@@ -1,0 +1,25 @@
+name: "Freezer Inventory Tracker"
+version: "2.19.5"
+slug: "freezer_inventory_tracker"
+description: "Comprehensive freezer, butcher processing, and off-site cold storage inventory tracker with QR code scanning."
+arch:
+  - aarch64
+  - amd64
+  - armhf
+  - armv7
+  - i386
+init: false
+homeassistant_api: true
+hassio_api: true
+auth_api: true
+map:
+  - share:rw
+  - addon_config:rw
+options: {}
+schema: {}
+ports:
+  3000/tcp: 3000
+ingress: true
+ingress_port: 3000
+panel_icon: mdi:snowflake
+panel_title: "Freezer Inventory"

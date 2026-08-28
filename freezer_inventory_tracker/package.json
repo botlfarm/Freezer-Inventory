@@ -1,0 +1,45 @@
+{
+  "name": "freezer-inventory-tracker",
+  "private": true,
+  "version": "2.19.5",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx server.ts",
+    "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --external:better-sqlite3 --sourcemap --define:process.env.NODE_ENV=\\\"'production'\\\" --outfile=dist/server.cjs",
+    "start": "node dist/server.cjs",
+    "preview": "vite preview",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.17",
+    "better-sqlite3": "^11.3.0",
+    "express": "^5.2.1",
+    "html5-qrcode": "^2.3.8",
+    "jsbarcode": "^3.11.5",
+    "jszip": "^3.10.1",
+    "lucide-react": "^1.17.0",
+    "mobile-drag-drop": "^3.0.0-rc.0",
+    "nodemailer": "^7.0.0",
+    "papaparse": "^5.5.4",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.5.8",
+    "@types/express": "^5.0.6",
+    "@types/jsbarcode": "^3.11.4",
+    "@types/jszip": "^3.4.0",
+    "@types/node": "^22.14.0",
+    "@types/nodemailer": "^8.0.1",
+    "@types/papaparse": "^5.5.2",
+    "@vitejs/plugin-react": "^5.0.0",
+    "autoprefixer": "^10.4.20",
+    "esbuild": "^0.28.0",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "tsx": "^4.22.4",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.0"
+  }
+}

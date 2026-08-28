@@ -1,0 +1,54 @@
+
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <script>
+      // Home Assistant Ingress relative path fix
+      if (!window.location.pathname.endsWith('/')) {
+        window.location.replace(window.location.pathname + '/' + window.location.search);
+      }
+    </script>
+    <script>
+      // Force light mode
+      try {
+        localStorage.setItem('freezer-theme', 'light');
+        document.documentElement.classList.add('light');
+      } catch (e) {}
+    </script>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Freezer Inventory Tracker</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              'cool-gray': {
+                '950': 'var(--cool-gray-950)',
+                '900': 'var(--cool-gray-900)',
+                '850': 'var(--cool-gray-850)',
+                '800': 'var(--cool-gray-800)',
+                '750': 'var(--cool-gray-750)',
+                '700': 'var(--cool-gray-700)',
+                '650': 'var(--cool-gray-650)',
+                '600': 'var(--cool-gray-600)',
+                '500': 'var(--cool-gray-500)',
+                '450': 'var(--cool-gray-450)',
+                '400': 'var(--cool-gray-400)',
+                '300': 'var(--cool-gray-300)',
+                '200': 'var(--cool-gray-200)',
+                '100': 'var(--cool-gray-100)',
+              },
+            }
+          }
+        }
+      }
+    </script>
+</head>
+  <body class="bg-cool-gray-900 text-cool-gray-100">
+    <div id="root"></div>
+    <script type="module" src="/index.tsx"></script>
+  </body>
+</html>

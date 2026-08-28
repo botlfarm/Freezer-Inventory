@@ -1,0 +1,662 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ==========================================================================
+   FREEZER INVENTORY TRACKER - NATIVE HOME ASSISTANT COLOR ENGINE
+   Direct Mapping to Home Assistant Built-in Theme Variables (color.globals.ts)
+   ========================================================================== */
+
+:root {
+  /* Home Assistant Native Theme Variables with HA Dark Mode Defaults as Fallback */
+  --ha-primary-color: var(--ha-color-primary, var(--primary-color, #03a9f4));
+  --ha-dark-primary-color: var(--dark-primary-color, #0284c7);
+  --ha-light-primary-color: var(--light-primary-color, #81d4fa);
+  --ha-accent-color: var(--accent-color, #ff9800);
+
+  --ha-bg-app: var(--primary-background-color, #111827);
+  --ha-bg-card: var(--ha-card-background, var(--card-background-color, var(--secondary-background-color, #1f2937)));
+  --ha-bg-surface: var(--secondary-background-color, var(--card-background-color, #1f2937));
+  --ha-bg-input: var(--input-fill-color, var(--mdc-text-field-fill-color, var(--secondary-background-color, #374151)));
+  --ha-bg-chip: var(--chip-background-color, var(--ha-chip-background, var(--secondary-background-color, #374151)));
+  --ha-bg-header: var(--app-header-background-color, var(--ha-bg-app));
+  --ha-bg-sidebar: var(--sidebar-background-color, var(--ha-bg-card));
+
+  --ha-text-primary: var(--primary-text-color, var(--text-primary-color, #f3f4f6));
+  --ha-text-secondary: var(--secondary-text-color, #9ca3af);
+  --ha-text-muted: var(--disabled-text-color, #6b7280);
+
+  --ha-divider: var(--divider-color, rgba(255, 255, 255, 0.12));
+  --ha-border: var(--ha-card-border-color, var(--border-color, var(--divider-color, rgba(255, 255, 255, 0.12))));
+
+  --ha-success-color: var(--success-color, #10b981);
+  --ha-warning-color: var(--warning-color, #f59e0b);
+  --ha-error-color: var(--error-color, #ef4444);
+  --ha-info-color: var(--info-color, var(--ha-primary-color));
+}
+
+/* Base Body & Root Surface Styling */
+html, body, #root {
+  background-color: var(--ha-bg-app) !important;
+  color: var(--ha-text-primary) !important;
+  min-height: 100vh;
+}
+
+/* Application Headers, Sidebars, Sticky Category Bars & Navigation */
+header,
+header.sticky,
+header[class*="sticky"],
+#main-app-header,
+.sticky,
+[class*="sticky"],
+div[class*="sticky"],
+div[class*="sticky top-"],
+#mobile-category-pillbar,
+#mobile-display-category-pillbar {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  background-color: var(--ha-bg-card) !important;
+  opacity: 1 !important;
+  border-bottom: 1px solid var(--ha-border) !important;
+  color: var(--ha-text-primary) !important;
+}
+
+/* Ensure sticky product headers inside cards use solid background */
+div[class*="sticky"][class*="bg-cool-gray"],
+div[class*="sticky"][class*="bg-slate"],
+div[class*="sticky"][class*="bg-zinc"],
+div[class*="sticky"][class*="bg-gray"] {
+  background-color: var(--ha-bg-card) !important;
+  opacity: 1 !important;
+}
+
+/* Forms, Inputs, Select Options & Textareas */
+input,
+select,
+textarea {
+  background-color: var(--ha-bg-input) !important;
+  border: 1px solid var(--ha-border) !important;
+  color: var(--ha-text-primary) !important;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--ha-text-muted) !important;
+}
+
+option {
+  background-color: var(--ha-bg-card) !important;
+  color: var(--ha-text-primary) !important;
+}
+
+/* Cards, Container Panels, Product Cards, Display Cards, Menus, Dropdowns, Comboboxes & Dialog Modals */
+.container-card,
+[class*="container-card"],
+.product-card,
+[class*="product-card"],
+[id*="prod-card-"],
+div[id^="prod-card-"],
+[id*="display-card-"],
+[role="dialog"],
+[role="menu"],
+[role="listbox"],
+.modal,
+.modal-content,
+[class*="modal"],
+[id*="menu-"],
+[id*="dropdown"],
+[class*="dropdown"],
+[class*="popover"],
+[class*="flyout"],
+#user-hamburger-dropdown,
+#sync-status-dropdown,
+div.absolute.z-50,
+div.fixed.z-50,
+div.absolute[class*="shadow-"],
+div.fixed[class*="shadow-"],
+div.absolute[class*="z-["],
+div.fixed[class*="z-["],
+div.absolute[class*="bg-cool-gray"],
+div.absolute[class*="bg-slate"],
+div.absolute[class*="bg-zinc"],
+div.absolute[class*="bg-gray"],
+ul.absolute,
+div.absolute.mt-1 {
+  background-color: var(--ha-bg-card) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  opacity: 1 !important;
+  border: 1px solid var(--ha-border) !important;
+  color: var(--ha-text-primary) !important;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.6), 0 8px 10px -6px rgba(0, 0, 0, 0.6) !important;
+}
+
+/* ==========================================================================
+   INTAKE & MOVEMENT FORM SUB-SECTION BACKGROUND ENGINE
+   Utilizes Home Assistant Native Theme Color Variables for Distinct Contrast
+   ========================================================================== */
+
+/* Top Summary Sticky Header */
+.intake-header-sticky {
+  background-color: var(--ha-bg-card, var(--card-background-color, #1f2937)) !important;
+  border: 1.5px solid var(--ha-primary-color, #03a9f4) !important;
+  color: var(--ha-text-primary, #f3f4f6) !important;
+}
+
+/* Section 1: Stock Intake / Move Details (Product Details - Primary Cyan/Blue Tint) */
+.intake-section-1 {
+  background-color: color-mix(in srgb, var(--ha-bg-card, #1f2937) 85%, var(--ha-primary-color, #03a9f4) 15%) !important;
+  border: 1px solid var(--ha-border, rgba(255, 255, 255, 0.12)) !important;
+  border-top: 4px solid var(--ha-primary-color, #03a9f4) !important;
+  color: var(--ha-text-primary, #f3f4f6) !important;
+}
+
+.intake-section-1-subcard {
+  background-color: var(--ha-bg-card, var(--card-background-color, #1f2937)) !important;
+  border: 1px solid var(--ha-border, rgba(255, 255, 255, 0.12)) !important;
+  color: var(--ha-text-primary, #f3f4f6) !important;
+}
+
+/* Section 2A: Container Selection (Box, Bag, Staging - Warning Amber/Gold Tint) */
+.intake-section-2a {
+  background-color: color-mix(in srgb, var(--ha-bg-card, #1f2937) 82%, var(--ha-warning-color, #f59e0b) 18%) !important;
+  border: 1px solid var(--ha-border, rgba(255, 255, 255, 0.12)) !important;
+  border-top: 4px solid var(--ha-warning-color, #f59e0b) !important;
+  color: var(--ha-text-primary, #f3f4f6) !important;
+}
+
+.intake-section-2a-subcard {
+  background-color: var(--ha-bg-card, var(--card-background-color, #1f2937)) !important;
+  border: 1px solid var(--ha-border, rgba(255, 255, 255, 0.12)) !important;
+  color: var(--ha-text-primary, #f3f4f6) !important;
+}
+
+.intake-section-2a-creator {
+  background-color: var(--ha-bg-input, var(--input-fill-color, #374151)) !important;
+  border: 1px solid var(--ha-border, rgba(255, 255, 255, 0.12)) !important;
+  color: var(--ha-text-primary, #f3f4f6) !important;
+}
+
+/* Section 2B: Freezer Location Assignment (Info/Deep Blue Tint) */
+.intake-section-2b {
+  background-color: color-mix(in srgb, var(--ha-bg-card, #1f2937) 80%, var(--ha-info-color, var(--ha-primary-color, #0284c7)) 20%) !important;
+  border: 1px solid var(--ha-border, rgba(255, 255, 255, 0.12)) !important;
+  border-top: 4px solid var(--ha-info-color, var(--ha-primary-color, #03a9f4)) !important;
+  color: var(--ha-text-primary, #f3f4f6) !important;
+}
+
+.intake-section-2b-subcard {
+  background-color: var(--ha-bg-card, var(--card-background-color, #1f2937)) !important;
+  border: 1px solid var(--ha-border, rgba(255, 255, 255, 0.12)) !important;
+  color: var(--ha-text-primary, #f3f4f6) !important;
+}
+
+/* Tables & Data Displays */
+table {
+  background-color: var(--ha-bg-card) !important;
+  color: var(--ha-text-primary) !important;
+}
+
+thead, th {
+  background-color: var(--ha-bg-surface) !important;
+  color: var(--ha-text-primary) !important;
+  border-bottom: 2px solid var(--ha-border) !important;
+}
+
+td {
+  border-bottom: 1px solid var(--ha-border) !important;
+  color: var(--ha-text-primary) !important;
+}
+
+tr:hover {
+  background-color: var(--ha-bg-chip) !important;
+}
+
+/* ==========================================================================
+   PILLS, BADGES, CHIPS & BUTTONS - HOME ASSISTANT THEME OVERRIDES
+   ========================================================================== */
+
+/* Inactive Category Pills, Chips, Badges & Tags */
+.pill,
+.badge,
+.chip,
+.tag,
+[class*="rounded-full"],
+[class*="rounded-md"][class*="px-2"],
+[class*="rounded-lg"][class*="px-2"],
+[class*="rounded-xl"][class*="px-2"] {
+  background-color: var(--ha-bg-chip);
+  color: var(--ha-text-primary);
+  border: 1px solid var(--ha-border);
+}
+
+/* Active Category Pills & Selected Filters */
+button[class*="rounded-full"].bg-cyan-600,
+button[class*="rounded-full"].bg-cyan-500,
+button[class*="rounded-full"].bg-cyan-700,
+button[class*="rounded-full"].bg-cyan-800,
+button[class*="rounded-full"][class*="bg-cyan"],
+button[class*="rounded-full"][class*="bg-blue"],
+.pill-active,
+.active-category-pill {
+  background-color: var(--ha-primary-color) !important;
+  color: #ffffff !important;
+  border-color: var(--ha-primary-color) !important;
+}
+
+/* Status Badges - Warning / Expiring Soon */
+[class*="bg-amber-900"],
+[class*="bg-amber-800"],
+[class*="bg-amber-950"],
+[class*="bg-yellow-900"],
+.badge-warning {
+  background-color: var(--ha-bg-chip) !important;
+  color: var(--ha-warning-color) !important;
+  border: 1px solid var(--ha-warning-color) !important;
+}
+
+/* Status Badges - Success / Good / In Stock */
+[class*="bg-emerald-900"],
+[class*="bg-emerald-800"],
+[class*="bg-emerald-950"],
+[class*="bg-green-900"],
+.badge-success {
+  background-color: var(--ha-bg-chip) !important;
+  color: var(--ha-success-color) !important;
+  border: 1px solid var(--ha-success-color) !important;
+}
+
+/* Status Badges - Error / Expired / Danger */
+[class*="bg-red-900"],
+[class*="bg-red-800"],
+[class*="bg-rose-900"],
+[class*="bg-rose-800"],
+[class*="bg-rose-950"],
+.badge-danger,
+.badge-error {
+  background-color: var(--ha-bg-chip) !important;
+  color: var(--ha-error-color) !important;
+  border: 1px solid var(--ha-error-color) !important;
+}
+
+/* Primary Action Buttons */
+button.bg-cyan-600,
+button.bg-cyan-500,
+button.bg-cyan-700,
+button.bg-blue-600,
+button.bg-indigo-600,
+.btn-primary {
+  background-color: var(--ha-primary-color) !important;
+  color: #ffffff !important;
+  border-color: var(--ha-primary-color) !important;
+}
+
+button.bg-cyan-600:hover,
+button.bg-cyan-500:hover,
+.btn-primary:hover {
+  background-color: var(--ha-dark-primary-color) !important;
+}
+
+/* Secondary & Faint Buttons */
+button.bg-cool-gray-800,
+button.bg-cool-gray-700,
+button.bg-slate-800,
+button.bg-zinc-800,
+.btn-secondary {
+  background-color: var(--ha-bg-chip) !important;
+  color: var(--ha-text-primary) !important;
+  border: 1px solid var(--ha-border) !important;
+}
+
+button.bg-cool-gray-800:hover,
+button.bg-cool-gray-700:hover,
+.btn-secondary:hover {
+  background-color: var(--ha-bg-input) !important;
+}
+
+/* ==========================================================================
+   TYPOGRAPHY & TEXT COLOR OVERRIDES
+   ========================================================================== */
+
+.text-cool-gray-100,
+.text-cool-gray-200,
+.text-white,
+.text-gray-100 {
+  color: var(--ha-text-primary) !important;
+}
+
+.text-cool-gray-300,
+.text-cool-gray-400,
+.text-cool-gray-455,
+.text-slate-400,
+.text-zinc-400,
+.text-gray-400 {
+  color: var(--ha-text-secondary) !important;
+}
+
+.text-cool-gray-500,
+.text-cool-gray-550,
+.text-slate-500,
+.text-zinc-500,
+.text-gray-500 {
+  color: var(--ha-text-muted) !important;
+}
+
+.text-cyan-400,
+.text-cyan-300,
+.text-blue-400,
+.text-sky-400 {
+  color: var(--ha-primary-color) !important;
+}
+
+.text-amber-300,
+.text-amber-400,
+.text-yellow-400 {
+  color: var(--ha-warning-color) !important;
+}
+
+.text-emerald-300,
+.text-emerald-400,
+.text-green-400 {
+  color: var(--ha-success-color) !important;
+}
+
+.text-red-400,
+.text-rose-400,
+.text-rose-300 {
+  color: var(--ha-error-color) !important;
+}
+
+hr,
+[class*="border-cool-gray-"],
+[class*="border-slate-"],
+[class*="border-zinc-"],
+[class*="border-gray-"] {
+  border-color: var(--ha-border) !important;
+}
+
+/* Drag-and-drop & Typography overrides */
+.dnd-poly-drag-image {
+  pointer-events: none !important;
+}
+
+[title*="Notes:"], p[title*="Notes:"], p.italic, span.italic, div.italic {
+  font-style: normal !important;
+}
+
+/* ==========================================================================
+   MOVEMENT REPORTS & CHECKLISTS - PRINT / PDF / PREVIEW OVERRIDES
+   Ensures clean black text on white backgrounds, completely bypassing
+   Home Assistant dark mode variables and overrides.
+   ========================================================================== */
+
+#printable-document,
+#all-printable-documents,
+.printable-pdf-document,
+.printable-pdf-page,
+#field-checklist-pdf,
+#field-checklist-pdf-scanner {
+  background-color: #ffffff !important;
+  color: #000000 !important;
+  color-scheme: light !important;
+}
+
+#printable-document *,
+#all-printable-documents *,
+.printable-pdf-document *,
+.printable-pdf-page *,
+#field-checklist-pdf *,
+#field-checklist-pdf-scanner * {
+  text-shadow: none !important;
+  box-shadow: none !important;
+  color-scheme: light !important;
+}
+
+/* Explicit Background Highlights for Report Sections & Headers */
+#printable-document .bg-white,
+#all-printable-documents .bg-white,
+.printable-pdf-document .bg-white,
+.printable-pdf-page .bg-white,
+#field-checklist-pdf .bg-white,
+#field-checklist-pdf-scanner .bg-white {
+  background-color: #ffffff !important;
+}
+
+#printable-document .bg-gray-50,
+#printable-document .bg-gray-55,
+#printable-document [class*="bg-gray-50"],
+#printable-document [class*="bg-gray-55"],
+#all-printable-documents .bg-gray-50,
+#all-printable-documents .bg-gray-55,
+#all-printable-documents [class*="bg-gray-50"],
+#all-printable-documents [class*="bg-gray-55"],
+.printable-pdf-document .bg-gray-50,
+.printable-pdf-document [class*="bg-gray-50"],
+.printable-pdf-page .bg-gray-50,
+#field-checklist-pdf .bg-gray-50,
+#field-checklist-pdf-scanner .bg-gray-50 {
+  background-color: #f9fafb !important;
+}
+
+#printable-document .bg-gray-100,
+#printable-document [class*="bg-gray-100"],
+#all-printable-documents .bg-gray-100,
+#all-printable-documents [class*="bg-gray-100"],
+.printable-pdf-document .bg-gray-100,
+.printable-pdf-document [class*="bg-gray-100"],
+.printable-pdf-page .bg-gray-100,
+#field-checklist-pdf .bg-gray-100,
+#field-checklist-pdf-scanner .bg-gray-100 {
+  background-color: #f3f4f6 !important;
+}
+
+#printable-document .bg-gray-200,
+#all-printable-documents .bg-gray-200,
+.printable-pdf-document .bg-gray-200,
+.printable-pdf-page .bg-gray-200,
+#field-checklist-pdf .bg-gray-200,
+#field-checklist-pdf-scanner .bg-gray-200 {
+  background-color: #e5e7eb !important;
+}
+
+#printable-document .bg-emerald-50,
+#all-printable-documents .bg-emerald-50,
+.printable-pdf-document .bg-emerald-50,
+.printable-pdf-page .bg-emerald-50 {
+  background-color: #ecfdf5 !important;
+}
+
+/* Table overrides to override native table styles */
+#printable-document table,
+#all-printable-documents table,
+.printable-pdf-document table,
+.printable-pdf-page table,
+#field-checklist-pdf table,
+#field-checklist-pdf-scanner table {
+  background-color: #ffffff !important;
+  color: #000000 !important;
+  border: 1px solid #9ca3af !important;
+  border-collapse: collapse !important;
+}
+
+#printable-document thead,
+#printable-document th,
+#all-printable-documents thead,
+#all-printable-documents th,
+.printable-pdf-document thead,
+.printable-pdf-document th,
+.printable-pdf-page thead,
+.printable-pdf-page th,
+#field-checklist-pdf thead,
+#field-checklist-pdf th,
+#field-checklist-pdf-scanner thead,
+#field-checklist-pdf-scanner th {
+  background-color: #f3f4f6 !important;
+  color: #000000 !important;
+  border: 1px solid #9ca3af !important;
+  font-weight: 800 !important;
+}
+
+#printable-document tbody,
+#all-printable-documents tbody,
+.printable-pdf-document tbody,
+.printable-pdf-page tbody {
+  background-color: #ffffff !important;
+  color: #000000 !important;
+}
+
+#printable-document tr,
+#all-printable-documents tr,
+.printable-pdf-document tr,
+.printable-pdf-page tr,
+#field-checklist-pdf tr,
+#field-checklist-pdf-scanner tr {
+  background-color: transparent !important;
+}
+
+#printable-document tr:hover,
+#all-printable-documents tr:hover,
+.printable-pdf-document tr:hover,
+.printable-pdf-page tr:hover,
+#field-checklist-pdf tr:hover,
+#field-checklist-pdf-scanner tr:hover {
+  background-color: #f3f4f6 !important;
+}
+
+#printable-document td,
+#all-printable-documents td,
+.printable-pdf-document td,
+.printable-pdf-page td,
+#field-checklist-pdf td,
+#field-checklist-pdf-scanner td {
+  background-color: transparent !important;
+  color: #000000 !important;
+  border: 1px solid #e5e7eb !important;
+}
+
+/* Specific text color definitions to keep visual hierarchy on white bg */
+#printable-document .text-gray-950,
+#printable-document .text-gray-900,
+#printable-document .text-gray-800,
+#printable-document .text-gray-750,
+#all-printable-documents .text-gray-950,
+#all-printable-documents .text-gray-900,
+#all-printable-documents .text-gray-800,
+#all-printable-documents .text-gray-750,
+.printable-pdf-document .text-gray-950,
+.printable-pdf-document .text-gray-900,
+.printable-pdf-document .text-gray-800,
+.printable-pdf-document .text-gray-750,
+.printable-pdf-page .text-gray-950,
+.printable-pdf-page .text-gray-900,
+.printable-pdf-page .text-gray-800,
+.printable-pdf-page .text-gray-750,
+#field-checklist-pdf .text-gray-900,
+#field-checklist-pdf .text-gray-800,
+#field-checklist-pdf-scanner .text-gray-700 {
+  color: #111827 !important;
+}
+
+#printable-document .text-gray-650,
+#printable-document .text-gray-600,
+#printable-document .text-gray-500,
+#printable-document .text-gray-400,
+#all-printable-documents .text-gray-650,
+#all-printable-documents .text-gray-600,
+#all-printable-documents .text-gray-500,
+#all-printable-documents .text-gray-400,
+.printable-pdf-document .text-gray-650,
+.printable-pdf-document .text-gray-600,
+.printable-pdf-document .text-gray-500,
+.printable-pdf-document .text-gray-400,
+.printable-pdf-page .text-gray-650,
+.printable-pdf-page .text-gray-600,
+.printable-pdf-page .text-gray-500,
+.printable-pdf-page .text-gray-400,
+#field-checklist-pdf .text-gray-600,
+#field-checklist-pdf .text-gray-500,
+#field-checklist-pdf-scanner .text-gray-600,
+#field-checklist-pdf-scanner .text-gray-500 {
+  color: #4b5563 !important;
+}
+
+#printable-document [class*="text-gray-"],
+#all-printable-documents [class*="text-gray-"],
+.printable-pdf-document [class*="text-gray-"],
+.printable-pdf-page [class*="text-gray-"] {
+  color: #374151 !important;
+}
+
+#printable-document .text-blue-800,
+#all-printable-documents .text-blue-800,
+.printable-pdf-document .text-blue-800 {
+  color: #1e40af !important; /* Force legible dark blue for links/highlights */
+}
+
+#printable-document .text-purple-350,
+#printable-document .text-purple-400,
+#all-printable-documents .text-purple-350,
+#all-printable-documents .text-purple-400,
+.printable-pdf-document .text-purple-350,
+.printable-pdf-document .text-purple-400 {
+  color: #6b21a8 !important; /* Legible dark purple */
+}
+
+/* Ensure borders are fully styled and visible on print/white bg */
+#printable-document .border,
+#all-printable-documents .border,
+.printable-pdf-document .border,
+.printable-pdf-page .border,
+#field-checklist-pdf .border,
+#field-checklist-pdf-scanner .border {
+  border: 1px solid #9ca3af !important;
+}
+#printable-document .border-t,
+#all-printable-documents .border-t,
+.printable-pdf-document .border-t,
+.printable-pdf-page .border-t,
+#field-checklist-pdf .border-t,
+#field-checklist-pdf-scanner .border-t {
+  border-top: 1px solid #9ca3af !important;
+}
+#printable-document .border-b,
+#all-printable-documents .border-b,
+.printable-pdf-document .border-b,
+.printable-pdf-page .border-b,
+#field-checklist-pdf .border-b,
+#field-checklist-pdf-scanner .border-b {
+  border-bottom: 1px solid #9ca3af !important;
+}
+#printable-document .border-r,
+#all-printable-documents .border-r,
+.printable-pdf-document .border-r,
+.printable-pdf-page .border-r,
+#field-checklist-pdf .border-r,
+#field-checklist-pdf-scanner .border-r {
+  border-right: 1px solid #9ca3af !important;
+}
+#printable-document .border-l,
+#all-printable-documents .border-l,
+.printable-pdf-document .border-l,
+.printable-pdf-page .border-l,
+#field-checklist-pdf .border-l,
+#field-checklist-pdf-scanner .border-l {
+  border-left: 1px solid #9ca3af !important;
+}
+#printable-document .divide-x > :not([hidden]) ~ :not([hidden]),
+#all-printable-documents .divide-x > :not([hidden]) ~ :not([hidden]),
+.printable-pdf-document .divide-x > :not([hidden]) ~ :not([hidden]),
+.printable-pdf-page .divide-x > :not([hidden]) ~ :not([hidden]),
+#field-checklist-pdf .divide-x > :not([hidden]) ~ :not([hidden]),
+#field-checklist-pdf-scanner .divide-x > :not([hidden]) ~ :not([hidden]) {
+  border-left: 1px solid #9ca3af !important;
+}
+#printable-document .divide-y > :not([hidden]) ~ :not([hidden]),
+#all-printable-documents .divide-y > :not([hidden]) ~ :not([hidden]),
+.printable-pdf-document .divide-y > :not([hidden]) ~ :not([hidden]),
+.printable-pdf-page .divide-y > :not([hidden]) ~ :not([hidden]),
+#field-checklist-pdf .divide-y > :not([hidden]) ~ :not([hidden]),
+#field-checklist-pdf-scanner .divide-y > :not([hidden]) ~ :not([hidden]) {
+  border-top: 1px solid #9ca3af !important;
+}
+
