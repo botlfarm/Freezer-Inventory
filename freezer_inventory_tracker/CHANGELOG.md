@@ -1,3 +1,56 @@
+### [2.20.0] - 2026-08-29
+
+### Added
+- **Multi-Architecture Cloud Pre-compilation & GitHub Actions**:
+  - Configured automated GitHub Actions workflow (`.github/workflows/build-addon.yml`) using the official `home-assistant/builder` action to build and publish ready-to-run container images across `aarch64`, `amd64`, `armhf`, `armv7`, and `i386` to GitHub Container Registry (GHCR).
+  - Added `build.yaml` with official Home Assistant multi-architecture base images.
+  - Linked prebuilt GHCR container image endpoint in `config.yaml` (`image: "ghcr.io/botlfarm/freezer-inventory-tracker-{arch}"`).
+
+### Changed
+- **Multi-Stage Lean Docker Build**:
+  - Re-architected `Dockerfile` into a 2-stage build: a build environment that compiles TypeScript frontend (`vite`) and backend (`esbuild`), and a stripped runtime container that only contains production artifacts and pruned dependencies.
+  - Drastically reduced final add-on container disk footprint and eliminated on-device compilation during installation.
+
+### Files Modified
+- `/.github/workflows/build-addon.yml`
+- `/freezer_inventory_tracker/Dockerfile`
+- `/freezer_inventory_tracker/build.yaml`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.19.7] - 2026-08-29
+
+### Changed
+- **Repository Configuration & Git Tracking Hygiene**:
+  - Updated Home Assistant add-on repository manifest (`repository.yaml`) URL and maintainer to `botlfarm/freezer-inventory-tracker`.
+  - Hardened `.gitignore` to exclude SQLite database files (`*.db`, `*.db-wal`, `*.db-shm`), malformed database dumps, environment variable files, and runtime backup/upload directories.
+  - Added `.gitkeep` placeholders to `data/backups/` and `data/uploads/` to maintain clean repository directory structure for new clones.
+
+### Files Modified
+- `/.gitignore`
+- `/repository.yaml`
+- `/freezer_inventory_tracker/data/backups/.gitkeep`
+- `/freezer_inventory_tracker/data/uploads/.gitkeep`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.19.6] - 2026-08-28
+
+### Fixed
+- **Double Submission Prevention During UI / Network Lag**:
+  - Implemented synchronous submission lock guards (`isSubmittingRef` and `isSubmitting` states) across `UnifiedInboundMoveForm.tsx` and `MoveModalContent.tsx` (`MoveMeat`, `MoveContainer`, and `ChangeContainerFlow`).
+  - Disabled submit buttons and displayed real-time spinner animations during in-flight operations to prevent rapid re-clicks or duplicate item creation/movements during network delays.
+  - Wrapped all async dispatches and state updates in robust `try / catch / finally` blocks ensuring submission locks always release safely upon completion or failure.
+
+### Files Modified
+- `/freezer_inventory_tracker/components/UnifiedInboundMoveForm.tsx`
+- `/freezer_inventory_tracker/components/MoveModalContent.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
 ### [2.19.5] - 2026-08-28
 
 ### Changed

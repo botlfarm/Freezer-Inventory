@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { Action, InventoryState, Container } from '../types';
 import AddForms from './AddForms';
 import { PackageIcon, PlusIcon, MinusIcon } from './icons';
@@ -42,6 +42,8 @@ const MoveMeat: React.FC<CommonMoveProps & { meatCutId: string }> = ({ dispatch,
   const [searchRetiredText, setSearchRetiredText] = useState('');
   const [targetFreezerId, setTargetFreezerId] = useState<string>('');
   const [errorMsg, setErrorMsg] = useState<string>('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const isSubmittingRef = useRef(false);
 
   const hasRetiredConflict = React.useMemo(() => {
     if (destinationType !== 'retired' || !targetContainerId || !targetFreezerId) return false;
@@ -102,73 +104,17 @@ const MoveMeat: React.FC<CommonMoveProps & { meatCutId: string }> = ({ dispatch,
     setQuantityStr(newVal.toString());
   };
 
-  const handleContainerCreated = (newContainerId: string) => {
-    dispatch({ 
-      type: 'MOVE_MEAT_QUANTITY', 
-      payload: { 
-        meatCutId, 
-        productId: meatCut.productId,
-        newContainerId, 
-        quantity: evalQty, 
-        sourceContainerId: meatCut.containerId,
-        notes: meatCut.notes,
-        tagIds: meatCut.tagIds,
-        originalCutName: meatCut.originalCutName
-      } 
-    });
-    onClose();
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErrorMsg('');
-    
-    if (targetContainerId && targetContainerId !== meatCut.containerId && evalQty > 0) {
-      let finalTargetContainerId = targetContainerId;
-
-      if (destinationType === 'retired') {
-        if (!targetFreezerId) {
-          setErrorMsg("Please assign a freezer location to un-retire this container.");
-          return;
-        }
-
-        const existingContainer = state.containers.find(c => c.id === targetContainerId);
-        const matchedTemplate = (state.containerTemplates || []).find(t => t.id === targetContainerId || t.name.toLowerCase().trim() === targetContainerId.toLowerCase().trim());
-
-        if (existingContainer) {
-          if (existingContainer.isArchived) {
-            await dispatch({ type: 'TOGGLE_CONTAINER_ARCHIVED', payload: { containerId: existingContainer.id, isArchived: false } });
-          }
-          await dispatch({ type: 'MOVE_CONTAINER', payload: { containerId: existingContainer.id, newFreezerId: targetFreezerId } });
-          finalTargetContainerId = existingContainer.id;
-        } else if (matchedTemplate) {
-          const generatedId = generateUUID();
-          const newContainerPayload = {
-            id: generatedId,
-            name: matchedTemplate.name,
-            icon: matchedTemplate.icon || 'Folder',
-            templateId: matchedTemplate.id,
-            imageUrl: matchedTemplate.imageUrl || undefined,
-            deleteOnEmpty: false,
-            freezerId: targetFreezerId,
-            isArchived: false
-          };
-
-          const success = await dispatch({ type: 'ADD_CONTAINER', payload: newContainerPayload });
-          if (!success) {
-            setErrorMsg('Failed to instantiate container from template.');
-            return;
-          }
-          finalTargetContainerId = generatedId;
-        }
-      }
-      
-      dispatch({ 
+  const handleContainerCreated = async (newContainerId: string) => {
+    if (isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
+    setIsSubmitting(true);
+    try {
+      await dispatch({ 
         type: 'MOVE_MEAT_QUANTITY', 
         payload: { 
           meatCutId, 
           productId: meatCut.productId,
-          newContainerId: finalTargetContainerId, 
+          newContainerId, 
           quantity: evalQty, 
           sourceContainerId: meatCut.containerId,
           notes: meatCut.notes,
@@ -177,6 +123,85 @@ const MoveMeat: React.FC<CommonMoveProps & { meatCutId: string }> = ({ dispatch,
         } 
       });
       onClose();
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Failed to move item.');
+    } finally {
+      isSubmittingRef.current = false;
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
+    setIsSubmitting(true);
+    setErrorMsg('');
+    
+    try {
+      if (targetContainerId && targetContainerId !== meatCut.containerId && evalQty > 0) {
+        let finalTargetContainerId = targetContainerId;
+
+        if (destinationType === 'retired') {
+          if (!targetFreezerId) {
+            setErrorMsg("Please assign a freezer location to un-retire this container.");
+            return;
+          }
+
+          const existingContainer = state.containers.find(c => c.id === targetContainerId);
+          const matchedTemplate = (state.containerTemplates || []).find(t => t.id === targetContainerId || t.name.toLowerCase().trim() === targetContainerId.toLowerCase().trim());
+
+          if (existingContainer) {
+            if (existingContainer.isArchived) {
+              await dispatch({ type: 'TOGGLE_CONTAINER_ARCHIVED', payload: { containerId: existingContainer.id, isArchived: false } });
+            }
+            await dispatch({ type: 'MOVE_CONTAINER', payload: { containerId: existingContainer.id, newFreezerId: targetFreezerId } });
+            finalTargetContainerId = existingContainer.id;
+          } else if (matchedTemplate) {
+            const generatedId = generateUUID();
+            const newContainerPayload = {
+              id: generatedId,
+              name: matchedTemplate.name,
+              icon: matchedTemplate.icon || 'Folder',
+              templateId: matchedTemplate.id,
+              imageUrl: matchedTemplate.imageUrl || undefined,
+              deleteOnEmpty: false,
+              freezerId: targetFreezerId,
+              isArchived: false
+            };
+
+            const success = await dispatch({ type: 'ADD_CONTAINER', payload: newContainerPayload });
+            if (!success) {
+              setErrorMsg('Failed to instantiate container from template.');
+              return;
+            }
+            finalTargetContainerId = generatedId;
+          }
+        }
+        
+        const success = await dispatch({ 
+          type: 'MOVE_MEAT_QUANTITY', 
+          payload: { 
+            meatCutId, 
+            productId: meatCut.productId,
+            newContainerId: finalTargetContainerId, 
+            quantity: evalQty, 
+            sourceContainerId: meatCut.containerId,
+            notes: meatCut.notes,
+            tagIds: meatCut.tagIds,
+            originalCutName: meatCut.originalCutName
+          } 
+        });
+        if (success) {
+          onClose();
+        }
+      }
+    } catch (err: any) {
+      console.error("Error moving meat cut:", err);
+      setErrorMsg(err?.message || "Failed to move meat cut.");
+    } finally {
+      isSubmittingRef.current = false;
+      setIsSubmitting(false);
     }
   };
 
@@ -398,10 +423,17 @@ const MoveMeat: React.FC<CommonMoveProps & { meatCutId: string }> = ({ dispatch,
       {destinationType !== 'new' && (
         <button 
             type="submit" 
-            disabled={!targetContainerId || (destinationType === 'retired' && !targetFreezerId)} 
-            className="w-full py-2.5 px-4 bg-cyan-600 text-white font-extrabold rounded-lg hover:bg-cyan-700 transition disabled:bg-cool-gray-800 disabled:text-cool-gray-500 disabled:cursor-not-allowed text-xs uppercase tracking-wider"
+            disabled={isSubmitting || !targetContainerId || (destinationType === 'retired' && !targetFreezerId)} 
+            className="w-full py-2.5 px-4 bg-cyan-600 text-white font-extrabold rounded-lg hover:bg-cyan-700 transition disabled:bg-cool-gray-800 disabled:text-cool-gray-500 disabled:cursor-not-allowed text-xs uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer active:scale-95"
         >
-            Move Item
+            {isSubmitting ? (
+              <>
+                <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
+                <span>Moving Item...</span>
+              </>
+            ) : (
+              'Move Item'
+            )}
         </button>
       )}
     </form>
@@ -415,6 +447,8 @@ const MoveContainer: React.FC<CommonMoveProps & { containerId: string }> = ({ di
         return special ? special.id : '';
     }, [state.freezers, container]);
     const [targetFreezerId, setTargetFreezerId] = useState<string>(defaultFreezerId);
+    const [isSubmitting, setIsSubmitting] = useState(false);
+    const isSubmittingRef = useRef(false);
   
     if (!container) {
       return <p>Error: Container not found.</p>;
@@ -427,11 +461,21 @@ const MoveContainer: React.FC<CommonMoveProps & { containerId: string }> = ({ di
       targetFreezerId !== ''
     );
   
-    const handleSubmit = (e: React.FormEvent) => {
+    const handleSubmit = async (e: React.FormEvent) => {
       e.preventDefault();
-      if (targetFreezerId !== container.freezerId) {
-        dispatch({ type: 'MOVE_CONTAINER', payload: { containerId, newFreezerId: targetFreezerId || undefined } });
+      if (isSubmittingRef.current) return;
+      isSubmittingRef.current = true;
+      setIsSubmitting(true);
+      try {
+        if (targetFreezerId !== container.freezerId) {
+          await dispatch({ type: 'MOVE_CONTAINER', payload: { containerId, newFreezerId: targetFreezerId || undefined } });
+        }
         onClose();
+      } catch (err) {
+        console.error("Failed to move container:", err);
+      } finally {
+        isSubmittingRef.current = false;
+        setIsSubmitting(false);
       }
     };
     
@@ -460,7 +504,20 @@ const MoveContainer: React.FC<CommonMoveProps & { containerId: string }> = ({ di
           </p>
         )}
 
-        <button type="submit" className="w-full py-2 px-4 bg-cyan-600 text-white font-semibold rounded-lg hover:bg-cyan-700 transition">Move Container</button>
+        <button 
+          type="submit" 
+          disabled={isSubmitting}
+          className="w-full py-2 px-4 bg-cyan-600 text-white font-semibold rounded-lg hover:bg-cyan-700 transition flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed active:scale-95"
+        >
+          {isSubmitting ? (
+            <>
+              <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
+              <span>Moving Container...</span>
+            </>
+          ) : (
+            'Move Container'
+          )}
+        </button>
       </form>
     );
   };
@@ -487,6 +544,7 @@ const ChangeContainerFlow: React.FC<CommonMoveProps & { containerId: string }> =
   const [targetFreezerId, setTargetFreezerId] = useState<string>('');
   const [errorMsg, setErrorMsg] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const isSubmittingRef = useRef(false);
 
   if (!sourceContainer) return <p className="text-red-400 font-bold p-4 text-center">Error: Source container not found.</p>;
 
@@ -561,69 +619,71 @@ const ChangeContainerFlow: React.FC<CommonMoveProps & { containerId: string }> =
 
   const handleSubmit = async (e?: React.FormEvent, finalTargetContainerId?: string) => {
     if (e) e.preventDefault();
+    if (isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
+    setIsSubmitting(true);
     setErrorMsg('');
 
-    let destContainerId = finalTargetContainerId || targetContainerId;
-    if (!destContainerId) {
-      setErrorMsg("Please select a target container.");
-      return;
-    }
-
-    if (destinationType === 'retired') {
-      if (!targetFreezerId) {
-        setErrorMsg("Please assign a freezer location to un-retire this container.");
+    try {
+      let destContainerId = finalTargetContainerId || targetContainerId;
+      if (!destContainerId) {
+        setErrorMsg("Please select a target container.");
         return;
       }
-      const existingContainer = state.containers.find(c => c.id === destContainerId);
-      const matchedTemplate = (state.containerTemplates || []).find(t => t.id === destContainerId || t.name.toLowerCase().trim() === destContainerId.toLowerCase().trim());
 
-      if (existingContainer) {
-        if (existingContainer.isArchived) {
-          await dispatch({ type: 'TOGGLE_CONTAINER_ARCHIVED', payload: { containerId: existingContainer.id, isArchived: false } });
-        }
-        await dispatch({ type: 'MOVE_CONTAINER', payload: { containerId: existingContainer.id, newFreezerId: targetFreezerId } });
-        destContainerId = existingContainer.id;
-      } else if (matchedTemplate) {
-        const generatedId = generateUUID();
-        const newContainerPayload = {
-          id: generatedId,
-          name: matchedTemplate.name,
-          icon: matchedTemplate.icon || 'Folder',
-          templateId: matchedTemplate.id,
-          imageUrl: matchedTemplate.imageUrl || undefined,
-          deleteOnEmpty: false,
-          freezerId: targetFreezerId,
-          isArchived: false
-        };
-
-        const success = await dispatch({ type: 'ADD_CONTAINER', payload: newContainerPayload });
-        if (!success) {
-          setErrorMsg('Failed to instantiate container from template.');
+      if (destinationType === 'retired') {
+        if (!targetFreezerId) {
+          setErrorMsg("Please assign a freezer location to un-retire this container.");
           return;
         }
-        destContainerId = generatedId;
-      }
-    }
+        const existingContainer = state.containers.find(c => c.id === destContainerId);
+        const matchedTemplate = (state.containerTemplates || []).find(t => t.id === destContainerId || t.name.toLowerCase().trim() === destContainerId.toLowerCase().trim());
 
-    // Filter cuts that are selected and have valid quantities
-    const cutsToMove: Array<{ id: string; qty: number }> = [];
-    for (const mc of containerCuts) {
-      const stateForMc = selectedCuts[mc.id];
-      if (stateForMc?.selected) {
-        const parsedQty = evaluateMathExpression(stateForMc.quantityStr, 1, mc.quantity) ?? mc.quantity;
-        if (parsedQty > 0) {
-          cutsToMove.push({ id: mc.id, qty: parsedQty });
+        if (existingContainer) {
+          if (existingContainer.isArchived) {
+            await dispatch({ type: 'TOGGLE_CONTAINER_ARCHIVED', payload: { containerId: existingContainer.id, isArchived: false } });
+          }
+          await dispatch({ type: 'MOVE_CONTAINER', payload: { containerId: existingContainer.id, newFreezerId: targetFreezerId } });
+          destContainerId = existingContainer.id;
+        } else if (matchedTemplate) {
+          const generatedId = generateUUID();
+          const newContainerPayload = {
+            id: generatedId,
+            name: matchedTemplate.name,
+            icon: matchedTemplate.icon || 'Folder',
+            templateId: matchedTemplate.id,
+            imageUrl: matchedTemplate.imageUrl || undefined,
+            deleteOnEmpty: false,
+            freezerId: targetFreezerId,
+            isArchived: false
+          };
+
+          const success = await dispatch({ type: 'ADD_CONTAINER', payload: newContainerPayload });
+          if (!success) {
+            setErrorMsg('Failed to instantiate container from template.');
+            return;
+          }
+          destContainerId = generatedId;
         }
       }
-    }
 
-    if (cutsToMove.length === 0) {
-      setErrorMsg("Please select at least one cut to move with a quantity greater than zero.");
-      return;
-    }
+      // Filter cuts that are selected and have valid quantities
+      const cutsToMove: Array<{ id: string; qty: number }> = [];
+      for (const mc of containerCuts) {
+        const stateForMc = selectedCuts[mc.id];
+        if (stateForMc?.selected) {
+          const parsedQty = evaluateMathExpression(stateForMc.quantityStr, 1, mc.quantity) ?? mc.quantity;
+          if (parsedQty > 0) {
+            cutsToMove.push({ id: mc.id, qty: parsedQty });
+          }
+        }
+      }
 
-    setIsSubmitting(true);
-    try {
+      if (cutsToMove.length === 0) {
+        setErrorMsg("Please select at least one cut to move with a quantity greater than zero.");
+        return;
+      }
+
       // Execute moves sequentially to maintain consistency
       for (const item of cutsToMove) {
         await dispatch({
@@ -641,6 +701,7 @@ const ChangeContainerFlow: React.FC<CommonMoveProps & { containerId: string }> =
       console.error("Error moving cuts:", err);
       setErrorMsg(err.message || "Failed to complete the transfer.");
     } finally {
+      isSubmittingRef.current = false;
       setIsSubmitting(false);
     }
   };

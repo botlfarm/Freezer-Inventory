@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Table } from 'lucide-react';
 import { Action, InventoryState, Container, Product, MeatCut, Freezer } from '../types';
 import { getContainerIcon } from './ContainerIconsMap';
@@ -195,6 +195,8 @@ export const UnifiedInboundMoveForm: React.FC<UnifiedInboundMoveFormProps> = ({
 
   const [unretireFreezerId, setUnretireFreezerId] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const isSubmittingRef = useRef(false);
 
   // --- Form fields for creating a NEW container on the fly ---
   const [newContainerName, setNewContainerName] = useState('');
@@ -514,136 +516,151 @@ export const UnifiedInboundMoveForm: React.FC<UnifiedInboundMoveFormProps> = ({
   // Action Button / Submit Handler
   const handleFormSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
+    setIsSubmitting(true);
     setErrorMsg('');
 
-    let targetId = selectedContainerId;
+    try {
+      let targetId = selectedContainerId;
 
-    // 1. If "New Container" tab is selected, validate and create it first
-    if (destTab === 'new') {
-      if (!newContainerName.trim()) {
-        setErrorMsg('Please specify a name for the new container.');
-        return;
-      }
-      
-      const generatedId = generateUUID();
-      const finalFreezerId = selectedFreezerId || newContainerFreezerId || undefined;
-      const newContainerPayload = {
-        id: generatedId,
-        name: newContainerName.trim(),
-        icon: newContainerIcon,
-        deleteOnEmpty: newContainerDeleteOnEmpty,
-        freezerId: finalFreezerId,
-        imageUrl: newContainerImageUrl.trim() || undefined
-      };
-
-      const success = await dispatch({ type: 'ADD_CONTAINER', payload: newContainerPayload });
-      if (!success) {
-        setErrorMsg('Failed to create the new container on the backend.');
-        return;
-      }
-      targetId = generatedId;
-
-    // 2. If "Retired" container selected, make sure to move it back to a freezer first (or leave in Staging optional)
-    } else if (destTab === 'retired') {
-      if (!selectedContainerId) {
-        setErrorMsg('Please select a retired or unused container.');
-        return;
-      }
-      const finalFreezerId = selectedFreezerId || unretireFreezerId || undefined;
-
-      const existingContainer = state.containers.find(c => c.id === selectedContainerId);
-      const matchedTemplate = (state.containerTemplates || []).find(t => t.id === selectedContainerId || t.name.toLowerCase().trim() === selectedContainerId.toLowerCase().trim());
-
-      if (existingContainer) {
-        if (existingContainer.isArchived) {
-          await dispatch({ type: 'TOGGLE_CONTAINER_ARCHIVED', payload: { containerId: existingContainer.id, isArchived: false } });
-        }
-        const success = await dispatch({ type: 'MOVE_CONTAINER', payload: { containerId: existingContainer.id, newFreezerId: finalFreezerId } });
-        if (!success) {
-          setErrorMsg('Failed to assign the container selection.');
+      // 1. If "New Container" tab is selected, validate and create it first
+      if (destTab === 'new') {
+        if (!newContainerName.trim()) {
+          setErrorMsg('Please specify a name for the new container.');
           return;
         }
-        targetId = existingContainer.id;
-      } else if (matchedTemplate) {
+        
         const generatedId = generateUUID();
+        const finalFreezerId = selectedFreezerId || newContainerFreezerId || undefined;
         const newContainerPayload = {
           id: generatedId,
-          name: matchedTemplate.name,
-          icon: matchedTemplate.icon || 'Folder',
-          templateId: matchedTemplate.id,
-          imageUrl: matchedTemplate.imageUrl || undefined,
-          deleteOnEmpty: false,
+          name: newContainerName.trim(),
+          icon: newContainerIcon,
+          deleteOnEmpty: newContainerDeleteOnEmpty,
           freezerId: finalFreezerId,
-          isArchived: false
+          imageUrl: newContainerImageUrl.trim() || undefined
         };
 
         const success = await dispatch({ type: 'ADD_CONTAINER', payload: newContainerPayload });
         if (!success) {
-          setErrorMsg('Failed to create container from template.');
+          setErrorMsg('Failed to create the new container on the backend.');
           return;
         }
         targetId = generatedId;
+
+      // 2. If "Retired" container selected, make sure to move it back to a freezer first (or leave in Staging optional)
+      } else if (destTab === 'retired') {
+        if (!selectedContainerId) {
+          setErrorMsg('Please select a retired or unused container.');
+          return;
+        }
+        const finalFreezerId = selectedFreezerId || unretireFreezerId || undefined;
+
+        const existingContainer = state.containers.find(c => c.id === selectedContainerId);
+        const matchedTemplate = (state.containerTemplates || []).find(t => t.id === selectedContainerId || t.name.toLowerCase().trim() === selectedContainerId.toLowerCase().trim());
+
+        if (existingContainer) {
+          if (existingContainer.isArchived) {
+            await dispatch({ type: 'TOGGLE_CONTAINER_ARCHIVED', payload: { containerId: existingContainer.id, isArchived: false } });
+          }
+          const success = await dispatch({ type: 'MOVE_CONTAINER', payload: { containerId: existingContainer.id, newFreezerId: finalFreezerId } });
+          if (!success) {
+            setErrorMsg('Failed to assign the container selection.');
+            return;
+          }
+          targetId = existingContainer.id;
+        } else if (matchedTemplate) {
+          const generatedId = generateUUID();
+          const newContainerPayload = {
+            id: generatedId,
+            name: matchedTemplate.name,
+            icon: matchedTemplate.icon || 'Folder',
+            templateId: matchedTemplate.id,
+            imageUrl: matchedTemplate.imageUrl || undefined,
+            deleteOnEmpty: false,
+            freezerId: finalFreezerId,
+            isArchived: false
+          };
+
+          const success = await dispatch({ type: 'ADD_CONTAINER', payload: newContainerPayload });
+          if (!success) {
+            setErrorMsg('Failed to create container from template.');
+            return;
+          }
+          targetId = generatedId;
+        } else {
+          targetId = selectedContainerId;
+        }
       } else {
-        targetId = selectedContainerId;
-      }
-    } else {
-      // Existing Containers tab
-      if (selectedFreezerId && (!selectedContainerId || selectedContainerId === 'staging_loose' || selectedContainerId.endsWith('_loose'))) {
-        targetId = `${selectedFreezerId}_loose`;
-      } else if (!selectedContainerId) {
-        setErrorMsg('Please select a target container or Staging.');
-        return;
-      }
-      // If user selected a specific container and chose or changed its freezer location in Section 2B
-      if (selectedContainerId !== 'staging_loose' && !selectedContainerId.endsWith('_loose') && selectedContainer) {
-        if (selectedFreezerId && selectedFreezerId !== selectedContainer.freezerId) {
-          await dispatch({ type: 'MOVE_CONTAINER', payload: { containerId: selectedContainerId, newFreezerId: selectedFreezerId } });
+        // Existing Containers tab
+        if (selectedFreezerId && (!selectedContainerId || selectedContainerId === 'staging_loose' || selectedContainerId.endsWith('_loose'))) {
+          targetId = `${selectedFreezerId}_loose`;
+        } else if (!selectedContainerId) {
+          setErrorMsg('Please select a target container or Staging.');
+          return;
+        }
+        // If user selected a specific container and chose or changed its freezer location in Section 2B
+        if (selectedContainerId !== 'staging_loose' && !selectedContainerId.endsWith('_loose') && selectedContainer) {
+          if (selectedFreezerId && selectedFreezerId !== selectedContainer.freezerId) {
+            await dispatch({ type: 'MOVE_CONTAINER', payload: { containerId: selectedContainerId, newFreezerId: selectedFreezerId } });
+          }
         }
       }
-    }
 
-    // --- Execute Core Action based on Mode ---
-    if (isMoveMode && sourceMeatCut) {
-      if (evalQty <= 0) {
-        setErrorMsg('Move quantity must be greater than zero.');
-        return;
-      }
-      dispatch({
-        type: 'MOVE_MEAT_QUANTITY',
-        payload: {
-          meatCutId: sourceMeatCut.id,
-          newContainerId: targetId,
-          quantity: evalQty,
-          sourceContainerId: sourceMeatCut.containerId
+      // --- Execute Core Action based on Mode ---
+      if (isMoveMode && sourceMeatCut) {
+        if (evalQty <= 0) {
+          setErrorMsg('Move quantity must be greater than zero.');
+          return;
         }
-      });
-      onClose();
-    } else {
-      // Inbound stock mode
-      const validItems = inboundItems
-        .filter(item => item.productId && Number(item.quantity) > 0)
-        .map(({ productId, quantity, notes, workingFrom, notForSale, tagIds }) => ({ 
-          productId, 
-          quantity: Number(quantity), 
-          notes,
-          workingFrom,
-          notForSale,
-          tagIds: tagIds || []
-        }));
-
-      if (validItems.length === 0) {
-        setErrorMsg('Please add at least one valid product with quantity larger than 0.');
-        return;
-      }
-
-      dispatch({
-        type: 'BULK_ADD_MEAT_CUTS',
-        payload: {
-          items: validItems,
-          containerId: targetId
+        const success = await dispatch({
+          type: 'MOVE_MEAT_QUANTITY',
+          payload: {
+            meatCutId: sourceMeatCut.id,
+            newContainerId: targetId,
+            quantity: evalQty,
+            sourceContainerId: sourceMeatCut.containerId
+          }
+        });
+        if (success) {
+          onClose();
         }
-      });
-      onClose();
+      } else {
+        // Inbound stock mode
+        const validItems = inboundItems
+          .filter(item => item.productId && Number(item.quantity) > 0)
+          .map(({ productId, quantity, notes, workingFrom, notForSale, tagIds }) => ({ 
+            productId, 
+            quantity: Number(quantity), 
+            notes,
+            workingFrom,
+            notForSale,
+            tagIds: tagIds || []
+          }));
+
+        if (validItems.length === 0) {
+          setErrorMsg('Please add at least one valid product with quantity larger than 0.');
+          return;
+        }
+
+        const success = await dispatch({
+          type: 'BULK_ADD_MEAT_CUTS',
+          payload: {
+            items: validItems,
+            containerId: targetId
+          }
+        });
+        if (success) {
+          onClose();
+        }
+      }
+    } catch (err: any) {
+      console.error('Submission error:', err);
+      setErrorMsg(err?.message || 'An error occurred during submission.');
+    } finally {
+      isSubmittingRef.current = false;
+      setIsSubmitting(false);
     }
   };
 
@@ -724,13 +741,21 @@ export const UnifiedInboundMoveForm: React.FC<UnifiedInboundMoveFormProps> = ({
           {/* DONE / COMPLETE ACTION BUTTON AT TOP */}
           <button
             type="submit"
-            className="py-2.5 px-5 bg-gradient-to-r from-cyan-600 to-teal-600 hover:from-cyan-500 hover:to-teal-500 text-white font-black text-xs uppercase tracking-wider rounded-xl transition shadow-lg cursor-pointer flex items-center justify-center gap-2 border border-cyan-300/40 shrink-0 active:scale-95"
+            disabled={isSubmitting || (isMoveMode ? evalQty <= 0 : inboundItems.filter(i => i.productId && Number(i.quantity) > 0).length === 0)}
+            className="py-2.5 px-5 bg-gradient-to-r from-cyan-600 to-teal-600 hover:from-cyan-500 hover:to-teal-500 text-white font-black text-xs uppercase tracking-wider rounded-xl transition shadow-lg cursor-pointer flex items-center justify-center gap-2 border border-cyan-300/40 shrink-0 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none"
           >
-            <span>
-              {isMoveMode
-                ? `✓ Done: Move ${evalQty} Item${evalQty > 1 ? 's' : ''}`
-                : `✓ Done: Complete Stock Intake`}
-            </span>
+            {isSubmitting ? (
+              <div className="flex items-center gap-2">
+                <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                <span>{isMoveMode ? 'Moving Items...' : 'Saving Intake...'}</span>
+              </div>
+            ) : (
+              <span>
+                {isMoveMode
+                  ? `✓ Done: Move ${evalQty} Item${evalQty > 1 ? 's' : ''}`
+                  : `✓ Done: Complete Stock Intake`}
+              </span>
+            )}
           </button>
         </div>
       </div>
@@ -1335,6 +1360,30 @@ export const UnifiedInboundMoveForm: React.FC<UnifiedInboundMoveFormProps> = ({
           ⚠️ {errorMsg}
         </p>
       )}
+
+      {/* ========================================================= */}
+      {/* BOTTOM ACTION BUTTON */}
+      {/* ========================================================= */}
+      <div className="pt-2 border-t border-cool-gray-800 flex justify-end">
+        <button
+          type="submit"
+          disabled={isSubmitting || (isMoveMode ? evalQty <= 0 : inboundItems.filter(i => i.productId && Number(i.quantity) > 0).length === 0)}
+          className="w-full sm:w-auto py-3 px-8 bg-gradient-to-r from-cyan-600 to-teal-600 hover:from-cyan-500 hover:to-teal-500 text-white font-black text-xs uppercase tracking-wider rounded-xl transition shadow-lg cursor-pointer flex items-center justify-center gap-2 border border-cyan-300/40 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none"
+        >
+          {isSubmitting ? (
+            <div className="flex items-center gap-2">
+              <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+              <span>{isMoveMode ? 'Moving Items...' : 'Saving Intake...'}</span>
+            </div>
+          ) : (
+            <span>
+              {isMoveMode
+                ? `✓ Done: Move ${evalQty} Item${evalQty > 1 ? 's' : ''}`
+                : `✓ Done: Complete Stock Intake`}
+            </span>
+          )}
+        </button>
+      </div>
     </form>
   );
 };

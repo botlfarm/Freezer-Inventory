@@ -7,12 +7,37 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# Dependencies & Build Output
 node_modules
 dist
 dist-ssr
 *.local
+*.tsbuildinfo
 
-# Editor directories and files
+# Environment & Local Secrets
+.env
+.env*.local
+*.env
+*.env.*
+
+# SQLite & Database Files
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.db_malformed*
+inventory.db*
+**/data/*.db*
+**/data/inventory.db*
+
+# User Data, Backups & Uploads
+**/data/backups/*
+!**/data/backups/.gitkeep
+**/data/uploads/*
+!**/data/uploads/.gitkeep
+
+# Editor & System files
 .vscode/*
 !.vscode/extensions.json
 .idea
