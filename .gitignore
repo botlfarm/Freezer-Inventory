@@ -30,12 +30,11 @@ dist-ssr
 inventory.db*
 **/data/*.db*
 **/data/inventory.db*
+**/data/*.json
 
 # User Data, Backups & Uploads
 **/data/backups/*
-!**/data/backups/.gitkeep
 **/data/uploads/*
-!**/data/uploads/.gitkeep
 
 # Editor & System files
 .vscode/*

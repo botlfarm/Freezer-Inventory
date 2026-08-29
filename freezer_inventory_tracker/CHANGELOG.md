@@ -1,3 +1,17 @@
+### [2.20.2] - 2026-08-29
+
+### Fixed
+- **Home Assistant Supervisor Store Compatibility & Clean Repository Layout**:
+  - Removed git-tracked runtime data and configuration JSON files from `data/` directory to prevent Home Assistant Supervisor store scanner from mistaking runtime files for add-on configs.
+  - Updated `config.yaml` volume map definitions to use modern Supervisor options (`config:rw`).
+  - Enhanced `.gitignore` rules for `data/*.json` and runtime SQLite state.
+
+### Files Modified
+- `/.gitignore`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
 ### [2.20.1] - 2026-08-29
 
 ### Fixed
