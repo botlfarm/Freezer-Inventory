@@ -1,3 +1,14 @@
+### [2.21.0] - 2026-08-29
+
+### Changed
+- **Home Assistant Slug Renamed for Safe Side-by-Side Running**:
+  - Updated add-on slug to `freezer_inventory` in `config.yaml` to allow running side-by-side with an existing local `freezer_inventory_tracker` installation without naming collisions or unwanted overwrites during testing.
+
+### Files Modified
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
 ### [2.20.2] - 2026-08-29
 
 ### Fixed
