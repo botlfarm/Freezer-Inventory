@@ -197,7 +197,26 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
   }, [state]);
 
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; label: string } | null>(null);
-  const [uploadProgress, setUploadProgress] = useState<{ total: number; current: number; status: string } | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<{
+    title?: string;
+    total: number;
+    current: number;
+    status: string;
+    unit?: string;
+  } | null>(null);
+
+  const blobToBase64 = (blob: Blob): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result as string;
+        const base64 = result.includes(',') ? result.split(',')[1] : result;
+        resolve(base64);
+      };
+      reader.onerror = (err) => reject(err);
+      reader.readAsDataURL(blob);
+    });
+  };
 
   // Custom alert/confirm overlays
   const [modalState, setModalState] = useState<{
@@ -574,76 +593,62 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
       'Confirm Database Restore',
       'Are you absolutely sure you want to replace your actively selected inventory database with this uploaded backup file (.db)? This will overwrite your active inventory.',
       async () => {
-        setUploadProgress({ total: 100, current: 0, status: 'Reading database file...' });
+        setUploadProgress({ title: 'Restoring Database', total: 100, current: 10, status: 'Reading database file...', unit: '%' });
         try {
-          const reader = new FileReader();
-          reader.onload = async (evt) => {
-            if (evt.target && evt.target.result) {
-              const arrayBuffer = evt.target.result as ArrayBuffer;
-              let binary = '';
-              const bytes = new Uint8Array(arrayBuffer);
-              const len = bytes.byteLength;
-              for (let i = 0; i < len; i++) {
-                binary += String.fromCharCode(bytes[i]);
-              }
-              const base64 = window.btoa(binary);
+          const base64 = await blobToBase64(file);
 
-              setUploadProgress({ total: 100, current: 40, status: 'Uploading backup to server snapshot vault...' });
-              const token = localStorage.getItem('freezerToken');
-              const uploadRes = await fetch(getApiUrl('api/backups/upload'), {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-                },
-                body: JSON.stringify({ filename: file.name, base64 })
-              });
+          setUploadProgress({ title: 'Restoring Database', total: 100, current: 40, status: 'Uploading backup to server snapshot vault...', unit: '%' });
+          const token = localStorage.getItem('freezerToken');
+          const uploadRes = await fetch(getApiUrl('api/backups/upload'), {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+            },
+            body: JSON.stringify({ filename: file.name, base64 })
+          });
 
-              if (!uploadRes.ok) {
-                const errJson = await uploadRes.json();
-                throw new Error(errJson.error || 'Failed to upload backup to vault.');
-              }
+          if (!uploadRes.ok) {
+            const errJson = await uploadRes.json();
+            throw new Error(errJson.error || 'Failed to upload backup to vault.');
+          }
 
-              const uploadReply = await uploadRes.json();
-              const savedFilename = uploadReply.filename;
+          const uploadReply = await uploadRes.json();
+          const savedFilename = uploadReply.filename;
 
-              setUploadProgress({ total: 100, current: 75, status: 'Applying and restoring database snapshot...' });
-              
-              const activeSections: string[] = [];
-              if (selFreezers) activeSections.push('freezers');
-              if (selContainers) activeSections.push('containers');
-              if (selItems) activeSections.push('catalog');
-              if (selInventory) activeSections.push('inventory');
-              if (selOffSite) activeSections.push('offsite');
-              if (selPics) activeSections.push('images');
-              if (selCustomLists) activeSections.push('customLists');
-              if (selTags) activeSections.push('tags');
+          setUploadProgress({ title: 'Restoring Database', total: 100, current: 75, status: 'Applying and restoring database snapshot...', unit: '%' });
+          
+          const activeSections: string[] = [];
+          if (selFreezers) activeSections.push('freezers');
+          if (selContainers) activeSections.push('containers');
+          if (selItems) activeSections.push('catalog');
+          if (selInventory) activeSections.push('inventory');
+          if (selOffSite) activeSections.push('offsite');
+          if (selPics) activeSections.push('images');
+          if (selCustomLists) activeSections.push('customLists');
+          if (selTags) activeSections.push('tags');
 
-              if (activeSections.length === 0) {
-                throw new Error('Select at least one scope/section to restore!');
-              }
+          if (activeSections.length === 0) {
+            throw new Error('Select at least one scope/section to restore!');
+          }
 
-              const restoreRes = await fetch(getApiUrl(`api/backups/restore/${savedFilename}`), {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-                },
-                body: JSON.stringify({ sections: activeSections, restoreImages: selPics })
-              });
+          const restoreRes = await fetch(getApiUrl(`api/backups/restore/${savedFilename}`), {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+            },
+            body: JSON.stringify({ sections: activeSections, restoreImages: selPics })
+          });
 
-              if (restoreRes.ok) {
-                setUploadProgress(null);
-                showToastMessage('success', 'Backup file uploaded and restored successfully!');
-                setTimeout(() => window.location.reload(), 1500);
-              } else {
-                const errJson = await restoreRes.json();
-                throw new Error(errJson.error || 'Failed to restore uploaded backup.');
-              }
-            }
-          };
-
-          reader.readAsArrayBuffer(file);
+          if (restoreRes.ok) {
+            setUploadProgress(null);
+            showToastMessage('success', 'Backup file uploaded and restored successfully!');
+            setTimeout(() => window.location.reload(), 1500);
+          } else {
+            const errJson = await restoreRes.json();
+            throw new Error(errJson.error || 'Failed to restore uploaded backup.');
+          }
         } catch (e: any) {
           setUploadProgress(null);
           showToastMessage('error', `Upload & Restore error: ${e.message}`);
@@ -655,48 +660,80 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
   const handleUploadSnapshotOnly = async (file: File) => {
     if (!file) return;
     const fileExt = file.name.split('.').pop()?.toLowerCase();
-    if (!['db', 'zip'].includes(fileExt || '')) {
-      showToastMessage('error', 'Only .db and .zip files can be uploaded as snapshots!');
+    if (!['db', 'zip', 'json', 'csv'].includes(fileExt || '')) {
+      showToastMessage('error', 'Only .db, .zip, .json, and .csv files can be uploaded as snapshots!');
       return;
     }
 
-    setUploadProgress({ total: 100, current: 0, status: 'Reading snapshot file...' });
     try {
-      const reader = new FileReader();
-      reader.onload = async (evt) => {
-        if (evt.target && evt.target.result) {
-          const arrayBuffer = evt.target.result as ArrayBuffer;
-          let binary = '';
-          const bytes = new Uint8Array(arrayBuffer);
-          const len = bytes.byteLength;
-          for (let i = 0; i < len; i++) {
-            binary += String.fromCharCode(bytes[i]);
-          }
-          const base64 = window.btoa(binary);
+      const token = localStorage.getItem('freezerToken');
+      const CHUNK_SIZE = 2 * 1024 * 1024; // 2MB chunking for large files
 
-          setUploadProgress({ total: 100, current: 50, status: 'Uploading to snapshot folder...' });
-          const token = localStorage.getItem('freezerToken');
-          const uploadRes = await fetch(getApiUrl('api/backups/upload'), {
+      if (file.size <= CHUNK_SIZE) {
+        setUploadProgress({ title: 'Uploading Snapshot', total: 100, current: 20, status: 'Reading snapshot file...', unit: '%' });
+        const base64 = await blobToBase64(file);
+        setUploadProgress({ title: 'Uploading Snapshot', total: 100, current: 70, status: 'Uploading to snapshot vault...', unit: '%' });
+
+        const uploadRes = await fetch(getApiUrl('api/backups/upload'), {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+          },
+          body: JSON.stringify({ filename: file.name, base64 })
+        });
+
+        if (uploadRes.ok) {
+          setUploadProgress(null);
+          showToastMessage('success', 'Snapshot file uploaded and saved to Point-in-Time snapshots library!');
+          loadOnSiteBackups();
+        } else {
+          const errJson = await uploadRes.json();
+          throw new Error(errJson.error || 'Failed to upload snapshot file.');
+        }
+      } else {
+        const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+        const uploadId = `upload_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+
+        for (let c = 0; c < totalChunks; c++) {
+          const start = c * CHUNK_SIZE;
+          const end = Math.min(file.size, start + CHUNK_SIZE);
+          const chunkBlob = file.slice(start, end);
+          const chunkBase64 = await blobToBase64(chunkBlob);
+
+          setUploadProgress({
+            title: 'Uploading Snapshot to Vault',
+            total: totalChunks,
+            current: c + 1,
+            status: `Uploading snapshot chunk ${c + 1} of ${totalChunks} (${Math.round(((c + 1) / totalChunks) * 100)}%)...`,
+            unit: 'chunks'
+          });
+
+          const res = await fetch(getApiUrl('api/backups/upload-chunk'), {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
               ...(token ? { 'Authorization': `Bearer ${token}` } : {})
             },
-            body: JSON.stringify({ filename: file.name, base64 })
+            body: JSON.stringify({
+              uploadId,
+              chunkIndex: c,
+              totalChunks,
+              filename: file.name,
+              base64: chunkBase64
+            })
           });
 
-          if (uploadRes.ok) {
-            setUploadProgress(null);
-            showToastMessage('success', 'Snapshot file uploaded and saved to Point-in-Time snapshots library!');
-            loadOnSiteBackups();
-          } else {
-            const errJson = await uploadRes.json();
-            throw new Error(errJson.error || 'Failed to upload snapshot file.');
+          if (!res.ok) {
+            const errJson = await res.json().catch(() => ({}));
+            throw new Error(errJson.error || `Chunk upload failed at part ${c + 1}`);
           }
         }
-      };
 
-      reader.readAsArrayBuffer(file);
+        setUploadProgress(null);
+        showToastMessage('success', 'Snapshot file uploaded and saved to Point-in-Time snapshots library!');
+        loadOnSiteBackups();
+      }
     } catch (e: any) {
       setUploadProgress(null);
       showToastMessage('error', `Snapshot upload failed: ${e.message}`);
@@ -758,22 +795,29 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
       "Confirm Comprehensive Import",
       `Are you sure you want to restore the selected components? This will overwrite existing elements in On-Site, Off-Site, and/or Image Uploads according to your selection.`,
       async () => {
-        setUploadProgress({ total: 100, current: 0, status: 'Opening backup ZIP package...' });
+        setUploadProgress({ title: 'Opening Package', total: 100, current: 10, status: 'Opening backup ZIP package...', unit: '%' });
         try {
           const jsZip = new JSZip();
           const zip = await jsZip.loadAsync(file);
 
-          setUploadProgress({ total: 100, current: 10, status: 'Extracting database files...' });
+          setUploadProgress({ title: 'Extracting Package', total: 100, current: 20, status: 'Scanning package entries...', unit: '%' });
 
-          // Extract database contents flexibly
+          // Extract database & data entries
           let onSiteText: string | null = null;
           let offSiteText: string | null = null;
           let dbBuffer: Uint8Array | null = null;
 
+          const validExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg'];
+          const imageEntries: { name: string; file: JSZip.JSZipObject }[] = [];
+
           for (const filename of Object.keys(zip.files)) {
             const entry = zip.files[filename];
             if (entry.dir) continue;
-            const lowerName = filename.toLowerCase();
+            const normalizedFilename = filename.replace(/\\/g, '/');
+            const lowerName = normalizedFilename.toLowerCase();
+            const cleanName = normalizedFilename.split('/').pop() || normalizedFilename;
+            const dotIdx = cleanName.lastIndexOf('.');
+            const ext = dotIdx !== -1 ? cleanName.substring(dotIdx).toLowerCase() : '';
 
             if (!onSiteText && (lowerName.endsWith('inventory-on-site.json') || lowerName.endsWith('inventory.json') || lowerName.endsWith('.json'))) {
               onSiteText = await entry.async("string");
@@ -782,32 +826,25 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
             } else if (!dbBuffer && lowerName.endsWith('.db')) {
               dbBuffer = await entry.async("uint8array");
             }
-          }
 
-          // Create base64 payload. If file is <= 80MB, send full package for 1-shot server-side extraction
-          let packageBase64 = '';
-          const isDirectServerPackage = file.size <= 80 * 1024 * 1024;
-
-          if (isDirectServerPackage) {
-            const arrayBuffer = await file.arrayBuffer();
-            let binary = '';
-            const bytes = new Uint8Array(arrayBuffer);
-            const len = bytes.byteLength;
-            for (let i = 0; i < len; i++) {
-              binary += String.fromCharCode(bytes[i]);
+            const isImageFile = validExtensions.includes(ext);
+            const isInImageFolder = lowerName.includes('images/') || lowerName.includes('photos/') || lowerName.includes('uploads/');
+            if (cleanName && (isImageFile || isInImageFolder)) {
+              if (validExtensions.includes(ext)) {
+                imageEntries.push({ name: cleanName, file: entry });
+              }
             }
-            packageBase64 = window.btoa(binary);
-          } else {
-            const dbZip = new JSZip();
-            if (onSiteText) dbZip.file("inventory-on-site.json", onSiteText);
-            if (offSiteText) dbZip.file("inventory-off-site.csv", offSiteText);
-            if (dbBuffer) dbZip.file("inventory.db", dbBuffer);
-            packageBase64 = await dbZip.generateAsync({ type: "base64" });
           }
 
-          setUploadProgress({ total: 100, current: 30, status: 'Uploading backup package...' });
+          // Build lightweight package with only database files for immediate backend restoration
+          const dbZip = new JSZip();
+          if (onSiteText) dbZip.file("inventory-on-site.json", onSiteText);
+          if (offSiteText) dbZip.file("inventory-off-site.csv", offSiteText);
+          if (dbBuffer) dbZip.file("inventory.db", dbBuffer);
+          const dbPackageBase64 = await dbZip.generateAsync({ type: "base64" });
 
-          // Post to backend
+          setUploadProgress({ title: 'Restoring Database', total: 100, current: 40, status: 'Restoring database records and schemas...', unit: '%' });
+
           const token = localStorage.getItem('freezerToken');
           const res = await fetch(getApiUrl('api/backups/import-zip'), {
             method: 'POST',
@@ -816,13 +853,13 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
               ...(token ? { 'Authorization': `Bearer ${token}` } : {})
             },
             body: JSON.stringify({
-              base64: packageBase64,
+              base64: dbPackageBase64,
               restoreFreezers: selFreezers,
               restoreContainers: selContainers,
               restoreProducts: selItems,
               restoreMeatCuts: selInventory,
               restoreOffSite: selOffSite,
-              restoreImages: selPics,
+              restoreImages: false, // Handled separately in resilient batches
               restoreCustomLists: selCustomLists,
               restoreTags: selTags
             })
@@ -847,65 +884,78 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
 
           const dbReply = await res.json();
 
-          // If package was large and images weren't directly restored in 1-shot server extraction, process images sequentially
-          if (selPics && !isDirectServerPackage) {
-            const imageEntries: { name: string; file: JSZip.JSZipObject }[] = [];
-            const validExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg'];
+          // Resilient Batch Photo Asset Restoration
+          if (selPics && imageEntries.length > 0) {
+            const BATCH_SIZE = 5;
+            let uploadedImagesCount = 0;
 
-            for (const filename of Object.keys(zip.files)) {
-              const entry = zip.files[filename];
-              if (entry.dir) continue;
-              const normalizedFilename = filename.replace(/\\/g, '/');
-              const lowerName = normalizedFilename.toLowerCase();
-              const cleanName = normalizedFilename.split('/').pop() || normalizedFilename;
-              const dotIdx = cleanName.lastIndexOf('.');
-              const ext = dotIdx !== -1 ? cleanName.substring(dotIdx).toLowerCase() : '';
+            for (let i = 0; i < imageEntries.length; i += BATCH_SIZE) {
+              const batch = imageEntries.slice(i, i + BATCH_SIZE);
+              
+              setUploadProgress({
+                title: 'Restoring Photo Assets',
+                total: imageEntries.length,
+                current: uploadedImagesCount,
+                status: `Preparing photo batch (${uploadedImagesCount + 1}-${Math.min(uploadedImagesCount + batch.length, imageEntries.length)} of ${imageEntries.length})...`,
+                unit: 'photos'
+              });
 
-              const isImageFile = validExtensions.includes(ext);
-              const isInImageFolder = lowerName.includes('images/') || lowerName.includes('photos/') || lowerName.includes('uploads/');
+              const batchPayload = await Promise.all(
+                batch.map(async (item) => ({
+                  filename: item.name,
+                  base64: await item.file.async("base64")
+                }))
+              );
 
-              if (cleanName && (isImageFile || isInImageFolder)) {
-                if (validExtensions.includes(ext)) {
-                  imageEntries.push({ name: cleanName, file: entry });
-                }
-              }
-            }
-
-            if (imageEntries.length > 0) {
-              setUploadProgress({ total: imageEntries.length, current: 0, status: `Restoring ${imageEntries.length} photo assets...` });
-
-              for (let i = 0; i < imageEntries.length; i++) {
-                const entry = imageEntries[i];
-                const base64Img = await entry.file.async("base64");
-                const filename = entry.name;
-
-                setUploadProgress({
-                  total: imageEntries.length,
-                  current: i,
-                  status: `Restoring photo assets: Uploading "${filename}" (${i + 1}/${imageEntries.length})...`
-                });
-
-                const uploadRes = await fetch(getApiUrl('api/backups/upload-image'), {
+              try {
+                const batchRes = await fetch(getApiUrl('api/backups/upload-images-batch'), {
                   method: 'POST',
                   headers: {
                     'Content-Type': 'application/json',
                     ...(token ? { 'Authorization': `Bearer ${token}` } : {})
                   },
-                  body: JSON.stringify({
-                    filename,
-                    base64: base64Img
-                  })
+                  body: JSON.stringify({ images: batchPayload })
                 });
 
-                if (!uploadRes.ok) {
-                  console.warn(`Failed to upload photo asset: ${filename}`);
+                if (batchRes.ok) {
+                  uploadedImagesCount += batch.length;
+                } else {
+                  throw new Error('Batch upload endpoint failed, falling back to individual');
+                }
+              } catch (batchErr) {
+                console.warn('Batch upload fallback triggered:', batchErr);
+                for (const item of batchPayload) {
+                  try {
+                    await fetch(getApiUrl('api/backups/upload-image'), {
+                      method: 'POST',
+                      headers: {
+                        'Content-Type': 'application/json',
+                        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+                      },
+                      body: JSON.stringify(item)
+                    });
+                  } catch (singleErr) {
+                    console.warn(`Failed to upload ${item.filename}:`, singleErr);
+                  }
+                  uploadedImagesCount++;
                 }
               }
+
+              setUploadProgress({
+                title: 'Restoring Photo Assets',
+                total: imageEntries.length,
+                current: Math.min(uploadedImagesCount, imageEntries.length),
+                status: `Uploaded ${Math.min(uploadedImagesCount, imageEntries.length)} of ${imageEntries.length} photos...`,
+                unit: 'photos'
+              });
             }
           }
 
           setUploadProgress(null);
-          showToastMessage('success', dbReply.message || 'Restored successfully!');
+          const successMsg = selPics && imageEntries.length > 0
+            ? `${dbReply.message || 'Database restored'} and ${imageEntries.length} photos imported successfully!`
+            : (dbReply.message || 'Restored successfully!');
+          showToastMessage('success', successMsg);
           setTimeout(() => window.location.reload(), 1500);
 
         } catch (e: any) {
@@ -1451,7 +1501,9 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
           <div className="bg-cool-gray-900 border border-cool-gray-750 p-8 rounded-2xl max-w-sm w-full shadow-2xl text-center space-y-5 animate-fade-in">
             <Loader2 className="w-10 h-10 text-cyan-400 animate-spin mx-auto" />
             <div className="space-y-1.5">
-              <h3 className="text-sm font-bold text-white uppercase tracking-wider">Compiling Relational Spreadsheet Workbook</h3>
+              <h3 className="text-sm font-bold text-white uppercase tracking-wider">
+                {uploadProgress.title || 'System Backup & Restore Operation'}
+              </h3>
               <p className="text-[11px] text-cool-gray-400 leading-normal">{uploadProgress.status}</p>
             </div>
             {uploadProgress.total > 0 && (
@@ -1459,11 +1511,15 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
                 <div className="w-full bg-cool-gray-850 h-2 rounded-full overflow-hidden border border-cool-gray-800">
                   <div 
                     className="bg-cyan-400 h-full transition-all duration-300 rounded-full" 
-                    style={{ width: `${(uploadProgress.current / uploadProgress.total) * 100}%` }}
+                    style={{ width: `${Math.min(100, Math.max(0, (uploadProgress.current / uploadProgress.total) * 100))}%` }}
                   />
                 </div>
                 <p className="text-[10px] text-cool-gray-450 font-bold uppercase">
-                  Progress: {uploadProgress.current} / {uploadProgress.total} images uploaded
+                  {uploadProgress.unit === 'photos'
+                    ? `Progress: ${uploadProgress.current} / ${uploadProgress.total} photos restored`
+                    : uploadProgress.unit === 'chunks'
+                      ? `Progress: ${uploadProgress.current} / ${uploadProgress.total} chunks transferred`
+                      : `Progress: ${Math.round((uploadProgress.current / uploadProgress.total) * 100)}% (${uploadProgress.current} / ${uploadProgress.total})`}
                 </p>
               </div>
             )}

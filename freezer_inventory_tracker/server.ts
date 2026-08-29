@@ -4617,6 +4617,132 @@ app.post('/api/backups/upload-image', async (req: any, res) => {
   }
 });
 
+app.post('/api/backups/upload-images-batch', async (req: any, res) => {
+  try {
+    const { images } = req.body;
+    if (!images || !Array.isArray(images) || images.length === 0) {
+      return res.status(400).json({ error: 'Missing images array.' });
+    }
+
+    if (!fs.existsSync(UPLOADS_DIR)) {
+      fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+    }
+
+    const validExts = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg'];
+    let savedCount = 0;
+
+    for (const item of images) {
+      const { filename, base64 } = item;
+      if (!filename || !base64) continue;
+      const safeFilename = path.basename(filename);
+      if (!safeFilename || safeFilename === '.' || safeFilename === '..') continue;
+      const ext = path.extname(safeFilename).toLowerCase();
+      if (!validExts.includes(ext)) continue;
+
+      let base64Data = base64;
+      if (base64.startsWith('data:')) {
+        const commaIdx = base64.indexOf(',');
+        if (commaIdx !== -1) {
+          base64Data = base64.substring(commaIdx + 1);
+        }
+      }
+
+      const destPath = path.join(UPLOADS_DIR, safeFilename);
+      fs.writeFileSync(destPath, Buffer.from(base64Data, 'base64'));
+      savedCount++;
+    }
+
+    res.json({ success: true, count: savedCount });
+  } catch (err: any) {
+    console.error('Failed to upload image batch during restore:', err);
+    res.status(500).json({ error: `Image batch upload failed: ${err.message}` });
+  }
+});
+
+const activeChunkUploads: { [uploadId: string]: { filename: string; tempPath: string; receivedChunks: Set<number>; totalChunks: number; lastActive: number } } = {};
+
+// Auto-cleanup stale chunk uploads after 10 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const uploadId of Object.keys(activeChunkUploads)) {
+    const entry = activeChunkUploads[uploadId];
+    if (now - entry.lastActive > 10 * 60 * 1000) {
+      if (fs.existsSync(entry.tempPath)) {
+        try { fs.unlinkSync(entry.tempPath); } catch (e) {}
+      }
+      delete activeChunkUploads[uploadId];
+    }
+  }
+}, 60 * 1000);
+
+app.post('/api/backups/upload-chunk', async (req: any, res) => {
+  try {
+    const { uploadId, chunkIndex, totalChunks, filename, base64 } = req.body;
+    if (!uploadId || chunkIndex === undefined || !totalChunks || !filename || !base64) {
+      return res.status(400).json({ error: 'Missing chunk upload parameters.' });
+    }
+
+    const safeFilename = path.basename(filename);
+    if (!safeFilename || safeFilename === '.' || safeFilename === '..') {
+      return res.status(400).json({ error: 'Invalid filename.' });
+    }
+
+    const ext = path.extname(safeFilename).toLowerCase();
+    if (!['.db', '.json', '.csv', '.zip'].includes(ext)) {
+      return res.status(400).json({ error: 'Only .db, .json, .csv, and .zip files are allowed.' });
+    }
+
+    if (!fs.existsSync(BACKUPS_DIR)) {
+      fs.mkdirSync(BACKUPS_DIR, { recursive: true });
+    }
+
+    let uploadEntry = activeChunkUploads[uploadId];
+    if (!uploadEntry) {
+      const tempPath = path.join(BACKUPS_DIR, `temp_chunk_${uploadId}_${Date.now()}.tmp`);
+      uploadEntry = {
+        filename: safeFilename,
+        tempPath,
+        receivedChunks: new Set<number>(),
+        totalChunks,
+        lastActive: Date.now()
+      };
+      activeChunkUploads[uploadId] = uploadEntry;
+    }
+
+    let base64Data = base64;
+    if (base64.startsWith('data:')) {
+      const commaIdx = base64.indexOf(',');
+      if (commaIdx !== -1) base64Data = base64.substring(commaIdx + 1);
+    }
+
+    const buffer = Buffer.from(base64Data, 'base64');
+    fs.appendFileSync(uploadEntry.tempPath, buffer);
+    uploadEntry.receivedChunks.add(chunkIndex);
+    uploadEntry.lastActive = Date.now();
+
+    if (uploadEntry.receivedChunks.size >= totalChunks || chunkIndex === totalChunks - 1) {
+      let targetFilename = uploadEntry.filename;
+      let filepath = path.join(BACKUPS_DIR, targetFilename);
+      if (fs.existsSync(filepath)) {
+        const baseName = path.basename(uploadEntry.filename, ext);
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
+        targetFilename = `${baseName}_${timestamp}${ext}`;
+        filepath = path.join(BACKUPS_DIR, targetFilename);
+      }
+
+      fs.renameSync(uploadEntry.tempPath, filepath);
+      delete activeChunkUploads[uploadId];
+
+      return res.json({ success: true, completed: true, filename: targetFilename });
+    }
+
+    res.json({ success: true, completed: false, chunkIndex });
+  } catch (err: any) {
+    console.error('Chunk upload error:', err);
+    res.status(500).json({ error: `Failed to process chunk: ${err.message}` });
+  }
+});
+
 // ---------------- SERVER-SENT EVENTS REAL-TIME SYNC ----------------
 
 let sseClients: any[] = [];

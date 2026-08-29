@@ -1,3 +1,19 @@
+### [2.21.2] - 2026-08-29
+
+### Fixed
+- **ZIP Backup & Photo Asset Import Hang Resolved**:
+  - **Batch Image Transfer Architecture**: Separated the core database restore from image asset transfers in `DataImportView.tsx`. Core database schemas, JSON files, and CSV records are restored instantaneously in a lightweight payload, followed by photo asset transfers processed in small, resilient 5-photo batches via a newly added `/api/backups/upload-images-batch` endpoint.
+  - **Accurate Dynamic Progress Tracking**: Fixed the import progress overlay which previously displayed a static or misleading progress metric. The progress modal now accurately counts all photos (e.g. `10 / 163 photos restored`) with live percentage tracking.
+  - **Chunked Large Snapshot Uploading**: Added `/api/backups/upload-chunk` to allow uploading large `.zip` snapshot archives to the vault in 2MB chunks, preventing HTTP body size limits and proxy gateway timeouts in Home Assistant Ingress.
+  - **Optimized Base64 Encoding**: Replaced character-by-character string accumulation with streaming `FileReader.readAsDataURL` conversions to eliminate browser CPU locking during large file imports.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/views/DataImportView.tsx`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
 ### [2.21.1] - 2026-08-29
 
 ### Fixed

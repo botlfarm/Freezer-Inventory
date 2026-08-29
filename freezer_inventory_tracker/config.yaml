@@ -1,5 +1,5 @@
 name: "Freezer Inventory Tracker"
-version: "2.21.1"
+version: "2.21.2"
 slug: "freezer_inventory"
 description: "Comprehensive freezer, butcher processing, and off-site cold storage inventory tracker with QR code scanning."
 image: "ghcr.io/botlfarm/freezer-inventory-tracker-{arch}"
