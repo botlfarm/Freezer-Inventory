@@ -35,7 +35,8 @@ jobs:
         uses: home-assistant/builder@2024.08.2
         with:
           args: |
-            --all \
+            --aarch64 \
+            --amd64 \
             --target freezer_inventory_tracker \
             --image "ghcr.io/${{ github.repository_owner }}/freezer-inventory-tracker-{arch}" \
             --docker-hub "ghcr.io/${{ github.repository_owner }}"

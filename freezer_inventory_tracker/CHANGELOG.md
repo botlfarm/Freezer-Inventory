@@ -1,3 +1,18 @@
+### [2.20.1] - 2026-08-29
+
+### Fixed
+- **Docker Build & Architecture Optimization**:
+  - Replaced strict `npm ci` with `npm install` in `Dockerfile` to prevent package-lock sync failures across platforms during Docker container compilation.
+  - Streamlined target architectures in GitHub Actions workflow (`.github/workflows/build-addon.yml`), `config.yaml`, and `build.yaml` to focus specifically on modern 64-bit platforms (`aarch64` and `amd64`), eliminating slow QEMU 32-bit emulation timeouts and reducing cloud build times to minutes.
+
+### Files Modified
+- `/freezer_inventory_tracker/Dockerfile`
+- `/.github/workflows/build-addon.yml`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/build.yaml`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
 ### [2.20.0] - 2026-08-29
 
 ### Added

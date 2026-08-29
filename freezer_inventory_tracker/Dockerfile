@@ -16,9 +16,9 @@ RUN apk add --no-cache \
 
 WORKDIR /app
 
-# Copy dependency manifests and install all packages (including devDependencies for build)
+# Copy dependency manifests and install all packages
 COPY package*.json ./
-RUN npm ci
+RUN npm install
 
 # Copy source files and build the production bundles (Vite frontend + esbuild server)
 COPY . .
