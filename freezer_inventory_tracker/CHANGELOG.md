@@ -1,3 +1,16 @@
+### [2.21.1] - 2026-08-29
+
+### Fixed
+- **GHCR Image Publication & Tag Namespace Resolution**:
+  - Corrected image argument in `.github/workflows/build-addon.yml` to prevent redundant nested registry URL prefixing when using `home-assistant/builder`.
+  - Bumped version to `2.21.1` to build and publish clean image manifests to `ghcr.io/botlfarm/freezer-inventory-tracker-{arch}:2.21.1`.
+
+### Files Modified
+- `/.github/workflows/build-addon.yml`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
 ### [2.21.0] - 2026-08-29
 
 ### Changed
