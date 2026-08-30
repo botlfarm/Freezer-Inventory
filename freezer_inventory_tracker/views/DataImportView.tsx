@@ -33,6 +33,7 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
   const [selPics, setSelPics] = useState(true);
   const [selCustomLists, setSelCustomLists] = useState(true);
   const [selTags, setSelTags] = useState(true);
+  const [selHistory, setSelHistory] = useState(true);
   const [exportingZip, setExportingZip] = useState(false);
   const [previewData, setPreviewData] = useState<any | null>(null);
   const [loadingPreview, setLoadingPreview] = useState<string | null>(null);
@@ -494,6 +495,7 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
           if (selPics) activeSections.push('images');
           if (selCustomLists) activeSections.push('customLists');
           if (selTags) activeSections.push('tags');
+          if (selHistory) activeSections.push('history');
 
           if (activeSections.length === 0) {
             showToastMessage('error', 'Select at least one scope/section to restore!');
@@ -627,6 +629,7 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
           if (selPics) activeSections.push('images');
           if (selCustomLists) activeSections.push('customLists');
           if (selTags) activeSections.push('tags');
+          if (selHistory) activeSections.push('history');
 
           if (activeSections.length === 0) {
             throw new Error('Select at least one scope/section to restore!');
@@ -758,7 +761,8 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
           includeOffSite: selOffSite,
           includeImages: selPics,
           includeCustomLists: selCustomLists,
-          includeTags: selTags
+          includeTags: selTags,
+          includeHistory: selHistory
         })
       });
       if (res.ok) {
@@ -861,7 +865,8 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
               restoreOffSite: selOffSite,
               restoreImages: false, // Handled separately in resilient batches
               restoreCustomLists: selCustomLists,
-              restoreTags: selTags
+              restoreTags: selTags,
+              restoreHistory: selHistory
             })
           });
 
@@ -1726,15 +1731,15 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
                           </td>
                         </tr>
                         {/* History */}
-                        <tr className="bg-cool-gray-900/30">
+                        <tr className={selHistory ? "bg-cool-gray-850/20" : "opacity-50"}>
                           <td className="py-2.5 px-4 text-white flex items-center gap-1.5">
-                            <Database className="w-3.5 h-3.5 text-cool-gray-400" /> Activity History Logs
+                            <Database className="w-3.5 h-3.5 text-purple-400" /> Activity History Logs
                           </td>
-                          <td className="py-2.5 px-4 text-center text-cool-gray-300 font-mono">{liveTotals.history}</td>
+                          <td className="py-2.5 px-4 text-center text-cool-gray-300 font-mono">{previewData.currentCounts?.history ?? liveTotals.history}</td>
                           <td className="py-2.5 px-4 text-center text-indigo-300 font-mono font-bold">{previewData.counts.history ?? 0}</td>
                           <td className="py-2.5 px-4 text-right">
-                            <span className="text-[10px] px-1.5 py-0.5 rounded font-bold bg-cool-gray-850 text-cool-gray-400">
-                              OVERWRITES WITH INVENTORY
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${selHistory ? "bg-amber-950/80 border border-amber-800/40 text-amber-300" : "bg-cool-gray-800 text-cool-gray-400"}`}>
+                              {selHistory ? "WILL OVERWRITE" : "SKIPPED"}
                             </span>
                           </td>
                         </tr>
@@ -1839,9 +1844,18 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
                           type="checkbox"
                           checked={selTags}
                           onChange={(e) => setSelTags(e.target.checked)}
-                          className="w-4 h-4 rounded border-cool-gray-700 bg-cool-gray-950 text-indigo-500 cursor-pointer focus:ring-0"
+                          className="w-4 h-4 rounded border-cool-gray-700 bg-cool-gray-955 text-indigo-500 cursor-pointer focus:ring-0"
                         />
                         <span className="text-xs text-white">Quality/Status Tags</span>
+                      </label>
+                      <label className="flex items-center gap-2.5 cursor-pointer select-none py-1 px-1.5 rounded hover:bg-cool-gray-800/30 transition">
+                        <input
+                          type="checkbox"
+                          checked={selHistory}
+                          onChange={(e) => setSelHistory(e.target.checked)}
+                          className="w-4 h-4 rounded border-cool-gray-700 bg-cool-gray-955 text-indigo-500 cursor-pointer focus:ring-0"
+                        />
+                        <span className="text-xs text-white">Activity History Logs</span>
                       </label>
                     </div>
                   </div>

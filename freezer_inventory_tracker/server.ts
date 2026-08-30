@@ -3429,6 +3429,9 @@ function selectiveRestoreFromDb(srcDbPath: string, targetSections: string[]) {
       if (targetSections.includes('tags')) {
         copyTable('tags');
       }
+      if (targetSections.includes('history') || targetSections.includes('audit') || targetSections.includes('logs')) {
+        copyTable('history');
+      }
     })();
   } finally {
     srcDb.close();
@@ -3494,9 +3497,7 @@ app.post('/api/backups/restore/:filename', async (req: any, res) => {
         } finally {
           if (fs.existsSync(tempDbPath)) fs.unlinkSync(tempDbPath);
         }
-      }
-
-      if (onSiteEntry || offSiteEntry) {
+      } else if (onSiteEntry || offSiteEntry) {
         let currentState = await loadState();
         if (onSiteEntry) {
           try {
@@ -3520,6 +3521,7 @@ app.post('/api/backups/restore/:filename', async (req: any, res) => {
               const doOffSite = isFullRestore || sections?.includes('offSiteEntries') || sections?.includes('offsite');
               const doCustomLists = isFullRestore || sections?.includes('customLists');
               const doTags = isFullRestore || sections?.includes('tags');
+              const doHistory = isFullRestore || sections?.includes('history') || sections?.includes('audit') || sections?.includes('logs');
 
               if (isFullRestore) {
                 currentState = {
@@ -3549,7 +3551,7 @@ app.post('/api/backups/restore/:filename', async (req: any, res) => {
                 if (doOffSite && srcOffSite) currentState.offSiteEntries = srcOffSite;
                 if (doCustomLists && srcCustomLists) currentState.customLists = srcCustomLists;
                 if (doTags && srcTags) currentState.tags = srcTags;
-                if (srcHistory) currentState.history = srcHistory;
+                if (doHistory && srcHistory) currentState.history = srcHistory;
               }
               restoredAny = true;
             }
@@ -4327,7 +4329,8 @@ app.post('/api/backups/import-zip', async (req: any, res) => {
       restoreProducts,
       restoreMeatCuts,
       restoreCustomLists,
-      restoreTags
+      restoreTags,
+      restoreHistory
     } = req.body;
     if (!base64) {
       return res.status(400).json({ error: 'No backup ZIP file provided.' });
@@ -4355,6 +4358,7 @@ app.post('/api/backups/import-zip', async (req: any, res) => {
     const doMeatCuts = restoreMeatCuts !== undefined ? restoreMeatCuts : restoreOnSite;
     const doCustomLists = restoreCustomLists !== undefined ? restoreCustomLists : restoreOnSite;
     const doTags = restoreTags !== undefined ? restoreTags : restoreOnSite;
+    const doHistory = restoreHistory !== undefined ? restoreHistory : (restoreOnSite !== undefined ? restoreOnSite : true);
 
     // Parse database entries from ZIP
     const dbEntry = zipEntries.find(e => !e.isDirectory && (e.entryName === 'inventory.db' || e.entryName.toLowerCase().endsWith('/inventory.db') || e.entryName.toLowerCase().endsWith('.db')));
@@ -4373,8 +4377,9 @@ app.post('/api/backups/import-zip', async (req: any, res) => {
         if (restoreOffSite) targetSections.push('offSiteEntries');
         if (doCustomLists) targetSections.push('customLists');
         if (doTags) targetSections.push('tags');
+        if (doHistory) targetSections.push('history');
 
-        if (targetSections.length === 0 || targetSections.length >= 6) {
+        if (targetSections.length === 0 || targetSections.length >= 7) {
           db.close();
           const dbPath = getDatabasePath();
           const walPath = `${dbPath}-wal`;
@@ -4395,9 +4400,7 @@ app.post('/api/backups/import-zip', async (req: any, res) => {
       } finally {
         if (fs.existsSync(tempDbPath)) fs.unlinkSync(tempDbPath);
       }
-    }
-
-    if (onSiteEntry && (doFreezers || doContainers || doProducts || doMeatCuts || doCustomLists || doTags)) {
+    } else if (onSiteEntry && (doFreezers || doContainers || doProducts || doMeatCuts || doCustomLists || doTags || doHistory)) {
       const text = onSiteEntry.getData().toString('utf8');
       const parsed = JSON.parse(text);
       if (parsed) {
@@ -4408,6 +4411,7 @@ app.post('/api/backups/import-zip', async (req: any, res) => {
         const zMeatCuts = parsed.meatCuts || parsed.meatcuts || parsed.inventory || parsed.stock || parsed.stockCounts || parsed.counts;
         const zCustomLists = parsed.customLists || parsed.customlists || parsed.lists;
         const zTags = parsed.tags;
+        const zHistory = parsed.history || parsed.logs;
 
         if (doFreezers && zFreezers) {
           state.freezers = zFreezers;
@@ -4440,6 +4444,10 @@ app.post('/api/backups/import-zip', async (req: any, res) => {
         if (doTags && zTags) {
           state.tags = zTags;
           actionsDesc.push('Tags');
+        }
+        if (doHistory && zHistory) {
+          state.history = zHistory;
+          actionsDesc.push('Activity History');
         }
       }
     }

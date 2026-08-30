@@ -1,3 +1,18 @@
+### [2.21.3] - 2026-08-29
+
+### Fixed
+- **Audit History Recovery on Database and Snapshot Restores**:
+  - Added full transaction support for the `history` table in `selectiveRestoreFromDb` in `server.ts` to ensure audit and activity logs are restored when restoring SQLite snapshots or full packages.
+  - Added dedicated `selHistory` selection toggle, API payload parameter (`restoreHistory` / `includeHistory`), and dynamic row status in the Snapshot Restoration Preview comparison modal within `DataImportView.tsx`.
+  - Refactored `import-zip` backend handler to invoke safe selective table copies instead of raw database file replacement when a `.db` entry is included in the ZIP, eliminating SQLite lock contention and database restoration hangs.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/views/DataImportView.tsx`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
 ### [2.21.2] - 2026-08-29
 
 ### Fixed
