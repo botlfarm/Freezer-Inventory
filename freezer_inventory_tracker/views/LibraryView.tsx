@@ -285,6 +285,79 @@ const LibraryView: React.FC<{
     return val ? parseFloat(val) : 40;
   });
 
+  // Helper to persist preferences directly to database app_config table
+  const saveAppConfigKey = (key: string, value: string) => {
+    fetch('/api/app-config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key, value })
+    }).catch(err => console.warn(`Could not save app_config key "${key}":`, err));
+  };
+
+  // Synchronize preferences from database app_config table on mount, migrating any local data seamlessly
+  React.useEffect(() => {
+    let isMounted = true;
+    fetch('/api/app-config')
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (!isMounted || !data || !data.configs) return;
+        const configs = data.configs;
+        const dbFromName = configs['report-from-name'];
+        const dbFromAddress = configs['report-from-address'];
+        const dbBoxWeight = configs['offsite-theoretical-box-weight'];
+
+        let needsMigration = false;
+        const toMigrate: Record<string, string> = {};
+
+        if (dbFromName !== undefined) {
+          setDefaultFromName(dbFromName);
+          localStorage.setItem("report-from-name", dbFromName);
+        } else {
+          const localName = localStorage.getItem("report-from-name");
+          if (localName) {
+            toMigrate['report-from-name'] = localName;
+            needsMigration = true;
+          }
+        }
+
+        if (dbFromAddress !== undefined) {
+          setDefaultFromAddress(dbFromAddress);
+          localStorage.setItem("report-from-address", dbFromAddress);
+        } else {
+          const localAddr = localStorage.getItem("report-from-address");
+          if (localAddr) {
+            toMigrate['report-from-address'] = localAddr;
+            needsMigration = true;
+          }
+        }
+
+        if (dbBoxWeight !== undefined) {
+          const parsed = parseFloat(dbBoxWeight);
+          if (!isNaN(parsed) && parsed > 0) {
+            setTheoreticalBoxWeight(parsed);
+            localStorage.setItem("offsite-theoretical-box-weight", parsed.toString());
+          }
+        } else {
+          const localWeight = localStorage.getItem("offsite-theoretical-box-weight");
+          if (localWeight) {
+            toMigrate['offsite-theoretical-box-weight'] = localWeight;
+            needsMigration = true;
+          }
+        }
+
+        if (needsMigration) {
+          fetch('/api/app-config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ configs: toMigrate })
+          }).catch(err => console.warn('Could not auto-migrate localStorage to app_config:', err));
+        }
+      })
+      .catch(err => console.warn('Could not load app_config on mount:', err));
+
+    return () => { isMounted = false; };
+  }, []);
+
   const [showDemoStartConfirm, setShowDemoStartConfirm] = useState(false);
   const [showDemoEndConfirm, setShowDemoEndConfirm] = useState(false);
   const [isDemoActionLoading, setIsDemoActionLoading] = useState(false);
@@ -2871,6 +2944,7 @@ const LibraryView: React.FC<{
                       onChange={(e) => {
                         setDefaultFromName(e.target.value);
                         localStorage.setItem("report-from-name", e.target.value);
+                        saveAppConfigKey("report-from-name", e.target.value);
                       }}
                       className="w-full max-w-md bg-cool-gray-900 border border-cool-gray-750 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:border-cyan-500 font-semibold"
                       placeholder="Shipper or farm name (e.g. My Ranch)"
@@ -2883,6 +2957,7 @@ const LibraryView: React.FC<{
                       onChange={(e) => {
                         setDefaultFromAddress(e.target.value);
                         localStorage.setItem("report-from-address", e.target.value);
+                        saveAppConfigKey("report-from-address", e.target.value);
                       }}
                       rows={3}
                       className="w-full max-w-md bg-cool-gray-900 border border-cool-gray-750 rounded-xl px-4 py-2 text-white text-sm focus:outline-none focus:border-cyan-500 font-semibold"
@@ -2909,12 +2984,14 @@ const LibraryView: React.FC<{
                       setTheoreticalBoxWeight(isNaN(val) ? 0 : val);
                       if (!isNaN(val) && val > 0) {
                         localStorage.setItem("offsite-theoretical-box-weight", val.toString());
+                        saveAppConfigKey("offsite-theoretical-box-weight", val.toString());
                       }
                     }}
                     onBlur={() => {
                       if (!theoreticalBoxWeight || theoreticalBoxWeight <= 0) {
                         setTheoreticalBoxWeight(40);
                         localStorage.setItem("offsite-theoretical-box-weight", "40");
+                        saveAppConfigKey("offsite-theoretical-box-weight", "40");
                       }
                     }}
                     className="w-full max-w-xs bg-cool-gray-900 border border-cool-gray-750 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:border-cyan-500 font-semibold"
@@ -2927,9 +3004,7 @@ const LibraryView: React.FC<{
 
               <div className="border-t border-cool-gray-750/40 pt-5 text-xs text-cool-gray-450 leading-relaxed font-semibold">
                 <p>
-                  🔒 Application preferences are saved automatically to your browser's
-                  persistent workspace, persisting across tab reloads and system
-                  restarts.
+                  🔒 Application preferences are stored in your SQLite database (<code className="text-cyan-400 text-[11px] font-mono">app_config</code>) and mirrored in local cache, persisting across devices, reloads, and container restarts.
                 </p>
               </div>
             </div>

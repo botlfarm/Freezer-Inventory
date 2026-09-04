@@ -1,3 +1,54 @@
+### [2.21.6] - 2026-08-30
+
+### Changed
+- **Scheduler Interval Relaxation**:
+  - Adjusted background timer intervals for automatic rolling snapshots and scheduled notification checks in `server.ts` to run every 30 minutes instead of every 60 seconds.
+  - Schedulers continue to trigger initial checks immediately on server startup.
+
+### Added
+- **Persistent Database Storage for Application Preferences (`app_config`)**:
+  - Implemented `/api/app-config` (GET and POST) API endpoints in `server.ts` to store arbitrary configuration key-value pairs directly in the SQLite `app_config` table with automatic conflict resolution and timestamps.
+  - Migrated the "Default Movement Report Shipper" name and address preferences in `LibraryView.tsx` from browser-only `localStorage` to the central database `app_config` table.
+  - Added seamless bidirectional fallback and automatic migration on initial load for existing user preferences.
+  - Updated `MovementReportModal.tsx` to automatically synchronize default shipper details from the database `app_config` table upon opening.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/views/LibraryView.tsx`
+- `/freezer_inventory_tracker/views/MovementReportModal.tsx`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.21.5] - 2026-08-30
+
+### Fixed
+- **Timezone Mismatch & Automatic Rolling Backup Early Trigger Fix**:
+  - Resolved the 4-hour timezone offset where background rolling snapshots fired prematurely in UTC instead of the user's local timezone (e.g. EDT/EST).
+  - Added proactive Home Assistant system configuration querying via `SUPERVISOR_TOKEN` to auto-detect the host timezone (`America/New_York`, etc.) on boot.
+  - Added support for explicit target timezones in `auto_snapshot_config`, with bi-directional synchronization between notification settings and rolling snapshot schedules.
+  - Updated `getDateAndMinutesInTz` to enforce 24-hour military formatting (`hour12: false`, `hourCycle: 'h23'`) and safe fallback to configured local timezones.
+  - Increased snapshot scheduler precision to 60-second checks so backups trigger accurately when the scheduled local hour arrives.
+  - Added a visual Timezone Selector and target clock preview in the Vault/Backup settings within `DataImportView.tsx` with one-click browser timezone auto-detection.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/views/DataImportView.tsx`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.21.4] - 2026-08-30
+
+### Added
+- **Root Project README**: Added root-level `README.md` identifying the application as a 100% AI-written Freezer Inventory Tracker engineered specifically for Home Assistant with comprehensive documentation for installation, features, and technology stack.
+
+### Files Modified
+- `/README.md`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
 ### [2.21.3] - 2026-08-29
 
 ### Fixed

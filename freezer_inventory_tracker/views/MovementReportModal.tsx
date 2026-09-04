@@ -285,9 +285,29 @@ export const MovementReportModal: React.FC<MovementReportModalProps> = ({
   const [scanItemIndex, setScanItemIndex] = useState(0);
   const [scanPalletFilter, setScanPalletFilter] = useState<string>('all');
   
-  // From section fields - loaded from localStorage with default fallbacks
+  // From section fields - loaded from app_config and localStorage with default fallbacks
   const [fromName, setFromName] = useState(() => localStorage.getItem("report-from-name") || "");
   const [fromAddress, setFromAddress] = useState(() => localStorage.getItem("report-from-address") || "");
+
+  // Synchronize default shipper information from database app_config table when modal opens
+  useEffect(() => {
+    if (!isOpen) return;
+    fetch('/api/app-config')
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (!data || !data.configs) return;
+        const configs = data.configs;
+        if (configs['report-from-name'] !== undefined) {
+          setFromName(configs['report-from-name']);
+          localStorage.setItem("report-from-name", configs['report-from-name']);
+        }
+        if (configs['report-from-address'] !== undefined) {
+          setFromAddress(configs['report-from-address']);
+          localStorage.setItem("report-from-address", configs['report-from-address']);
+        }
+      })
+      .catch(() => {});
+  }, [isOpen]);
 
   // Purchase Order & Items summary fields
   const [editablePo, setEditablePo] = useState('');

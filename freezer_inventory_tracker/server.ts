@@ -28,6 +28,33 @@ app.use((req, res, next) => {
 
 // Path to data directory for configs and fallbacks.
 // Home Assistant Add-ons use the root /data directory for persistent volume mount.
+let cachedHaTimezone: string | null = null;
+async function fetchHomeAssistantTimezone(): Promise<string | null> {
+  if (cachedHaTimezone) return cachedHaTimezone;
+  const token = process.env.SUPERVISOR_TOKEN;
+  if (!token) return null;
+  try {
+    const res = await fetch('http://supervisor/core/api/config', {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      signal: AbortSignal.timeout(4000)
+    });
+    if (res.ok) {
+      const data = await res.json() as any;
+      if (data && data.time_zone && typeof data.time_zone === 'string' && data.time_zone.trim()) {
+        cachedHaTimezone = data.time_zone.trim();
+        console.log(`[Timezone] Auto-detected Home Assistant system timezone: ${cachedHaTimezone}`);
+        return cachedHaTimezone;
+      }
+    }
+  } catch (e) {
+    // Non-blocking supervisor fetch
+  }
+  return null;
+}
+
 let DATA_DIR = path.join(process.cwd(), 'data');
 if (!fs.existsSync(DATA_DIR) && fs.existsSync(path.join(process.cwd(), 'freezer_inventory_tracker', 'data'))) {
   DATA_DIR = path.join(process.cwd(), 'freezer_inventory_tracker', 'data');
@@ -2351,6 +2378,7 @@ interface AutoSnapshotSettings {
   fullZipRollingMaxCount: number;
   fullZipLastBackupTimestamp?: string;
 
+  timezone?: string;
   isDemoMode?: boolean;
 }
 
@@ -2363,12 +2391,13 @@ const defaultAutoSnapshotSettings: AutoSnapshotSettings = {
   dbRollingEnabled: true,
   dbRollingIntervalDays: 1, // Nightly
   dbRollingMaxCount: 7, // 1 week retention
-  dbBackupHour: 2, // 2:00 AM
+  dbBackupHour: 2, // 2:00 AM local
 
   fullZipRollingEnabled: true,
   fullZipRollingIntervalDays: 7, // Weekly
   fullZipRollingMaxCount: 2, // 2 weeks retention
 
+  timezone: 'America/New_York',
   isDemoMode: false
 };
 
@@ -2429,12 +2458,34 @@ function saveAutoSnapshotConfig(config: AutoSnapshotSettings) {
 function getUserTimezone(): string {
   try {
     if (!db) initDatabase();
+    // 1. Check configured timezone in auto_snapshot_config
+    const autoCfgRow = db.prepare("SELECT value FROM app_config WHERE key = 'auto_snapshot_config'").get() as any;
+    if (autoCfgRow && autoCfgRow.value) {
+      try {
+        const parsed = JSON.parse(autoCfgRow.value);
+        if (parsed && parsed.timezone && typeof parsed.timezone === 'string' && parsed.timezone.trim()) {
+          return parsed.timezone.trim();
+        }
+      } catch (e) {}
+    }
+    // 2. Check notification_settings table
     const row = db.prepare("SELECT timezone FROM notification_settings WHERE id = 'global'").get() as any;
-    if (row && row.timezone) {
-      return row.timezone;
+    if (row && row.timezone && typeof row.timezone === 'string' && row.timezone.trim()) {
+      return row.timezone.trim();
     }
   } catch (e) {}
-  return process.env.TZ || 'America/New_York';
+
+  // 3. Check Home Assistant system timezone if discovered
+  if (cachedHaTimezone && typeof cachedHaTimezone === 'string' && cachedHaTimezone.trim()) {
+    return cachedHaTimezone.trim();
+  }
+
+  // 4. Check system process.env.TZ (if set and not bare UTC)
+  if (process.env.TZ && process.env.TZ.trim() && process.env.TZ !== 'UTC') {
+    return process.env.TZ.trim();
+  }
+
+  return 'America/New_York';
 }
 
 async function runAutomaticRollingSnapshots() {
@@ -2464,7 +2515,7 @@ async function runAutomaticRollingSnapshots() {
       const intervalDays = config.dbRollingIntervalDays || (config as any).dbRollingInterval || 1;
 
       if (!lastDb || (dayDiff >= intervalDays && currentHour >= backupHour)) {
-        console.log(`Running automatic rolling DB snapshot (scheduled hour: ${backupHour}:00 ${userTz}, current local time: ${currentInfo.hour}:${currentInfo.minute.toString().padStart(2, '0')}, days elapsed: ${dayDiff})...`);
+        console.log(`[Auto-Snapshot] Running automatic rolling DB snapshot (Scheduled hour: ${backupHour}:00 in ${userTz}, Current Local Time: ${currentInfo.dateStr} ${currentInfo.hour}:${currentInfo.minute.toString().padStart(2, '0')} ${userTz}, Days elapsed: ${dayDiff})...`);
         const dbFilename = `auto_rolling_db_${timestamp}.db`;
         const dbFilepath = path.join(BACKUPS_DIR, dbFilename);
         if (!db) initDatabase();
@@ -2497,7 +2548,7 @@ async function runAutomaticRollingSnapshots() {
       const lastZip = config.fullZipLastBackupTimestamp ? new Date(config.fullZipLastBackupTimestamp) : null;
 
       if (!lastZip || (now.getTime() - lastZip.getTime() >= intervalMs)) {
-        console.log('Running automatic rolling Full Package ZIP snapshot...');
+        console.log(`[Auto-Snapshot] Running automatic rolling Full Package ZIP snapshot in ${userTz}...`);
         const zipFilename = `auto_rolling_full_${timestamp}.zip`;
         const zipFilepath = path.join(BACKUPS_DIR, zipFilename);
 
@@ -2551,10 +2602,13 @@ async function runAutomaticRollingSnapshots() {
   }
 }
 
-// Start auto snapshot checks periodically (every 15 minutes)
+// Start auto snapshot checks periodically (every 30 minutes)
 setInterval(() => {
   runAutomaticRollingSnapshots().catch(err => console.error(err));
-}, 15 * 60 * 1000);
+}, 30 * 60 * 1000);
+
+// Run initial check on server boot
+runAutomaticRollingSnapshots().catch(err => console.error(err));
 
 // ---------------- VERSATILE NOTIFICATION PLATFORM ----------------
 
@@ -2919,9 +2973,11 @@ async function triggerNotification(customListIds?: string[], forceNow: boolean =
 }
 
 function getDateAndMinutesInTz(date: Date, timeZone: string) {
+  const safeTz = timeZone && timeZone.trim() ? timeZone.trim() : 'America/New_York';
   try {
     const formatter = new Intl.DateTimeFormat('en-US', {
-      timeZone,
+      timeZone: safeTz,
+      hour12: false,
       hourCycle: 'h23',
       year: 'numeric',
       month: '2-digit',
@@ -2944,7 +3000,8 @@ function getDateAndMinutesInTz(date: Date, timeZone: string) {
   } catch (e) {
     try {
       const formatter = new Intl.DateTimeFormat('en-US', {
-        timeZone: 'UTC',
+        timeZone: 'America/New_York',
+        hour12: false,
         hourCycle: 'h23',
         year: 'numeric',
         month: '2-digit',
@@ -3018,10 +3075,98 @@ async function checkAndTriggerScheduledNotifications() {
   }
 }
 
-// Check scheduled notifications every minute
+// Check scheduled notifications every 30 minutes
 setInterval(() => {
   checkAndTriggerScheduledNotifications().catch(err => console.error('Error running scheduled notification checks:', err));
-}, 60 * 1000);
+}, 30 * 60 * 1000);
+
+// Run initial notification check on server boot
+checkAndTriggerScheduledNotifications().catch(err => console.error('Error running initial notification check:', err));
+
+
+// ---------------- APP CONFIG DB TABLE ENDPOINTS ----------------
+
+app.get('/api/app-config', (req, res) => {
+  try {
+    if (!db) initDatabase();
+    const rows = db.prepare('SELECT key, value, updatedAt FROM app_config').all() as any[];
+    const configs: Record<string, string> = {};
+    const items: any[] = [];
+    rows.forEach(r => {
+      configs[r.key] = r.value;
+      items.push({ key: r.key, value: r.value, updatedAt: r.updatedAt });
+    });
+    res.json({ configs, items });
+  } catch (err: any) {
+    console.error('Error fetching app_config:', err);
+    res.status(500).json({ error: 'Failed to retrieve app config.', details: err.message });
+  }
+});
+
+app.get('/api/app-config/:key', (req, res) => {
+  try {
+    if (!db) initDatabase();
+    const key = req.params.key;
+    const row = db.prepare('SELECT key, value, updatedAt FROM app_config WHERE key = ?').get(key) as any;
+    if (row) {
+      res.json({ key: row.key, value: row.value, updatedAt: row.updatedAt });
+    } else {
+      res.status(404).json({ error: `Config key "${key}" not found.`, key, value: null });
+    }
+  } catch (err: any) {
+    console.error(`Error fetching app_config key "${req.params.key}":`, err);
+    res.status(500).json({ error: 'Failed to retrieve app config key.', details: err.message });
+  }
+});
+
+app.post('/api/app-config', (req, res) => {
+  try {
+    if (!db) initDatabase();
+    const { key, value, configs } = req.body;
+    const nowIso = new Date().toISOString();
+
+    const upsertStmt = db.prepare(`
+      INSERT INTO app_config (key, value, updatedAt)
+      VALUES (?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updatedAt = excluded.updatedAt
+    `);
+
+    const updatedKeys: string[] = [];
+
+    const tx = db.transaction(() => {
+      if (configs && typeof configs === 'object') {
+        for (const [k, v] of Object.entries(configs)) {
+          if (typeof k === 'string' && k.trim()) {
+            const valStr = typeof v === 'string' ? v : JSON.stringify(v);
+            upsertStmt.run(k.trim(), valStr, nowIso);
+            updatedKeys.push(k.trim());
+          }
+        }
+      }
+      if (key && typeof key === 'string' && key.trim()) {
+        const valStr = typeof value === 'string' ? value : JSON.stringify(value ?? '');
+        upsertStmt.run(key.trim(), valStr, nowIso);
+        if (!updatedKeys.includes(key.trim())) {
+          updatedKeys.push(key.trim());
+        }
+      }
+    });
+
+    tx();
+
+    // Return the latest complete configs
+    const rows = db.prepare('SELECT key, value, updatedAt FROM app_config').all() as any[];
+    const resultConfigs: Record<string, string> = {};
+    rows.forEach(r => {
+      resultConfigs[r.key] = r.value;
+    });
+
+    res.json({ success: true, updatedKeys, configs: resultConfigs });
+  } catch (err: any) {
+    console.error('Error saving app_config:', err);
+    res.status(500).json({ error: 'Failed to save app config.', details: err.message });
+  }
+});
 
 
 // ---------------- DEMO MODE ENDPOINTS ----------------
@@ -3128,7 +3273,15 @@ app.post('/api/demo/end', async (req, res) => {
 app.get('/api/backups/config', (req, res) => {
   try {
     const config = loadAutoSnapshotConfig();
-    res.json(config);
+    const effectiveTz = getUserTimezone();
+    const now = new Date();
+    const nowInfo = getDateAndMinutesInTz(now, effectiveTz);
+    res.json({
+      ...config,
+      timezone: config.timezone || effectiveTz,
+      effectiveTimezone: effectiveTz,
+      currentLocalTime: `${nowInfo.dateStr} ${nowInfo.hour.toString().padStart(2, '0')}:${nowInfo.minute.toString().padStart(2, '0')}`
+    });
   } catch (err) {
     res.status(500).json({ error: 'Failed to read auto backup config' });
   }
@@ -3139,7 +3292,8 @@ app.post('/api/backups/config', (req, res) => {
     const { 
       rollingEnabled, rollingInterval, rollingMaxCount,
       dbRollingEnabled, dbRollingIntervalDays, dbRollingInterval, dbRollingMaxCount, dbBackupHour,
-      fullZipRollingEnabled, fullZipRollingIntervalDays, fullZipRollingInterval, fullZipRollingMaxCount
+      fullZipRollingEnabled, fullZipRollingIntervalDays, fullZipRollingInterval, fullZipRollingMaxCount,
+      timezone
     } = req.body;
     
     const current = loadAutoSnapshotConfig();
@@ -3166,11 +3320,31 @@ app.post('/api/backups/config', (req, res) => {
     if (typeof rollingInterval === 'number') current.rollingInterval = Math.max(1, rollingInterval);
     if (typeof rollingMaxCount === 'number') current.rollingMaxCount = Math.max(1, rollingMaxCount);
 
+    if (timezone && typeof timezone === 'string' && timezone.trim()) {
+      current.timezone = timezone.trim();
+      try {
+        if (!db) initDatabase();
+        db.prepare(`
+          UPDATE notification_settings 
+          SET timezone = ? 
+          WHERE id = 'global'
+        `).run(timezone.trim());
+      } catch (e) {}
+    }
+
     saveAutoSnapshotConfig(current);
     
     runAutomaticRollingSnapshots().catch(e => console.error(e));
     
-    res.json(current);
+    const effectiveTz = current.timezone || getUserTimezone();
+    const now = new Date();
+    const nowInfo = getDateAndMinutesInTz(now, effectiveTz);
+
+    res.json({
+      ...current,
+      effectiveTimezone: effectiveTz,
+      currentLocalTime: `${nowInfo.dateStr} ${nowInfo.hour.toString().padStart(2, '0')}:${nowInfo.minute.toString().padStart(2, '0')}`
+    });
   } catch (err) {
     res.status(500).json({ error: 'Failed to update auto backup config' });
   }
@@ -7949,6 +8123,28 @@ app.post('/api/inventory/action', async (req: any, res) => {
         });
         break;
       }
+      case 'UPDATE_NOTIFICATION_SETTINGS': {
+        const payload = action.payload || {};
+        const currentSettings = (nextState.notificationSettings && nextState.notificationSettings[0]) || {
+          id: 'global',
+          enabled: false,
+          digestEnabled: false,
+          digestTime: '20:00',
+          digestMode: 'combined',
+          method: 'homeassistant',
+          timezone: getUserTimezone()
+        };
+        const updated = { ...currentSettings, ...payload };
+        nextState.notificationSettings = [updated];
+
+        // Also synchronize with auto_snapshot_config if timezone provided
+        if (payload.timezone) {
+          const cfg = loadAutoSnapshotConfig();
+          cfg.timezone = payload.timezone;
+          saveAutoSnapshotConfig(cfg);
+        }
+        break;
+      }
       case 'ADD_LOCATION': {
         const { id, name, address, contact, notes, isHome, type } = action.payload;
         const locs = nextState.locations || [];
@@ -8339,6 +8535,9 @@ app.post('/api/photos/assign', async (req, res) => {
 // ---------------- HOSTING SETUP & SERVER START ----------------
 
 async function startServer() {
+  // Proactively query Home Assistant system configuration to detect host timezone
+  fetchHomeAssistantTimezone().catch(e => console.warn('Could not auto-fetch HA timezone:', e));
+
   // Vite development integration when not running in production
   if (process.env.NODE_ENV !== "production") {
     const { createServer: createViteServer } = await import('vite');
@@ -8362,7 +8561,9 @@ async function startServer() {
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Inventory tracker server is booted on port http://localhost:${PORT}`);
+    const tz = getUserTimezone();
+    const nowInfo = getDateAndMinutesInTz(new Date(), tz);
+    console.log(`Inventory tracker server is booted on port http://localhost:${PORT} (Timezone: ${tz}, Local Time: ${nowInfo.dateStr} ${nowInfo.hour}:${nowInfo.minute.toString().padStart(2, '0')})`);
   });
 }
 

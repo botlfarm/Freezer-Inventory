@@ -3,7 +3,8 @@ import { InventoryState, Action, Product, Container, MeatCut, Freezer } from '..
 import { 
   Database, Upload, Download, FileText, CheckCircle2, AlertTriangle, 
   ArrowRight, Info, Library, Layers, Box, HelpCircle, RefreshCw, Sparkles, 
-  X, Check, FolderOpen, Image as ImageIcon, Loader2, Play, Trash2, Eye, Settings
+  X, Check, FolderOpen, Image as ImageIcon, Loader2, Play, Trash2, Eye, Settings,
+  Globe, Clock
 } from 'lucide-react';
 import JSZip from 'jszip';
 import { generateUUID } from '../components/uuidHelper';
@@ -48,6 +49,15 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
   const [zipAutoInterval, setZipAutoInterval] = useState(7);
   const [zipAutoMaxCount, setZipAutoMaxCount] = useState(2);
 
+  const [backupTimezone, setBackupTimezone] = useState<string>(() => {
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/New_York';
+    } catch {
+      return 'America/New_York';
+    }
+  });
+  const [serverLocalTime, setServerLocalTime] = useState<string>('');
+
   const [lastAutoSnapshot, setLastAutoSnapshot] = useState('');
   const [loadingAutoConfig, setLoadingAutoConfig] = useState(false);
 
@@ -68,6 +78,13 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
         setZipAutoEnabled(data.fullZipRollingEnabled ?? true);
         setZipAutoInterval(data.fullZipRollingInterval ?? data.fullZipRollingIntervalDays ?? 7);
         setZipAutoMaxCount(data.fullZipRollingMaxCount ?? 2);
+
+        if (data.timezone || data.effectiveTimezone) {
+          setBackupTimezone(data.timezone || data.effectiveTimezone);
+        }
+        if (data.currentLocalTime) {
+          setServerLocalTime(data.currentLocalTime);
+        }
 
         setLastAutoSnapshot(data.lastBackupTimestamp || '');
       }
@@ -96,12 +113,16 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
           fullZipRollingEnabled: zipAutoEnabled,
           fullZipRollingInterval: zipAutoInterval,
           fullZipRollingIntervalDays: zipAutoInterval,
-          fullZipRollingMaxCount: zipAutoMaxCount
+          fullZipRollingMaxCount: zipAutoMaxCount,
+          timezone: backupTimezone
         })
       });
       if (res.ok) {
         const data = await res.json();
         setLastAutoSnapshot(data.lastBackupTimestamp || '');
+        if (data.currentLocalTime) {
+          setServerLocalTime(data.currentLocalTime);
+        }
         showToastMessage('success', 'Rolling snapshot schedule parameters saved successfully!');
         loadOnSiteBackups();
       } else {
@@ -1327,7 +1348,7 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
                       <input
                         type="number"
                         min={1}
-                        max={365}
+                        max={30}
                         value={zipAutoInterval}
                         onChange={(e) => setZipAutoInterval(parseInt(e.target.value) || 1)}
                         className="w-full bg-cool-gray-900 border border-cool-gray-800 rounded-lg px-2.5 py-1.5 text-white font-mono font-bold text-xs"
@@ -1348,6 +1369,83 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
                   <p className="text-[10px] text-cool-gray-500">
                     Recommended: Frequency = 7 days (Weekly), Retention = 2 backups.
                   </p>
+                </div>
+              </div>
+
+              {/* Timezone & Scheduling Clock Reference */}
+              <div className="p-4 bg-cool-gray-950 border border-cool-gray-800 rounded-xl space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-cool-gray-850 pb-2.5">
+                  <div className="flex items-center gap-2">
+                    <Globe className="w-4 h-4 text-emerald-400" />
+                    <span className="text-xs font-bold text-white">Scheduled Timezone & Target Clock</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      try {
+                        const detected = Intl.DateTimeFormat().resolvedOptions().timeZone;
+                        if (detected) {
+                          setBackupTimezone(detected);
+                          showToastMessage('success', `Detected browser timezone: ${detected}`);
+                        }
+                      } catch (e) {}
+                    }}
+                    className="text-[11px] font-bold text-emerald-400 hover:text-emerald-300 flex items-center gap-1 cursor-pointer bg-emerald-950/40 hover:bg-emerald-900/40 border border-emerald-800/60 px-2.5 py-1 rounded-lg transition"
+                  >
+                    <Clock className="w-3 h-3" /> Auto-Detect Browser Timezone
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-center">
+                  <div>
+                    <label className="block text-[10px] text-cool-gray-450 font-bold uppercase mb-1">Backup Target Timezone</label>
+                    <select
+                      value={backupTimezone}
+                      onChange={(e) => setBackupTimezone(e.target.value)}
+                      className="w-full bg-cool-gray-900 border border-cool-gray-800 rounded-lg px-3 py-1.5 text-white font-mono text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
+                    >
+                      <option value="America/New_York">America/New_York (Eastern Time - US)</option>
+                      <option value="America/Chicago">America/Chicago (Central Time - US)</option>
+                      <option value="America/Denver">America/Denver (Mountain Time - US)</option>
+                      <option value="America/Phoenix">America/Phoenix (Mountain Standard - Arizona)</option>
+                      <option value="America/Los_Angeles">America/Los_Angeles (Pacific Time - US)</option>
+                      <option value="America/Anchorage">America/Anchorage (Alaska Time)</option>
+                      <option value="Pacific/Honolulu">Pacific/Honolulu (Hawaii Time)</option>
+                      <option value="America/Toronto">America/Toronto (Eastern Time - Canada)</option>
+                      <option value="America/Vancouver">America/Vancouver (Pacific Time - Canada)</option>
+                      <option value="Europe/London">Europe/London (GMT / BST)</option>
+                      <option value="Europe/Paris">Europe/Paris (CET / CEST)</option>
+                      <option value="Europe/Berlin">Europe/Berlin (CET / CEST)</option>
+                      <option value="Australia/Sydney">Australia/Sydney (AEST / AEDT)</option>
+                      <option value="UTC">UTC (Coordinated Universal Time)</option>
+                      {backupTimezone && ![
+                        "America/New_York", "America/Chicago", "America/Denver", "America/Phoenix", 
+                        "America/Los_Angeles", "America/Anchorage", "Pacific/Honolulu", "America/Toronto", 
+                        "America/Vancouver", "Europe/London", "Europe/Paris", "Europe/Berlin", 
+                        "Australia/Sydney", "UTC"
+                      ].includes(backupTimezone) && (
+                        <option value={backupTimezone}>{backupTimezone} (Custom / System)</option>
+                      )}
+                    </select>
+                  </div>
+                  <div className="bg-cool-gray-900 border border-cool-gray-800 rounded-lg p-2.5 text-xs text-cool-gray-300 flex flex-col justify-center">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] text-cool-gray-450 font-bold uppercase">Next DB Snapshot Trigger</span>
+                      <span className="font-mono font-bold text-indigo-400">
+                        {dbBackupHour % 12 === 0 ? 12 : dbBackupHour % 12}:00 {dbBackupHour >= 12 ? 'PM' : 'AM'}
+                      </span>
+                    </div>
+                    <div className="text-[10px] text-cool-gray-450 mt-1 flex items-center justify-between">
+                      <span>Timezone:</span>
+                      <span className="font-mono text-emerald-400 font-bold">{backupTimezone}</span>
+                    </div>
+                    {serverLocalTime && (
+                      <div className="text-[10px] text-cool-gray-450 mt-0.5 flex items-center justify-between">
+                        <span>Current Target Time:</span>
+                        <span className="font-mono text-cool-gray-300">{serverLocalTime}</span>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
 
