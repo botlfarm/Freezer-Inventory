@@ -262,6 +262,7 @@ const LibraryView: React.FC<{
   theme?: string;
   onThemeChange?: (newTheme: string) => void;
   onNavigateToView?: (view: any) => void;
+  isLoading?: boolean;
 }> = ({
   state,
   dispatch,
@@ -271,6 +272,7 @@ const LibraryView: React.FC<{
   theme: parentTheme,
   onThemeChange,
   onNavigateToView,
+  isLoading = false,
 }) => {
   const [activeTab, setActiveTab] = useState<LibraryTab>(initialTab || "products");
   const [productArchiveFilter, setProductArchiveFilter] = useState<'active' | 'archived' | 'all'>('active');
@@ -1041,9 +1043,9 @@ const LibraryView: React.FC<{
       .filter(Boolean);
     let list = state.containers;
 
-    // Exclude the internal loose container layout if necessary and exclude off-site boxes
+    // Exclude the internal loose container layout if necessary and exclude archived containers
     list = list.filter(
-      (c) => c.id !== "staging_loose" && !c.id.endsWith("_loose") && !c.isArchived && !c.isBox && !c.id.startsWith("box-"),
+      (c) => c.id !== "staging_loose" && !c.id.endsWith("_loose") && !c.isArchived,
     );
 
     if (searchWords.length > 0) {
@@ -1179,7 +1181,7 @@ const LibraryView: React.FC<{
   const filteredTemplates = useMemo(() => {
     const templates = state.containerTemplates || [];
     const activeContainers = (state.containers || []).filter(c => 
-      c.id !== "staging_loose" && !c.id.endsWith("_loose") && !c.isBox && !c.id.startsWith("box-")
+      c.id !== "staging_loose" && !c.id.endsWith("_loose")
     );
     const nonArchivedActive = activeContainers.filter(c => !c.isArchived);
 
@@ -1515,7 +1517,7 @@ const LibraryView: React.FC<{
   const renderContainersTab = () => {
     const templates = state.containerTemplates || [];
     const activeContainers = (state.containers || []).filter(c => 
-      c.id !== "staging_loose" && !c.id.endsWith("_loose") && !c.isBox && !c.id.startsWith("box-")
+      c.id !== "staging_loose" && !c.id.endsWith("_loose")
     );
     const nonArchivedActive = activeContainers.filter(c => !c.isArchived);
 
@@ -1976,9 +1978,16 @@ const LibraryView: React.FC<{
         if (state.products.length === 0) {
           return (
             <div className="text-center py-12 bg-cool-gray-900/10 rounded-xl border-2 border-dashed border-cool-gray-800 mt-4">
-              <p className="text-cool-gray-400 text-sm">
-                No products found. Click "+ Product" to create one.
-              </p>
+              {isLoading ? (
+                <div className="flex flex-col items-center justify-center space-y-3 py-4">
+                  <div className="w-8 h-8 rounded-full border-2 border-cyan-500/20 border-t-cyan-400 animate-spin" />
+                  <p className="text-cool-gray-400 text-sm font-medium animate-pulse">Loading products from database...</p>
+                </div>
+              ) : (
+                <p className="text-cool-gray-400 text-sm">
+                  No products found. Click "+ Product" to create one.
+                </p>
+              )}
             </div>
           );
         }
@@ -6312,7 +6321,7 @@ export const ManageLocations: React.FC<ManageLocationsProps> = ({ state, dispatc
 
   // Stats for Home summary
   const freezerCount = state.freezers?.filter(f => !f.isPallet && !f.id.startsWith('pallet-') && !f.isArchived)?.length || 0;
-  const containerCount = state.containers?.filter(c => c.freezerId && !c.isBox && !c.id.startsWith('box-'))?.length || 0;
+  const containerCount = state.containers?.filter(c => c.freezerId && !c.isArchived)?.length || 0;
   const totalCutsOnSite = state.meatCuts?.reduce((acc, mc) => acc + (mc.quantity || 0), 0) || 0;
 
   return (

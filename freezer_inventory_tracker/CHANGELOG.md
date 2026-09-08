@@ -1,3 +1,119 @@
+### [2.21.12] - 2026-09-08
+
+### Fixed
+- **Accurate Cut Counts & Fresh State on Butcher File Append**:
+  - Fixed a stale state issue where adding more cuts to an existing butcher file would retain previously uploaded or parsed counts on the finalize and submit buttons.
+  - Implemented `resetImportCutsState` to automatically clear parsed records, raw CSV text, and pending mapping state when clicking "Receive Additional Cuts", switching target orders, creating a new order, or clicking "Cancel Import".
+  - Cleared file input values on upload and on click (`e.target.value = ''`), ensuring that re-uploading an amended file with the identical filename reliably re-triggers parsing.
+  - Added real-time calculation `targetOrderStats` to distinguish existing cuts already in the target order, newly added cuts from the CSV, cuts updating existing serials, and the projected order total count.
+  - Updated the intake submit and mapping wizard finalize buttons to display clear, accurate cut totals (e.g., newly added cuts, updated cuts, and resulting total order cuts).
+  - Enhanced the parsed CSV summary card with an inline breakdown showing existing cuts in order, new cuts, and resulting total cuts.
+  - Guarded against duplicate order prefixing when constructing cut box names.
+
+### Files Modified
+- `/freezer_inventory_tracker/views/ButcherRecordsView.tsx`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.21.11] - 2026-09-08
+
+### Added
+- **Enforced Pallet Selection on Butcher Off-Site Import**:
+  - Required a destination pallet selection or new pallet entry whenever butcher cuts are being imported directly into off-site inventory (`importForm.importToOffSite` enabled).
+  - Added a visual required asterisk (`*`) and requirement alert note to the "Destination Pallet / Placement" field in the butcher intake form.
+  - Enhanced `PalletCreatableSelect` with `required` and `hasError` attributes, styling with amber validation highlights when missing.
+  - Updated placeholder text dynamically to indicate that pallet selection is required for off-site intake.
+  - Added an inline warning notification banner above the submit action when attempting to import cuts to off-site without a selected pallet.
+  - Updated submit button validation to disable submission with a helpful tooltip when pallet selection is missing during off-site import.
+  - Added form submission validation in `handleImportSubmit` that prevents import and informs the user if the destination pallet is not specified.
+  - Ensured `targetPallet` is trimmed cleanly before dispatching `ADD_BUTCHER_ORDER`.
+
+### Files Modified
+- `/freezer_inventory_tracker/views/ButcherRecordsView.tsx`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.21.10] - 2026-09-07
+
+### Fixed
+- **Orphaned Items Relocation to Sorting Table (Staging Area)**:
+  - Ensured that when a container is emptied and retired/deleted (`MOVE_CONTAINER` with `emptyCuts: true`, or `DELETE_CONTAINER`), its meat cuts are never deleted or lost; instead, all cuts are safely reassigned to the Sorting Table (`staging_loose`).
+  - Added duplicate consolidation for the Sorting Table after reassigning cuts via `consolidateMeatCutsInContainer('staging_loose', nextState)` to prevent fragmenting identical item lines.
+  - Handled `DELETE_FREEZER` edge case: loose cuts belonging to the deleted freezer's loose container (`freezerId + "_loose"`) are automatically transferred to the Sorting Table (`staging_loose`) rather than being left orphaned.
+  - Handled `TOGGLE_CONTAINER_ARCHIVED` edge case: archiving any container safely moves its contents to the Sorting Table so active on-site inventory is never trapped inside an archived container.
+  - Implemented comprehensive automatic orphaned item recovery in `normalizeState` (`server.ts`): any meat cuts in the system missing a `containerId`, pointing to `'unassigned'`, assigned to a non-existent container ID, assigned to an archived container, or pointing to an obsolete freezer loose container are automatically recovered and placed onto the Sorting Table with an audit entry in system history.
+  - Guarded active containers holding on-site inventory against automatic archiving during off-site box catalog synchronization.
+  - Updated client-side optimistic handlers in `useInventory.ts` for `MOVE_CONTAINER`, `DELETE_CONTAINER`, `TOGGLE_CONTAINER_ARCHIVED`, and `DELETE_FREEZER` to instantly relocate cuts to `staging_loose`.
+  - Updated `ContainerCard.tsx` retirement confirmation dialog to clearly inform the user that retiring a container safely transfers all its contents to the Sorting Table (Staging Area), and improved title display for `staging_loose` to "Sorting Table (Loose)".
+  - Updated `FreezerView.tsx` and `ProductView.tsx` staged container filters to include active box containers present on the sorting table.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/components/ContainerCard.tsx`
+- `/freezer_inventory_tracker/views/FreezerView.tsx`
+- `/freezer_inventory_tracker/views/ProductView.tsx`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.21.9] - 2026-09-07
+
+### Fixed
+- **Halted Box Template Cleanup & Restored Active Containers**:
+  - Removed the automated cleanup script and filter from `convertAndNormalizeContainerTemplates` in `server.ts` that was purging box templates and deleting unassigned active containers.
+  - Stopped automatic omission of unassigned containers without cuts, ensuring all active containers and templates remain fully intact for safe manual management by the user.
+  - Updated `saveStateSync` in `server.ts` to sync the full `state.containers` list to the SQLite `containers` table, eliminating the filter that previously discarded containers where `isBox` was true or IDs started with `box-`.
+  - Restored visibility of active containers in `LibraryView.tsx` by removing the blanket `isBox` exclusion from container lists, container counts, and template filters.
+  - Restored destination selection for active box containers in `MoveModalContent.tsx`, allowing users to move meat cuts into box containers without restriction.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/views/LibraryView.tsx`
+- `/freezer_inventory_tracker/components/MoveModalContent.tsx`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.21.8] - 2026-09-07
+
+### Added
+- **Database Loading Dialog & Cold-Start Screen Guard**:
+  - Implemented a dedicated "Loading Database" modal dialog with smooth backdrop blur, animated database icon, pulsing status indicator, and network retry handling.
+  - Initialized `isLoading: true` and introduced `hasLoadedInitial` state tracking in `useInventory.ts` to prevent premature rendering of empty state views while the database is fetching from the server.
+  - Guarded `<main>` view rendering in `App.tsx` during initial cold starts so that the application does not momentarily flash or display "No products found" before records have finished synchronizing.
+  - Added `isLoading` handling to empty-state placeholders in both `ProductView.tsx` and `LibraryView.tsx`, displaying an in-place loading spinner and message while fetching, while preserving the standard "No products found" message once the database has fully loaded with an empty catalog.
+
+### Files Modified
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/views/ProductView.tsx`
+- `/freezer_inventory_tracker/views/LibraryView.tsx`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.21.7] - 2026-09-07
+
+### Fixed
+- **One-Off Inbound Box Containers & Template Catalog Isolation**:
+  - Fixed an issue where boxes inbounded from off-site to on-site were being automatically converted into permanent container templates and cluttering the reusable `containerTemplates` catalog.
+  - Updated `convertAndNormalizeContainerTemplates` in `server.ts` to strictly recognize one-off containers (`deleteOnEmpty: true`, `isBox: true`, box and staging naming patterns), preventing them from being converted into reusable catalog templates.
+  - Added retroactive cleanup during state normalization to filter out any one-off inbounded box entries previously saved to `containerTemplates`.
+  - Updated `EXECUTE_MOVEMENT_ORDER` and `REVERT_MOVEMENT_ORDER` in `server.ts` to ensure inbounded boxes are created with `isBox: true`, `deleteOnEmpty: true`, clean non-duplicate naming, and no `templateId`.
+  - Enhanced container selectors and catalog views in `UnifiedInboundMoveForm.tsx`, `MoveModalContent.tsx`, and `LibraryView.tsx` to ensure one-off and archived inbounded boxes are excluded from reusable container template selections.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/components/UnifiedInboundMoveForm.tsx`
+- `/freezer_inventory_tracker/components/MoveModalContent.tsx`
+- `/freezer_inventory_tracker/views/LibraryView.tsx`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
 ### [2.21.6] - 2026-08-30
 
 ### Changed

@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { Upload, Search, List, Trash2, ArrowRight, Edit3, X, ChevronDown, Check, CheckCircle2, FileSpreadsheet, PlusCircle, Plus, Link, ExternalLink, AlertTriangle } from 'lucide-react';
+import { Upload, Search, List, Trash2, ArrowRight, Edit3, X, ChevronDown, Check, CheckCircle2, FileSpreadsheet, PlusCircle, Plus, Link, ExternalLink, AlertTriangle, AlertCircle } from 'lucide-react';
 import Papa from 'papaparse';
 import { ButcherOrder, ButcherRecord, AppLocation, Product, ButcherOrderDocument } from '../types';
 import { SearchableProductSelect } from './OffSiteStorageView';
@@ -203,14 +203,18 @@ const PalletCreatableSelect = ({
   onChange, 
   placeholder = 'Select existing active pallet or type to create new...',
   destinationName = '',
-  palletLocationMap = new Map<string, string>()
+  palletLocationMap = new Map<string, string>(),
+  required = false,
+  hasError = false
 }: { 
   options: string[], 
   value?: string, 
   onChange: (val: string) => void, 
   placeholder?: string,
   destinationName?: string,
-  palletLocationMap?: Map<string, string>
+  palletLocationMap?: Map<string, string>,
+  required?: boolean,
+  hasError?: boolean
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [search, setSearch] = useState(value || '');
@@ -233,6 +237,7 @@ const PalletCreatableSelect = ({
       <div className="relative flex items-center">
         <input 
           type="text" 
+          required={required}
           value={search || ''}
           onChange={e => {
             setSearch(e.target.value);
@@ -242,7 +247,11 @@ const PalletCreatableSelect = ({
           onFocus={() => setIsOpen(true)}
           onBlur={() => setTimeout(() => setIsOpen(false), 250)}
           placeholder={placeholder}
-          className="w-full bg-cool-gray-900 border border-cool-gray-700 rounded-lg px-3 py-2 text-xs text-white font-mono placeholder:text-cool-gray-600 focus:ring-2 focus:ring-cyan-500 outline-none pr-14"
+          className={`w-full bg-cool-gray-900 border rounded-lg px-3 py-2 text-xs text-white font-mono placeholder:text-cool-gray-600 focus:ring-2 outline-none pr-14 transition-colors ${
+            hasError 
+              ? 'border-amber-500/80 focus:ring-amber-500/50 bg-amber-950/10' 
+              : 'border-cool-gray-700 focus:ring-cyan-500'
+          }`}
         />
         <div className="absolute right-2 flex items-center gap-1">
           {search ? (
@@ -484,14 +493,27 @@ export const ButcherRecordsView = ({ state, dispatch }) => {
   const [targetOrderId, setTargetOrderId] = useState<string | null>(null);
   const [fileInputKey, setFileInputKey] = useState(0);
 
-  const handleClearImportForm = () => {
+  // Import mapping wizard states
+  const [pendingImport, setPendingImport] = useState<{order: ButcherOrder, records: ButcherRecord[]} | null>(null);
+  const [unmappedCuts, setUnmappedCuts] = useState<{ rawCut: string, itemNumber: string, namePart: string }[]>([]);
+  const [cutMappings, setCutMappings] = useState<Record<string, string>>({});
+  const [createNewProductFor, setCreateNewProductFor] = useState<{ rawCut: string, itemNumber: string, namePart: string } | null>(null);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+
+  // Cleanly resets uploaded/parsed CSV state and pending mappings to guarantee fresh counts
+  const resetImportCutsState = () => {
     setCsvContent(null);
     setParsedRecords([]);
-    setTargetOrderId(null);
     setPendingImport(null);
     setUnmappedCuts([]);
     setCutMappings({});
     setCreateNewProductFor(null);
+    setFileInputKey(prev => prev + 1);
+  };
+
+  const handleClearImportForm = () => {
+    resetImportCutsState();
+    setTargetOrderId(null);
     setImportForm({
       orderNumber: '',
       species: '',
@@ -510,15 +532,7 @@ export const ButcherRecordsView = ({ state, dispatch }) => {
       documents: [],
       butcherFee: ''
     });
-    setFileInputKey(prev => prev + 1);
   };
-
-  // Import mapping wizard states
-  const [pendingImport, setPendingImport] = useState<{order: ButcherOrder, records: ButcherRecord[]} | null>(null);
-  const [unmappedCuts, setUnmappedCuts] = useState<{ rawCut: string, itemNumber: string, namePart: string }[]>([]);
-  const [cutMappings, setCutMappings] = useState<Record<string, string>>({});
-  const [createNewProductFor, setCreateNewProductFor] = useState<{ rawCut: string, itemNumber: string, namePart: string } | null>(null);
-  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
   // Document link input states
   const [newDocName, setNewDocName] = useState('');
@@ -610,6 +624,39 @@ export const ButcherRecordsView = ({ state, dispatch }) => {
 
   const existingOrderNumbers = useMemo(() => (Array.from(new Set(orders.map(o => o.orderNumber))).filter(Boolean) as string[]).sort((a, b) => b.localeCompare(a, undefined, { numeric: true, sensitivity: 'base' })), [orders]);
   const existingSpecies = useMemo(() => Array.from(new Set(orders.map(o => o.species))).filter(Boolean).sort(), [orders]);
+
+  // Real-time calculation of order cuts and newly appended cuts when adding more cuts to an existing butcher file
+  const targetOrderStats = useMemo(() => {
+    if (!targetOrderId) return null;
+    const existing = records.filter(r => r.orderId === targetOrderId);
+    const existingSerials = new Set(
+      existing
+        .map(r => (r.serial || '').trim().toLowerCase())
+        .filter(Boolean)
+    );
+
+    let newCount = 0;
+    let updateCount = 0;
+
+    parsedRecords.forEach(r => {
+      const serialLower = (r.serial || '').trim().toLowerCase();
+      if (serialLower && existingSerials.has(serialLower)) {
+        updateCount++;
+      } else {
+        newCount++;
+      }
+    });
+
+    const projectedTotal = existing.length + newCount;
+
+    return {
+      existingCount: existing.length,
+      newCount,
+      updateCount,
+      projectedTotal,
+      csvTotal: parsedRecords.length
+    };
+  }, [targetOrderId, records, parsedRecords]);
   
   // Active destination location for intake
   const activeTargetLocationId = importForm.targetLocationId || importForm.locationId || '';
@@ -778,6 +825,9 @@ export const ButcherRecordsView = ({ state, dispatch }) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    // Reset the input value so selecting the exact same file immediately works again
+    e.target.value = '';
+
     const reader = new FileReader();
     reader.onload = (event) => {
       const text = event.target?.result as string;
@@ -835,7 +885,7 @@ export const ButcherRecordsView = ({ state, dispatch }) => {
           }
           setParsedRecords(newRecords);
           
-          // Try to guess order number from the top rows
+          // Try to guess order number from the top rows only if not appending to an existing log
           let guessedOrderNumber = '';
           for (let i=0; i<headerIdx; i++) {
             const r = results.data[i] as string[];
@@ -845,7 +895,7 @@ export const ButcherRecordsView = ({ state, dispatch }) => {
               }
             }
           }
-          if (guessedOrderNumber && !importForm.orderNumber) {
+          if (guessedOrderNumber && !importForm.orderNumber && !targetOrderId) {
             setImportForm(prev => ({...prev, orderNumber: guessedOrderNumber}));
           }
         }
@@ -855,6 +905,7 @@ export const ButcherRecordsView = ({ state, dispatch }) => {
   };
 
   const handleStartReceiveMoreCuts = (order: ButcherOrder) => {
+    resetImportCutsState();
     setTargetOrderId(order.id);
     setImportForm({
       orderNumber: order.orderNumber || '',
@@ -893,6 +944,12 @@ export const ButcherRecordsView = ({ state, dispatch }) => {
 
     if (targetOrderId && !parsedRecords.length) {
       alert("Please upload a CSV cutsheet file to receive additional cuts into an existing order.");
+      return;
+    }
+
+    // Require pallet selection when butcher import is being added to off-site inventory
+    if (importForm.importToOffSite && (parsedRecords.length > 0 || targetOrderId) && !importForm.targetPallet?.trim()) {
+      alert("A destination pallet selection is required when importing cuts into off-site inventory. Please select an existing active pallet or enter a new pallet name.");
       return;
     }
     
@@ -969,7 +1026,9 @@ export const ButcherRecordsView = ({ state, dispatch }) => {
         lot: r.lot,
         pieces: r.pieces,
         netWeight: r.netWeight,
-        box: finalOrderNumber ? `${finalOrderNumber}-${r.box}` : r.box,
+        box: finalOrderNumber 
+          ? (String(r.box || '').startsWith(`${finalOrderNumber}-`) ? String(r.box || '') : `${finalOrderNumber}-${r.box || ''}`)
+          : (r.box || ''),
         importedToOffSite: importForm.importToOffSite,
         pallet: r.pallet || importForm.targetPallet || '',
         location: r.location || targetLocName || ''
@@ -995,13 +1054,12 @@ export const ButcherRecordsView = ({ state, dispatch }) => {
         order, 
         records,
         targetLocation: targetLocName || order.locationId,
-        targetPallet: importForm.targetPallet
+        targetPallet: importForm.targetPallet?.trim() || undefined
       }
     });
 
-    // Reset
-    setCsvContent(null);
-    setParsedRecords([]);
+    // Reset all import and parsed state
+    resetImportCutsState();
     setTargetOrderId(null);
     setImportForm({
       orderNumber: '',
@@ -1700,11 +1758,9 @@ export const ButcherRecordsView = ({ state, dispatch }) => {
                   <button 
                     type="button"
                     onClick={() => { 
-                      setUnmappedCuts([]); 
-                      setPendingImport(null); 
-                      setCutMappings({}); 
+                      resetImportCutsState();
                     }} 
-                    className="px-5 py-2.5 text-yellow-800 hover:bg-yellow-900/50 font-bold rounded-xl transition-colors"
+                    className="px-5 py-2.5 text-yellow-800 hover:bg-yellow-900/50 font-bold rounded-xl transition-colors cursor-pointer"
                   >
                     Cancel Import
                   </button>
@@ -1712,9 +1768,20 @@ export const ButcherRecordsView = ({ state, dispatch }) => {
                     type="button"
                     onClick={() => finalizeImportMapping()} 
                     disabled={unmappedCuts.some(c => !cutMappings[c.rawCut])} 
-                    className="px-6 py-2.5 bg-yellow-600 hover:bg-yellow-700 text-white rounded-xl font-bold disabled:opacity-50 disabled:cursor-not-allowed shadow-md transition-all"
+                    className="px-6 py-2.5 bg-yellow-600 hover:bg-yellow-700 text-white rounded-xl font-bold disabled:opacity-50 disabled:cursor-not-allowed shadow-md transition-all cursor-pointer flex items-center gap-2 text-sm"
                   >
-                    Save Mappings & Complete Import
+                    <CheckCircle2 size={16} />
+                    {targetOrderId ? (
+                      targetOrderStats ? (
+                        targetOrderStats.updateCount > 0 && targetOrderStats.newCount > 0
+                          ? `Save Mappings & Append ${targetOrderStats.newCount} New Cuts (${targetOrderStats.updateCount} updated • Total ${targetOrderStats.projectedTotal})`
+                          : `Save Mappings & Append ${targetOrderStats.newCount} Cuts (Order Total: ${targetOrderStats.projectedTotal})`
+                      ) : (
+                        `Save Mappings & Finalize Append (${pendingImport?.records.length || 0} Cuts)`
+                      )
+                    ) : (
+                      `Save Mappings & Complete Import (${pendingImport?.records.length || parsedRecords.length} Cuts)`
+                    )}
                   </button>
                 </div>
               </div>
@@ -1773,6 +1840,7 @@ export const ButcherRecordsView = ({ state, dispatch }) => {
                   <button
                     type="button"
                     onClick={() => {
+                      resetImportCutsState();
                       setTargetOrderId(null);
                       setImportForm({
                         orderNumber: '',
@@ -1865,9 +1933,7 @@ export const ButcherRecordsView = ({ state, dispatch }) => {
                       <button
                         type="button"
                         onClick={() => {
-                          setCsvContent(null);
-                          setParsedRecords([]);
-                          setFileInputKey(k => k + 1);
+                          resetImportCutsState();
                         }}
                         className="text-xs text-red-400 hover:text-red-300 font-medium cursor-pointer"
                       >
@@ -1883,14 +1949,37 @@ export const ButcherRecordsView = ({ state, dispatch }) => {
                       </p>
                       <p className="text-[11px] text-cool-gray-500 mt-1">Leave empty to start a drop-off order without cuts</p>
                     </div>
-                    <input key={fileInputKey} type="file" className="hidden" accept=".csv" onChange={handleFileUpload} />
+                    <input 
+                      key={fileInputKey} 
+                      type="file" 
+                      className="hidden" 
+                      accept=".csv" 
+                      onClick={(e) => { (e.target as HTMLInputElement).value = ''; }}
+                      onChange={handleFileUpload} 
+                    />
                   </label>
                   {parsedRecords.length > 0 && (
-                    <div className="p-2.5 bg-emerald-950/40 border border-emerald-800/50 rounded-xl text-xs text-emerald-300 font-semibold flex items-center justify-between">
-                      <span className="flex items-center gap-1.5">
-                        <CheckCircle2 size={15} className="text-emerald-400 shrink-0" />
-                        Parsed {parsedRecords.length} cut records from CSV
-                      </span>
+                    <div className="p-3 bg-emerald-950/40 border border-emerald-800/50 rounded-xl text-xs text-emerald-300 font-semibold space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="flex items-center gap-1.5 font-bold">
+                          <CheckCircle2 size={15} className="text-emerald-400 shrink-0" />
+                          Parsed {parsedRecords.length} cuts from CSV
+                        </span>
+                        {targetOrderId && targetOrderStats && (
+                          <span className="bg-emerald-900/70 border border-emerald-700/60 px-2 py-0.5 rounded text-[11px] font-mono font-bold text-emerald-200">
+                            Resulting Order Total: {targetOrderStats.projectedTotal} cuts
+                          </span>
+                        )}
+                      </div>
+                      {targetOrderId && targetOrderStats && (
+                        <div className="text-[11px] text-emerald-300/90 flex items-center gap-3 pt-1 border-t border-emerald-800/40 flex-wrap">
+                          <span>Existing cuts in order: <strong className="text-white font-bold">{targetOrderStats.existingCount}</strong></span>
+                          <span>Newly added cuts: <strong className="text-emerald-300 font-bold">+{targetOrderStats.newCount}</strong></span>
+                          {targetOrderStats.updateCount > 0 && (
+                            <span>Cuts updating existing records: <strong className="text-amber-300 font-bold">{targetOrderStats.updateCount}</strong></span>
+                          )}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -2101,16 +2190,24 @@ export const ButcherRecordsView = ({ state, dispatch }) => {
 
                         <div>
                           <label className="block text-xs font-bold text-cool-gray-300 mb-1">
-                            Destination Pallet / Placement {activeTargetLocation ? <span className="text-cyan-400 font-normal">at {activeTargetLocation.name}</span> : ''}
+                            Destination Pallet / Placement <span className="text-red-400 font-extrabold">*</span> {activeTargetLocation ? <span className="text-cyan-400 font-normal">at {activeTargetLocation.name}</span> : ''}
                           </label>
                           <PalletCreatableSelect
                             options={existingActivePalletsForDestination}
                             value={importForm.targetPallet || ''}
                             onChange={(val) => setImportForm({...importForm, targetPallet: val})}
-                            placeholder={activeTargetLocation?.name ? `Select active pallet at ${activeTargetLocation.name} or type to create new...` : `Select existing active pallet or type to create new...`}
+                            placeholder={activeTargetLocation?.name ? `Select active pallet at ${activeTargetLocation.name} (Required) or type to create new...` : `Select existing active pallet (Required) or type to create new...`}
                             destinationName={activeTargetLocation?.name || ''}
                             palletLocationMap={palletLocationMap}
+                            required={true}
+                            hasError={!importForm.targetPallet?.trim()}
                           />
+                          {!importForm.targetPallet?.trim() && (
+                            <p className="text-[11px] text-amber-400 font-medium mt-1.5 flex items-center gap-1.5">
+                              <AlertCircle size={13} className="shrink-0 text-amber-400" />
+                              <span>Pallet selection is required when importing into off-site inventory.</span>
+                            </p>
+                          )}
                         </div>
                       </div>
                     )}
@@ -2213,6 +2310,14 @@ export const ButcherRecordsView = ({ state, dispatch }) => {
                 </div>
               </div>
 
+              {/* Validation Warning when off-site import is missing a pallet selection */}
+              {importForm.importToOffSite && !importForm.targetPallet?.trim() && (targetOrderId || parsedRecords.length > 0) && (
+                <div className="flex items-center gap-2 p-3 bg-amber-950/40 border border-amber-800/60 rounded-xl text-amber-300 text-xs font-semibold">
+                  <AlertCircle size={16} className="shrink-0 text-amber-400" />
+                  <span>A destination pallet is required before importing cuts into off-site inventory. Please select or enter a pallet above.</span>
+                </div>
+              )}
+
               <div className="flex justify-end pt-4 border-t border-cool-gray-700 gap-3 flex-wrap">
                 <button
                   type="button"
@@ -2224,16 +2329,38 @@ export const ButcherRecordsView = ({ state, dispatch }) => {
                 </button>
                 <button
                   type="submit"
-                  disabled={targetOrderId ? !parsedRecords.length : (!importForm.species || !importForm.species.trim())}
+                  disabled={
+                    targetOrderId 
+                      ? (!parsedRecords.length || (importForm.importToOffSite && !importForm.targetPallet?.trim())) 
+                      : (!importForm.species || !importForm.species.trim() || (importForm.importToOffSite && parsedRecords.length > 0 && !importForm.targetPallet?.trim()))
+                  }
+                  title={
+                    importForm.importToOffSite && !importForm.targetPallet?.trim() && (targetOrderId || parsedRecords.length > 0)
+                      ? "A destination pallet must be selected or created for off-site inventory"
+                      : undefined
+                  }
                   className="px-6 py-3 bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-extrabold rounded-xl shadow-md transition-colors flex items-center gap-2 text-sm cursor-pointer"
                 >
                   <ArrowRight size={18} />
-                  {targetOrderId 
-                    ? `Upload & Append ${parsedRecords.length} Cuts to Order #${importForm.orderNumber}`
-                    : parsedRecords.length > 0
+                  {targetOrderId ? (
+                    parsedRecords.length > 0 ? (
+                      targetOrderStats && targetOrderStats.updateCount > 0 ? (
+                        targetOrderStats.newCount > 0 ? (
+                          `Upload & Append: ${targetOrderStats.newCount} New Cuts (${targetOrderStats.updateCount} updated • Total ${targetOrderStats.projectedTotal})`
+                        ) : (
+                          `Upload & Update ${targetOrderStats.updateCount} Existing Cuts in Order #${importForm.orderNumber}`
+                        )
+                      ) : (
+                        `Upload & Append ${parsedRecords.length} Cuts to Order #${importForm.orderNumber} (Order Total: ${targetOrderStats?.projectedTotal ?? parsedRecords.length})`
+                      )
+                    ) : (
+                      `Upload Cutsheet CSV to Append Cuts to Order #${importForm.orderNumber}`
+                    )
+                  ) : (
+                    parsedRecords.length > 0
                       ? `Import Order & ${parsedRecords.length} Cuts`
                       : `Start Butcher Order (${(importForm.orderNumber || '').trim() || 'Auto Temp #'})`
-                  }
+                  )}
                 </button>
               </div>
             </form>

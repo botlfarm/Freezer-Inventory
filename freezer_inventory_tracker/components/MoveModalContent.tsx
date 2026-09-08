@@ -249,7 +249,7 @@ const MoveMeat: React.FC<CommonMoveProps & { meatCutId: string }> = ({ dispatch,
     const searchWords = searchRetiredText.toLowerCase().trim().split(/\s+/).filter(Boolean);
 
     if (destinationType === 'existing') {
-        containerList = state.containers.filter(c => c.freezerId && c.id !== meatCut.containerId && !c.isBox && !c.id.startsWith('box-') && !c.isArchived);
+        containerList = state.containers.filter(c => c.freezerId && c.id !== meatCut.containerId && !c.isArchived);
         if (searchWords.length > 0) {
             containerList = containerList.filter(c => {
                 const nameLower = c.name.toLowerCase();
@@ -279,6 +279,8 @@ const MoveMeat: React.FC<CommonMoveProps & { meatCutId: string }> = ({ dispatch,
 
         const unplacedContainers = state.containers.filter(c => {
             if (c.isBox || c.id.startsWith('box-') || c.id.endsWith('_loose') || c.id === 'staging_loose') return false;
+            if (c.name && (c.name.toLowerCase().trim().startsWith('box ') || c.name.toLowerCase().trim().startsWith('staging pallet'))) return false;
+            if (c.deleteOnEmpty && c.isArchived) return false;
             const isUnplaced = !c.freezerId || c.isArchived;
             if (!isUnplaced) return false;
             if (c.templateId && existingTemplateIds.has(c.templateId)) return false;
@@ -784,6 +786,8 @@ const ChangeContainerFlow: React.FC<CommonMoveProps & { containerId: string }> =
 
         const unplacedContainers = state.containers.filter(c => {
             if (c.isBox || c.id.startsWith('box-') || c.id.endsWith('_loose') || c.id === 'staging_loose') return false;
+            if (c.name && (c.name.toLowerCase().trim().startsWith('box ') || c.name.toLowerCase().trim().startsWith('staging pallet'))) return false;
+            if (c.deleteOnEmpty && c.isArchived) return false;
             const isUnplaced = !c.freezerId || c.isArchived;
             if (!isUnplaced) return false;
             if (c.templateId && existingTemplateIds.has(c.templateId)) return false;

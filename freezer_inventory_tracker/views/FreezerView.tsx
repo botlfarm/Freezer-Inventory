@@ -178,7 +178,7 @@ const FreezerView: React.FC<FreezerViewProps> = ({
     }, [state.meatCuts, state.products, state.containers, hideZeroQuantity, activeCheckedTags, selectedPrimary, selectedSub, selectedFreezerId]);
 
     const stagedContainers = useMemo(() => {
-        return state.containers.filter(c => !c.isArchived && !c.isBox && !c.freezerId && (!c.id.endsWith('_loose') || c.id === 'staging_loose') && filteredMeatCuts.some(mc => mc.containerId === c.id)).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+        return state.containers.filter(c => !c.isArchived && !c.freezerId && (!c.id.endsWith('_loose') || c.id === 'staging_loose') && filteredMeatCuts.some(mc => mc.containerId === c.id)).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
     }, [state.containers, filteredMeatCuts]);
 
     const displayedStagedContainers = useMemo(() => {

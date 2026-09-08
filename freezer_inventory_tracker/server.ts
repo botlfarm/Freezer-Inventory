@@ -1499,12 +1499,11 @@ function saveStateSync(state: AppInventoryState) {
   
   try {
     const transaction = db.transaction(() => {
-      // Filter out dynamically added virtual pallets and boxes before syncing to database!
+      // Filter out dynamically added virtual pallets before syncing to database!
       const pureFreezers = (state.freezers || []).filter((f: any) => !f.isPallet && !f.id.startsWith('pallet-'));
-      const pureContainers = (state.containers || []).filter((c: any) => !c.isBox && !c.id.startsWith('box-'));
 
       syncTableData('freezers', pureFreezers);
-      syncTableData('containers', pureContainers);
+      syncTableData('containers', state.containers || []);
       syncTableData('container_templates', state.containerTemplates || []);
       syncTableData('products', state.products || []);
       syncTableData('categories', state.categories || []);
@@ -1587,6 +1586,54 @@ function saveStateSync(state: AppInventoryState) {
   }
 }
 
+// Top-level helper to consolidate identical meat cut variants inside a container
+function consolidateMeatCutsInContainer(containerId: string, currentState: any): any {
+  if (!containerId || !currentState || !currentState.meatCuts) return currentState;
+  const cutsInContainer = (currentState.meatCuts || []).filter((mc: any) => mc.containerId === containerId && mc.quantity > 0);
+  if (cutsInContainer.length <= 1) return currentState;
+
+  const groupMap = new Map<string, any[]>();
+
+  for (const cut of cutsInContainer) {
+    const normNotes = (cut.notes || '').trim();
+    const sortedTagIds = [...(cut.tagIds || [])].sort().join(',');
+    const normOrig = (cut.originalCutName || '').trim();
+    const normWrong = (cut.wrongLabel || '').trim();
+    const key = `${cut.productId}|||${normNotes}|||${sortedTagIds}|||${normOrig}|||${normWrong}`;
+    
+    if (!groupMap.has(key)) {
+      groupMap.set(key, []);
+    }
+    groupMap.get(key)!.push(cut);
+  }
+
+  let hasDuplicates = false;
+  const otherCuts = (currentState.meatCuts || []).filter((mc: any) => mc.containerId !== containerId);
+  const consolidatedContainerCuts: any[] = [];
+
+  for (const [, group] of groupMap.entries()) {
+    if (group.length === 1) {
+      consolidatedContainerCuts.push(group[0]);
+    } else {
+      hasDuplicates = true;
+      const primaryCut = group[0];
+      const totalQuantity = group.reduce((sum: number, item: any) => sum + item.quantity, 0);
+      consolidatedContainerCuts.push({
+        ...primaryCut,
+        quantity: totalQuantity
+      });
+    }
+  }
+
+  if (hasDuplicates) {
+    return {
+      ...currentState,
+      meatCuts: [...otherCuts, ...consolidatedContainerCuts]
+    };
+  }
+  return currentState;
+}
+
 // Helper to guarantee standard special containers exist in the system
 function normalizeState(state: AppInventoryState): AppInventoryState {
   const stagingLoose = state.containers.find(c => c.id === 'staging_loose');
@@ -1604,6 +1651,21 @@ function normalizeState(state: AppInventoryState): AppInventoryState {
     containers = containers.map(c => c.id === 'staging_loose' ? { ...c, name: 'Loose' } : c);
     changed = true;
   }
+
+  // Active freezer IDs set
+  const activeFreezerIds = new Set<string>((state.freezers || []).map((f: any) => f.id));
+
+  // Clean up any obsolete freezer loose containers for freezers that no longer exist
+  containers = containers.filter(c => {
+    if (c.id.endsWith('_loose') && c.id !== 'staging_loose') {
+      const pfxId = c.id.slice(0, -6);
+      if (!activeFreezerIds.has(pfxId) && (!c.freezerId || !activeFreezerIds.has(c.freezerId))) {
+        changed = true;
+        return false;
+      }
+    }
+    return true;
+  });
 
   // Ensure every freezer always has its loose stock container
   state.freezers.forEach(f => {
@@ -1845,6 +1907,14 @@ function normalizeState(state: AppInventoryState): AppInventoryState {
         let boxUpdated = false;
         if (!existingBox.isBox) {
           existingBox.isBox = true;
+          boxUpdated = true;
+        }
+        if (!existingBox.deleteOnEmpty) {
+          existingBox.deleteOnEmpty = true;
+          boxUpdated = true;
+        }
+        if (existingBox.templateId) {
+          delete existingBox.templateId;
           boxUpdated = true;
         }
         if (existingBox.isArchived !== isArchivedBox) {
@@ -2140,8 +2210,15 @@ function normalizeState(state: AppInventoryState): AppInventoryState {
     }
 
     if (state.containers) {
+      const containerIdsWithCuts = new Set(
+        (state.meatCuts || []).filter((mc: any) => mc.quantity > 0).map((mc: any) => mc.containerId)
+      );
       state.containers = state.containers.map((c: any) => {
         if (c.isBox) {
+          // Containers actively holding on-site meat cuts must NEVER be auto-archived
+          if (containerIdsWithCuts.has(c.id)) {
+            return { ...c, isArchived: false };
+          }
           const boxName = c.name;
           const bObj = state.boxes?.find((b: any) => b.name === boxName || b.id === boxName);
           if (bObj) {
@@ -2153,132 +2230,88 @@ function normalizeState(state: AppInventoryState): AppInventoryState {
     }
   }
 
+  // ---------------- ORPHANED ITEM RECOVERY ----------------
+  // Guarantee that any orphaned items (missing containerId, non-existent container,
+  // archived container, or obsolete freezer loose container) are safely relocated to
+  // the Sorting Table (staging_loose) so that inventory is NEVER lost or invisible.
+  if (state.meatCuts && Array.isArray(state.meatCuts)) {
+    const activeContainerIds = new Set<string>();
+    (state.containers || []).forEach((c: any) => {
+      if (!c.isArchived) {
+        activeContainerIds.add(c.id);
+      }
+    });
+
+    const activeFreezerIds = new Set<string>((state.freezers || []).map((f: any) => f.id));
+
+    let rescuedCount = 0;
+    const updatedMeatCuts = state.meatCuts.map((mc: any) => {
+      const contId = (mc.containerId || '').trim();
+      const isFreezerLoose = contId.endsWith('_loose') && contId !== 'staging_loose';
+      let freezerExists = true;
+      if (isFreezerLoose) {
+        const prefixFreezerId = contId.slice(0, -6);
+        freezerExists = activeFreezerIds.has(prefixFreezerId);
+      }
+
+      const isOrphaned = !contId || 
+        contId === 'unassigned' || 
+        !activeContainerIds.has(contId) || 
+        (isFreezerLoose && !freezerExists);
+
+      if (isOrphaned) {
+        rescuedCount++;
+        return {
+          ...mc,
+          containerId: 'staging_loose'
+        };
+      }
+      return mc;
+    });
+
+    if (rescuedCount > 0) {
+      state.meatCuts = updatedMeatCuts;
+      state = consolidateMeatCutsInContainer('staging_loose', state);
+
+      if (state.history) {
+        state.history = [
+          {
+            id: crypto.randomUUID(),
+            timestamp: new Date().toISOString(),
+            description: `Automatically recovered ${rescuedCount} orphaned item(s) and placed them on the Sorting Table (Staging Area).`,
+            targetId: 'staging_loose',
+            user: 'System Safety'
+          },
+          ...state.history
+        ].slice(0, 500);
+      }
+    }
+  }
+
   return state;
 }
 
-// Helper function to separate container templates from active containers and maintain the 2-table schema
+// Helper function to maintain container templates and container properties without automated cleanups
 function convertAndNormalizeContainerTemplates(state: AppInventoryState): AppInventoryState {
   if (!state || !state.containers) return state;
 
-  let containerTemplates: any[] = [...(state.containerTemplates || [])];
-  // Filter out old hallucinated placeholder templates (e.g. tpl_bag, tpl_box)
-  containerTemplates = containerTemplates.filter(t => t && t.id && !t.id.startsWith('tpl_'));
+  const containerTemplates: any[] = [...(state.containerTemplates || [])];
+  const containers: any[] = [...(state.containers || [])];
 
-  let containers: any[] = [...(state.containers || [])];
-  let meatCuts: any[] = [...(state.meatCuts || [])];
-  let history: any[] = [...(state.history || [])];
+  // Do NOT run any automatic cleanup scripts on containerTemplates or containers.
+  // The user manages box templates and container cleanups manually.
+  // All active containers and templates are strictly preserved.
 
-  const isLooseCheck = (c: any) => {
-    if (!c) return false;
-    const name = (c.name || '').toLowerCase().trim();
-    return (
-      c.id === 'staging_loose' ||
-      c.id.endsWith('_loose') ||
-      name === 'loose' ||
-      name === 'loose stock' ||
-      name === 'loose display stock' ||
-      name === 'uncontainered / loose items'
-    );
-  };
-
-  // Build lookup map for existing container templates by normalized name
-  const templateMap = new Map<string, any>();
-  for (const tpl of containerTemplates) {
-    if (tpl && tpl.name) {
-      templateMap.set(tpl.name.toLowerCase().trim(), tpl);
-    }
-  }
-
-  // Set of container IDs that currently hold meat cuts
-  const containerIdsWithCuts = new Set(meatCuts.map((cut: any) => cut.containerId));
-
-  // Step 1: Separate old unassigned template containers from containers array
-  const finalContainers: any[] = [];
-
-  for (const c of containers) {
-    if (isLooseCheck(c) || c.isBox) {
-      // Keep loose stock and boxes as active containers
-      finalContainers.push(c);
-      continue;
-    }
-
-    const trimmedName = (c.name || '').trim();
-    const normalizedName = trimmedName.toLowerCase();
-    const isUnassigned = !c.freezerId;
-
-    if (isUnassigned) {
-      // Check if cuts exist inside this unassigned container
-      const hasCuts = containerIdsWithCuts.has(c.id);
-
-      // Convert this unassigned container into containerTemplates catalog
-      if (normalizedName) {
-        if (!templateMap.has(normalizedName)) {
-          const newTemplate = {
-            id: c.id || crypto.randomUUID(),
-            name: trimmedName,
-            icon: c.icon || 'Folder',
-            imageUrl: c.imageUrl || undefined,
-            createdAt: new Date().toISOString()
-          };
-          containerTemplates.push(newTemplate);
-          templateMap.set(normalizedName, newTemplate);
-        } else {
-          // Update existing template if missing image or icon
-          const existingTpl = templateMap.get(normalizedName);
-          if (!existingTpl.imageUrl && c.imageUrl) {
-            existingTpl.imageUrl = c.imageUrl;
-          }
-          if ((!existingTpl.icon || existingTpl.icon === 'Folder') && c.icon && c.icon !== 'Folder') {
-            existingTpl.icon = c.icon;
-          }
-        }
-      }
-
-      if (hasCuts) {
-        // If it holds cuts, keep it as an active container in staging so cuts are not lost!
-        const matchedTpl = templateMap.get(normalizedName);
-        finalContainers.push({
-          ...c,
-          templateId: matchedTpl ? matchedTpl.id : c.templateId
-        });
-      }
-      // If it doesn't hold cuts, it is safely in containerTemplates catalog, so omit from active containers
-    } else {
-      // Active placed container in freezer
-      let templateId = c.templateId;
-
-      if (!templateId && normalizedName) {
-        if (templateMap.has(normalizedName)) {
-          templateId = templateMap.get(normalizedName).id;
-        } else if (!c.deleteOnEmpty) {
-          // Automatically create a template entry for reusable active container
-          const autoTpl = {
-            id: crypto.randomUUID(),
-            name: trimmedName,
-            icon: c.icon || 'Folder',
-            imageUrl: c.imageUrl || undefined,
-            createdAt: new Date().toISOString()
-          };
-          containerTemplates.push(autoTpl);
-          templateMap.set(normalizedName, autoTpl);
-          templateId = autoTpl.id;
-        }
-      }
-
-      finalContainers.push({
-        ...c,
-        templateId
-      });
-    }
-  }
-
-  // Step 2: Ensure all active containers linked to a template inherit/sync template properties
   const templateIdMap = new Map<string, any>();
   for (const tpl of containerTemplates) {
-    templateIdMap.set(tpl.id, tpl);
+    if (tpl && tpl.id) {
+      templateIdMap.set(tpl.id, tpl);
+    }
   }
 
-  const normalizedContainers = finalContainers.map(c => {
+  // Ensure active containers linked to an existing template inherit template properties if applicable
+  const normalizedContainers = containers.map(c => {
+    if (!c) return c;
     if (c.templateId && templateIdMap.has(c.templateId)) {
       const tpl = templateIdMap.get(c.templateId);
       return {
@@ -2294,9 +2327,7 @@ function convertAndNormalizeContainerTemplates(state: AppInventoryState): AppInv
   return {
     ...state,
     containerTemplates,
-    containers: normalizedContainers,
-    meatCuts,
-    history
+    containers: normalizedContainers
   };
 }
 
@@ -5428,53 +5459,6 @@ app.post('/api/inventory/action', async (req: any, res) => {
         return true;
     };
 
-    const consolidateMeatCutsInContainer = (containerId: string, currentState: any) => {
-        if (!containerId || !currentState || !currentState.meatCuts) return currentState;
-        const cutsInContainer = (currentState.meatCuts || []).filter((mc: any) => mc.containerId === containerId && mc.quantity > 0);
-        if (cutsInContainer.length <= 1) return currentState;
-
-        const groupMap = new Map<string, any[]>();
-
-        for (const cut of cutsInContainer) {
-            const normNotes = (cut.notes || '').trim();
-            const sortedTagIds = [...(cut.tagIds || [])].sort().join(',');
-            const normOrig = (cut.originalCutName || '').trim();
-            const normWrong = (cut.wrongLabel || '').trim();
-            const key = `${cut.productId}|||${normNotes}|||${sortedTagIds}|||${normOrig}|||${normWrong}`;
-            
-            if (!groupMap.has(key)) {
-                groupMap.set(key, []);
-            }
-            groupMap.get(key)!.push(cut);
-        }
-
-        let hasDuplicates = false;
-        const otherCuts = (currentState.meatCuts || []).filter((mc: any) => mc.containerId !== containerId);
-        const consolidatedContainerCuts: any[] = [];
-
-        for (const [, group] of groupMap.entries()) {
-            if (group.length === 1) {
-                consolidatedContainerCuts.push(group[0]);
-            } else {
-                hasDuplicates = true;
-                const primaryCut = group[0];
-                const totalQuantity = group.reduce((sum: number, item: any) => sum + item.quantity, 0);
-                consolidatedContainerCuts.push({
-                    ...primaryCut,
-                    quantity: totalQuantity
-                });
-            }
-        }
-
-        if (hasDuplicates) {
-            return {
-                ...currentState,
-                meatCuts: [...otherCuts, ...consolidatedContainerCuts]
-            };
-        }
-        return currentState;
-    };
-
     let nextState = { ...state };
 
     switch (action.type) {
@@ -5516,10 +5500,25 @@ app.post('/api/inventory/action', async (req: any, res) => {
         const freezerId = action.payload.id;
         const freezer = nextState.freezers.find(f => f.id === freezerId);
         const freezerName = freezer ? freezer.name : 'Unknown Freezer';
-        // Unassign containers from this freezer
-        nextState.containers = nextState.containers.map(c => c.freezerId === freezerId ? { ...c, freezerId: undefined } : c);
+        
+        // Move any cuts in the freezer's loose container (freezerId + "_loose") to the Sorting Table (staging_loose)
+        const looseContId = freezerId + "_loose";
+        const looseCuts = (nextState.meatCuts || []).filter(mc => mc.containerId === looseContId);
+        if (looseCuts.length > 0) {
+          nextState.meatCuts = nextState.meatCuts.map(mc => 
+            mc.containerId === looseContId ? { ...mc, containerId: 'staging_loose' } : mc
+          );
+          nextState = consolidateMeatCutsInContainer('staging_loose', nextState);
+        }
+
+        // Remove the freezer's loose container and unassign other containers from this freezer
+        nextState.containers = nextState.containers
+          .filter(c => c.id !== looseContId)
+          .map(c => c.freezerId === freezerId ? { ...c, freezerId: undefined } : c);
+
         nextState.freezers = nextState.freezers.filter(f => f.id !== freezerId);
-        const history = newHistoryEntry(`Freezer "${freezerName}" was permanently deleted. All containers inside were category-retired as unassigned.`, freezerId);
+        const looseDesc = looseCuts.length > 0 ? ` (${looseCuts.length} loose item(s) moved to the Sorting Table)` : '';
+        const history = newHistoryEntry(`Freezer "${freezerName}" was permanently deleted. All containers inside were category-retired as unassigned${looseDesc}.`, freezerId);
         nextState.history = addHistory(nextState, history);
         break;
       }
@@ -5627,8 +5626,21 @@ app.post('/api/inventory/action', async (req: any, res) => {
           c.id === containerId ? { ...c, isArchived: !!isArchived } : c
         );
 
+        let cutsDesc = '';
+        if (isArchived) {
+          // Relocate cuts to Sorting Table so active inventory is never trapped inside an archived container
+          const cutsInContainer = (nextState.meatCuts || []).filter(mc => mc.containerId === containerId);
+          if (cutsInContainer.length > 0) {
+            nextState.meatCuts = nextState.meatCuts.map(mc => 
+              mc.containerId === containerId ? { ...mc, containerId: 'staging_loose' } : mc
+            );
+            nextState = consolidateMeatCutsInContainer('staging_loose', nextState);
+            cutsDesc = ` (${cutsInContainer.length} item(s) moved to the Sorting Table)`;
+          }
+        }
+
         const statusText = isArchived ? 'archived' : 'restored/unarchived';
-        const history = newHistoryEntry(`Container "${container.name}" was ${statusText}.`, containerId);
+        const history = newHistoryEntry(`Container "${container.name}" was ${statusText}${cutsDesc}.`, containerId);
         nextState.history = addHistory(nextState, history);
         break;
       }
@@ -5646,7 +5658,17 @@ app.post('/api/inventory/action', async (req: any, res) => {
           c.id === containerId ? { ...c, freezerId: undefined, isArchived: true } : c
         );
 
-        const history = newHistoryEntry(`Container "${containerName}" was archived.`, containerId);
+        // Relocate any cuts inside this container to the Sorting Table (staging_loose)
+        const cutsInContainer = (nextState.meatCuts || []).filter(mc => mc.containerId === containerId);
+        if (cutsInContainer.length > 0) {
+          nextState.meatCuts = nextState.meatCuts.map(mc => 
+            mc.containerId === containerId ? { ...mc, containerId: 'staging_loose' } : mc
+          );
+          nextState = consolidateMeatCutsInContainer('staging_loose', nextState);
+        }
+
+        const cutsDesc = cutsInContainer.length > 0 ? ` and ${cutsInContainer.length} item(s) moved to the Sorting Table (Staging Area)` : '';
+        const history = newHistoryEntry(`Container "${containerName}" was archived${cutsDesc}.`, containerId);
         nextState.history = addHistory(nextState, history);
         break;
       }
@@ -6500,11 +6522,14 @@ app.post('/api/inventory/action', async (req: any, res) => {
 
         if (newFreezerId === undefined) {
           if (emptyCuts) {
-            // Automatically empty all meat cuts inside this container first
+            // Automatically empty all meat cuts inside this container to the Sorting Table (staging_loose)
             const cutsInContainer = nextState.meatCuts.filter(mc => mc.containerId === containerId);
             if (cutsInContainer.length > 0) {
-              nextState.meatCuts = nextState.meatCuts.filter(mc => mc.containerId !== containerId);
-              const emptyHistory = newHistoryEntry(`Container "${container.name}" was emptied of its contents.`, containerId);
+              nextState.meatCuts = nextState.meatCuts.map(mc => 
+                mc.containerId === containerId ? { ...mc, containerId: 'staging_loose' } : mc
+              );
+              nextState = consolidateMeatCutsInContainer('staging_loose', nextState);
+              const emptyHistory = newHistoryEntry(`Container "${container.name}" was emptied, moving ${cutsInContainer.length} item(s) to the Sorting Table (Staging Area).`, containerId);
               nextState.history = addHistory(nextState, emptyHistory);
             }
 
@@ -7526,7 +7551,13 @@ app.post('/api/inventory/action', async (req: any, res) => {
               const isHomeLoc = !!(loc && loc.isHome);
 
               if (moveToStaging && isHomeLoc) {
-                const boxName = e.box ? `Box ${e.box.trim()}` : (e.currentLocation ? `Staging Pallet ${e.currentLocation.trim()}` : 'Staging Box');
+                const rawBox = (e.box || '').trim();
+                let boxName = 'Staging Box';
+                if (rawBox) {
+                  boxName = /^box\s+/i.test(rawBox) ? rawBox : `Box ${rawBox}`;
+                } else if (e.currentLocation) {
+                  boxName = `Staging Pallet ${e.currentLocation.trim()}`;
+                }
 
                 let container = nextState.containers?.find(c => !c.freezerId && c.name.trim().toLowerCase() === boxName.trim().toLowerCase());
                 if (!container) {
@@ -7535,9 +7566,14 @@ app.post('/api/inventory/action', async (req: any, res) => {
                     name: boxName.trim(),
                     freezerId: undefined,
                     deleteOnEmpty: true,
+                    isBox: true,
                     icon: 'package'
                   };
                   nextState.containers = [...(nextState.containers || []), container];
+                } else {
+                  container.deleteOnEmpty = true;
+                  container.isBox = true;
+                  delete container.templateId;
                 }
 
                 let prod = e.productId ? nextState.products?.find(p => p.id === e.productId) : null;
@@ -7794,7 +7830,13 @@ app.post('/api/inventory/action', async (req: any, res) => {
 
                 if (isHomeLoc) {
                   // Check if the box name was suffix-split or original
-                  let boxName = e.box ? `Box ${e.box.trim()}` : (e.currentLocation ? `Staging Pallet ${e.currentLocation.trim()}` : 'Staging Box');
+                  const rawBox = (e.box || '').trim();
+                  let boxName = 'Staging Box';
+                  if (rawBox) {
+                    boxName = /^box\s+/i.test(rawBox) ? rawBox : `Box ${rawBox}`;
+                  } else if (e.currentLocation) {
+                    boxName = `Staging Pallet ${e.currentLocation.trim()}`;
+                  }
                   
                   // Also support checking the suffix container if it was split
                   let container = nextState.containers?.find(c => !c.freezerId && c.name.trim().toLowerCase() === boxName.trim().toLowerCase());

@@ -825,6 +825,7 @@ interface ProductViewProps {
     setSelectedPrimary: (cat: string | null) => void;
     setSelectedSub: (sub: string | null) => void;
     onNavigateToOffsiteStaging?: () => void;
+    isLoading?: boolean;
 }
 
 const ProductView: React.FC<ProductViewProps> = ({ 
@@ -842,7 +843,8 @@ const ProductView: React.FC<ProductViewProps> = ({
     activeCheckedTags = [],
     setSelectedPrimary,
     setSelectedSub,
-    onNavigateToOffsiteStaging
+    onNavigateToOffsiteStaging,
+    isLoading = false
 }) => {
     const [isDragOverStaging, setIsDragOverStaging] = useState<boolean>(false);
     const [isStagingMenuOpen, setIsStagingMenuOpen] = useState<boolean>(false);
@@ -888,7 +890,7 @@ const ProductView: React.FC<ProductViewProps> = ({
     };
 
     const stagedContainers = useMemo(() => {
-        return state.containers.filter(c => !c.isArchived && !c.isBox && !c.freezerId && (!c.id.endsWith('_loose') || c.id === 'staging_loose') && state.meatCuts.some(mc => mc.containerId === c.id)).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+        return state.containers.filter(c => !c.isArchived && !c.freezerId && (!c.id.endsWith('_loose') || c.id === 'staging_loose') && state.meatCuts.some(mc => mc.containerId === c.id)).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
     }, [state.containers, state.meatCuts]);
 
     // Handle deep navigation focus & highlights
@@ -1468,7 +1470,14 @@ const ProductView: React.FC<ProductViewProps> = ({
                 <div className="mb-2"></div>
                 {Object.keys(groupedProducts).length === 0 ? (
                     <div className="text-center py-16 bg-cool-gray-900/10 rounded-xl border-2 border-dashed border-cool-gray-800" id="no-products-dashboard-placeholder">
-                        <p className="text-cool-gray-400 font-medium">No inventory products found matching active filters in this view.</p>
+                        {isLoading ? (
+                            <div className="flex flex-col items-center justify-center space-y-3 py-4">
+                                <div className="w-8 h-8 rounded-full border-2 border-cyan-500/20 border-t-cyan-400 animate-spin" />
+                                <p className="text-cool-gray-400 text-sm font-medium animate-pulse">Loading products from database...</p>
+                            </div>
+                        ) : (
+                            <p className="text-cool-gray-400 font-medium">No inventory products found matching active filters in this view.</p>
+                        )}
                     </div>
                 ) : (
                     Object.keys(groupedProducts).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })).map(primaryCategory => (

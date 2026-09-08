@@ -411,6 +411,8 @@ export const UnifiedInboundMoveForm: React.FC<UnifiedInboundMoveFormProps> = ({
 
     const archivedOrUnassignedContainers = state.containers.filter(c => {
       if (c.isBox || c.id.startsWith('box-') || c.id.endsWith('_loose') || c.id === 'staging_loose') return false;
+      if (c.name && (c.name.toLowerCase().trim().startsWith('box ') || c.name.toLowerCase().trim().startsWith('staging pallet'))) return false;
+      if (c.deleteOnEmpty && c.isArchived) return false;
       const isUnassignedOrArchived = !c.freezerId || c.isArchived;
       if (!isUnassignedOrArchived) return false;
       if (c.templateId && existingTemplateIds.has(c.templateId)) return false;

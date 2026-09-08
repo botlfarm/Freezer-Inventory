@@ -189,7 +189,9 @@ const ContainerCard: React.FC<ContainerCardProps> = ({ container, meatCuts, disp
                     <span className="text-cool-gray-550 font-light">-</span>
                   </>
                 )}
-                <span className="font-extrabold text-cyan-400 truncate max-w-[180px] sm:max-w-[240px]" title={container.name}>{container.name}</span>
+                <span className="font-extrabold text-cyan-400 truncate max-w-[180px] sm:max-w-[240px]" title={container.id === 'staging_loose' ? 'Sorting Table (Loose)' : container.name}>
+                  {container.id === 'staging_loose' ? 'Sorting Table (Loose)' : container.name}
+                </span>
                 {container.deleteOnEmpty && (
                   <span className="text-[9px] bg-amber-950/70 text-amber-400 border border-amber-800/50 px-1.5 py-0.5 rounded font-extrabold uppercase tracking-wider select-none animate-pulse shrink-0" title="This container will automatically be deleted/retired when it runs out of items">
                     🗑️ Retire on Empty
@@ -345,7 +347,7 @@ const ContainerCard: React.FC<ContainerCardProps> = ({ container, meatCuts, disp
                     <h4 className="text-md font-bold text-cyan-400 mb-2">Retire Container</h4>
                     <p className="text-sm text-cool-gray-300">
                       {meatCuts.length > 0 ? (
-                        <span>Are you sure you want to retire the container <span className="font-semibold text-white">"{container.name}"</span>? It currently contains <span className="font-semibold text-yellow-400">{meatCuts.length} different item(s)</span>. <span className="text-red-400 font-semibold block mt-1.5">Retiring will empty all its contents first!</span></span>
+                        <span>Are you sure you want to retire the container <span className="font-semibold text-white">"{container.name}"</span>? It currently contains <span className="font-semibold text-yellow-400">{meatCuts.length} different item(s)</span>. <span className="text-amber-400 font-semibold block mt-1.5">Retiring will empty this container and safely relocate all its contents to the Sorting Table (Staging Area).</span></span>
                       ) : (
                         <span>Are you sure you want to retire the container <span className="font-semibold text-white">"{container.name}"</span>? It will be removed from the freezer but can be used again later.</span>
                       )}

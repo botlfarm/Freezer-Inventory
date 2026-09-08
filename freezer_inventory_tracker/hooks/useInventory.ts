@@ -41,7 +41,8 @@ export const useInventory = () => {
   const [state, setState] = useState<InventoryState>(defaultInitialState);
   const [undoStack, setUndoStack] = useState<InventoryState[]>([]);
   const [redoStack, setRedoStack] = useState<InventoryState[]>([]);
-  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [hasLoadedInitial, setHasLoadedInitial] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [isPendingSync, setIsPendingSync] = useState<boolean>(false);
 
@@ -318,6 +319,7 @@ export const useInventory = () => {
       setError(err.message || 'Error occurred fetching inventory.');
     } finally {
       setIsLoading(false);
+      setHasLoadedInitial(true);
     }
   }, []);
 
@@ -650,6 +652,42 @@ export const useInventory = () => {
       return sendActionToServer(action);
     }
 
+    if (action.type === 'DELETE_CONTAINER') {
+      const { containerId } = action.payload;
+      setState(prev => ({
+        ...prev,
+        containers: prev.containers.map(c => c.id === containerId ? { ...c, freezerId: undefined, isArchived: true } : c),
+        meatCuts: prev.meatCuts.map(mc => mc.containerId === containerId ? { ...mc, containerId: 'staging_loose' } : mc)
+      }));
+      return sendActionToServer(action);
+    }
+
+    if (action.type === 'TOGGLE_CONTAINER_ARCHIVED') {
+      const { containerId, isArchived } = action.payload;
+      setState(prev => ({
+        ...prev,
+        containers: prev.containers.map(c => c.id === containerId ? { ...c, isArchived: !!isArchived } : c),
+        meatCuts: isArchived
+          ? prev.meatCuts.map(mc => mc.containerId === containerId ? { ...mc, containerId: 'staging_loose' } : mc)
+          : prev.meatCuts
+      }));
+      return sendActionToServer(action);
+    }
+
+    if (action.type === 'DELETE_FREEZER') {
+      const freezerId = action.payload.id;
+      const looseId = freezerId + '_loose';
+      setState(prev => ({
+        ...prev,
+        freezers: prev.freezers.filter(f => f.id !== freezerId),
+        containers: prev.containers
+          .filter(c => c.id !== looseId)
+          .map(c => c.freezerId === freezerId ? { ...c, freezerId: undefined } : c),
+        meatCuts: prev.meatCuts.map(mc => mc.containerId === looseId ? { ...mc, containerId: 'staging_loose' } : mc)
+      }));
+      return sendActionToServer(action);
+    }
+
     if (action.type === 'MOVE_CONTAINER') {
       const { containerId, newFreezerId, emptyCuts } = action.payload;
 
@@ -658,7 +696,9 @@ export const useInventory = () => {
         let updatedContainers = prev.containers;
 
         if (emptyCuts) {
-          updatedMeatCuts = prev.meatCuts.filter(mc => mc.containerId !== containerId);
+          updatedMeatCuts = prev.meatCuts.map(mc => 
+            mc.containerId === containerId ? { ...mc, containerId: 'staging_loose' } : mc
+          );
         }
 
         const targetContainer = prev.containers.find(c => c.id === containerId);
@@ -1338,6 +1378,7 @@ export const useInventory = () => {
     state,
     dispatch,
     isLoading,
+    hasLoadedInitial,
     error,
     isPendingSync,
     clientId: clientIdRef.current,

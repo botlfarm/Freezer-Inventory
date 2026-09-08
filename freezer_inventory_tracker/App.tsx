@@ -2,7 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { useInventory } from './hooks/useInventory';
 import { getApiUrl } from './hooks/apiUrl';
 import { ModalType, View } from './types';
-import { Undo, Redo, Tag, PackagePlus, History, Sparkles, Table, Package, ClipboardList, Sun, Moon, Filter, Plus, Download, ChevronDown, ChevronUp, Eye, AlertTriangle, RefreshCw } from 'lucide-react';
+import { Undo, Redo, Tag, PackagePlus, History, Sparkles, Table, Package, ClipboardList, Sun, Moon, Filter, Plus, Download, ChevronDown, ChevronUp, Eye, AlertTriangle, RefreshCw, Database } from 'lucide-react';
 import { FreezerIcon, SearchIcon, GridViewIcon, ListViewIcon } from './components/icons';
 import Modal from './components/Modal';
 import AddForms from './components/AddForms';
@@ -133,6 +133,8 @@ export default function App() {
     state,
     dispatch,
     isLoading,
+    hasLoadedInitial,
+    error,
     refreshState,
     undoStack,
     redoStack,
@@ -1240,6 +1242,15 @@ export default function App() {
   }
 
   const renderCurrentView = () => {
+    if (!hasLoadedInitial && (!state.products || state.products.length === 0)) {
+      return (
+        <div className="flex flex-col items-center justify-center min-h-[360px] w-full py-20 space-y-4" id="initial-loading-view-placeholder">
+          <div className="w-12 h-12 rounded-full border-4 border-cyan-500/20 border-t-cyan-400 animate-spin" />
+          <p className="text-cool-gray-400 text-sm font-medium animate-pulse">Loading database records...</p>
+        </div>
+      );
+    }
+
     switch(currentView) {
       case 'freezer':
         return (
@@ -1310,6 +1321,7 @@ export default function App() {
               setCurrentView('offsite');
               setOffsiteSubTab('staging-worksheet');
             }}
+            isLoading={isLoading}
           />
         );
       case 'library':
@@ -1323,6 +1335,7 @@ export default function App() {
             theme={theme}
             onThemeChange={handleThemeChange}
             onNavigateToView={setCurrentView}
+            isLoading={isLoading}
           />
         );
       case 'history':
@@ -2538,6 +2551,56 @@ export default function App() {
       >
         {renderModalContent()}
       </Modal>
+
+      {/* Initial Database Loading Dialog */}
+      {(!hasLoadedInitial || (isLoading && (!state.products || state.products.length === 0))) && (
+        <div 
+          id="database-loading-dialog" 
+          className="fixed inset-0 z-[250] flex items-center justify-center bg-cool-gray-950/80 backdrop-blur-md p-4 animate-fade-in"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="loading-dialog-title"
+        >
+          <div className="bg-cool-gray-900 border border-cool-gray-700/80 shadow-2xl rounded-2xl p-6 sm:p-8 max-w-md w-full flex flex-col items-center text-center space-y-5">
+            {/* Animated Database / Server Icon */}
+            <div className="relative flex items-center justify-center">
+              <div className="w-20 h-20 rounded-full border-4 border-cyan-500/20 border-t-cyan-400 animate-spin" />
+              <div className="absolute w-14 h-14 rounded-full bg-cyan-950/60 border border-cyan-500/30 flex items-center justify-center">
+                <Database className="w-7 h-7 text-cyan-400 animate-pulse" />
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <h3 id="loading-dialog-title" className="text-lg sm:text-xl font-bold text-white tracking-wide">
+                Loading Database
+              </h3>
+              <p className="text-sm text-cool-gray-400 max-w-xs mx-auto leading-relaxed">
+                Retrieving products, storage freezers, and inventory records...
+              </p>
+            </div>
+
+            {error ? (
+              <div className="w-full space-y-3 pt-1">
+                <div className="p-3 rounded-xl bg-rose-950/40 border border-rose-800/60 text-xs text-rose-300">
+                  {error}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => refreshState(true)}
+                  className="w-full py-2.5 px-4 bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs uppercase tracking-wider rounded-xl transition-all shadow-md cursor-pointer flex items-center justify-center gap-2"
+                >
+                  <RefreshCw className="w-4 h-4" /> Retry Loading
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 text-xs font-mono text-cyan-300 bg-cyan-950/60 border border-cyan-800/60 px-3.5 py-1.5 rounded-full shadow-inner">
+                <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
+                <span>Synchronizing with server...</span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
 
 
