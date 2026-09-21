@@ -1,3 +1,17 @@
+### [2.41.7] - 2026-09-20
+
+### Fixed
+- **Docker Image Build Dependency Resolution (`package.json`)**:
+  - Added `compression` (`^1.8.0`) and `@types/compression` (`^1.8.0`) directly to `freezer_inventory_tracker/package.json`.
+  - Resolves Docker container builder failure (`✘ [ERROR] Could not resolve "compression"` during `esbuild server.ts`), allowing Docker image builds and GitHub Actions CI pipelines to compile without errors.
+
+### Files Modified
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
 ### [2.41.6] - 2026-09-20
 
 ### Changed

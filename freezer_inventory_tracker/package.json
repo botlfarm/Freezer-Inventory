@@ -1,7 +1,7 @@
 {
   "name": "freezer-inventory-tracker",
   "private": true,
-  "version": "2.41.6",
+  "version": "2.41.7",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
@@ -13,6 +13,7 @@
   "dependencies": {
     "adm-zip": "^0.5.17",
     "better-sqlite3": "^11.3.0",
+    "compression": "^1.8.0",
     "express": "^5.2.1",
     "html5-qrcode": "^2.3.8",
     "jsbarcode": "^3.11.5",
@@ -27,6 +28,7 @@
   },
   "devDependencies": {
     "@types/adm-zip": "^0.5.8",
+    "@types/compression": "^1.8.0",
     "@types/express": "^5.0.6",
     "@types/jsbarcode": "^3.11.4",
     "@types/jszip": "^3.4.0",
