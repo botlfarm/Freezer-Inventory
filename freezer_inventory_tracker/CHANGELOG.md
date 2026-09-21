@@ -1,3 +1,20 @@
+### [2.41.6] - 2026-09-20
+
+### Changed
+- **Upgrade GitHub Actions to Native Node.js 24 Versions (`build-addon.yml`)**:
+  - Upgraded `actions/checkout` from `v4` to `v5` to run natively on Node.js 24.
+  - Upgraded `docker/setup-qemu-action` from `v3` to `v4` for native Node.js 24 runner execution.
+  - Upgraded `docker/login-action` from `v3` to `v4` for native Node.js 24 runner execution.
+  - Removed obsolete Node 20 fallback environment overrides, eliminating deprecation warnings on GitHub Actions runners.
+
+### Files Modified
+- `/.github/workflows/build-addon.yml`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
 ### [2.41.5] - 2026-09-20
 
 ### Changed
