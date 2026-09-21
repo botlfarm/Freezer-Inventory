@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { compareBoxLabels } from '../utils/boxSort';
-import { Truck, Plus, ChevronRight, Calendar, CheckCircle2, ArrowRightCircle, PackageOpen, Info, Edit3, X, Trash2, RotateCcw, Home, ClipboardList, CheckSquare, Square, ShieldAlert, Printer, Wrench, ChevronDown, Download, MinusSquare, FileText, Flag } from 'lucide-react';
+import { Truck, Plus, ChevronRight, Calendar, CheckCircle2, ArrowRightCircle, PackageOpen, Info, Edit3, X, Trash2, RotateCcw, Home, ClipboardList, CheckSquare, Square, ShieldAlert, Printer, Wrench, ChevronDown, Download, MinusSquare, FileText, Flag, AlertTriangle } from 'lucide-react';
 import { MovementOrder, MovementItem } from '../types';
 import { MovementReportModal } from './MovementReportModal';
 
@@ -57,11 +57,19 @@ const renderItemTagsHelper = (tags: any[] | undefined, items: any[]) => {
   );
 };
 
-export const OffSiteMovementPlanner = ({ state, dispatch }) => {
+export const OffSiteMovementPlanner = ({ state, dispatch, activeOrderId, onSelectOrder }: {
+  state: any;
+  dispatch: any;
+  activeOrderId?: string | null;
+  onSelectOrder?: (orderId: string) => void;
+}) => {
   const rawEntries = (state.offSiteEntries || []).filter((e: any) => {
     if (e.archived) return false;
-    if (e.box && state.containers?.some((c: any) => c.isBox && c.isArchived && c.name.toLowerCase().trim() === e.box.toLowerCase().trim())) {
-      return false;
+    if (e.box) {
+      const boxLower = e.box.toLowerCase().trim();
+      const isArchived = (state.boxes || []).some((b: any) => b.isArchived && ((b.name && b.name.toLowerCase().trim() === boxLower) || (b.id && b.id.toLowerCase().trim() === boxLower))) ||
+                         (state.containers || []).some((c: any) => c.isBox && c.isArchived && c.name && c.name.toLowerCase().trim() === boxLower);
+      if (isArchived) return false;
     }
     return true;
   });
@@ -168,7 +176,19 @@ export const OffSiteMovementPlanner = ({ state, dispatch }) => {
     });
   };
 
-  const activeOrder = orders.find(o => o.status === 'planning' || o.status === 'finalized');
+  const activeOrders = useMemo(() => {
+    return orders.filter(o => o.status === 'planning' || o.status === 'finalized');
+  }, [orders]);
+
+  const activeOrder = useMemo(() => {
+    if (activeOrders.length === 0) return null;
+    const targetId = activeOrderId || localStorage.getItem('selected-movement-order-id');
+    if (targetId) {
+      const match = activeOrders.find(o => o.id === targetId);
+      if (match) return match;
+    }
+    return activeOrders[0];
+  }, [activeOrders, activeOrderId]);
 
   if (!activeOrder) {
     return null;
@@ -876,8 +896,52 @@ const ActiveOrderPlanner = ({ order, entries, dispatch, onBack, allPallets, allL
     return entries.filter(e => order.palletsInPlay.includes(e.currentLocation || ''));
   }, [entries, order.palletsInPlay]);
 
+  const orderConflicts = useMemo(() => {
+    const otherOpenOrders = (state?.movementOrders || []).filter((o: any) => 
+      o.id !== order.id && (o.status === 'planning' || o.status === 'finalized')
+    );
+    const myEntryIds = new Set(order.moves.map((m: any) => m.entryId));
+    
+    const conflicts: { otherOrder: any; overlappingCount: number }[] = [];
+    otherOpenOrders.forEach((oo: any) => {
+      const overlapping = oo.moves.filter((m: any) => myEntryIds.has(m.entryId));
+      if (overlapping.length > 0) {
+        conflicts.push({
+          otherOrder: oo,
+          overlappingCount: overlapping.length
+        });
+      }
+    });
+    return conflicts;
+  }, [order.moves, order.id, state?.movementOrders]);
+
   return (
     <div className="space-y-6 animate-fade-in" id="offsite-movement-planner">
+      {orderConflicts.length > 0 && (
+        <div className="bg-amber-950/50 border-2 border-amber-600/80 rounded-2xl p-4 shadow-xl text-amber-200 backdrop-blur-xs flex flex-col md:flex-row items-start md:items-center justify-between gap-3 no-print">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 bg-amber-500/20 border border-amber-500/40 rounded-xl text-amber-400 shrink-0">
+              <AlertTriangle size={22} />
+            </div>
+            <div>
+              <div className="text-sm font-black text-amber-300 flex items-center gap-2">
+                <span>Multi-Order Conflict Warning</span>
+                <span className="text-[10px] bg-amber-500/30 text-amber-200 border border-amber-500/40 px-2 py-0.5 rounded-full font-bold uppercase">
+                  {orderConflicts.reduce((sum, c) => sum + c.overlappingCount, 0)} Items Overlapping
+                </span>
+              </div>
+              <p className="text-xs text-amber-300/80 mt-1 leading-relaxed">
+                This order shares items or boxes with {orderConflicts.length} other open order{orderConflicts.length > 1 ? 's' : ''}:{' '}
+                <span className="font-semibold text-amber-200">
+                  {orderConflicts.map(c => `"${c.otherOrder.name}" (${c.overlappingCount} items)`).join(', ')}
+                </span>
+                . In the spreadsheet view, these items and destinations are highlighted with cross-order movements.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {isFinalized && (
         <div className="flex bg-cool-gray-850 p-1.5 rounded-2xl border border-cool-gray-750 gap-1 mb-6 no-print">
           <button

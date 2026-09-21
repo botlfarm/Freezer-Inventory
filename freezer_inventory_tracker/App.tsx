@@ -1,8 +1,9 @@
 import React, { useState, useMemo } from 'react';
 import { useInventory } from './hooks/useInventory';
 import { getApiUrl } from './hooks/apiUrl';
+import { getClientDeviceInfo } from './utils/clientDevice';
 import { ModalType, View } from './types';
-import { Undo, Redo, Tag, PackagePlus, History, Sparkles, Table, Package, ClipboardList, Sun, Moon, Filter, Plus, Download, ChevronDown, ChevronUp, Eye, AlertTriangle, RefreshCw, Database } from 'lucide-react';
+import { Tag, PackagePlus, History, Sparkles, Table, Package, ClipboardList, Sun, Moon, Filter, Plus, Download, ChevronDown, ChevronUp, Eye, AlertTriangle, RefreshCw, Database, RotateCcw, Users, User, Zap, ArrowUpDown, SlidersHorizontal } from 'lucide-react';
 import { FreezerIcon, SearchIcon, GridViewIcon, ListViewIcon } from './components/icons';
 import Modal from './components/Modal';
 import AddForms from './components/AddForms';
@@ -23,11 +24,16 @@ import { AddToListModalContent } from './components/AddToListModalContent';
 import { SelectTagsModalContent } from './components/SelectTagsModalContent';
 import { SplitItemModalContent } from './components/SplitItemModalContent';
 import { ListThresholdAlertModalContent } from './components/ListThresholdAlertModalContent';
+import { ConnectedClientsModalContent } from './components/ConnectedClientsModalContent';
 import { OffSiteStorageView } from './views/OffSiteStorageView';
 import { AdvancedFilterMenu } from './views/OffSiteSpreadsheet';
 import { ButcherRecordsView } from './views/ButcherRecordsView';
+import { TraceabilityView } from './views/TraceabilityView';
 import { ProductQuickInfoModal } from './components/ProductQuickInfoModal';
 import { ActiveMovementModal } from './views/ActiveMovementModal';
+import { UndoConfirmationModal } from './components/UndoConfirmationModal';
+import { SortOrderModal } from './components/SortOrderModal';
+import { loadSortOrderConfig, saveSortOrderConfig, sortPrimaryCategories, sortSubCategories, SortMode } from './utils/sortOrder';
 import { useHomeAssistantTheme } from './hooks/useHomeAssistantTheme';
 
 export default function App() {
@@ -62,14 +68,19 @@ export default function App() {
 
   React.useEffect(() => {
     const handleScroll = () => {
+      const scrollY = window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0;
       setIsScrolled((prev) => {
-        if (!prev && window.scrollY > 80) return true;
-        if (prev && window.scrollY < 20) return false;
+        if (!prev && scrollY > 40) return true;
+        if (prev && scrollY < 15) return false;
         return prev;
       });
     };
     window.addEventListener('scroll', handleScroll, { passive: true });
-    return () => window.removeEventListener('scroll', handleScroll);
+    document.addEventListener('scroll', handleScroll, { passive: true });
+    return () => {
+      window.removeEventListener('scroll', handleScroll);
+      document.removeEventListener('scroll', handleScroll);
+    };
   }, []);
 
   // Global drag-and-drop auto-scrolling effect
@@ -129,6 +140,8 @@ export default function App() {
     };
   }, []);
 
+  const [currentView, setCurrentView] = useState<View>('product');
+
   const {
     state,
     dispatch,
@@ -138,19 +151,78 @@ export default function App() {
     refreshState,
     undoStack,
     redoStack,
+    undoSnapshots,
+    undoSnapshotCount,
+    executeUndo,
+    isUndoing,
+    hasPendingChanges,
+    isSaving,
     isPendingSync,
     clientId,
+    operatingMode,
+    setOperatingMode,
+    forcedMultiUser,
+    updateForcedMulti,
     isSingleUserMode,
     singleUserLock,
     claimSingleUserMode,
     releaseSingleUserMode,
     requestBreakIn,
     cancelBreakIn,
+    forceReleaseSingleUserLock,
     updateSingleUserLock,
     hasUnsyncedLocalChanges,
     breakInCountdown,
-    setBreakInCountdown
-  } = useInventory();
+    setBreakInCountdown,
+    isCollaborativeMode,
+    setIsCollaborativeMode,
+    activeClientCount,
+    setActiveClientCount,
+    connectedClients,
+    setConnectedClients,
+    fetchConnectedClients,
+    disconnectClient,
+    forceSyncAllClients,
+    flushAllPendingSyncs,
+    zoneClientCounts,
+    setZoneClientCounts,
+    activeZone,
+    activeZoneClientCount,
+    recalculateCollaborativeMode
+  } = useInventory(currentView);
+
+  const [undoModalConfig, setUndoModalConfig] = useState<{
+    isOpen: boolean;
+    snapshotId?: string | null;
+    historyId?: string | null;
+  }>({ isOpen: false });
+
+  // Global keyboard shortcut for Undo (Ctrl+Z / Cmd+Z)
+  React.useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z') && !e.shiftKey) {
+        e.preventDefault();
+        setUndoModalConfig({
+          isOpen: true,
+          snapshotId: null,
+          historyId: null
+        });
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   const [isDemoTransitioning, setIsDemoTransitioning] = useState(false);
   const [isPreviewTransitioning, setIsPreviewTransitioning] = useState(false);
@@ -325,7 +397,7 @@ export default function App() {
   const [isUserDropdownOpen, setIsUserDropdownOpen] = useState(false);
   const [isSyncMenuOpen, setIsSyncMenuOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
-  const [currentView, setCurrentView] = useState<View>('product');
+  const [traceabilityInitialSearch, setTraceabilityInitialSearch] = useState<string>('');
 
   // Off-Site Lifted States & Refs
   const [offsiteSubTab, setOffsiteSubTab] = useState<'sheet' | 'import' | 'hierarchy' | 'history' | 'active-movement' | 'staging-worksheet'>('sheet');
@@ -389,9 +461,27 @@ export default function App() {
   const [tempName, setTempName] = useState('');
   const [tempDate, setTempDate] = useState('');
 
-  const activeOrder = useMemo(() => {
-    return (state.movementOrders || []).find((o: any) => o.status === 'planning' || o.status === 'finalized');
+  const [selectedMovementOrderId, setSelectedMovementOrderId] = useState<string | null>(() => {
+    return localStorage.getItem('selected-movement-order-id') || null;
+  });
+
+  const activeOrders = useMemo(() => {
+    return (state.movementOrders || []).filter((o: any) => o.status === 'planning' || o.status === 'finalized');
   }, [state.movementOrders]);
+
+  const activeOrder = useMemo(() => {
+    if (activeOrders.length === 0) return null;
+    if (selectedMovementOrderId) {
+      const match = activeOrders.find((o: any) => o.id === selectedMovementOrderId);
+      if (match) return match;
+    }
+    return activeOrders[0];
+  }, [activeOrders, selectedMovementOrderId]);
+
+  const handleSelectMovementOrder = (orderId: string) => {
+    setSelectedMovementOrderId(orderId);
+    localStorage.setItem('selected-movement-order-id', orderId);
+  };
 
   React.useEffect(() => {
     if (activeOrder) {
@@ -452,11 +542,36 @@ export default function App() {
 
   const [isSearchFilterOpen, setIsSearchFilterOpen] = useState(false);
 
+  const sortConfig = useMemo(() => loadSortOrderConfig(state.appConfig), [state.appConfig]);
+
+  const handleToggleSortMode = async (mode: SortMode) => {
+    const isDisplay = currentView === 'display_case';
+    const updatedConfig = {
+      ...sortConfig,
+      ...(isDisplay ? { displaySortMode: mode } : { productSortMode: mode })
+    };
+    await saveSortOrderConfig(updatedConfig);
+    const currentConfigs = state.appConfig || [];
+    const updatedConfigs = [
+      ...currentConfigs.filter(c => c.key !== 'sort-hierarchy-config'),
+      { key: 'sort-hierarchy-config', value: JSON.stringify(updatedConfig), updatedAt: new Date().toISOString() }
+    ];
+    dispatch({
+      type: 'REPLACE_STATE',
+      payload: {
+        ...state,
+        appConfig: updatedConfigs
+      }
+    });
+  };
+
   // Group categories and subcategories together for a single integrated select list
   const groupedCategories = useMemo(() => {
+    const sortConfig = loadSortOrderConfig(state.appConfig);
+    const activeSortMode = currentView === 'display_case' ? sortConfig.displaySortMode : sortConfig.productSortMode;
     const list: Array<{ primary: string; subs: string[] }> = [];
     const catSet = new Set(state.products.map(p => p.primaryCategory).filter(Boolean) as string[]);
-    const sortedCats = Array.from(catSet).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+    const sortedCats = sortPrimaryCategories(Array.from(catSet), activeSortMode, sortConfig.customOrder);
     for (const cat of sortedCats) {
       const subs = Array.from(
         new Set(
@@ -465,11 +580,12 @@ export default function App() {
             .map(p => p.subCategory)
             .filter(Boolean) as string[]
         )
-      ).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
-      list.push({ primary: cat, subs });
+      );
+      const sortedSubs = sortSubCategories(subs, cat, activeSortMode, sortConfig.customOrder);
+      list.push({ primary: cat, subs: sortedSubs });
     }
     return list;
-  }, [state.products]);
+  }, [state.products, state.appConfig, currentView]);
 
   const currentCategoryValue = selectedSub 
     ? `sub:${selectedPrimary}:${selectedSub}` 
@@ -579,9 +695,47 @@ export default function App() {
   const [syncStatus, setSyncStatus] = useState<'synced' | 'connecting' | 'error' | 'remote_editing'>('synced');
   const [lastSyncBy, setLastSyncBy] = useState<string | null>(null);
   const [showSyncToast, setShowSyncToast] = useState(false);
+  const [undoToastMessage, setUndoToastMessage] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [reconnectTrigger, setReconnectTrigger] = useState(0);
   const pendingRefreshRef = React.useRef<boolean>(false);
+  const isAutoMultiActive = operatingMode === 'auto' && isCollaborativeMode;
+
+  const clientIdRef = React.useRef(clientId);
+  const isSingleUserModeRef = React.useRef(isSingleUserMode);
+  const isPendingSyncRef = React.useRef(isPendingSync);
+  const refreshStateRef = React.useRef(refreshState);
+  const updateSingleUserLockRef = React.useRef(updateSingleUserLock);
+  const updateForcedMultiRef = React.useRef(updateForcedMulti);
+  const activeClientCountRef = React.useRef(activeClientCount);
+  const setActiveClientCountRef = React.useRef(setActiveClientCount);
+  const setConnectedClientsRef = React.useRef(setConnectedClients);
+  const flushAllPendingSyncsRef = React.useRef(flushAllPendingSyncs);
+  const setIsCollaborativeModeRef = React.useRef(setIsCollaborativeMode);
+  const fetchConnectedClientsRef = React.useRef(fetchConnectedClients);
+  const setZoneClientCountsRef = React.useRef(setZoneClientCounts);
+  const recalculateCollaborativeModeRef = React.useRef(recalculateCollaborativeMode);
+  const activeZoneRef = React.useRef(activeZone);
+  const currentViewRef = React.useRef(currentView);
+
+  React.useEffect(() => {
+    clientIdRef.current = clientId;
+    isSingleUserModeRef.current = isSingleUserMode;
+    isPendingSyncRef.current = isPendingSync;
+    refreshStateRef.current = refreshState;
+    updateSingleUserLockRef.current = updateSingleUserLock;
+    updateForcedMultiRef.current = updateForcedMulti;
+    activeClientCountRef.current = activeClientCount;
+    setActiveClientCountRef.current = setActiveClientCount;
+    setConnectedClientsRef.current = setConnectedClients;
+    flushAllPendingSyncsRef.current = flushAllPendingSyncs;
+    setIsCollaborativeModeRef.current = setIsCollaborativeMode;
+    fetchConnectedClientsRef.current = fetchConnectedClients;
+    setZoneClientCountsRef.current = setZoneClientCounts;
+    recalculateCollaborativeModeRef.current = recalculateCollaborativeMode;
+    activeZoneRef.current = activeZone;
+    currentViewRef.current = currentView;
+  });
 
   const forceReconnect = React.useCallback(() => {
     setReconnectTrigger(prev => prev + 1);
@@ -600,58 +754,111 @@ export default function App() {
         );
         if (!isEditing && pendingRefreshRef.current) {
           pendingRefreshRef.current = false;
-          refreshState();
+          refreshStateRef.current();
         }
       }, 150);
     };
 
     window.addEventListener('focusout', handleFocusOut);
     return () => window.removeEventListener('focusout', handleFocusOut);
-  }, [refreshState]);
+  }, []);
 
   // Setup EventSource for SSE live-sync
   React.useEffect(() => {
     setSyncStatus('connecting');
     
     // Ensure the stream URL is fully qualified and resolves correctly in all ingress and root environments
-    let streamUrl = 'api/inventory/stream';
-    const matchIngress = window.location.pathname.match(/^\/api\/hassio_ingress\/[^/]+\/?/);
-    if (matchIngress) {
-      // Under HA Ingress, construct path relative to the ingress base
-      const base = matchIngress[0].endsWith('/') ? matchIngress[0] : `${matchIngress[0]}/`;
-      streamUrl = `${base}api/inventory/stream`;
-    } else {
-      // In standard environments (AI Studio, Cloud Run, Local), use absolute path to avoid relative url parsing bugs
-      streamUrl = '/api/inventory/stream';
-    }
+    const streamUrl = getApiUrl('api/inventory/stream');
+    const storedUserName = localStorage.getItem('freezerUserName') || localStorage.getItem('freezer_user') || 'User';
+    const deviceInfo = getClientDeviceInfo();
+    const params = new URLSearchParams({
+      clientId: clientIdRef.current,
+      userName: storedUserName,
+      clientDevice: deviceInfo.clientDevice,
+      clientInfo: deviceInfo.clientInfo,
+      clientZone: activeZoneRef.current,
+      clientView: currentViewRef.current
+    });
 
-    const eventSource = new EventSource(`${streamUrl}?clientId=${clientId}`);
+    const eventSource = new EventSource(`${streamUrl}?${params.toString()}`);
 
     eventSource.onopen = () => {
       setSyncStatus('synced');
+      fetchConnectedClientsRef.current().catch(() => {});
     };
 
     let remoteEditingTimeout: NodeJS.Timeout | null = null;
+    let reconnectTimeout: NodeJS.Timeout | null = null;
 
     eventSource.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
         if (data.type === 'init') {
-          if (data.lock !== undefined) {
-            updateSingleUserLock(data.lock);
+          if (data.lock !== undefined || data.locks !== undefined) {
+            updateSingleUserLockRef.current(data.lock, data.locks);
           }
+          if (data.forcedMulti !== undefined || data.forcedMultis !== undefined) {
+            updateForcedMultiRef.current(data.forcedMulti, data.forcedMultis);
+          }
+          if (data.clientCount !== undefined) {
+            setActiveClientCountRef.current(data.clientCount);
+          }
+          if (data.zoneCounts) {
+            setZoneClientCountsRef.current(data.zoneCounts);
+          }
+          if (data.clients && Array.isArray(data.clients)) {
+            setConnectedClientsRef.current(data.clients);
+          }
+          recalculateCollaborativeModeRef.current(data.forcedMulti, data.zoneCounts);
+        } else if (data.type === 'operating_mode_changed') {
+          if (data.forcedMulti !== undefined || data.forcedMultis !== undefined) {
+            updateForcedMultiRef.current(data.forcedMulti, data.forcedMultis);
+          }
+          if (data.lock !== undefined || data.locks !== undefined) {
+            updateSingleUserLockRef.current(data.lock, data.locks);
+          }
+        } else if (data.type === 'clients_count' || data.type === 'clients_changed') {
+          const count = data.count !== undefined ? data.count : data.clientCount;
+          if (count !== undefined) {
+            setActiveClientCountRef.current(count);
+          }
+          if (data.zoneCounts) {
+            setZoneClientCountsRef.current(data.zoneCounts);
+          }
+          if (data.clients && Array.isArray(data.clients)) {
+            setConnectedClientsRef.current(data.clients);
+          }
+          recalculateCollaborativeModeRef.current(undefined, data.zoneCounts);
         } else if (data.type === 'single_user_lock_changed') {
-          updateSingleUserLock(data.lock);
+          updateSingleUserLockRef.current(data.lock, data.locks);
+          if (data.forcedMulti !== undefined || data.forcedMultis !== undefined) {
+            updateForcedMultiRef.current(data.forcedMulti, data.forcedMultis);
+          }
         } else if (data.type === 'break_in_requested') {
-          updateSingleUserLock(data.lock);
+          updateSingleUserLockRef.current(data.lock, data.locks);
         } else if (data.type === 'break_in_cancelled') {
-          updateSingleUserLock(data.lock);
+          updateSingleUserLockRef.current(data.lock, data.locks);
+        } else if (data.type === 'force_flush') {
+          if (!data.targetClientId || data.targetClientId === clientIdRef.current) {
+            flushAllPendingSyncsRef.current();
+          }
         } else if (data.type === 'update') {
-          if (!isSingleUserMode) {
+          // If this update was triggered by our own client action, ignore it (we already receive the updated state directly via HTTP response)
+          if (data.sourceClientId && data.sourceClientId === clientIdRef.current) {
+            return;
+          }
+          if (data.sourceClientId && data.sourceClientId !== clientIdRef.current) {
+            recalculateCollaborativeModeRef.current();
+            if (remoteEditingTimeout) clearTimeout(remoteEditingTimeout);
+            remoteEditingTimeout = setTimeout(() => {
+              recalculateCollaborativeModeRef.current();
+            }, 4000);
+          }
+          if (!isSingleUserModeRef.current) {
             if (remoteEditingTimeout) clearTimeout(remoteEditingTimeout);
             setSyncStatus('synced');
             
-            // Solution 1: Check if user is actively typing / focusing an input field
+            // Check if user is actively typing / focusing an input field
             const activeEl = document.activeElement;
             const isEditing = activeEl && (
               activeEl.tagName === 'INPUT' || 
@@ -659,20 +866,31 @@ export default function App() {
               activeEl.tagName === 'SELECT' || 
               (activeEl as HTMLElement).isContentEditable
             );
-            if (isEditing || isPendingSync) {
+            if (isEditing) {
               pendingRefreshRef.current = true;
             } else {
               pendingRefreshRef.current = false;
-              refreshState();
+              refreshStateRef.current();
             }
           }
         } else if (data.type === 'editing') {
-          if (!isSingleUserMode) {
+          if (data.sourceClientId && data.sourceClientId === clientIdRef.current) {
+            return;
+          }
+          if (data.sourceClientId && data.sourceClientId !== clientIdRef.current) {
+            if (activeClientCountRef.current > 1) {
+              setIsCollaborativeModeRef.current(true);
+            }
+          }
+          if (!isSingleUserModeRef.current) {
             setSyncStatus('remote_editing');
             if (remoteEditingTimeout) clearTimeout(remoteEditingTimeout);
             remoteEditingTimeout = setTimeout(() => {
                setSyncStatus(prev => prev === 'remote_editing' ? 'synced' : prev);
-            }, 3500);
+               if (activeClientCountRef.current <= 1) {
+                 setIsCollaborativeModeRef.current(false);
+               }
+            }, 4000);
           }
         }
       } catch (err) {
@@ -682,33 +900,40 @@ export default function App() {
 
     eventSource.onerror = (e) => {
       console.warn('SSE connection lost or error:', e);
-      // Natively EventSource automatically attempts reconnection when disconnected.
-      // If readyState is CONNECTING, it is retrying under the hood, so show 'connecting' (amber).
       if (eventSource.readyState === EventSource.CONNECTING) {
         setSyncStatus('connecting');
       } else {
         setSyncStatus('error');
       }
+      if (!reconnectTimeout) {
+        reconnectTimeout = setTimeout(() => {
+          forceReconnect();
+        }, 3000);
+      }
     };
 
     return () => {
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      if (remoteEditingTimeout) clearTimeout(remoteEditingTimeout);
       eventSource.close();
     };
-  }, [refreshState, reconnectTrigger]);
+  }, [reconnectTrigger]);
 
   // Reconnect on window/tab focus or transition to visible focus
   React.useEffect(() => {
     const handleFocus = () => {
       if (syncStatus === 'error') {
         forceReconnect();
-        refreshState();
+        refreshStateRef.current();
       }
     };
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        forceReconnect();
-        refreshState();
+        if (syncStatus === 'error') {
+          forceReconnect();
+        }
+        refreshStateRef.current();
       }
     };
 
@@ -719,15 +944,20 @@ export default function App() {
       window.removeEventListener('focus', handleFocus);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [forceReconnect, refreshState, syncStatus]);
+  }, [forceReconnect, syncStatus]);
 
   const handleManualRefresh = async () => {
     setIsRefreshing(true);
-    forceReconnect();
-    await refreshState();
-    setTimeout(() => {
-      setIsRefreshing(false);
-    }, 800);
+    try {
+      await flushAllPendingSyncs();
+      forceReconnect();
+      await fetchConnectedClients();
+      await refreshState(true);
+    } finally {
+      setTimeout(() => {
+        setIsRefreshing(false);
+      }, 600);
+    }
   };
 
   React.useEffect(() => {
@@ -762,120 +992,81 @@ export default function App() {
     }, {} as Record<string, number>);
   }, [state.meatCuts]);
 
-  // Compute off-site quantity map
-  const offSiteQuantityMap = React.useMemo(() => {
-    const map: Record<string, number> = {};
-    const rawEntries = (state.offSiteEntries || []).filter((e: any) => {
-      if (e.archived) return false;
-      if (e.box && state.containers?.some((c: any) => c.isBox && c.isArchived && c.name.toLowerCase().trim() === e.box.toLowerCase().trim())) {
-        return false;
-      }
-      return true;
-    });
+  // High-performance unified off-site maps (pre-indexed product lookups O(1) instead of O(N*P))
+  const { offSiteQuantityMap, offSiteWeightMap } = React.useMemo(() => {
+    const qtyMap: Record<string, number> = {};
+    const weightMap: Record<string, number> = {};
+
     const products = state.products || [];
+    const offSiteEntries = state.offSiteEntries || [];
+    const boxes = state.boxes || [];
+    const containers = state.containers || [];
 
-    rawEntries.forEach((e: any) => {
-      const cutsStr = ((state.products?.find((p: any) => p.id === e.productId)?.name || e.originalCutName) || '').trim();
-      const origStr = (e.originalCutName || '').trim();
-      const normStr = ((state.products?.find((p: any) => p.id === e.productId)?.name || '') || '').trim();
+    if (offSiteEntries.length === 0 || products.length === 0) {
+      return { offSiteQuantityMap: qtyMap, offSiteWeightMap: weightMap };
+    }
 
-      let matchedProduct = null;
-      if (e.productId) {
-        matchedProduct = products.find((prod: any) => prod.id === e.productId);
+    const archivedBoxNames = new Set([
+      ...boxes.filter((b: any) => b.isArchived && (b.name || b.id)).map((b: any) => (b.name || b.id).toLowerCase().trim()),
+      ...containers.filter((c: any) => c.isBox && c.isArchived && c.name).map((c: any) => c.name.toLowerCase().trim())
+    ]);
+
+    const productById = new Map<string, any>();
+    const productByName = new Map<string, any>();
+    const productByNum = new Map<string, any>();
+    const productByCleanName = new Map<string, any>();
+
+    const cleanName = (str: string) => str.replace(/^\d+[a-zA-Z0-9-]*\s+/, '').trim().toLowerCase();
+    const matchNum = (str: string) => {
+      const m = str.match(/^(\d+[a-zA-Z0-9-]*)/);
+      return m ? m[1].toLowerCase() : null;
+    };
+
+    products.forEach((p: any) => {
+      if (p.id) productById.set(p.id, p);
+      const nameLower = (p.name || '').trim().toLowerCase();
+      if (nameLower) {
+        productByName.set(nameLower, p);
+        productByCleanName.set(cleanName(nameLower), p);
       }
-      if (!matchedProduct && normStr) {
-        matchedProduct = products.find((prod: any) => prod.name.trim().toLowerCase() === normStr.toLowerCase());
-      }
-      if (!matchedProduct) {
-        const matchNum = (str: string) => {
-          const m = str.match(/^(\d+[a-zA-Z0-9-]*)/);
-          return m ? m[1] : null;
-        };
-        const cutsNum = matchNum(cutsStr);
-        const origNum = matchNum(origStr);
-        if (cutsNum || origNum) {
-          matchedProduct = products.find((prod: any) => 
-            prod.productNumbers && prod.productNumbers.some((num: string) => 
-              (cutsNum && num.toLowerCase() === cutsNum.toLowerCase()) || 
-              (origNum && num.toLowerCase() === origNum.toLowerCase())
-            )
-          );
-        }
-      }
-      if (!matchedProduct) {
-        const cleanName = (str: string) => str.replace(/^\d+[a-zA-Z0-9-]*\s+/, '').trim().toLowerCase();
-        const cleanCuts = cleanName(cutsStr);
-        const cleanOrig = cleanName(origStr);
-        const cleanNorm = cleanName(normStr);
-        matchedProduct = products.find((p: any) => {
-          const pName = p.name.trim().toLowerCase();
-          return pName === cleanCuts || pName === cleanOrig || pName === cleanNorm || pName === cutsStr.toLowerCase() || pName === origStr.toLowerCase() || pName === normStr.toLowerCase();
+      if (Array.isArray(p.productNumbers)) {
+        p.productNumbers.forEach((num: any) => {
+          if (num) productByNum.set(String(num).trim().toLowerCase(), p);
         });
       }
-
-      if (matchedProduct) {
-        map[matchedProduct.id] = (map[matchedProduct.id] || 0) + (e.pieces || 0);
-      }
     });
-    return map;
-  }, [state.offSiteEntries, state.products, state.containers]);
 
-  // Compute off-site weight map
-  const offSiteWeightMap = React.useMemo(() => {
-    const map: Record<string, number> = {};
-    const rawEntries = (state.offSiteEntries || []).filter((e: any) => {
+    const rawEntries = offSiteEntries.filter((e: any) => {
       if (e.archived) return false;
-      if (e.box && state.containers?.some((c: any) => c.isBox && c.isArchived && c.name.toLowerCase().trim() === e.box.toLowerCase().trim())) {
-        return false;
-      }
+      if (e.box && archivedBoxNames.has(e.box.toLowerCase().trim())) return false;
       return true;
     });
-    const products = state.products || [];
 
     rawEntries.forEach((e: any) => {
-      const cutsStr = ((state.products?.find((p: any) => p.id === e.productId)?.name || e.originalCutName) || '').trim();
-      const origStr = (e.originalCutName || '').trim();
-      const normStr = ((state.products?.find((p: any) => p.id === e.productId)?.name || '') || '').trim();
-
-      let matchedProduct = null;
+      let matched: any = null;
       if (e.productId) {
-        matchedProduct = products.find((prod: any) => prod.id === e.productId);
+        matched = productById.get(e.productId);
       }
-      if (!matchedProduct && normStr) {
-        matchedProduct = products.find((prod: any) => prod.name.trim().toLowerCase() === normStr.toLowerCase());
-      }
-      if (!matchedProduct) {
-        const matchNum = (str: string) => {
-          const m = str.match(/^(\d+[a-zA-Z0-9-]*)/);
-          return m ? m[1] : null;
-        };
-        const cutsNum = matchNum(cutsStr);
-        const origNum = matchNum(origStr);
-        if (cutsNum || origNum) {
-          matchedProduct = products.find((prod: any) => 
-            prod.productNumbers && prod.productNumbers.some((num: string) => 
-              (cutsNum && num.toLowerCase() === cutsNum.toLowerCase()) || 
-              (origNum && num.toLowerCase() === origNum.toLowerCase())
-            )
-          );
+      if (!matched && e.originalCutName) {
+        const origTrim = e.originalCutName.trim();
+        const origLower = origTrim.toLowerCase();
+        matched = productByName.get(origLower);
+        if (!matched) {
+          const num = matchNum(origTrim);
+          if (num) matched = productByNum.get(num);
+        }
+        if (!matched) {
+          matched = productByCleanName.get(cleanName(origLower));
         }
       }
-      if (!matchedProduct) {
-        const cleanName = (str: string) => str.replace(/^\d+[a-zA-Z0-9-]*\s+/, '').trim().toLowerCase();
-        const cleanCuts = cleanName(cutsStr);
-        const cleanOrig = cleanName(origStr);
-        const cleanNorm = cleanName(normStr);
-        matchedProduct = products.find((p: any) => {
-          const pName = p.name.trim().toLowerCase();
-          return pName === cleanCuts || pName === cleanOrig || pName === cleanNorm || pName === cutsStr.toLowerCase() || pName === origStr.toLowerCase() || pName === normStr.toLowerCase();
-        });
-      }
 
-      if (matchedProduct) {
-        map[matchedProduct.id] = (map[matchedProduct.id] || 0) + (e.netWeight || 0);
+      if (matched) {
+        qtyMap[matched.id] = (qtyMap[matched.id] || 0) + (e.pieces || 0);
+        weightMap[matched.id] = (weightMap[matched.id] || 0) + (e.netWeight || 0);
       }
     });
-    return map;
+
+    return { offSiteQuantityMap: qtyMap, offSiteWeightMap: weightMap };
   }, [state.offSiteEntries, state.products, state.containers]);
 
   // Compute total quantity map
@@ -1078,6 +1269,8 @@ export default function App() {
           return container ? `Change Container of Cuts from "${container.name}"` : 'Change Container of Cuts';
       }
       case 'LIST_THRESHOLD_ALERT': return 'Inventory Automation Alert';
+      case 'CONNECTED_CLIENTS': return 'Active Devices & Connected Users';
+      case 'SORT_ORDER': return 'Configure Custom Hierarchy Sort Order';
       default: return '';
     }
   };
@@ -1088,7 +1281,7 @@ export default function App() {
     if (modal.type === 'BULK_ADD_MEAT' || modal.type === 'MOVE_MEAT') {
       return 'max-w-[100%] lg:max-w-[95vw] xl:max-w-7xl'; 
     }
-    if (modal.type === 'CHANGE_CONTAINER_FLOW') return 'max-w-2xl';
+    if (modal.type === 'CHANGE_CONTAINER_FLOW' || modal.type === 'SORT_ORDER') return 'max-w-4xl';
     return 'max-w-lg';
   };
   
@@ -1231,6 +1424,31 @@ export default function App() {
             onClose={handleCloseModal}
           />
         );
+      case 'CONNECTED_CLIENTS':
+        return (
+          <ConnectedClientsModalContent
+            currentClientId={clientId}
+            clients={connectedClients}
+            activeClientCount={activeClientCount}
+            zoneCounts={zoneClientCounts}
+            activeZone={activeZone}
+            operatingMode={operatingMode}
+            isCollaborativeMode={isCollaborativeMode}
+            onRefresh={fetchConnectedClients}
+            onDisconnect={disconnectClient}
+            onForceSyncAll={forceSyncAllClients}
+            onClose={handleCloseModal}
+          />
+        );
+      case 'SORT_ORDER':
+        return (
+          <SortOrderModal
+            state={state}
+            dispatch={dispatch}
+            onClose={handleCloseModal}
+            initialView={activeModal.initialView}
+          />
+        );
       default:
         return null;
     }
@@ -1339,7 +1557,20 @@ export default function App() {
           />
         );
       case 'history':
-        return <HistoryView state={state} dispatch={dispatch} />;
+        return (
+          <HistoryView
+            state={state}
+            dispatch={dispatch}
+            onOpenUndo={(historyId) =>
+              setUndoModalConfig({
+                isOpen: true,
+                historyId: historyId || null,
+                snapshotId: null
+              })
+            }
+            undoSnapshots={undoSnapshots}
+          />
+        );
       case 'reconcile':
         if (!reconcileFreezerId) {
             setCurrentView('freezer'); // Safety check
@@ -1393,10 +1624,26 @@ export default function App() {
             isSingleUserMode={isSingleUserMode}
             claimSingleUserMode={claimSingleUserMode}
             releaseSingleUserMode={releaseSingleUserMode}
+            selectedMovementOrderId={activeOrder?.id || selectedMovementOrderId}
+            onSelectActiveOrder={handleSelectMovementOrder}
           />
         );
       case 'butcher_records':
         return <ButcherRecordsView state={state} dispatch={dispatch} />;
+      case 'traceability':
+        return (
+          <TraceabilityView 
+            state={state} 
+            dispatch={dispatch} 
+            onNavigateToView={(view: View, params?: any) => {
+              if (params?.search) {
+                setSearchTerm(params.search);
+              }
+              setCurrentView(view);
+            }}
+            initialSearch={traceabilityInitialSearch}
+          />
+        );
       default:
         return null;
     }
@@ -1409,20 +1656,20 @@ export default function App() {
       <div className="max-w-[1600px] mx-auto w-full">
         {/* Single-User Mode Break-In Countdown Banner */}
         {breakInCountdown !== null && (
-          <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[100] w-full max-w-lg px-4 animate-bounce-short">
-            <div className="bg-amber-950/95 border-2 border-amber-500 text-amber-100 p-4 rounded-2xl shadow-2xl backdrop-blur-md flex flex-col gap-3">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-amber-500/20 border border-amber-400 flex items-center justify-center shrink-0">
-                  <span className="text-xl">⚠️</span>
+          <div className="fixed top-3 left-1/2 -translate-x-1/2 z-[100] w-[calc(100vw-1rem)] max-w-lg px-2 sm:px-4 animate-bounce-short">
+            <div className="bg-amber-950/95 border-2 border-amber-500 text-amber-100 p-3.5 sm:p-4 rounded-xl sm:rounded-2xl shadow-2xl backdrop-blur-md flex flex-col gap-2.5 sm:gap-3">
+              <div className="flex items-start sm:items-center gap-2.5 sm:gap-3">
+                <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-lg sm:rounded-xl bg-amber-500/20 border border-amber-400 flex items-center justify-center shrink-0 mt-0.5 sm:mt-0">
+                  <span className="text-lg sm:text-xl">⚠️</span>
                 </div>
                 <div className="flex-1 min-w-0">
-                  <h4 className="font-bold text-sm text-white flex items-center gap-2">
-                    Break-In Requested
-                    <span className="px-2 py-0.5 rounded-full text-[10px] bg-amber-500 text-black font-black uppercase tracking-wider">
+                  <h4 className="font-bold text-xs sm:text-sm text-white flex items-center gap-1.5 sm:gap-2 flex-wrap">
+                    <span>Break-In Requested</span>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] bg-amber-500 text-black font-black uppercase tracking-wider shrink-0">
                       {breakInCountdown}s Countdown
                     </span>
                   </h4>
-                  <p className="text-xs text-amber-200 mt-0.5">
+                  <p className="text-xs text-amber-200 mt-0.5 leading-snug whitespace-normal break-words">
                     <span className="font-semibold text-amber-300">{singleUserLock?.breakInRequest?.requestedByName || 'Another user'}</span> is waiting to edit. Auto-syncing and returning to Multi-User Mode in <span className="font-bold font-mono text-white underline">{breakInCountdown}s</span>...
                   </p>
                 </div>
@@ -1436,12 +1683,12 @@ export default function App() {
                 />
               </div>
 
-              <div className="flex items-center justify-end gap-2 pt-1">
+              <div className="flex items-center justify-end gap-2 pt-1 flex-wrap sm:flex-nowrap">
                 <button
                   onClick={async () => {
                     await cancelBreakIn();
                   }}
-                  className="px-3 py-1.5 rounded-lg bg-amber-900/80 hover:bg-amber-800 border border-amber-700 text-xs font-bold text-amber-200 cursor-pointer transition"
+                  className="px-3 py-1.5 rounded-lg bg-amber-900/80 hover:bg-amber-800 border border-amber-700 text-xs font-bold text-amber-200 cursor-pointer transition flex-1 sm:flex-initial text-center justify-center"
                 >
                   Cancel Request
                 </button>
@@ -1449,7 +1696,7 @@ export default function App() {
                   onClick={async () => {
                     await releaseSingleUserMode();
                   }}
-                  className="px-3.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-xs font-bold text-slate-950 cursor-pointer shadow transition"
+                  className="px-3.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-xs font-bold text-slate-950 cursor-pointer shadow transition flex-1 sm:flex-initial text-center justify-center"
                 >
                   Sync & Exit Now
                 </button>
@@ -1460,72 +1707,225 @@ export default function App() {
 
         {/* Persistent Top Banner for Second Users when Single-User Mode is locked by someone else */}
         {singleUserLock && singleUserLock.clientId !== clientId && (
-          <div className="sticky top-2 z-40 bg-amber-950/95 border border-amber-500/60 text-amber-100 px-4 py-3 rounded-xl mb-4 shadow-2xl backdrop-blur-md flex flex-col sm:flex-row items-center justify-between gap-3 text-sm animate-scale-up">
-            <div className="flex items-center gap-3 min-w-0">
-              <div className="w-9 h-9 rounded-xl bg-amber-500/20 border border-amber-400/50 flex items-center justify-center shrink-0 shadow-inner">
-                <span className="text-lg">🔒</span>
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <strong className="text-white font-bold text-sm">Single-User Mode Active</strong>
-                  <span className="px-2 py-0.5 rounded-full text-[10px] bg-amber-500/30 text-amber-300 font-bold border border-amber-500/50 uppercase tracking-wider">
-                    Locked by {singleUserLock.holderName}
+          <div className={`sticky top-2 z-40 bg-amber-950/95 border border-amber-500/60 text-amber-100 shadow-2xl backdrop-blur-md transition-all duration-200 animate-scale-up w-full max-w-full box-border ${
+            isScrolled
+              ? 'px-3 sm:px-4 py-1.5 rounded-lg sm:rounded-xl mb-2.5 flex flex-row items-center justify-between gap-2 text-xs overflow-hidden'
+              : 'p-3 sm:p-4 rounded-xl mb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 sm:gap-3 text-sm'
+          }`}>
+            <div className={`flex items-start sm:items-center min-w-0 w-full sm:w-auto flex-1 ${isScrolled ? 'gap-2 truncate' : 'gap-2.5 sm:gap-3'}`}>
+              {isScrolled ? (
+                <span className="text-sm shrink-0">🔒</span>
+              ) : (
+                <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-lg sm:rounded-xl bg-amber-500/20 border border-amber-400/50 flex items-center justify-center shrink-0 shadow-inner mt-0.5 sm:mt-0">
+                  <span className="text-base sm:text-lg">🔒</span>
+                </div>
+              )}
+              <div className={`min-w-0 flex-1 ${isScrolled ? 'truncate' : ''}`}>
+                <div className={`flex items-center gap-1.5 sm:gap-2 ${isScrolled ? 'truncate' : 'flex-wrap'}`}>
+                  <strong className={`text-white font-bold ${isScrolled ? 'text-xs truncate' : 'text-xs sm:text-sm'}`}>
+                    {singleUserLock.scope === 'offsite'
+                      ? 'Off-Site Solo Mode'
+                      : singleUserLock.scope === 'onsite'
+                      ? 'On-Site Solo Mode'
+                      : 'Single-User Mode'}: <span className="font-normal text-amber-200">Locked by {singleUserLock.holderName}</span>
+                  </strong>
+                  <span className="hidden sm:inline-flex px-1.5 py-0.5 rounded text-[10px] bg-amber-500/30 text-amber-300 font-bold border border-amber-500/50 uppercase tracking-wider shrink-0">
+                    Read-Only
                   </span>
                 </div>
-                <p className="text-xs text-amber-200/90 mt-0.5 leading-snug">
-                  <span className="font-semibold text-white">{singleUserLock.holderName}</span> is currently editing in Solo Mode with zero-lag local caching. Remote database updates are paused until they exit or go idle.
-                </p>
+                {!isScrolled && (
+                  <p className="text-xs text-amber-200/90 mt-0.5 leading-snug whitespace-normal break-words">
+                    <span className="font-semibold text-white">{singleUserLock.holderName}</span> {
+                      singleUserLock.scope === 'offsite'
+                        ? 'is currently editing Off-Site Storage/Movements in Solo Mode. On-site retail inventory remains available.'
+                        : singleUserLock.scope === 'onsite'
+                        ? 'is currently editing On-Site Freezers in Solo Mode. Off-site storage actions remain available.'
+                        : 'is currently editing in Solo Mode with zero-lag local caching. Remote database updates are paused until they exit or go idle.'
+                    }
+                  </p>
+                )}
               </div>
             </div>
 
-            <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto justify-end pt-1 sm:pt-0 border-t sm:border-t-0 border-amber-900/50">
+            <div className={`flex items-center gap-1.5 shrink-0 ${isScrolled ? '' : 'w-full sm:w-auto justify-end pt-1.5 sm:pt-0 border-t sm:border-t-0 border-amber-900/50'}`}>
               {singleUserLock.breakInRequest?.requestedByClientId === clientId ? (
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-semibold text-amber-300 animate-pulse flex items-center gap-1.5 bg-amber-900/80 px-3 py-1.5 rounded-lg border border-amber-700/80">
-                    <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
+                <div className="flex items-center gap-1.5 w-full sm:w-auto justify-end">
+                  <span className={`font-semibold text-amber-300 animate-pulse flex items-center gap-1 bg-amber-900/80 rounded border border-amber-700/80 whitespace-nowrap ${isScrolled ? 'text-[11px] px-2 py-0.5' : 'text-xs px-2.5 sm:px-3 py-1.5'}`}>
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping" />
                     Break-In Requested...
                   </span>
                   <button
                     onClick={async () => {
                       await cancelBreakIn();
                     }}
-                    className="px-3 py-1.5 rounded-lg bg-amber-900/90 hover:bg-amber-800 border border-amber-700/80 text-xs font-bold text-amber-200 cursor-pointer transition shadow"
+                    className={`rounded-lg bg-amber-900/90 hover:bg-amber-800 border border-amber-700/80 font-bold text-amber-200 cursor-pointer transition shadow whitespace-nowrap ${isScrolled ? 'text-[11px] px-2 py-1' : 'text-xs px-2.5 sm:px-3 py-1.5'}`}
                   >
                     Cancel
                   </button>
+                  <button
+                    onClick={async () => {
+                      await forceReleaseSingleUserLock();
+                    }}
+                    className={`rounded-lg bg-rose-700 hover:bg-rose-600 text-white font-bold cursor-pointer transition shadow whitespace-nowrap ${isScrolled ? 'text-[11px] px-2 py-1' : 'text-xs px-2.5 sm:px-3 py-1.5'}`}
+                    title="Immediately release lock and regain full access"
+                  >
+                    Force Unlock
+                  </button>
                 </div>
               ) : (
-                <button
-                  onClick={async () => {
-                    const res = await requestBreakIn();
-                    if (!res.success && res.message) {
-                      alert(res.message);
-                    }
-                  }}
-                  className="px-3.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-xs font-bold text-slate-950 shadow-md transition cursor-pointer flex items-center gap-1.5"
-                >
-                  <span>⚠️ Request Break-In (5s)</span>
-                </button>
+                <div className="flex items-center gap-1.5 w-full sm:w-auto justify-end">
+                  <button
+                    onClick={async () => {
+                      const res = await requestBreakIn();
+                      if (!res.success && res.message) {
+                        alert(res.message);
+                      }
+                    }}
+                    className={`rounded-lg bg-amber-500 hover:bg-amber-400 font-bold text-slate-950 shadow-md transition cursor-pointer flex items-center justify-center gap-1 whitespace-nowrap w-full sm:w-auto ${isScrolled ? 'text-[11px] px-2.5 py-1' : 'text-xs px-3.5 py-1.5 gap-1.5'}`}
+                  >
+                    <span>⚠️ Request Break-In (5s)</span>
+                  </button>
+                  <button
+                    onClick={async () => {
+                      await forceReleaseSingleUserLock();
+                    }}
+                    className={`rounded-lg bg-amber-900/80 hover:bg-amber-800 border border-amber-700 text-amber-200 font-bold cursor-pointer transition shadow whitespace-nowrap ${isScrolled ? 'text-[11px] px-2 py-1' : 'text-xs px-2.5 py-1.5'}`}
+                    title="Force release the lock if the other device is unresponsive or closed"
+                  >
+                    Force Unlock
+                  </button>
+                </div>
               )}
             </div>
           </div>
         )}
 
+        {/* Banner when Current User has Forced Single-User Mode */}
+        {operatingMode === 'single' && breakInCountdown === null && (!singleUserLock || singleUserLock.clientId === clientId) && (
+          <div className={`sticky top-2 z-40 bg-emerald-950/95 border border-emerald-500/60 text-emerald-100 shadow-2xl backdrop-blur-md transition-all duration-200 animate-scale-up w-full max-w-full box-border ${
+            isScrolled
+              ? 'px-3 sm:px-4 py-1.5 rounded-lg sm:rounded-xl mb-2.5 flex flex-row items-center justify-between gap-2 text-xs overflow-hidden'
+              : 'p-3 sm:p-4 rounded-xl mb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 sm:gap-3 text-sm'
+          }`}>
+            <div className={`flex items-start sm:items-center min-w-0 w-full sm:w-auto flex-1 ${isScrolled ? 'gap-2 truncate' : 'gap-2.5 sm:gap-3'}`}>
+              {isScrolled ? (
+                <span className="text-sm shrink-0">🔒</span>
+              ) : (
+                <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-lg sm:rounded-xl bg-emerald-500/20 border border-emerald-400/50 flex items-center justify-center shrink-0 shadow-inner mt-0.5 sm:mt-0">
+                  <span className="text-base sm:text-lg">🔒</span>
+                </div>
+              )}
+              <div className={`min-w-0 flex-1 ${isScrolled ? 'truncate' : ''}`}>
+                <div className={`flex items-center gap-1.5 sm:gap-2 ${isScrolled ? 'truncate' : 'flex-wrap'}`}>
+                  <strong className={`text-white font-bold ${isScrolled ? 'text-xs truncate' : 'text-xs sm:text-sm'}`}>
+                    Single-User Mode (Exclusive Lock) Active
+                  </strong>
+                  <span className="hidden sm:inline-flex px-1.5 py-0.5 rounded-full text-[10px] bg-emerald-500/30 text-emerald-300 font-bold border border-emerald-500/50 uppercase tracking-wider shrink-0">
+                    Zero-Lag Local
+                  </span>
+                </div>
+                {!isScrolled && (
+                  <p className="text-xs text-emerald-200/90 mt-0.5 leading-snug whitespace-normal break-words">
+                    Local device caching active with zero network latency. Remote changes from other devices are locked out. Auto-times out after 5 minutes of inactivity.
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div className={`flex items-center gap-2 shrink-0 ${isScrolled ? '' : 'w-full sm:w-auto justify-end pt-1.5 sm:pt-0 border-t sm:border-t-0 border-emerald-900/50'}`}>
+              <button
+                onClick={async () => {
+                  await flushAllPendingSyncs();
+                }}
+                className={`rounded-lg bg-emerald-900/80 hover:bg-emerald-800 border border-emerald-600/60 font-bold text-emerald-200 cursor-pointer transition shadow whitespace-nowrap flex-1 sm:flex-initial text-center justify-center ${isScrolled ? 'text-[11px] px-2.5 py-1' : 'text-xs px-3 py-1.5'}`}
+              >
+                Sync Now
+              </button>
+              <button
+                onClick={async () => {
+                  await setOperatingMode('auto');
+                }}
+                className={`rounded-lg bg-emerald-500 hover:bg-emerald-400 font-bold text-slate-950 shadow-md transition cursor-pointer flex items-center justify-center gap-1 whitespace-nowrap flex-1 sm:flex-initial text-center ${isScrolled ? 'text-[11px] px-2.5 py-1' : 'text-xs px-3.5 py-1.5 gap-1.5'}`}
+              >
+                <span>⚡ <span className={isScrolled ? 'hidden sm:inline' : ''}>Switch to </span>Auto</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Banner when Current User has Forced Multi-User Mode */}
+        {operatingMode === 'multi' && (
+          <div className={`sticky top-2 z-40 bg-blue-950/95 border border-blue-500/60 text-blue-100 shadow-2xl backdrop-blur-md transition-all duration-200 animate-scale-up w-full max-w-full box-border ${
+            isScrolled
+              ? 'px-3 sm:px-4 py-1.5 rounded-lg sm:rounded-xl mb-2.5 flex flex-row items-center justify-between gap-2 text-xs overflow-hidden'
+              : 'p-3 sm:p-4 rounded-xl mb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 sm:gap-3 text-sm'
+          }`}>
+            <div className={`flex items-start sm:items-center min-w-0 w-full sm:w-auto flex-1 ${isScrolled ? 'gap-2 truncate' : 'gap-2.5 sm:gap-3'}`}>
+              {isScrolled ? (
+                <Users className="w-4 h-4 text-blue-300 shrink-0" />
+              ) : (
+                <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-lg sm:rounded-xl bg-blue-500/20 border border-blue-400/50 flex items-center justify-center shrink-0 shadow-inner mt-0.5 sm:mt-0">
+                  <Users className="w-4 h-4 sm:w-5 sm:h-5 text-blue-300" />
+                </div>
+              )}
+              <div className={`min-w-0 flex-1 ${isScrolled ? 'truncate' : ''}`}>
+                <div className={`flex items-center gap-1.5 sm:gap-2 ${isScrolled ? 'truncate' : 'flex-wrap'}`}>
+                  <strong className={`text-white font-bold ${isScrolled ? 'text-xs truncate' : 'text-xs sm:text-sm'}`}>
+                    Multi-User Mode (Collaborative Sync) Forced
+                  </strong>
+                  {forcedMultiUser?.setByName && (
+                    <span className="px-1.5 py-0.5 rounded-full text-[10px] bg-blue-500/25 text-blue-200 border border-blue-400/40">
+                      by {forcedMultiUser.setByName}{forcedMultiUser.setByClientId === clientId ? ' (You)' : ''}
+                    </span>
+                  )}
+                  <span className="hidden sm:inline-flex px-1.5 py-0.5 rounded-full text-[10px] bg-blue-500/30 text-blue-300 font-bold border border-blue-500/50 uppercase tracking-wider shrink-0">
+                    Live Broadcasts
+                  </span>
+                </div>
+                {!isScrolled && (
+                  <p className="text-xs text-blue-200/90 mt-0.5 leading-snug whitespace-normal break-words">
+                    Rapid debounced synchronization (1.2s) & SSE broadcast streaming are forced on across devices. Auto-reverts to Auto mode after 5 minutes of inactivity.
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div className={`flex items-center gap-2 shrink-0 ${isScrolled ? '' : 'w-full sm:w-auto justify-end pt-1.5 sm:pt-0 border-t sm:border-t-0 border-blue-900/50'}`}>
+              <button
+                onClick={async () => {
+                  await flushAllPendingSyncs();
+                }}
+                className={`rounded-lg bg-blue-900/80 hover:bg-blue-800 border border-blue-600/60 font-bold text-blue-200 cursor-pointer transition shadow whitespace-nowrap flex-1 sm:flex-initial text-center justify-center ${isScrolled ? 'text-[11px] px-2.5 py-1' : 'text-xs px-3 py-1.5'}`}
+              >
+                Sync Now
+              </button>
+              <button
+                onClick={async () => {
+                  await setOperatingMode('auto');
+                }}
+                className={`rounded-lg bg-blue-500 hover:bg-blue-400 font-bold text-slate-950 shadow-md transition cursor-pointer flex items-center justify-center gap-1 whitespace-nowrap flex-1 sm:flex-initial text-center ${isScrolled ? 'text-[11px] px-2.5 py-1' : 'text-xs px-3.5 py-1.5 gap-1.5'}`}
+              >
+                <span>⚡ <span className={isScrolled ? 'hidden sm:inline' : ''}>Switch to </span>Auto</span>
+              </button>
+            </div>
+          </div>
+        )}
+
         {state.isPreviewMode && (
-          <div className="bg-cyan-950/90 border border-cyan-500/40 text-cyan-200 px-4 py-3 rounded-xl mb-4 flex flex-col sm:flex-row items-center justify-between gap-3 text-sm animate-scale-up shadow-xl backdrop-blur">
-            <div className="flex items-center gap-2.5 min-w-0">
-              <span className="flex h-2.5 w-2.5 relative shrink-0">
+          <div className="bg-cyan-950/90 border border-cyan-500/40 text-cyan-200 p-3 sm:px-4 sm:py-3 rounded-xl mb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 sm:gap-3 text-sm animate-scale-up shadow-xl backdrop-blur w-full max-w-full box-border">
+            <div className="flex items-start sm:items-center gap-2.5 min-w-0 flex-1">
+              <span className="flex h-2.5 w-2.5 relative shrink-0 mt-1 sm:mt-0">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
                 <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-cyan-400"></span>
               </span>
-              <span className="truncate">
-                <strong className="text-white">👁️ Live Snapshot Preview Active (Read-Only):</strong> Viewing backup <code className="bg-cyan-900/80 border border-cyan-700/60 px-1.5 py-0.5 rounded text-cyan-200 font-mono text-xs font-bold">{state.previewBackupFilename || 'Snapshot'}</code>. All database modifications are disabled.
+              <span className="text-xs sm:text-sm whitespace-normal break-words min-w-0 flex-1">
+                <strong className="text-white">👁️ Live Snapshot Preview Active (Read-Only):</strong> Viewing backup <code className="bg-cyan-900/80 border border-cyan-700/60 px-1.5 py-0.5 rounded text-cyan-200 font-mono text-xs font-bold break-all">{state.previewBackupFilename || 'Snapshot'}</code>. All database modifications are disabled.
               </span>
             </div>
             <button
               onClick={handleEndPreviewMode}
               disabled={isPreviewTransitioning}
-              className="bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-cool-gray-950 font-extrabold px-4 py-1.5 rounded-lg text-xs transition duration-150 shadow focus:outline-none cursor-pointer whitespace-nowrap shrink-0"
+              className="bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-cool-gray-950 font-extrabold px-4 py-1.5 rounded-lg text-xs transition duration-150 shadow focus:outline-none cursor-pointer whitespace-nowrap shrink-0 w-full sm:w-auto text-center justify-center"
             >
               {isPreviewTransitioning ? 'Exiting Preview...' : 'Exit Preview Mode'}
             </button>
@@ -1533,20 +1933,20 @@ export default function App() {
         )}
 
         {state.isDemoMode && !state.isPreviewMode && (
-          <div className="bg-amber-950/80 border border-amber-500/30 text-amber-300 px-4 py-3 rounded-xl mb-4 flex flex-col sm:flex-row items-center justify-between gap-3 text-sm animate-scale-up shadow-lg">
-            <div className="flex items-center gap-2">
-              <span className="flex h-2.5 w-2.5 relative">
+          <div className="bg-amber-950/80 border border-amber-500/30 text-amber-300 p-3 sm:px-4 sm:py-3 rounded-xl mb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 sm:gap-3 text-sm animate-scale-up shadow-lg w-full max-w-full box-border">
+            <div className="flex items-start sm:items-center gap-2 min-w-0 flex-1">
+              <span className="flex h-2.5 w-2.5 relative shrink-0 mt-1 sm:mt-0">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
                 <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-amber-500"></span>
               </span>
-              <span>
+              <span className="text-xs sm:text-sm whitespace-normal break-words min-w-0 flex-1">
                 <strong>Demo Sandbox Playground Active:</strong> You are inside a safe sandboxed environment. All edits are temporary and will be completely discarded when you exit.
               </span>
             </div>
             <button
               onClick={handleEndDemo}
               disabled={isDemoTransitioning}
-              className="bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-cool-gray-950 font-bold px-4 py-1.5 rounded-lg text-xs transition duration-150 shadow focus:outline-none cursor-pointer whitespace-nowrap"
+              className="bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-cool-gray-950 font-bold px-4 py-1.5 rounded-lg text-xs transition duration-150 shadow focus:outline-none cursor-pointer whitespace-nowrap shrink-0 w-full sm:w-auto text-center justify-center"
             >
               {isDemoTransitioning ? 'Exiting...' : 'Exit & Discard'}
             </button>
@@ -1563,7 +1963,7 @@ export default function App() {
                 </div>
 
                 {/* View Switches on Top Left Header (Products, Freezer, Display) */}
-                {currentView !== 'library' && currentView !== 'history' && currentView !== 'reconcile' && currentView !== 'users' && currentView !== 'offsite' && currentView !== 'butcher_records' && (
+                {currentView !== 'library' && currentView !== 'history' && currentView !== 'reconcile' && currentView !== 'users' && currentView !== 'offsite' && currentView !== 'butcher_records' && currentView !== 'traceability' && (
                   <div className="flex items-center gap-1.5 ml-1">
                     <div className="flex items-center rounded-lg bg-cool-gray-850 border border-cool-gray-700 p-0.5">
                         <button 
@@ -1621,27 +2021,28 @@ export default function App() {
 
                 {currentView === 'offsite' && (
                   <div className="flex items-center gap-1.5 sm:gap-2.5 ml-1">
-                    {/* 4 Main View Sub-Tabs */}
+                    {/* Off-Site View Sub-Tabs: 3 Primary (Workspace, Storage Hierarchy, Movements) + Dynamic (Movement Scanner, Staging Worksheet) */}
                     <div className="flex items-center rounded-lg bg-cool-gray-850 border border-cool-gray-700 p-0.5" id="offsite-header-subtabs">
                       {(() => {
                         const tabs = [
                           { id: 'sheet', label: 'Workspace', icon: '📋', desc: 'Main CSV spreadsheet with condensed identical items or location hierarchy trees' },
-                          { id: 'hierarchy', label: 'Storage Hierarchy', icon: '🌳', desc: 'Interactive location, pallet, box, and meat cuts hierarchical tree explorer' }
+                          { id: 'hierarchy', label: 'Storage Hierarchy', icon: '🌳', desc: 'Interactive location, pallet, box, and meat cuts hierarchical tree explorer' },
+                          { id: 'history', label: 'Movements', icon: '🚚', desc: 'View historical/executed movement orders and details of what was moved' }
                         ];
-                        const hasStaged = (state.offSiteEntries || []).some((e: any) => e.staged);
-                        if (hasStaged) {
-                          tabs.push({ id: 'staging-worksheet', label: 'Staging Worksheet', icon: '📝', desc: 'Configure packaging, assign weights, locations, pallets, and serialize items' });
-                        }
                         const hasFinalized = (state.movementOrders || []).some((o: any) => o.status === 'finalized');
                         if (hasFinalized) {
                           tabs.push({ id: 'active-movement', label: 'Movement Scanner', icon: '⚡', desc: 'Execute live movement orders via interactive barcode scan and loading sheets' });
                         }
-                        tabs.push({ id: 'history', label: 'Movements', icon: '🚚', desc: 'View historical/executed movement orders and details of what was moved' });
+                        const hasStaged = (state.offSiteEntries || []).some((e: any) => e.staged);
+                        if (hasStaged) {
+                          tabs.push({ id: 'staging-worksheet', label: 'Staging Worksheet', icon: '📝', desc: 'Configure packaging, assign weights, locations, pallets, and serialize items' });
+                        }
                         return tabs.map(m => {
                           const isActive = offsiteSubTab === m.id;
                           return (
                             <button
                               key={m.id}
+                              id={`offsite-subtab-${m.id}`}
                               onClick={() => setOffsiteSubTab(m.id as any)}
                               type="button"
                               className={`px-2 sm:px-3 py-1 text-[11px] sm:text-xs font-bold transition-all rounded-md cursor-pointer flex items-center gap-1 ${
@@ -1713,6 +2114,11 @@ export default function App() {
                       </span>
                       <span className="hidden sm:inline shrink-0">🚚 {activeOrder.name} ({activeOrder.status === 'planning' ? 'Planning' : 'Finalized'})</span>
                       <span className="sm:hidden text-[10px] font-black shrink-0">🚚 {activeOrder.name.slice(0, 6)}</span>
+                      {activeOrders.length > 1 && (
+                        <span className="text-[10px] font-black bg-indigo-500/25 text-indigo-300 border border-indigo-500/40 px-1.5 py-0.2 rounded-full shrink-0">
+                          +{activeOrders.length - 1}
+                        </span>
+                      )}
                       <ChevronDown size={12} className={`transition-transform duration-200 shrink-0 ${isMovementPopdownOpen ? 'rotate-180' : ''}`} />
                     </button>
 
@@ -1722,6 +2128,7 @@ export default function App() {
                         state={state}
                         dispatch={dispatch}
                         onClose={() => setIsMovementPopdownOpen(false)}
+                        onSelectOrder={handleSelectMovementOrder}
                       />
                     )}
                   </div>
@@ -1741,40 +2148,54 @@ export default function App() {
 
 
 
-                {/* Combined Sync, Undo, Redo, and History Dropdown Menu */}
+                {/* Combined Sync, Operating Mode, and History Dropdown Menu */}
                 <div className="relative">
                   <button
                     onClick={() => setIsSyncMenuOpen(!isSyncMenuOpen)}
                     className={`h-8 px-2 sm:px-2.5 rounded-lg flex items-center justify-center gap-1 sm:gap-1.5 border transition duration-150 focus:outline-none cursor-pointer text-[11px] sm:text-xs font-bold ${
-                      isSingleUserMode
+                      operatingMode === 'single' || isSingleUserMode
                         ? 'bg-emerald-950/40 text-emerald-300 border-emerald-500/50 shadow-md shadow-emerald-950/30 ring-1 ring-emerald-500/30'
                         : singleUserLock && singleUserLock.clientId !== clientId
                         ? 'bg-amber-950/40 text-amber-300 border-amber-500/50'
-                        : isPendingSync
+                        : operatingMode === 'multi'
+                        ? 'bg-blue-950/40 text-blue-300 border-blue-500/50 shadow-md shadow-blue-950/30 ring-1 ring-blue-500/30'
+                        : isSaving
+                        ? 'bg-amber-950/40 text-amber-300 border-amber-500/50 animate-pulse'
+                        : hasPendingChanges
                         ? 'bg-amber-950/20 text-amber-400 border-amber-500/25 animate-pulse'
                         : syncStatus === 'remote_editing'
                         ? 'bg-fuchsia-950/20 text-fuchsia-400 border-fuchsia-500/25 animate-pulse'
                         : syncStatus === 'synced'
-                        ? 'bg-cyan-950/20 text-cyan-400 border-cyan-500/20'
+                        ? isAutoMultiActive
+                          ? 'bg-blue-950/40 text-blue-300 border-blue-500/40 shadow-sm shadow-blue-950/20'
+                          : 'bg-cyan-950/20 text-cyan-400 border-cyan-500/20'
                         : syncStatus === 'connecting'
                         ? 'bg-amber-950/20 text-amber-400 border-amber-500/25 animate-pulse'
                         : 'bg-rose-950/20 text-rose-400 border-rose-500/20'
                     }`}
                     title={
-                      isSingleUserMode
+                      operatingMode === 'single' || isSingleUserMode
                         ? 'Single-User Mode Active (Zero-Lag Local Storage)'
                         : singleUserLock && singleUserLock.clientId !== clientId
                         ? `Locked in Single-User Mode by ${singleUserLock.holderName}`
-                        : `Session Sync State: ${isPendingSync ? 'Saving locally before sync...' : syncStatus === 'remote_editing' ? 'Someone else is actively editing...' : syncStatus === 'synced' ? 'Live connected' : syncStatus === 'connecting' ? 'Connecting...' : 'Disconnected (Click to sync)'}`
+                        : operatingMode === 'multi'
+                        ? 'Forced Multi-User Mode Active (Collaborative Sync)'
+                        : operatingMode === 'auto'
+                        ? isAutoMultiActive
+                          ? `Auto Mode: Multi-User Active (${activeClientCount} connected) — Live sync enabled`
+                          : 'Auto Mode: Single-User Active (Solo) — Zero-lag local buffering'
+                        : `Sync, History & Traceability (${isSaving ? 'Saving to server...' : hasPendingChanges ? 'Pending changes syncing...' : syncStatus === 'remote_editing' ? 'Someone else is actively editing...' : syncStatus === 'synced' ? 'Live connected' : syncStatus === 'connecting' ? 'Connecting...' : 'Disconnected (Click to sync)'})`
                     }
                   >
-                    {isSingleUserMode ? (
+                    {operatingMode === 'single' || isSingleUserMode ? (
                       <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping mr-0.5 shrink-0" />
                     ) : singleUserLock && singleUserLock.clientId !== clientId ? (
                       <span className="text-amber-400 text-xs shrink-0">🔒</span>
-                    ) : (
+                    ) : operatingMode === 'multi' ? (
+                      <Users className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                    ) : isSaving || isRefreshing ? (
                       <svg 
-                        className={`w-3.5 h-3.5 flex-shrink-0 ${isRefreshing ? 'animate-spin' : (isPendingSync || syncStatus === 'connecting' || syncStatus === 'remote_editing') ? 'animate-bounce' : ''}`} 
+                        className="w-3.5 h-3.5 flex-shrink-0 animate-spin text-cyan-400" 
                         xmlns="http://www.w3.org/2000/svg" 
                         fill="none" 
                         viewBox="0 0 24 24" 
@@ -1783,18 +2204,37 @@ export default function App() {
                       >
                         <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
                       </svg>
+                    ) : (hasPendingChanges || syncStatus === 'connecting' || syncStatus === 'remote_editing') ? (
+                      <svg 
+                        className="w-3.5 h-3.5 flex-shrink-0 animate-bounce text-amber-400" 
+                        xmlns="http://www.w3.org/2000/svg" 
+                        fill="none" 
+                        viewBox="0 0 24 24" 
+                        stroke="currentColor" 
+                        strokeWidth={2.5}
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
+                      </svg>
+                    ) : isAutoMultiActive || operatingMode === 'multi' ? (
+                      <Users className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                    ) : (
+                      <Zap className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
                     )}
                     <span className="hidden sm:inline">
-                      {isSingleUserMode
-                        ? 'Solo Mode'
+                      {operatingMode === 'single' || isSingleUserMode
+                        ? 'Single-User'
                         : singleUserLock && singleUserLock.clientId !== clientId
                         ? `Locked (${singleUserLock.holderName})`
-                        : isPendingSync
+                        : operatingMode === 'multi'
+                        ? 'Multi-User'
+                        : isSaving
                         ? 'Saving...'
+                        : hasPendingChanges
+                        ? 'Pending Changes'
                         : syncStatus === 'remote_editing'
                         ? 'User Editing...'
                         : syncStatus === 'synced'
-                        ? 'Live'
+                        ? (isAutoMultiActive ? `Auto: Multi (${activeClientCount})` : 'Auto: Single')
                         : syncStatus === 'connecting'
                         ? 'Syncing'
                         : 'Offline'}
@@ -1807,72 +2247,209 @@ export default function App() {
                   {isSyncMenuOpen && (
                     <>
                       <div className="fixed inset-0 z-40" onClick={() => setIsSyncMenuOpen(false)} />
-                      <div id="sync-status-dropdown" className="absolute right-0 mt-2 w-56 sm:w-64 bg-cool-gray-850 rounded-xl border border-cool-gray-700 shadow-2xl p-2 z-50 text-xs animate-scale-up max-h-[85vh] overflow-y-auto">
+                      <div id="sync-status-dropdown" className="absolute right-0 mt-2 w-64 sm:w-72 bg-cool-gray-850 rounded-xl border border-cool-gray-700 shadow-2xl p-2.5 z-50 text-xs animate-scale-up max-h-[85vh] overflow-y-auto">
                         
-                        {/* Single-User Mode Control Panel */}
-                        <div className="p-2.5 bg-cool-gray-900/80 rounded-lg border border-cool-gray-750 mb-2">
-                          <div className="text-[10px] uppercase tracking-wider text-cool-gray-400 font-bold mb-1.5 flex items-center justify-between">
+                        {/* 3-Way Operating Mode Control Panel */}
+                        <div className="p-2.5 bg-cool-gray-900/90 rounded-lg border border-cool-gray-750 mb-2.5 shadow-inner">
+                          <div className="text-[10px] uppercase tracking-wider text-cool-gray-400 font-bold mb-2 flex items-center justify-between">
                             <span>Operating Mode</span>
-                            {isSingleUserMode && (
-                              <span className="text-emerald-400 text-[9px] font-bold bg-emerald-950/80 px-1.5 py-0.5 rounded border border-emerald-800/40">
-                                Zero-Lag Active
-                              </span>
-                            )}
+                            <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider flex items-center gap-1 ${
+                              operatingMode === 'auto'
+                                ? isAutoMultiActive
+                                  ? 'bg-blue-950/80 text-blue-300 border-blue-800/50'
+                                  : 'bg-cyan-950/80 text-cyan-300 border-cyan-800/50'
+                                : operatingMode === 'multi'
+                                ? 'bg-blue-950/80 text-blue-300 border-blue-800/50'
+                                : 'bg-emerald-950/80 text-emerald-300 border-emerald-800/50'
+                            }`}>
+                              {operatingMode === 'auto' 
+                                ? (isAutoMultiActive ? `Auto: Multi (${activeClientCount})` : 'Auto: Single') 
+                                : operatingMode === 'multi' 
+                                ? 'Forced Multi' 
+                                : 'Exclusive Lock'}
+                            </span>
                           </div>
 
-                          {isSingleUserMode ? (
-                            <div className="space-y-2">
-                              <p className="text-[11px] text-emerald-300 font-medium leading-tight">
-                                🔒 Single-User Mode is active. Changes save locally with zero lag and auto-sync when idle or switching tabs.
+                          {/* 3-Mode Tab Buttons */}
+                          <div className="grid grid-cols-3 gap-1 bg-cool-gray-800/90 p-1 rounded-lg border border-cool-gray-700/60 mb-2.5">
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                await setOperatingMode('auto');
+                              }}
+                              className={`py-1.5 px-1 rounded-md text-[11px] font-bold flex items-center justify-center gap-1 transition cursor-pointer ${
+                                operatingMode === 'auto'
+                                  ? isAutoMultiActive
+                                    ? 'bg-blue-600 text-white shadow-sm'
+                                    : 'bg-cyan-600 text-white shadow-sm'
+                                  : 'text-cool-gray-400 hover:text-cool-gray-200 hover:bg-cool-gray-700/50'
+                              }`}
+                              title="Auto Mode (Default): Runs solo locally with zero lag and seamlessly upgrades to collaborative sync when multiple users are active."
+                            >
+                              {isAutoMultiActive ? <Users className="w-3 h-3 shrink-0" /> : <Zap className="w-3 h-3 shrink-0" />}
+                              <span>Auto</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                await setOperatingMode('multi');
+                              }}
+                              className={`py-1.5 px-1 rounded-md text-[11px] font-bold flex items-center justify-center gap-1 transition cursor-pointer ${
+                                operatingMode === 'multi'
+                                  ? 'bg-blue-600 text-white shadow-sm'
+                                  : 'text-cool-gray-400 hover:text-cool-gray-200 hover:bg-cool-gray-700/50'
+                              }`}
+                              title="Multi-User Mode: Forces collaborative 1.2s sync and live broadcast updates. Ideal for multi-device testing. Auto-times out after 5m."
+                            >
+                              <Users className="w-3 h-3 shrink-0" />
+                              <span>Multi</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                const res = await setOperatingMode('single');
+                                if (!res.success && res.message) {
+                                  setActionErrorModal({
+                                    isOpen: true,
+                                    actionType: 'SINGLE_USER_LOCK',
+                                    message: res.message
+                                  });
+                                }
+                              }}
+                              className={`py-1.5 px-1 rounded-md text-[11px] font-bold flex items-center justify-center gap-1 transition cursor-pointer ${
+                                operatingMode === 'single'
+                                  ? 'bg-emerald-600 text-slate-950 font-black shadow-sm'
+                                  : singleUserLock && singleUserLock.clientId !== clientId
+                                  ? 'text-amber-400 hover:bg-amber-950/40'
+                                  : 'text-cool-gray-400 hover:text-cool-gray-200 hover:bg-cool-gray-700/50'
+                              }`}
+                              title="Single-User Mode: Claims exclusive database lock for zero lag. Locks other users with break-in option. Auto-times out after 5m."
+                            >
+                              <User className="w-3 h-3 shrink-0" />
+                              <span>Single</span>
+                            </button>
+                          </div>
+
+                          {/* Mode Description & Contextual Actions */}
+                          {operatingMode === 'auto' && (
+                            <div className="space-y-2 text-[11px] text-cool-gray-300">
+                              <p className="leading-snug">
+                                <span className="font-semibold text-cyan-300">⚡ Smart Auto:</span> Default solo performance with zero-lag local memory. Automatically transitions to live collaborative sync when multiple users are active.
+                              </p>
+                              <div className="flex items-center justify-between text-[10px] text-cool-gray-400 pt-1.5 border-t border-cool-gray-800">
+                                <span className="font-medium">Current Status:</span>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setIsSyncMenuOpen(false);
+                                    setActiveModal({ type: 'CONNECTED_CLIENTS' });
+                                  }}
+                                  className={`font-bold flex items-center gap-1.5 px-2 py-0.5 rounded cursor-pointer transition hover:scale-105 active:scale-95 ${
+                                    isAutoMultiActive 
+                                      ? 'bg-blue-950/90 hover:bg-blue-900/90 text-blue-300 border border-blue-800/60 shadow-sm' 
+                                      : 'bg-cyan-950/90 hover:bg-cyan-900/90 text-cyan-300 border border-cyan-800/60'
+                                  }`}
+                                  title="Click to view connected devices & active users"
+                                >
+                                  <span className={`w-1.5 h-1.5 rounded-full ${isAutoMultiActive ? 'bg-blue-400 animate-ping' : 'bg-cyan-400'}`} />
+                                  {isAutoMultiActive 
+                                    ? `Multi-User Active (${activeClientCount} Connected) ➔` 
+                                    : 'Single-User Active (Solo) ➔'}
+                                </button>
+                              </div>
+                            </div>
+                          )}
+
+                          {operatingMode === 'multi' && (
+                            <div className="space-y-2 text-[11px]">
+                              <p className="text-blue-200 leading-snug">
+                                <span className="font-semibold text-blue-300">👥 Forced Multi-User:</span> Real-time 1.2s debounced sync and SSE broadcasts are continuously active for live multi-device testing.
+                              </p>
+                              <div className="flex items-center justify-between text-[10px] text-cool-gray-400 pt-1 border-t border-cool-gray-800">
+                                <span className="font-medium">Active Clients:</span>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setIsSyncMenuOpen(false);
+                                    setActiveModal({ type: 'CONNECTED_CLIENTS' });
+                                  }}
+                                  className="font-bold flex items-center gap-1 px-2 py-0.5 rounded bg-blue-950/90 hover:bg-blue-900/90 text-blue-300 border border-blue-800/60 cursor-pointer transition hover:scale-105"
+                                  title="Click to view connected devices & active users"
+                                >
+                                  <span>{activeClientCount} Connected ➔</span>
+                                </button>
+                              </div>
+                              <p className="text-[10px] text-cool-gray-400 italic">
+                                Automatically reverts to Auto mode after 5 minutes of inactivity.
                               </p>
                               <button
+                                type="button"
                                 onClick={async () => {
-                                  await releaseSingleUserMode();
-                                  setIsSyncMenuOpen(false);
+                                  await setOperatingMode('auto');
+                                }}
+                                className="w-full py-1.5 px-2 bg-blue-600/30 hover:bg-blue-600/50 border border-blue-500/40 text-blue-200 hover:text-white font-bold rounded-md text-xs transition cursor-pointer flex items-center justify-center gap-1.5"
+                              >
+                                <span>⚡ Revert to Auto Mode</span>
+                              </button>
+                            </div>
+                          )}
+
+                          {operatingMode === 'single' && (
+                            <div className="space-y-2 text-[11px]">
+                              <p className="text-emerald-200 leading-snug">
+                                <span className="font-semibold text-emerald-300">🔒 Exclusive Lock Active:</span> Changes save with zero latency locally. Remote edits from other users are locked out.
+                              </p>
+                              <p className="text-[10px] text-cool-gray-400 italic">
+                                Automatically releases and reverts to Auto after 5 minutes of inactivity.
+                              </p>
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  await setOperatingMode('auto');
                                 }}
                                 className="w-full py-1.5 px-2 bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-bold rounded-md text-xs transition cursor-pointer flex items-center justify-center gap-1.5 shadow"
                               >
-                                <span>⚡ Exit Solo Mode & Sync</span>
+                                <span>⚡ Release Lock & Return to Auto</span>
                               </button>
                             </div>
-                          ) : singleUserLock && singleUserLock.clientId !== clientId ? (
-                            <div className="space-y-2">
-                              <p className="text-[11px] text-amber-300 leading-tight">
-                                🔒 Locked in Single-User Mode by <span className="font-bold text-white">{singleUserLock.holderName}</span>.
+                          )}
+
+                          {/* Break-in prompt if another user holds the single-user lock while we are in Auto or Multi */}
+                          {operatingMode !== 'single' && singleUserLock && singleUserLock.clientId !== clientId && (
+                            <div className="mt-2 pt-2 border-t border-amber-900/60 space-y-1.5">
+                              <p className="text-[11px] text-amber-300 leading-snug">
+                                🔒 Single-User lock held by <span className="font-bold text-white">{singleUserLock.holderName}</span>.
                               </p>
-                              <button
-                                onClick={async () => {
-                                  await requestBreakIn();
-                                  setIsSyncMenuOpen(false);
-                                }}
-                                className="w-full py-1.5 px-2 bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold rounded-md text-xs transition cursor-pointer flex items-center justify-center gap-1.5 shadow"
-                              >
-                                <span>⚠️ Request Break-In (5s)</span>
-                              </button>
-                            </div>
-                          ) : (
-                            <div className="space-y-2">
-                              <p className="text-[11px] text-cool-gray-400 leading-tight">
-                                Live multi-user sync. Switch to Single-User Mode to eliminate refresh lag during fast edits.
-                              </p>
-                              <button
-                                onClick={async () => {
-                                  const res = await claimSingleUserMode();
-                                  if (!res.success && res.message) {
-                                    alert(res.message);
-                                  }
-                                  setIsSyncMenuOpen(false);
-                                }}
-                                className="w-full py-1.5 px-2 bg-cyan-600/30 hover:bg-cyan-600/50 border border-cyan-500/40 text-cyan-200 hover:text-white font-bold rounded-md text-xs transition cursor-pointer flex items-center justify-center gap-1.5"
-                              >
-                                <span>🔒 Enable Single-User Mode</span>
-                              </button>
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    await requestBreakIn();
+                                  }}
+                                  className="flex-1 py-1.5 px-2 bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold rounded-md text-xs transition cursor-pointer flex items-center justify-center gap-1.5 shadow"
+                                >
+                                  <span>⚠️ Break-In (5s)</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    await forceReleaseSingleUserLock();
+                                  }}
+                                  className="py-1.5 px-2 bg-amber-900/80 hover:bg-amber-800 text-amber-200 border border-amber-700 font-bold rounded-md text-xs transition cursor-pointer flex items-center justify-center shadow"
+                                  title="Force unlock if other device is closed"
+                                >
+                                  Force Unlock
+                                </button>
+                              </div>
                             </div>
                           )}
                         </div>
 
                         <button
-                          onClick={() => {
+                          onClick={async () => {
+                            await flushAllPendingSyncs();
                             handleManualRefresh();
                             setIsSyncMenuOpen(false);
                           }}
@@ -1889,13 +2466,19 @@ export default function App() {
                             >
                               <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
                             </svg>
-                            Sync Status
+                            Sync Now
                           </span>
                           <span className={`text-[10px] uppercase font-bold tracking-wide px-1.5 py-0.5 rounded ${
-                            isSingleUserMode
+                            operatingMode === 'single' || isSingleUserMode
                               ? 'bg-emerald-950/80 text-emerald-400 border border-emerald-850/40'
-                              : isPendingSync
+                              : operatingMode === 'multi'
+                              ? 'bg-blue-950/80 text-blue-400 border border-blue-850/40'
+                              : isSaving
+                              ? 'bg-amber-950/80 text-amber-300 border border-amber-850/40 animate-pulse'
+                              : hasPendingChanges
                               ? 'bg-amber-950/80 text-amber-400 border border-amber-850/40 animate-pulse'
+                              : isAutoMultiActive
+                              ? 'bg-blue-950/80 text-blue-400 border border-blue-850/40'
                               : syncStatus === 'remote_editing'
                               ? 'bg-fuchsia-950/80 text-fuchsia-400 border border-fuchsia-850/40 animate-pulse'
                               : syncStatus === 'synced' 
@@ -1904,67 +2487,78 @@ export default function App() {
                               ? 'bg-amber-950/80 text-amber-400 border border-amber-850/40'
                               : 'bg-rose-950/80 text-rose-400 border border-rose-850/40'
                           }`}>
-                            {isSingleUserMode ? 'Solo Cached' : isPendingSync ? 'Saving locally' : syncStatus === 'remote_editing' ? 'User Editing' : syncStatus === 'synced' ? 'Synced' : syncStatus === 'connecting' ? 'Connecting' : 'Offline'}
+                            {operatingMode === 'single' || isSingleUserMode ? 'Single-User' : operatingMode === 'multi' ? 'Multi-User' : isSaving ? 'Saving...' : hasPendingChanges ? 'Pending Sync' : isAutoMultiActive ? `Auto: Multi (${activeClientCount})` : syncStatus === 'remote_editing' ? 'User Editing' : syncStatus === 'synced' ? 'Auto: Single' : syncStatus === 'connecting' ? 'Connecting' : 'Offline'}
+                          </span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsSyncMenuOpen(false);
+                            setActiveModal({ type: 'CONNECTED_CLIENTS' });
+                          }}
+                          className="flex w-full items-center justify-between gap-2 px-3 py-2 rounded-lg text-left text-cool-gray-300 hover:bg-cool-gray-700 hover:text-white transition font-medium cursor-pointer"
+                        >
+                          <span className="flex items-center gap-2">
+                            <Users className="w-3.5 h-3.5 text-cyan-400" />
+                            <span>Connected Devices</span>
+                          </span>
+                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-cool-gray-800 border border-cool-gray-700 text-cool-gray-300">
+                            {activeClientCount} {activeClientCount === 1 ? 'Device' : 'Devices'}
                           </span>
                         </button>
 
                         <div className="h-px bg-cool-gray-700/60 my-1" />
 
-                        <button
-                          onClick={() => {
-                            dispatch({ type: 'UNDO' });
-                            setIsSyncMenuOpen(false);
-                          }}
-                          disabled={undoStack.length === 0}
-                          className={`flex w-full items-center justify-between gap-2 px-3 py-2 rounded-lg text-left transition font-medium ${
-                            undoStack.length > 0 
-                              ? 'text-cool-gray-200 hover:bg-cool-gray-700 hover:text-white cursor-pointer' 
-                              : 'text-cool-gray-600 cursor-not-allowed'
-                          }`}
-                        >
-                          <span className="flex items-center gap-2">
-                            <Undo className={`w-3.5 h-3.5 ${undoStack.length > 0 ? 'text-cyan-400' : 'text-cool-gray-600'}`} />
-                            Undo Action
-                          </span>
-                          <span className="text-[10px] text-cool-gray-500 font-mono">
-                            {undoStack.length}
-                          </span>
-                        </button>
-
-                        <button
-                          onClick={() => {
-                            dispatch({ type: 'REDO' });
-                            setIsSyncMenuOpen(false);
-                          }}
-                          disabled={redoStack.length === 0}
-                          className={`flex w-full items-center justify-between gap-2 px-3 py-2 rounded-lg text-left transition font-medium ${
-                            redoStack.length > 0 
-                              ? 'text-cool-gray-200 hover:bg-cool-gray-700 hover:text-white cursor-pointer' 
-                              : 'text-cool-gray-605 cursor-not-allowed'
-                          }`}
-                        >
-                          <span className="flex items-center gap-2">
-                            <Redo className={`w-3.5 h-3.5 ${redoStack.length > 0 ? 'text-cyan-400' : 'text-cool-gray-600'}`} />
-                            Redo Action
-                          </span>
-                          <span className="text-[10px] text-cool-gray-500 font-mono">
-                            {redoStack.length}
-                          </span>
-                        </button>
-
-                        <div className="h-px bg-cool-gray-700/60 my-1" />
+                        {/* Audit & Traceability Section */}
+                        <div className="px-3 py-1 text-[10px] font-bold text-cool-gray-400 uppercase tracking-wider">
+                          <span>Audit & Traceability</span>
+                        </div>
 
                         <button
                           onClick={() => {
                             setCurrentView('history');
                             setIsSyncMenuOpen(false);
                           }}
-                          className={`flex w-full items-center gap-2 px-3 py-2 rounded-lg text-left transition font-medium cursor-pointer ${
-                            currentView === 'history' ? 'bg-cyan-600/30 text-white font-semibold' : 'text-cool-gray-300 hover:bg-cool-gray-700 hover:text-white'
+                          className={`flex w-full items-center justify-between px-3 py-2 rounded-lg text-left transition font-medium cursor-pointer ${
+                            currentView === 'history' 
+                              ? 'bg-indigo-600/25 text-indigo-300 font-semibold' 
+                              : 'text-cool-gray-300 hover:bg-cool-gray-700 hover:text-white'
                           }`}
                         >
-                          <History className="w-3.5 h-3.5 text-indigo-400" />
-                          <span>Audit History</span>
+                          <span className="flex items-center gap-2">
+                            <History className="w-3.5 h-3.5 text-indigo-400" />
+                            <span>Audit History Log</span>
+                          </span>
+                          {currentView === 'history' && (
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-3 h-3 text-indigo-400 shrink-0">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                            </svg>
+                          )}
+                        </button>
+
+                        <button
+                          onClick={() => {
+                            setCurrentView('traceability');
+                            setIsSyncMenuOpen(false);
+                          }}
+                          className={`flex w-full items-center justify-between px-3 py-2 rounded-lg text-left transition font-medium cursor-pointer ${
+                            currentView === 'traceability' 
+                              ? 'bg-amber-500/25 text-amber-300 font-semibold' 
+                              : 'text-cool-gray-300 hover:bg-cool-gray-700 hover:text-white'
+                          }`}
+                        >
+                          <span className="flex items-center gap-2">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-3.5 h-3.5 text-amber-400">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
+                            </svg>
+                            <span>Item Traceability</span>
+                          </span>
+                          {currentView === 'traceability' && (
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-3 h-3 text-amber-400 shrink-0">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                            </svg>
+                          )}
                         </button>
                       </div>
                     </>
@@ -2140,395 +2734,483 @@ export default function App() {
             </div>
 
             {/* Expanded Search & Filters Row */}
-            {currentView !== 'library' && currentView !== 'history' && currentView !== 'reconcile' && currentView !== 'users' && currentView !== 'offsite' && currentView !== 'butcher_records' && isSearchFilterOpen && (
-              <div className="mt-2.5 pt-2.5 border-t border-cool-gray-800/80 animate-fade-in w-full text-xs bg-cool-gray-900/60 p-3 rounded-lg border border-cool-gray-800/50">
-                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-                  
-                  {/* Compact Search input box */}
-                  <div className="relative w-full lg:max-w-[280px] shrink self-center">
-                    <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-2.5">
-                      <SearchIcon className="h-3.5 w-3.5 text-cyan-400/80" />
+            {currentView !== 'library' && currentView !== 'history' && currentView !== 'reconcile' && currentView !== 'users' && currentView !== 'offsite' && currentView !== 'butcher_records' && currentView !== 'traceability' && isSearchFilterOpen && (
+              <div className="mt-3 p-3 sm:p-4 bg-cool-gray-900/95 border border-cool-gray-750/90 rounded-xl shadow-xl shadow-black/30 backdrop-blur-md animate-fade-in text-xs space-y-3">
+                {/* Top Row: Search & Quick Visibility Toggles */}
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 pb-3 border-b border-cool-gray-800/80">
+                  {/* Search Input */}
+                  <div className="relative flex-grow max-w-lg">
+                    <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
+                      <SearchIcon className="h-3.5 w-3.5 text-cyan-400" />
                     </div>
                     <input
                       type="text"
                       autoFocus
-                      placeholder="Search items, freezers, notes..."
+                      placeholder="Search items, categories, locations, notes..."
                       value={searchTerm}
                       onChange={(e) => setSearchTerm(e.target.value)}
-                      className="block w-full rounded-md border-0 bg-cool-gray-850 pl-8 pr-7 text-cool-gray-100 ring-1 ring-inset ring-cool-gray-750 placeholder:text-cool-gray-500 focus:ring-2 focus:ring-inset focus:ring-cyan-500 py-1.5 text-xs transition duration-150"
+                      className="block w-full rounded-lg border-0 bg-cool-gray-850 pl-9 pr-8 text-cool-gray-100 ring-1 ring-inset ring-cool-gray-700 placeholder:text-cool-gray-500 focus:ring-2 focus:ring-inset focus:ring-cyan-500 py-1.5 text-xs transition"
                     />
                     {searchTerm && (
                       <button 
                         onClick={() => setSearchTerm('')} 
-                        className="absolute inset-y-0 right-0 flex items-center pr-2 text-cool-gray-400 hover:text-white cursor-pointer font-bold text-[10px]"
+                        className="absolute inset-y-0 right-0 flex items-center pr-2.5 text-cool-gray-400 hover:text-white cursor-pointer font-bold text-xs"
+                        title="Clear search input"
                       >
                         ✕
                       </button>
                     )}
                   </div>
 
-                  {/* Filter selectors panel */}
-                  <div className="flex flex-wrap items-center gap-3 lg:justify-end flex-grow w-full lg:w-auto">
-                    
-                    {/* Integrated Nested Category / Subcategory Dropdown */}
-                    <div className="flex items-center gap-1.5 shrink-0 w-full sm:w-auto">
-                      <span className="text-[10px] uppercase tracking-wider font-extrabold text-cool-gray-400 mr-0.5">Category:</span>
-                      <div className="w-full sm:min-w-[190px]">
-                        <select
-                          value={currentCategoryValue}
-                          onChange={(e) => handleCategorySelectChange(e.target.value)}
-                          className={`bg-cool-gray-850 text-xs font-bold rounded border py-1.5 px-3 pr-8 outline-none cursor-pointer focus:ring-1 w-full transition ${
-                            isDisplay 
-                              ? 'text-amber-400 focus:ring-amber-500 border-amber-600/30 hover:border-amber-500' 
-                              : 'text-cyan-400 focus:ring-cyan-500 border-cyan-600/30 hover:border-cyan-500'
-                          }`}
-                        >
-                          <option value="all">All Categories</option>
-                          {groupedCategories.map(group => (
-                            <React.Fragment key={group.primary}>
-                              <option value={`primary:${group.primary}`} className="font-bold text-cool-gray-100 bg-cool-gray-900">
-                                {group.primary} (All)
-                              </option>
-                              {group.subs.map(sub => (
-                                <option key={sub} value={`sub:${group.primary}:${sub}`} className="text-cool-gray-300 bg-cool-gray-900">
-                                  {group.primary} › {sub}
-                                </option>
-                              ))}
-                            </React.Fragment>
-                          ))}
-                        </select>
-                      </div>
-                    </div>
+                  {/* Visibility Toggles & Reset Actions */}
+                  <div className="flex items-center gap-2 flex-wrap shrink-0">
+                    {/* Hide Zero Qty / Hide Empty Toggle */}
+                    <label 
+                      className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border cursor-pointer select-none transition ${
+                        hideZeroQuantity 
+                          ? isDisplay ? 'bg-amber-950/40 border-amber-500/40 text-amber-300' : 'bg-cyan-950/40 border-cyan-500/40 text-cyan-300'
+                          : 'bg-cool-gray-850 border-cool-gray-750 text-cool-gray-400 hover:text-cool-gray-200'
+                      }`}
+                      title={currentView === 'freezer' ? "Hide empty containers and empty loose storage locations" : "Hide cuts and products with zero quantity"}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={hideZeroQuantity}
+                        onChange={(e) => setHideZeroQuantity(e.target.checked)}
+                        className={`h-3.5 w-3.5 rounded border-cool-gray-500 bg-cool-gray-700 cursor-pointer ${
+                          isDisplay ? 'text-amber-500 focus:ring-amber-500' : 'text-cyan-600 focus:ring-cyan-600'
+                        }`}
+                      />
+                      <span className="font-bold text-xs">{currentView === 'freezer' ? 'Hide Empty' : 'Hide Zero Qty'}</span>
+                    </label>
 
-                    {/* Storage Location Selector */}
-                    <div className="flex items-center gap-1.5 shrink-0 w-full sm:w-auto">
-                      <span className="text-[10px] uppercase tracking-wider font-extrabold text-cool-gray-400 mr-0.5">Location:</span>
-                      <div className="w-full sm:min-w-[160px]">
-                        <select
-                          value={selectedFreezerId || 'all'}
-                          onChange={(e) => setSelectedFreezerId(e.target.value)}
-                          className={`bg-cool-gray-850 text-xs font-bold rounded border py-1.5 px-3 pr-8 outline-none cursor-pointer focus:ring-1 w-full transition ${
-                            isDisplay 
-                              ? 'text-amber-400 focus:ring-amber-500 border-amber-600/30 hover:border-amber-500' 
-                              : 'text-cyan-400 focus:ring-cyan-500 border-cyan-600/30 hover:border-cyan-500'
-                          }`}
-                        >
-                          <option value="all">All {isDisplay ? 'Display Cases' : 'Freezers'}</option>
-                          {!isDisplay && <option value="staging">🛒 Staging Area</option>}
-                          {filterFreezers.map(f => (
-                            <option key={f.id} value={f.id}>{f.name} {f.isSpecial ? '🌟' : ''}</option>
-                          ))}
-                        </select>
-                      </div>
-                    </div>
-
-                    {/* Custom Multiselect Checkbox Tag Filter Dropdown */}
-                    {(currentView === 'product' || currentView === 'display_case' || currentView === 'freezer') && (
-                      <div className="flex items-center gap-1.5 shrink-0 w-full sm:w-auto relative">
-                        <span className="text-[10px] uppercase tracking-wider font-extrabold text-cool-gray-400 mr-0.5">Tag Filter:</span>
-                        <div className="w-full sm:min-w-[180px] relative">
-                          <button
-                            type="button"
-                            onClick={() => setIsTagDropdownOpen(!isTagDropdownOpen)}
-                            className={`bg-cool-gray-850 text-xs font-bold rounded border py-1.5 px-3 pr-8 text-left outline-none cursor-pointer focus:ring-1 w-full transition flex items-center justify-between select-none ${
-                              isDisplay 
-                                ? 'text-amber-400 focus:ring-amber-500 border-amber-600/30 hover:border-amber-500' 
-                                : 'text-cyan-400 focus:ring-cyan-500 border-cyan-600/30 hover:border-cyan-500'
-                            }`}
-                          >
-                            <span className="truncate">
-                              {activeCheckedTags.length === allTagIds.length ? (
-                                'All Tags Included'
-                              ) : activeCheckedTags.length === 0 ? (
-                                'No Tags'
-                              ) : activeCheckedTags.length === 1 ? (
-                                (() => {
-                                  const singleId = activeCheckedTags[0];
-                                  if (singleId === 'untagged') return 'Untagged Items';
-                                  const t = (state.tags || []).find(tag => tag.id === singleId);
-                                  return t ? t.name : singleId;
-                                })()
-                              ) : (
-                                `${activeCheckedTags.length} Tags Selected`
-                              )}
-                            </span>
-                            <span className="absolute inset-y-0 right-0 flex items-center pr-2 pointer-events-none">
-                              <svg className="h-4 w-4 text-cool-gray-400" viewBox="0 0 20 20" fill="currentColor">
-                                <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
-                              </svg>
-                            </span>
-                          </button>
-
-                          {isTagDropdownOpen && (
-                            <>
-                              {/* Click outside backdrop */}
-                              <div className="fixed inset-0 z-40" onClick={() => setIsTagDropdownOpen(false)} />
-                              
-                              {/* Dropdown Menu */}
-                              <div className="absolute left-0 mt-2 w-64 rounded-xl bg-cool-gray-900 border border-cool-gray-750 shadow-2xl py-1.5 z-50 text-xs animate-fade-in origin-top-left max-h-80 overflow-y-auto">
-                                <div className="px-3 py-1 border-b border-cool-gray-800 flex items-center justify-between gap-2 font-semibold text-[10px] text-cool-gray-400">
-                                  <span>TAGS FILTER CONTROLS</span>
-                                  <div className="flex gap-2">
-                                    <button 
-                                      type="button"
-                                      onClick={() => setCheckedTagIds(allTagIds)}
-                                      className="text-cyan-400 hover:underline cursor-pointer select-none"
-                                    >
-                                      All
-                                    </button>
-                                    <span className="text-cool-gray-600">|</span>
-                                    <button 
-                                      type="button"
-                                      onClick={() => setCheckedTagIds([])}
-                                      className="text-cyan-400 hover:underline cursor-pointer select-none"
-                                    >
-                                      None
-                                    </button>
-                                  </div>
-                                </div>
-                                <div className="py-1">
-                                  {/* Untagged virtual option */}
-                                  <label className="flex items-center gap-2.5 px-3.5 py-2 hover:bg-cool-gray-800 transition cursor-pointer select-none">
-                                    <input 
-                                      type="checkbox"
-                                      checked={activeCheckedTags.includes('untagged')}
-                                      onChange={() => {
-                                        const next = activeCheckedTags.includes('untagged')
-                                          ? activeCheckedTags.filter(id => id !== 'untagged')
-                                          : [...activeCheckedTags, 'untagged'];
-                                        setCheckedTagIds(next);
-                                      }}
-                                      className={`h-4 w-4 rounded border-cool-gray-500 bg-cool-gray-700 cursor-pointer ${
-                                        isDisplay ? 'text-amber-500 focus:ring-amber-500' : 'text-cyan-600 focus:ring-cyan-600'
-                                      }`}
-                                    />
-                                    <div className="flex items-center gap-1.5 overflow-hidden">
-                                      <span className="w-2.5 h-2.5 rounded-full bg-gray-400 shrink-0" />
-                                      <span className="text-cool-gray-200 font-bold truncate">Untagged Items</span>
-                                    </div>
-                                  </label>
-
-                                  {/* Dynamic tags from DB */}
-                                  {(state.tags || []).map(t => {
-                                    const isChecked = activeCheckedTags.includes(t.id);
-                                    return (
-                                      <label key={t.id} className="flex items-center gap-2.5 px-3.5 py-2 hover:bg-cool-gray-800 transition cursor-pointer select-none">
-                                        <input 
-                                          type="checkbox"
-                                          checked={isChecked}
-                                          onChange={() => {
-                                            const next = isChecked
-                                              ? activeCheckedTags.filter(id => id !== t.id)
-                                              : [...activeCheckedTags, t.id];
-                                            setCheckedTagIds(next);
-                                          }}
-                                          className={`h-4 w-4 rounded border-cool-gray-500 bg-cool-gray-700 cursor-pointer ${
-                                            isDisplay ? 'text-amber-500 focus:ring-amber-500' : 'text-cyan-600 focus:ring-cyan-600'
-                                          }`}
-                                        />
-                                        <div className="flex items-center gap-1.5 overflow-hidden">
-                                          <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: t.color || '#60a5fa' }} />
-                                          <span className="text-cool-gray-200 font-bold truncate">
-                                            {t.id === 'use-first' ? '🍳 ' : t.id === 'not-for-sale' ? '🛑 ' : '🏷️ '}{t.name}
-                                          </span>
-                                        </div>
-                                      </label>
-                                    );
-                                  })}
-                                </div>
-                              </div>
-                            </>
-                          )}
-                        </div>
-                      </div>
+                    {/* Show 0 Qty w/ On-Site Stock for Display View */}
+                    {currentView === 'display_case' && (
+                      <label className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border cursor-pointer select-none transition ${
+                        showZeroQtyWithStock 
+                          ? 'bg-amber-950/40 border-amber-500/40 text-amber-300 shadow-xs' 
+                          : 'bg-cool-gray-850 border-cool-gray-750 text-cool-gray-400 hover:text-cool-gray-200'
+                      }`}
+                      title="Show items with 0 display quantity if they have on-site backstock available to restock">
+                        <input
+                          type="checkbox"
+                          checked={showZeroQtyWithStock}
+                          onChange={(e) => setShowZeroQtyWithStock(e.target.checked)}
+                          className="h-3.5 w-3.5 rounded border-cool-gray-500 bg-cool-gray-700 text-amber-500 focus:ring-amber-500 cursor-pointer"
+                        />
+                        <span className="font-bold text-xs flex items-center gap-1">
+                          <span>⚡</span> Restock Backstock
+                        </span>
+                      </label>
                     )}
 
-                    {/* Other toggle options */}
-                    {(currentView === 'product' || currentView === 'display_case' || currentView === 'freezer') && (
-                      <div className="flex items-center gap-3 flex-wrap">
-                        <div className="flex items-center shrink-0 w-auto">
-                          <input
-                            id="global-hide-zero-box-compact"
-                            type="checkbox"
-                            checked={hideZeroQuantity}
-                            onChange={(e) => setHideZeroQuantity(e.target.checked)}
-                            className={`h-4 w-4 rounded border-cool-gray-500 bg-cool-gray-700 cursor-pointer ${
-                              isDisplay ? 'text-amber-500 focus:ring-amber-500' : 'text-cyan-600 focus:ring-cyan-600'
-                            }`}
-                          />
-                          <label htmlFor="global-hide-zero-box-compact" className="ml-2 block text-xs text-cool-gray-300 font-bold tracking-wide cursor-pointer select-none">
-                            Hide Zero Qty
-                          </label>
-                        </div>
+                    {/* Reset All Filters Button */}
+                    {(searchTerm || selectedPrimary || (selectedFreezerId && selectedFreezerId !== 'all') || (checkedTagIds !== null && checkedTagIds.length !== allTagIds.length) || !hideZeroQuantity) && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSearchTerm('');
+                          setSelectedPrimary(null);
+                          setSelectedSub(null);
+                          setSelectedFreezerId('all');
+                          setCheckedTagIds(allTagIds);
+                          setHideZeroQuantity(true);
+                          if (currentView === 'display_case') setShowZeroQtyWithStock(true);
+                        }}
+                        className="px-2.5 py-1.5 rounded-lg bg-cool-gray-800 hover:bg-cool-gray-750 text-cool-gray-400 hover:text-red-400 border border-cool-gray-700 transition flex items-center gap-1 font-bold text-xs cursor-pointer ml-auto sm:ml-0"
+                        title="Reset all search and filter values to default"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        <span>Reset All</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
 
-                        {currentView === 'display_case' && (
-                          <div className="flex items-center shrink-0 w-auto border-l border-cool-gray-750 pl-3">
-                            <input
-                              id="global-show-restock-with-stock-box"
-                              type="checkbox"
-                              checked={showZeroQtyWithStock}
-                              onChange={(e) => setShowZeroQtyWithStock(e.target.checked)}
-                              className="h-4 w-4 rounded border-cool-gray-500 bg-cool-gray-700 text-amber-500 focus:ring-amber-500 cursor-pointer"
-                            />
-                            <label
-                              htmlFor="global-show-restock-with-stock-box"
-                              className="ml-2 block text-xs text-amber-300 font-extrabold tracking-wide cursor-pointer select-none flex items-center gap-1"
-                              title="Show items with 0 display quantity if they have on-site backstock available to restock"
-                            >
-                              <span>⚡</span> Show 0 Qty w/ On-Site Stock
-                            </label>
-                          </div>
+                {/* Bottom Row: Filter Selectors & Sort Controls Grid */}
+                <div className={`grid grid-cols-1 sm:grid-cols-2 ${(currentView === 'product' || currentView === 'display_case') ? 'lg:grid-cols-4' : 'lg:grid-cols-3'} gap-3 pt-0.5`}>
+                  {/* 1. Category Selector */}
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] font-black uppercase text-cool-gray-400 tracking-wider flex items-center gap-1">
+                      <Tag className="w-3 h-3 text-cool-gray-400" /> Category:
+                    </label>
+                    <select
+                      value={currentCategoryValue}
+                      onChange={(e) => handleCategorySelectChange(e.target.value)}
+                      className={`bg-cool-gray-850 text-xs font-bold rounded-lg border py-2 px-3 outline-none cursor-pointer focus:ring-1 w-full transition ${
+                        selectedPrimary 
+                          ? isDisplay ? 'text-amber-400 border-amber-500/60 bg-amber-950/20' : 'text-cyan-400 border-cyan-500/60 bg-cyan-950/20'
+                          : 'text-cool-gray-300 border-cool-gray-700 hover:border-cool-gray-600'
+                      }`}
+                    >
+                      <option value="all">All Categories</option>
+                      {groupedCategories.map(group => (
+                        <React.Fragment key={group.primary}>
+                          <option value={`primary:${group.primary}`} className="font-bold text-cool-gray-100 bg-cool-gray-900">
+                            {group.primary} (All)
+                          </option>
+                          {group.subs.map(sub => (
+                            <option key={sub} value={`sub:${group.primary}:${sub}`} className="text-cool-gray-300 bg-cool-gray-900">
+                              {group.primary} › {sub}
+                            </option>
+                          ))}
+                        </React.Fragment>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* 2. Storage Location Selector */}
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] font-black uppercase text-cool-gray-400 tracking-wider flex items-center gap-1">
+                      <FreezerIcon className="w-3 h-3 text-cool-gray-400" /> Location:
+                    </label>
+                    <select
+                      value={selectedFreezerId || 'all'}
+                      onChange={(e) => setSelectedFreezerId(e.target.value)}
+                      className={`bg-cool-gray-850 text-xs font-bold rounded-lg border py-2 px-3 outline-none cursor-pointer focus:ring-1 w-full transition ${
+                        selectedFreezerId && selectedFreezerId !== 'all'
+                          ? isDisplay ? 'text-amber-400 border-amber-500/60 bg-amber-950/20' : 'text-cyan-400 border-cyan-500/60 bg-cyan-950/20'
+                          : 'text-cool-gray-300 border-cool-gray-700 hover:border-cool-gray-600'
+                      }`}
+                    >
+                      <option value="all">All {isDisplay ? 'Display Cases' : 'Freezers'}</option>
+                      {!isDisplay && <option value="staging">🛒 Staging Area</option>}
+                      {filterFreezers.map(f => (
+                        <option key={f.id} value={f.id}>{f.name} {f.isSpecial ? '🌟' : ''}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* 3. Tags Multi-Select Dropdown */}
+                  <div className="flex flex-col gap-1 relative">
+                    <label className="text-[10px] font-black uppercase text-cool-gray-400 tracking-wider flex items-center justify-between">
+                      <span className="flex items-center gap-1">
+                        <Tag className="w-3 h-3 text-cool-gray-400" /> Tags:
+                      </span>
+                      {activeCheckedTags.length !== allTagIds.length && (
+                        <span className={`text-[9px] font-extrabold ${isDisplay ? 'text-amber-400' : 'text-cyan-400'}`}>
+                          {activeCheckedTags.length}/{allTagIds.length} Active
+                        </span>
+                      )}
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setIsTagDropdownOpen(!isTagDropdownOpen)}
+                      className={`bg-cool-gray-850 text-xs font-bold rounded-lg border py-2 px-3 text-left outline-none cursor-pointer focus:ring-1 w-full transition flex items-center justify-between select-none ${
+                        activeCheckedTags.length !== allTagIds.length
+                          ? isDisplay ? 'text-amber-400 border-amber-500/60 bg-amber-950/20' : 'text-cyan-400 border-cyan-500/60 bg-cyan-950/20'
+                          : 'text-cool-gray-300 border-cool-gray-700 hover:border-cool-gray-600'
+                      }`}
+                    >
+                      <span className="truncate">
+                        {activeCheckedTags.length === allTagIds.length ? (
+                          'All Tags Included'
+                        ) : activeCheckedTags.length === 0 ? (
+                          'No Tags (Hidden)'
+                        ) : activeCheckedTags.length === 1 ? (
+                          (() => {
+                            const singleId = activeCheckedTags[0];
+                            if (singleId === 'untagged') return 'Untagged Items';
+                            const t = (state.tags || []).find(tag => tag.id === singleId);
+                            return t ? t.name : singleId;
+                          })()
+                        ) : (
+                          `${activeCheckedTags.length} Tags Selected`
                         )}
-                      </div>
+                      </span>
+                      <ChevronDown className="h-3.5 w-3.5 text-cool-gray-400 shrink-0 ml-1.5" />
+                    </button>
+
+                    {isTagDropdownOpen && (
+                      <>
+                        <div className="fixed inset-0 z-40" onClick={() => setIsTagDropdownOpen(false)} />
+                        <div className="absolute left-0 top-full mt-1.5 w-72 rounded-xl bg-cool-gray-900 border border-cool-gray-750 shadow-2xl py-1.5 z-50 text-xs animate-fade-in origin-top-left max-h-80 overflow-y-auto">
+                          <div className="px-3 py-1.5 border-b border-cool-gray-800 flex items-center justify-between gap-2 font-semibold text-[10px] text-cool-gray-400">
+                            <span>FILTER BY TAGS</span>
+                            <div className="flex gap-2">
+                              <button 
+                                type="button"
+                                onClick={() => setCheckedTagIds(allTagIds)}
+                                className="text-cyan-400 hover:underline cursor-pointer select-none font-bold"
+                              >
+                                Select All
+                              </button>
+                              <span className="text-cool-gray-600">|</span>
+                              <button 
+                                type="button"
+                                onClick={() => setCheckedTagIds([])}
+                                className="text-cyan-400 hover:underline cursor-pointer select-none font-bold"
+                              >
+                                Clear All
+                              </button>
+                            </div>
+                          </div>
+                          <div className="py-1">
+                            {/* Untagged virtual option */}
+                            <label className="flex items-center gap-2.5 px-3.5 py-2 hover:bg-cool-gray-800 transition cursor-pointer select-none">
+                              <input 
+                                type="checkbox"
+                                checked={activeCheckedTags.includes('untagged')}
+                                onChange={() => {
+                                  const next = activeCheckedTags.includes('untagged')
+                                    ? activeCheckedTags.filter(id => id !== 'untagged')
+                                    : [...activeCheckedTags, 'untagged'];
+                                  setCheckedTagIds(next);
+                                }}
+                                className={`h-4 w-4 rounded border-cool-gray-500 bg-cool-gray-700 cursor-pointer ${
+                                  isDisplay ? 'text-amber-500 focus:ring-amber-500' : 'text-cyan-600 focus:ring-cyan-600'
+                                }`}
+                              />
+                              <div className="flex items-center gap-1.5 overflow-hidden">
+                                <span className="w-2.5 h-2.5 rounded-full bg-gray-400 shrink-0" />
+                                <span className="text-cool-gray-200 font-bold truncate">Untagged Items</span>
+                              </div>
+                            </label>
+
+                            {/* Dynamic tags */}
+                            {(state.tags || []).map(t => {
+                              const isChecked = activeCheckedTags.includes(t.id);
+                              return (
+                                <label key={t.id} className="flex items-center gap-2.5 px-3.5 py-2 hover:bg-cool-gray-800 transition cursor-pointer select-none">
+                                  <input 
+                                    type="checkbox"
+                                    checked={isChecked}
+                                    onChange={() => {
+                                      const next = isChecked
+                                        ? activeCheckedTags.filter(id => id !== t.id)
+                                        : [...activeCheckedTags, t.id];
+                                      setCheckedTagIds(next);
+                                    }}
+                                    className={`h-4 w-4 rounded border-cool-gray-500 bg-cool-gray-700 cursor-pointer ${
+                                      isDisplay ? 'text-amber-500 focus:ring-amber-500' : 'text-cyan-600 focus:ring-cyan-600'
+                                    }`}
+                                  />
+                                  <div className="flex items-center gap-1.5 overflow-hidden">
+                                    <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: t.color || '#60a5fa' }} />
+                                    <span className="text-cool-gray-200 font-bold truncate">
+                                      {t.id === 'use-first' ? '🍳 ' : t.id === 'not-for-sale' ? '🛑 ' : '🏷️ '}{t.name}
+                                    </span>
+                                  </div>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </>
                     )}
                   </div>
 
+                  {/* 4. Sort By Controls (Only relevant on Product and Display Case views) */}
+                  {(currentView === 'product' || currentView === 'display_case') && (
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[10px] font-black uppercase text-cool-gray-400 tracking-wider flex items-center justify-between">
+                        <span className="flex items-center gap-1">
+                          <ArrowUpDown className="w-3 h-3 text-cool-gray-400" /> Sort Order:
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setActiveModal({ type: 'SORT_ORDER', initialView: isDisplay ? 'display_case' : 'product' })}
+                          className={`hover:underline flex items-center gap-0.5 cursor-pointer font-bold ${
+                            isDisplay ? 'text-amber-400 hover:text-amber-300' : 'text-cyan-400 hover:text-cyan-300'
+                          }`}
+                          title="Configure custom ordering for categories, subcategories, and cuts"
+                        >
+                          <SlidersHorizontal className="w-2.5 h-2.5" /> Configure
+                        </button>
+                      </label>
+                      <div className="grid grid-cols-2 gap-1 bg-cool-gray-850 p-1 rounded-lg border border-cool-gray-700 h-[38px] items-center">
+                        <button
+                          type="button"
+                          onClick={() => handleToggleSortMode('alphabetical')}
+                          className={`h-full rounded-md font-bold transition cursor-pointer text-xs flex items-center justify-center ${
+                            (isDisplay ? sortConfig.displaySortMode : sortConfig.productSortMode) === 'alphabetical'
+                              ? isDisplay ? 'bg-amber-600 text-black shadow-xs font-extrabold' : 'bg-cyan-600 text-white shadow-xs font-extrabold'
+                              : 'text-cool-gray-400 hover:text-cool-gray-200'
+                          }`}
+                          title="Sort alphabetically (A-Z)"
+                        >
+                          A-Z
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleToggleSortMode('custom')}
+                          className={`h-full rounded-md font-bold transition cursor-pointer text-xs flex items-center justify-center gap-1 ${
+                            (isDisplay ? sortConfig.displaySortMode : sortConfig.productSortMode) === 'custom'
+                              ? isDisplay ? 'bg-amber-600 text-black shadow-xs font-extrabold' : 'bg-cyan-600 text-white shadow-xs font-extrabold'
+                              : 'text-cool-gray-400 hover:text-cool-gray-200'
+                          }`}
+                          title="Sort by custom user-defined hierarchy order"
+                        >
+                          <Sparkles className={`w-3 h-3 ${isDisplay && (sortConfig.displaySortMode === 'custom') ? 'text-black' : isDisplay ? 'text-amber-300' : 'text-cyan-300'}`} />
+                          Custom
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
 
             {/* Expanded Off-Site Search & Filters Row */}
             {currentView === 'offsite' && offsiteSubTab === 'sheet' && offsiteSearchFilterOpen && (
-              <div className="mt-2.5 pt-2.5 border-t border-cool-gray-800/80 animate-fade-in w-full text-xs bg-cool-gray-900/60 p-3 rounded-lg border border-cool-gray-800/50">
-                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-                  {/* Compact Search input box */}
-                  <div className="relative w-full lg:max-w-[280px] shrink self-center">
-                    <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-2.5">
-                      <SearchIcon className="h-3.5 w-3.5 text-cyan-400/80" />
+              <div className="mt-3 p-3 sm:p-4 bg-cool-gray-900/95 border border-cool-gray-750/90 rounded-xl shadow-xl shadow-black/30 backdrop-blur-md animate-fade-in text-xs space-y-3">
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 pb-2 border-b border-cool-gray-800/80">
+                  {/* Search input box */}
+                  <div className="relative flex-grow max-w-lg">
+                    <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
+                      <SearchIcon className="h-3.5 w-3.5 text-cyan-400" />
                     </div>
                     <input
                       type="text"
                       autoFocus
-                      placeholder="Search cuts or boxes..."
+                      placeholder="Search cuts, box numbers, or notes..."
                       value={offsiteSearch}
                       onChange={(e) => setOffsiteSearch(e.target.value)}
-                      className="block w-full rounded-md border-0 bg-cool-gray-850 pl-8 pr-7 text-cool-gray-100 ring-1 ring-inset ring-cool-gray-750 placeholder:text-cool-gray-500 focus:ring-2 focus:ring-inset focus:ring-cyan-500 py-1.5 text-xs transition duration-150"
+                      className="block w-full rounded-lg border-0 bg-cool-gray-850 pl-9 pr-8 text-cool-gray-100 ring-1 ring-inset ring-cool-gray-750 placeholder:text-cool-gray-500 focus:ring-2 focus:ring-inset focus:ring-cyan-500 py-1.5 text-xs transition"
                     />
                     {offsiteSearch && (
                       <button 
                         onClick={() => setOffsiteSearch('')} 
-                        className="absolute inset-y-0 right-0 flex items-center pr-2 text-cool-gray-400 hover:text-white cursor-pointer font-bold text-[10px]"
+                        className="absolute inset-y-0 right-0 flex items-center pr-2.5 text-cool-gray-400 hover:text-white cursor-pointer font-bold text-xs"
+                        title="Clear search input"
                       >
                         ✕
                       </button>
                     )}
                   </div>
 
-                  {/* Filter selectors panel */}
-                  <div className="flex flex-wrap items-center gap-3 lg:justify-end flex-grow w-full lg:w-auto">
-                    {/* Advanced Filters Button */}
-                    <div className="relative">
-                      <button
-                        onClick={() => setOffsiteAdvancedFilterOpen(!offsiteAdvancedFilterOpen)}
-                        className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition flex items-center gap-1.5 cursor-pointer ${
-                          offsiteAdvancedFilterOpen || offsiteFilterTags.size > 0 || offsiteFilterLists.size > 0
-                            ? 'bg-cyan-950/45 border-cyan-500/50 text-cyan-300 shadow-md'
-                            : 'bg-cool-gray-850 border-cool-gray-700 text-cool-gray-400 hover:text-white'
-                        }`}
-                        title="Toggle tag and list advanced filters"
-                      >
-                        <Filter size={14} className="text-cyan-400" />
-                        <span>Tag & List Filters</span>
-                        {(offsiteFilterTags.size > 0 || offsiteFilterLists.size > 0) && (
-                          <span className="h-4 px-1 rounded-full bg-cyan-500 text-cool-gray-950 flex items-center justify-center text-[9px] font-black">
-                            {offsiteFilterTags.size + offsiteFilterLists.size}
-                          </span>
-                        )}
-                      </button>
+                  {/* Reset Offsite Filters */}
+                  {(offsiteSearch || offsiteFilterTags.size > 0 || offsiteFilterLists.size > 0) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOffsiteSearch('');
+                        setOffsiteFilterTags(new Set());
+                        setOffsiteFilterLists(new Set());
+                      }}
+                      className="px-2.5 py-1.5 rounded-lg bg-cool-gray-800 hover:bg-cool-gray-750 text-cool-gray-400 hover:text-red-400 border border-cool-gray-700 transition flex items-center gap-1 font-bold text-xs cursor-pointer ml-auto md:ml-0 shrink-0"
+                      title="Reset off-site search and active filters"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                      <span>Reset Filters</span>
+                    </button>
+                  )}
+                </div>
 
-                      {offsiteAdvancedFilterOpen && (
-                        <AdvancedFilterMenu 
-                          tags={state.tags || []}
-                          lists={state.customLists || []}
-                          selectedTags={offsiteFilterTags}
-                          selectedLists={offsiteFilterLists}
-                          onChange={(tags, lists) => {
-                            setOffsiteFilterTags(tags);
-                            setOffsiteFilterLists(lists);
-                          }}
-                          onClose={() => setOffsiteAdvancedFilterOpen(false)}
-                        />
+                {/* Filter selectors panel */}
+                <div className="flex flex-wrap items-center gap-2.5 pt-0.5">
+                  {/* Advanced Filters Button */}
+                  <div className="relative">
+                    <button
+                      onClick={() => setOffsiteAdvancedFilterOpen(!offsiteAdvancedFilterOpen)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition flex items-center gap-1.5 cursor-pointer ${
+                        offsiteAdvancedFilterOpen || offsiteFilterTags.size > 0 || offsiteFilterLists.size > 0
+                          ? 'bg-cyan-950/45 border-cyan-500/50 text-cyan-300 shadow-md'
+                          : 'bg-cool-gray-850 border-cool-gray-700 text-cool-gray-400 hover:text-white hover:border-cool-gray-600'
+                      }`}
+                      title="Toggle tag and list advanced filters"
+                    >
+                      <Filter size={14} className="text-cyan-400" />
+                      <span>Tag & List Filters</span>
+                      {(offsiteFilterTags.size > 0 || offsiteFilterLists.size > 0) && (
+                        <span className="h-4 px-1 rounded-full bg-cyan-500 text-cool-gray-950 flex items-center justify-center text-[9px] font-black">
+                          {offsiteFilterTags.size + offsiteFilterLists.size}
+                        </span>
                       )}
-                    </div>
+                    </button>
 
-                    {/* Column Selector */}
-                    <div className="relative group">
-                      <button className="px-3 py-1.5 rounded-lg text-xs font-bold border bg-cool-gray-850 border-cool-gray-700 text-cool-gray-400 hover:text-white transition flex items-center gap-1.5 cursor-pointer">
-                        <span>Columns</span>
-                        <ChevronDown size={14} className="text-cool-gray-500 group-hover:text-cyan-400 transition-colors" />
-                      </button>
-                      <div className="absolute right-0 mt-1 hidden group-hover:block bg-cool-gray-800 border border-cool-gray-700 rounded-lg shadow-xl p-2 z-50 min-w-[160px] animate-fade-in text-cool-gray-200">
-                        <div className="grid grid-cols-1 gap-1">
-                          {[
-                            { id: 'box', label: 'Box' },
-                            { id: 'cuts', label: 'Cuts' },
-                            { id: 'category', label: 'Category' },
-                            { id: 'weight', label: 'Weight' },
-                            { id: 'pieces', label: 'Pieces' },
-                            { id: 'location', label: 'Location' },
-                            { id: 'pallet', label: 'Pallet' },
-                            { id: 'movedTo', label: 'Moved To' },
-                            { id: 'flag', label: 'Flag' },
-                            { id: 'serial', label: 'Serial' },
-                            { id: 'lotNumber', label: 'Lot Number' },
-                            { id: 'packDate', label: 'Pack Date' }
-                          ].map(col => (
-                            <label key={col.id} className="flex items-center gap-2 cursor-pointer hover:bg-cool-gray-750 px-2 py-1 rounded select-none text-xs">
-                              <input 
-                                type="checkbox"
-                                checked={offsiteVisibleColumns.has(col.id)}
-                                onChange={(e) => {
-                                  const next = new Set(offsiteVisibleColumns);
-                                  if (e.target.checked) next.add(col.id);
-                                  else next.delete(col.id);
-                                  setOffsiteVisibleColumns(next);
-                                  localStorage.setItem("offsite-visible-columns", JSON.stringify(Array.from(next)));
-                                }}
-                                className="rounded bg-cool-gray-950 border-cool-gray-750 text-cyan-500 focus:ring-cyan-500/50 cursor-pointer w-3.5 h-3.5"
-                              />
-                              {col.label}
-                            </label>
-                          ))}
-                        </div>
+                    {offsiteAdvancedFilterOpen && (
+                      <AdvancedFilterMenu 
+                        tags={state.tags || []}
+                        lists={state.customLists || []}
+                        selectedTags={offsiteFilterTags}
+                        selectedLists={offsiteFilterLists}
+                        onChange={(tags, lists) => {
+                          setOffsiteFilterTags(tags);
+                          setOffsiteFilterLists(lists);
+                        }}
+                        onClose={() => setOffsiteAdvancedFilterOpen(false)}
+                      />
+                    )}
+                  </div>
+
+                  {/* Column Selector */}
+                  <div className="relative group">
+                    <button className="px-3 py-1.5 rounded-lg text-xs font-bold border bg-cool-gray-850 border-cool-gray-700 text-cool-gray-400 hover:text-white hover:border-cool-gray-600 transition flex items-center gap-1.5 cursor-pointer">
+                      <span>Columns</span>
+                      <ChevronDown size={14} className="text-cool-gray-500 group-hover:text-cyan-400 transition-colors" />
+                    </button>
+                    <div className="absolute left-0 mt-1 hidden group-hover:block bg-cool-gray-800 border border-cool-gray-700 rounded-xl shadow-xl p-2 z-50 min-w-[170px] animate-fade-in text-cool-gray-200">
+                      <div className="grid grid-cols-1 gap-1">
+                        {[
+                          { id: 'box', label: 'Box' },
+                          { id: 'cuts', label: 'Cuts' },
+                          { id: 'category', label: 'Category' },
+                          { id: 'weight', label: 'Weight' },
+                          { id: 'pieces', label: 'Pieces' },
+                          { id: 'location', label: 'Location' },
+                          { id: 'pallet', label: 'Pallet' },
+                          { id: 'movedTo', label: 'Moved To' },
+                          { id: 'flag', label: 'Flag' },
+                          { id: 'serial', label: 'Serial' },
+                          { id: 'lotNumber', label: 'Lot Number' },
+                          { id: 'packDate', label: 'Pack Date' }
+                        ].map(col => (
+                          <label key={col.id} className="flex items-center gap-2 cursor-pointer hover:bg-cool-gray-750 px-2 py-1 rounded select-none text-xs">
+                            <input 
+                              type="checkbox"
+                              checked={offsiteVisibleColumns.has(col.id)}
+                              onChange={(e) => {
+                                const next = new Set(offsiteVisibleColumns);
+                                if (e.target.checked) next.add(col.id);
+                                else next.delete(col.id);
+                                setOffsiteVisibleColumns(next);
+                                localStorage.setItem("offsite-visible-columns", JSON.stringify(Array.from(next)));
+                              }}
+                              className="rounded bg-cool-gray-950 border-cool-gray-750 text-cyan-500 focus:ring-cyan-500/50 cursor-pointer w-3.5 h-3.5"
+                            />
+                            {col.label}
+                          </label>
+                        ))}
                       </div>
                     </div>
-
-                    {/* Ungrouped Toggle */}
-                    <label className="inline-flex items-center gap-1.5 text-xs font-semibold text-cool-gray-300 hover:text-white cursor-pointer select-none bg-cool-gray-850 border border-cool-gray-700 px-3 py-1.5 rounded-lg">
-                      <input
-                        type="checkbox"
-                        checked={offsiteViewUngrouped}
-                        onChange={e => {
-                          setOffsiteViewUngrouped(e.target.checked);
-                          localStorage.setItem("offsite-view-ungrouped", e.target.checked ? "true" : "false");
-                        }}
-                        className="rounded bg-cool-gray-900 border-cool-gray-700 text-cyan-500 focus:ring-cyan-500/50 cursor-pointer w-4 h-4"
-                      />
-                      <span>Ungrouped</span>
-                    </label>
-
-                    {/* Direct Edit Toggle */}
-                    <label className="inline-flex items-center gap-1.5 text-xs font-semibold text-cool-gray-300 hover:text-white cursor-pointer select-none bg-cool-gray-850 border border-cool-gray-700 px-3 py-1.5 rounded-lg">
-                      <input
-                        type="checkbox"
-                        checked={offsiteDirectEdit}
-                        onChange={e => setOffsiteDirectEdit(e.target.checked)}
-                        className="rounded bg-cool-gray-900 border-cool-gray-700 text-blue-500 focus:ring-blue-500/50 cursor-pointer w-4 h-4"
-                      />
-                      <span>Direct Edit</span>
-                    </label>
-
-                    {/* View Original Names Toggle */}
-                    <label className="inline-flex items-center gap-1.5 text-xs font-semibold text-cool-gray-300 hover:text-white cursor-pointer select-none bg-cool-gray-850 border border-cool-gray-700 px-3 py-1.5 rounded-lg">
-                      <input
-                        type="checkbox"
-                        checked={offsiteViewOriginalNames}
-                        onChange={e => setOffsiteViewOriginalNames(e.target.checked)}
-                        className="rounded bg-cool-gray-900 border-cool-gray-700 text-blue-500 focus:ring-blue-500/50 cursor-pointer w-4 h-4"
-                      />
-                      <span>Raw CSV Names</span>
-                    </label>
                   </div>
+
+                  {/* Ungrouped Toggle */}
+                  <label className="inline-flex items-center gap-1.5 text-xs font-semibold text-cool-gray-300 hover:text-white cursor-pointer select-none bg-cool-gray-850 border border-cool-gray-700 hover:border-cool-gray-600 px-3 py-1.5 rounded-lg transition">
+                    <input
+                      type="checkbox"
+                      checked={offsiteViewUngrouped}
+                      onChange={e => {
+                        setOffsiteViewUngrouped(e.target.checked);
+                        localStorage.setItem("offsite-view-ungrouped", e.target.checked ? "true" : "false");
+                      }}
+                      className="rounded bg-cool-gray-900 border-cool-gray-700 text-cyan-500 focus:ring-cyan-500/50 cursor-pointer w-3.5 h-3.5"
+                    />
+                    <span>Ungrouped</span>
+                  </label>
+
+                  {/* Direct Edit Toggle */}
+                  <label className="inline-flex items-center gap-1.5 text-xs font-semibold text-cool-gray-300 hover:text-white cursor-pointer select-none bg-cool-gray-850 border border-cool-gray-700 hover:border-cool-gray-600 px-3 py-1.5 rounded-lg transition">
+                    <input
+                      type="checkbox"
+                      checked={offsiteDirectEdit}
+                      onChange={e => setOffsiteDirectEdit(e.target.checked)}
+                      className="rounded bg-cool-gray-900 border-cool-gray-700 text-blue-500 focus:ring-blue-500/50 cursor-pointer w-3.5 h-3.5"
+                    />
+                    <span>Direct Edit</span>
+                  </label>
+
+                  {/* View Original Names Toggle */}
+                  <label className="inline-flex items-center gap-1.5 text-xs font-semibold text-cool-gray-300 hover:text-white cursor-pointer select-none bg-cool-gray-850 border border-cool-gray-700 hover:border-cool-gray-600 px-3 py-1.5 rounded-lg transition">
+                    <input
+                      type="checkbox"
+                      checked={offsiteViewOriginalNames}
+                      onChange={e => setOffsiteViewOriginalNames(e.target.checked)}
+                      className="rounded bg-cool-gray-900 border-cool-gray-700 text-blue-500 focus:ring-blue-500/50 cursor-pointer w-3.5 h-3.5"
+                    />
+                    <span>Raw CSV Names</span>
+                  </label>
                 </div>
               </div>
             )}
@@ -2622,6 +3304,29 @@ export default function App() {
           </div>
           <button 
             onClick={() => setShowSyncToast(false)} 
+            className="text-cool-gray-500 hover:text-white transition duration-150 flex-shrink-0 cursor-pointer"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+              <path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" />
+            </svg>
+          </button>
+        </div>
+      )}
+
+      {/* Real-time Undo Notification Toast */}
+      {undoToastMessage && (
+        <div id="undo-success-toast" className="fixed bottom-6 right-6 z-50 max-w-sm bg-cool-gray-850 hover:bg-cool-gray-800 text-cool-gray-100 p-4 rounded-xl border border-amber-500/40 shadow-2xl flex items-start gap-3 animate-fade-in transition duration-300">
+          <div className="p-1.5 rounded-full bg-amber-500/20 text-amber-400 mt-0.5 flex-shrink-0">
+            <RotateCcw className="w-5 h-5" />
+          </div>
+          <div className="flex-grow min-w-0">
+            <h4 className="text-sm font-semibold text-amber-300">Action Undone</h4>
+            <p className="text-xs text-cool-gray-300 mt-1 leading-relaxed">
+              {undoToastMessage}
+            </p>
+          </div>
+          <button 
+            onClick={() => setUndoToastMessage(null)} 
             className="text-cool-gray-500 hover:text-white transition duration-150 flex-shrink-0 cursor-pointer"
           >
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
@@ -2787,6 +3492,31 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* Undo & Rollback Confirmation Modal */}
+      <UndoConfirmationModal
+        isOpen={undoModalConfig.isOpen}
+        onClose={() =>
+          setUndoModalConfig({
+            isOpen: false,
+            snapshotId: null,
+            historyId: null
+          })
+        }
+        recentSnapshots={undoSnapshots}
+        historyEntries={state.history || []}
+        state={state}
+        preselectedSnapshotId={undoModalConfig.snapshotId}
+        preselectedHistoryId={undoModalConfig.historyId}
+        onConfirmUndo={async (snapshotId, historyId) => {
+          const res = await executeUndo(snapshotId, historyId);
+          if (res.success) {
+            setUndoToastMessage(res.undoneDescription ? `Undid: ${res.undoneDescription}` : 'Action reverted successfully.');
+            setTimeout(() => setUndoToastMessage(null), 4000);
+          }
+          return res;
+        }}
+      />
     </div>
   );
 }

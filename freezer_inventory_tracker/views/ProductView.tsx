@@ -5,6 +5,12 @@ import { getContainerIcon } from '../components/ContainerIconsMap';
 import { MoreVertical, Move, History, Search, Tag, Edit, Package, MapPin, PlusCircle, AlertTriangle, GitFork, Archive } from 'lucide-react';
 import ContainerCard from '../components/ContainerCard';
 import { evaluateMathExpression } from '../components/QuickCalculatorPanel';
+import { 
+    loadSortOrderConfig, 
+    sortPrimaryCategories, 
+    sortSubCategories, 
+    sortProductsHierarchy 
+} from '../utils/sortOrder';
 
 interface ProductLocationRowProps {
     meatCut: MeatCut;
@@ -31,8 +37,6 @@ const ProductLocationRow: React.FC<ProductLocationRowProps> = ({
     const [openUpwards, setOpenUpwards] = useState(false);
 
     const menuRef = useRef<HTMLDivElement>(null);
-    const lastQuantityRef = useRef<number>(meatCut.quantity);
-    const lastDispatchedQuantityRef = useRef<number | null>(null);
 
     // Evaluate math formulas like +20, -5, or 10+5
     const evaluateMathExpression = (input: string, baseValue: number): number | null => {
@@ -66,16 +70,8 @@ const ProductLocationRow: React.FC<ProductLocationRowProps> = ({
     };
 
     useEffect(() => {
-        // Sync with global state if it changes
-        // Only update if we are not actively editing, AND if either:
-        // 1. lastDispatchedQuantityRef is null (not in a click sequence)
-        // 2. The incoming meatCut.quantity has caught up to our last dispatched quantity
-        if (lastDispatchedQuantityRef.current === null || meatCut.quantity === lastDispatchedQuantityRef.current) {
-            lastQuantityRef.current = meatCut.quantity;
-            if (!isEditing) {
-                setLocalQuantity(meatCut.quantity.toString());
-            }
-            lastDispatchedQuantityRef.current = null; // Clear out since we've caught up
+        if (!isEditing) {
+            setLocalQuantity(meatCut.quantity.toString());
         }
     }, [meatCut.quantity, isEditing]);
 
@@ -113,9 +109,8 @@ const ProductLocationRow: React.FC<ProductLocationRowProps> = ({
     }, [isMenuOpen]);
 
     const handleQuantityChange = (amount: number) => {
-        const newQuantity = Math.max(0, lastQuantityRef.current + amount);
-        lastQuantityRef.current = newQuantity;
-        lastDispatchedQuantityRef.current = newQuantity;
+        const currentQty = isEditing ? (parseInt(localQuantity, 10) || 0) : meatCut.quantity;
+        const newQuantity = Math.max(0, currentQty + amount);
         setLocalQuantity(newQuantity.toString());
         dispatch({ type: 'UPDATE_MEAT_QUANTITY', payload: { meatCutId: meatCut.id, newQuantity } });
     };
@@ -125,10 +120,10 @@ const ProductLocationRow: React.FC<ProductLocationRowProps> = ({
     };
 
     const handleCommitQuantity = () => {
-        const evaluated = evaluateMathExpression(localQuantity, meatCut.quantity);
-        if (evaluated !== null && evaluated >= 0 && evaluated !== meatCut.quantity) {
-            lastQuantityRef.current = evaluated;
-            lastDispatchedQuantityRef.current = evaluated;
+        const baseVal = meatCut.quantity;
+        const evaluated = evaluateMathExpression(localQuantity, baseVal);
+        if (evaluated !== null && evaluated >= 0 && evaluated !== baseVal) {
+            setLocalQuantity(evaluated.toString());
             dispatch({ type: 'UPDATE_MEAT_QUANTITY', payload: { meatCutId: meatCut.id, newQuantity: evaluated } });
         } else {
             setLocalQuantity(meatCut.quantity.toString());
@@ -138,10 +133,12 @@ const ProductLocationRow: React.FC<ProductLocationRowProps> = ({
     const ContainerIcon = getContainerIcon(container?.icon || 'generic');
     const product = state.products.find(p => p.id === meatCut.productId);
 
+    const displayedOriginalName = meatCut.originalCutName || (meatCut.wrongLabel ? state.products.find(p => p.id === meatCut.wrongLabel)?.name : undefined);
     const isLabeledDifferently = Boolean(
-      meatCut.originalCutName && (
+      (meatCut.isWrongLabel || meatCut.wrongLabel) &&
+      displayedOriginalName && (
         !product || 
-        meatCut.originalCutName.trim().toLowerCase() !== product.name.trim().toLowerCase()
+        displayedOriginalName.trim().toLowerCase() !== product.name.trim().toLowerCase()
       )
     );
 
@@ -241,8 +238,8 @@ const ProductLocationRow: React.FC<ProductLocationRowProps> = ({
                         })}
                     </button>
                     {isLabeledDifferently && (
-                        <p className="text-[10px] text-red-400 font-semibold mt-0.5 break-words whitespace-normal" title={meatCut.originalCutName}>
-                            ⚠️ Labeled As: <span className="underline">{meatCut.originalCutName}</span>
+                        <p className="text-[10px] text-red-400 font-semibold mt-0.5 break-words whitespace-normal" title={displayedOriginalName}>
+                            ⚠️ Labeled As: <span className="underline">{displayedOriginalName}</span>
                         </p>
                     )}
                     {meatCut.notes && <p className="text-[10px] text-amber-500/80 mt-0.5 break-words whitespace-normal" title={meatCut.notes}>Notes: {meatCut.notes}</p>}
@@ -1014,11 +1011,15 @@ const ProductView: React.FC<ProductViewProps> = ({
 
     const isDisplayFocus = selectedFreezerId === 'display';
 
+    const sortConfig = useMemo(() => loadSortOrderConfig(state.appConfig), [state.appConfig]);
+
     // Precompute sections for scroll-spy TOC and jump triggers
     const categorySections = useMemo(() => {
         const sections: { primary: string; sub: string; id: string }[] = [];
-        Object.keys(groupedProducts).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })).forEach(primary => {
-            Object.keys(groupedProducts[primary]).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })).forEach(sub => {
+        const sortedPrimaries = sortPrimaryCategories(Object.keys(groupedProducts), sortConfig.productSortMode, sortConfig.customOrder);
+        sortedPrimaries.forEach(primary => {
+            const sortedSubs = sortSubCategories(Object.keys(groupedProducts[primary]), primary, sortConfig.productSortMode, sortConfig.customOrder);
+            sortedSubs.forEach(sub => {
                 sections.push({
                     primary,
                     sub,
@@ -1027,7 +1028,7 @@ const ProductView: React.FC<ProductViewProps> = ({
             });
         });
         return sections;
-    }, [groupedProducts]);
+    }, [groupedProducts, sortConfig]);
 
     const [activeSectionId, setActiveSectionId] = useState<string | null>(null);
 
@@ -1227,7 +1228,7 @@ const ProductView: React.FC<ProductViewProps> = ({
     };
 
     return (
-        <div className="flex flex-col gap-4 relative w-full" id="product-panel-container">
+        <div className="flex flex-col gap-2.5 sm:gap-3 relative w-full" id="product-panel-container">
             
             {/* Sticky Horizontal Navigation Bar for All Screen Sizes */}
             {categorySections.length > 1 && (
@@ -1335,7 +1336,7 @@ const ProductView: React.FC<ProductViewProps> = ({
             )}
 
             {/* Main Products Area */}
-            <div className="flex-grow w-full bg-cool-gray-800 rounded-lg shadow-lg p-1.5 sm:p-4 border border-cool-gray-700 animate-fade-in" id="product-cards-panel">
+            <div className="flex-grow w-full bg-cool-gray-800 rounded-lg shadow-lg p-2 sm:p-3 sm:pt-2 border border-cool-gray-700 animate-fade-in" id="product-cards-panel">
 
                 {/* --- Staging & Sorting Table Section (Always shown to allow drag and drop) --- */}
                 {stagedContainers.length > 0 && (
@@ -1380,7 +1381,7 @@ const ProductView: React.FC<ProductViewProps> = ({
                                 console.error('Staging drop error:', err);
                             }
                         }}
-                        className={`mb-4 bg-amber-950/10 border-2 border-dashed rounded-lg p-3 flex flex-col gap-2 transition-all duration-300 shadow-lg shadow-amber-950/20 ${
+                        className={`mb-3 bg-amber-950/10 border-2 border-dashed rounded-lg p-3 flex flex-col gap-2 transition-all duration-300 shadow-lg shadow-amber-950/20 ${
                             isDragOverStaging 
                                 ? 'border-amber-400 bg-amber-900/20 scale-[1.01]' 
                                 : 'border-amber-500/50'
@@ -1467,7 +1468,6 @@ const ProductView: React.FC<ProductViewProps> = ({
                     </div>
                 )}
 
-                <div className="mb-2"></div>
                 {Object.keys(groupedProducts).length === 0 ? (
                     <div className="text-center py-16 bg-cool-gray-900/10 rounded-xl border-2 border-dashed border-cool-gray-800" id="no-products-dashboard-placeholder">
                         {isLoading ? (
@@ -1480,9 +1480,9 @@ const ProductView: React.FC<ProductViewProps> = ({
                         )}
                     </div>
                 ) : (
-                    Object.keys(groupedProducts).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })).map(primaryCategory => (
-                        <div key={primaryCategory} className="space-y-4 mb-6">
-                            {Object.keys(groupedProducts[primaryCategory]).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })).map(subCategory => {
+                    sortPrimaryCategories(Object.keys(groupedProducts), sortConfig.productSortMode, sortConfig.customOrder).map(primaryCategory => (
+                        <div key={primaryCategory} className="space-y-3 mb-5">
+                            {sortSubCategories(Object.keys(groupedProducts[primaryCategory]), primaryCategory, sortConfig.productSortMode, sortConfig.customOrder).map(subCategory => {
                                 const sectionId = `section-${primaryCategory.replaceAll(/\s+/g, '-')}-${subCategory.replaceAll(/\s+/g, '-')}`;
                                 
                                 const primaryDec = state.categories?.find(c => c.type === 'primary' && c.name.toLowerCase().trim() === primaryCategory.toLowerCase().trim());
@@ -1495,11 +1495,11 @@ const ProductView: React.FC<ProductViewProps> = ({
                                     <div 
                                         key={subCategory}
                                         id={sectionId}
-                                        className="scroll-mt-[185px] lg:scroll-mt-[140px] transition-all duration-300 space-y-4"
+                                        className="scroll-mt-[185px] lg:scroll-mt-[140px] transition-all duration-300 space-y-3"
                                     >
                                         
                                         {/* Pure human labels - Categorical heading banner in the scroll stream */}
-                                        <div className="pt-4 pb-2 border-b border-cool-gray-750/70">
+                                        <div className="pt-1.5 pb-2 border-b border-cool-gray-750/70">
                                             <div className="flex items-center gap-2 select-none">
                                                 <span className={`text-[10px] sm:text-[11px] uppercase tracking-wider font-extrabold px-2 py-0.5 rounded border flex items-center gap-1 ${
                                                     primaryColorConfig
@@ -1522,7 +1522,7 @@ const ProductView: React.FC<ProductViewProps> = ({
                                         </div>
 
                                         <div className="space-y-4">
-                                            {groupedProducts[primaryCategory][subCategory].sort((a,b)=> a.product.name.localeCompare(b.product.name, undefined, { numeric: true, sensitivity: 'base' })).map(({ product, locations, totalQuantity }) => {
+                                            {sortProductsHierarchy(groupedProducts[primaryCategory][subCategory], primaryCategory, subCategory, sortConfig.productSortMode, sortConfig.customOrder).map(({ product, locations, totalQuantity }) => {
                                                 return (
                                                     <div 
                                                         key={product.id} 
@@ -1560,8 +1560,8 @@ const ProductView: React.FC<ProductViewProps> = ({
                                                                         <span className="truncate">{primaryCategory}</span>
                                                                         <span className="text-cool-gray-650 font-light">•</span>
                                                                         <span className="truncate">{subCategory}</span>
-                                                                        {product.sku && (
-                                                                            <span className="font-mono text-[9px] bg-cool-gray-950 px-1 py-0.2 rounded border border-cool-gray-850 text-cool-gray-450 ml-1">SKU: {product.sku}</span>
+                                                                        {((product as any).sku || product.productNumbers?.[0]) && (
+                                                                            <span className="font-mono text-[9px] bg-cool-gray-950 px-1 py-0.2 rounded border border-cool-gray-850 text-cool-gray-450 ml-1">SKU: {(product as any).sku || product.productNumbers?.[0]}</span>
                                                                         )}
                                                                     </div>
                                                                     <div className="flex items-center gap-1.5 min-w-0">

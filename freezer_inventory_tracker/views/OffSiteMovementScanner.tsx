@@ -159,13 +159,16 @@ export const OffSiteMovementScanner = ({
   state: any; 
   dispatch: any;
   isSingleUserMode?: boolean;
-  claimSingleUserMode?: () => Promise<{ success: boolean; message?: string }>;
+  claimSingleUserMode?: (scope?: 'all' | 'onsite' | 'offsite') => Promise<{ success: boolean; message?: string }>;
   releaseSingleUserMode?: (fullStateToSync?: any) => Promise<boolean>;
 }) => {
   const rawEntries = (state.offSiteEntries || []).filter((e: any) => {
     if (e.archived) return false;
-    if (e.box && state.containers?.some((c: any) => c.isBox && c.isArchived && c.name.toLowerCase().trim() === e.box.toLowerCase().trim())) {
-      return false;
+    if (e.box) {
+      const boxLower = e.box.toLowerCase().trim();
+      const isArchived = (state.boxes || []).some((b: any) => b.isArchived && ((b.name && b.name.toLowerCase().trim() === boxLower) || (b.id && b.id.toLowerCase().trim() === boxLower))) ||
+                         (state.containers || []).some((c: any) => c.isBox && c.isArchived && c.name && c.name.toLowerCase().trim() === boxLower);
+      if (isArchived) return false;
     }
     return true;
   });
@@ -215,7 +218,22 @@ export const OffSiteMovementScanner = ({
   }, [rawEntries, products]);
 
   const orders = state.movementOrders || [];
-  const activeOrder = orders.find((o: any) => o.status === 'finalized');
+  const finalizedOrders = useMemo(() => {
+    return orders.filter((o: any) => o.status === 'finalized');
+  }, [orders]);
+
+  const [selectedFinalizedOrderId, setSelectedFinalizedOrderId] = useState<string | null>(() => {
+    return localStorage.getItem('selected-movement-order-id') || null;
+  });
+
+  const activeOrder = useMemo(() => {
+    if (finalizedOrders.length === 0) return null;
+    if (selectedFinalizedOrderId) {
+      const match = finalizedOrders.find((o: any) => o.id === selectedFinalizedOrderId);
+      if (match) return match;
+    }
+    return finalizedOrders[0];
+  }, [finalizedOrders, selectedFinalizedOrderId]);
 
   // Sound and scan states
   const [soundEnabled, setSoundEnabled] = useState(true);
@@ -264,9 +282,9 @@ export const OffSiteMovementScanner = ({
   // and automatically release Single-User Mode (syncing changes) when navigating away from the scanner tab.
   useEffect(() => {
     if (claimRef.current) {
-      claimRef.current().then(res => {
+      claimRef.current('offsite').then(res => {
         if (res?.success) {
-          console.log('Auto-activated Single-User Mode upon opening Movement Scanner tab.');
+          console.log('Auto-activated Single-User Mode (offsite) upon opening Movement Scanner tab.');
         }
       });
     }
@@ -574,7 +592,7 @@ export const OffSiteMovementScanner = ({
     if (!trimmed) return;
 
     if (!isSingleUserMode && claimSingleUserMode) {
-      claimSingleUserMode();
+      claimSingleUserMode('offsite');
     }
 
     const originalInput = trimmed;
@@ -1295,6 +1313,30 @@ export const OffSiteMovementScanner = ({
 
   return (
     <div className="space-y-6 animate-fade-in relative" id="offsite-movement-scanner">
+      {finalizedOrders.length > 1 && (
+        <div className="bg-cool-gray-800 p-3 px-4 rounded-xl border border-cool-gray-750 flex flex-wrap items-center justify-between gap-3 shadow-sm">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-bold text-cool-gray-300">Active Finalized Order:</span>
+            <select
+              value={activeOrder.id}
+              onChange={(e) => {
+                setSelectedFinalizedOrderId(e.target.value);
+                localStorage.setItem('selected-movement-order-id', e.target.value);
+              }}
+              className="bg-cool-gray-900 border border-indigo-500/50 text-indigo-200 rounded-lg px-3 py-1.5 text-xs font-bold focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
+            >
+              {finalizedOrders.map((o: any) => (
+                <option key={o.id} value={o.id}>
+                  🚚 {o.name} ({o.moves?.length || 0} moves)
+                </option>
+              ))}
+            </select>
+          </div>
+          <span className="text-[11px] font-bold text-cool-gray-400">
+            {finalizedOrders.length} finalized movement orders available
+          </span>
+        </div>
+      )}
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
           
           {/* LEFT: SCANNER ENGINE (5 COLS ON XL) */}
@@ -1376,7 +1418,7 @@ export const OffSiteMovementScanner = ({
                         <span>Multi-User Sync Active</span>
                         <button
                           type="button"
-                          onClick={() => claimSingleUserMode()}
+                          onClick={() => claimSingleUserMode('offsite')}
                           className="px-2.5 py-1 bg-amber-600 hover:bg-amber-500 text-white font-bold rounded-lg text-[11px] transition cursor-pointer shrink-0 ml-2"
                         >
                           Enable Single-User Mode

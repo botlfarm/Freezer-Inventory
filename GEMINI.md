@@ -48,3 +48,10 @@ The application utilizes a relational SQLite database architecture. Always adher
 - **Single Source of Truth**: Keep canonical entity information within its designated primary table (`products`, `containers`, `orders`, etc.) and reference those IDs across transactions, inventory cuts, and movements.
 - **Exceptions for Immutable Audit Logs**: Only store raw text snapshots when preserving historical import data or physical package labels as originally printed (e.g. `originalCutName` representing the immutable raw package text from external processors).
 
+---
+
+## 6. Living System Documentation & Architecture Reference (`APP_CONTEXT.md`)
+Whenever new features, database entities, synchronization changes, or architectural workflows are introduced or modified:
+- Keep `/APP_CONTEXT.md` (and `/freezer_inventory_tracker/APP_CONTEXT.md`) updated to reflect the latest state, data models, and architectural decisions.
+- This ensures that modular chat windows focusing on specific subsystems (e.g., multi-user sync, off-site freight, butcher tracking) maintain complete, accurate, and up-to-date context across the entire lifecycle of the project.
+

@@ -1,13 +1,28 @@
 import express from 'express';
+import compression from 'compression';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import AdmZip from 'adm-zip';
 import Database from 'better-sqlite3';
+import { calculateHistoryRetention } from './utils/historyRetention';
 
 const PORT = 3000;
 
 const app = express();
+
+// High-performance gzip/deflate compression for large database JSON states (6MB+ -> ~180KB)
+app.use(compression({
+  filter: (req, res) => {
+    // Never buffer/compress Server-Sent Events stream
+    if (req.headers.accept === 'text/event-stream' || req.url.includes('/stream')) {
+      return false;
+    }
+    return compression.filter(req, res);
+  },
+  threshold: 1024 // Only compress responses above 1KB
+}));
+
 app.use(express.json({ limit: '150mb' }));
 app.use(express.urlencoded({ limit: '150mb', extended: true }));
 
@@ -131,6 +146,7 @@ interface AppInventoryState {
   previewBackupFilename?: string;
   notificationSettings?: any[];
   notificationLogs?: any[];
+  appConfig?: any[];
 }
 
 /**
@@ -201,6 +217,7 @@ function getDatabasePath(): string {
 const TABLE_SCHEMAS: Record<string, {
   createSql: string;
   columns: string[];
+  primaryKey?: string;
   fromDb: (row: any) => any;
   toDb: (item: any) => any;
 }> = {
@@ -210,24 +227,21 @@ const TABLE_SCHEMAS: Record<string, {
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         isSpecial INTEGER DEFAULT 0,
-        isLooseOnly INTEGER DEFAULT 0,
-        isPallet INTEGER DEFAULT 0
+        isLooseOnly INTEGER DEFAULT 0
       )
     `,
-    columns: ['id', 'name', 'isSpecial', 'isLooseOnly', 'isPallet'],
+    columns: ['id', 'name', 'isSpecial', 'isLooseOnly'],
     fromDb: (row: any) => ({
       id: row.id,
       name: row.name,
       isSpecial: row.isSpecial === 1,
-      isLooseOnly: row.isLooseOnly === 1,
-      isPallet: row.isPallet === 1
+      isLooseOnly: row.isLooseOnly === 1
     }),
     toDb: (item: any) => ({
       id: item.id,
       name: item.name,
       isSpecial: item.isSpecial ? 1 : 0,
-      isLooseOnly: item.isLooseOnly ? 1 : 0,
-      isPallet: item.isPallet ? 1 : 0
+      isLooseOnly: item.isLooseOnly ? 1 : 0
     })
   },
   container_templates: {
@@ -267,12 +281,11 @@ const TABLE_SCHEMAS: Record<string, {
         deleteOnEmpty INTEGER DEFAULT 0,
         icon TEXT,
         isBox INTEGER DEFAULT 0,
-        boxNotes TEXT,
         color TEXT,
         isArchived INTEGER DEFAULT 0
       )
     `,
-    columns: ['id', 'name', 'freezerId', 'templateId', 'imageUrl', 'deleteOnEmpty', 'icon', 'isBox', 'boxNotes', 'color', 'isArchived'],
+    columns: ['id', 'name', 'freezerId', 'templateId', 'imageUrl', 'deleteOnEmpty', 'icon', 'isBox', 'color', 'isArchived'],
     fromDb: (row: any) => ({
       id: row.id,
       name: row.name,
@@ -282,7 +295,6 @@ const TABLE_SCHEMAS: Record<string, {
       deleteOnEmpty: row.deleteOnEmpty === 1,
       icon: row.icon || 'Folder',
       isBox: row.isBox === 1,
-      boxNotes: row.boxNotes || undefined,
       color: row.color || undefined,
       isArchived: row.isArchived === 1
     }),
@@ -295,7 +307,6 @@ const TABLE_SCHEMAS: Record<string, {
       deleteOnEmpty: item.deleteOnEmpty ? 1 : 0,
       icon: item.icon || 'Folder',
       isBox: item.isBox ? 1 : 0,
-      boxNotes: item.boxNotes || null,
       color: item.color || null,
       isArchived: item.isArchived ? 1 : 0
     })
@@ -425,23 +436,32 @@ const TABLE_SCHEMAS: Record<string, {
         timestamp TEXT NOT NULL,
         description TEXT NOT NULL,
         targetId TEXT NOT NULL,
-        user TEXT
+        user TEXT,
+        clientDevice TEXT,
+        clientInfo TEXT,
+        undoData TEXT
       )
     `,
-    columns: ['id', 'timestamp', 'description', 'targetId', 'user'],
+    columns: ['id', 'timestamp', 'description', 'targetId', 'user', 'clientDevice', 'clientInfo', 'undoData'],
     fromDb: (row: any) => ({
       id: row.id,
       timestamp: row.timestamp,
       description: row.description,
       targetId: row.targetId,
-      user: row.user || undefined
+      user: row.user || undefined,
+      clientDevice: row.clientDevice || undefined,
+      clientInfo: row.clientInfo || undefined,
+      undoData: row.undoData ? (typeof row.undoData === 'string' ? JSON.parse(row.undoData) : row.undoData) : undefined
     }),
     toDb: (item: any) => ({
       id: item.id,
       timestamp: item.timestamp,
       description: item.description,
       targetId: item.targetId,
-      user: item.user || null
+      user: item.user || null,
+      clientDevice: item.clientDevice || null,
+      clientInfo: item.clientInfo || null,
+      undoData: item.undoData ? JSON.stringify(item.undoData) : null
     })
   },
   
@@ -518,7 +538,6 @@ const TABLE_SCHEMAS: Record<string, {
         netWeight REAL,
         box TEXT,
         notes TEXT,
-        moveTo TEXT,
         tagIds TEXT,
         orderId TEXT,
         archived INTEGER DEFAULT 0,
@@ -528,7 +547,7 @@ const TABLE_SCHEMAS: Record<string, {
     columns: [
       'id', 'serial', 'productId', 'originalCutName', 'wrongLabel',
       'packDate', 'lot', 'pieces', 'netWeight', 'box',
-      'notes', 'moveTo', 'tagIds', 'orderId', 'archived', 'staged'
+      'notes', 'tagIds', 'orderId', 'archived', 'staged'
     ],
     fromDb: (row: any) => {
       const wrongLabelVal = (row.wrongLabel && String(row.wrongLabel).trim().length > 0) ? String(row.wrongLabel).trim() : undefined;
@@ -546,7 +565,6 @@ const TABLE_SCHEMAS: Record<string, {
         netWeight: row.netWeight || 0,
         box: row.box || undefined,
         notes: row.notes || undefined,
-        moveTo: row.moveTo || undefined,
         tagIds: row.tagIds ? JSON.parse(row.tagIds) : undefined,
         orderId: row.orderId || undefined,
         archived: row.archived === 1,
@@ -565,7 +583,6 @@ const TABLE_SCHEMAS: Record<string, {
       netWeight: item.netWeight || 0,
       box: item.box || null,
       notes: item.notes || null,
-      moveTo: item.moveTo || null,
       tagIds: item.tagIds ? JSON.stringify(item.tagIds) : null,
       orderId: item.orderId || null,
       archived: item.archived ? 1 : 0,
@@ -799,13 +816,16 @@ const TABLE_SCHEMAS: Record<string, {
         deliveredBoxIds TEXT,
         pickedItemIds TEXT,
         deliveredItemIds TEXT,
-        flags TEXT
+        flags TEXT,
+        confirmedPallets TEXT,
+        confirmedMoveEntryIds TEXT
       )
     `,
     columns: [
       'id', 'name', 'description', 'date', 'status', 'palletsInPlay', 'locationsInPlay',
       'targetDestinations', 'moves', 'executedAt', 'originalEntries', 'pickedBoxIds',
-      'deliveredBoxIds', 'pickedItemIds', 'deliveredItemIds', 'flags'
+      'deliveredBoxIds', 'pickedItemIds', 'deliveredItemIds', 'flags',
+      'confirmedPallets', 'confirmedMoveEntryIds'
     ],
     fromDb: (row: any) => ({
       id: row.id,
@@ -823,7 +843,9 @@ const TABLE_SCHEMAS: Record<string, {
       deliveredBoxIds: row.deliveredBoxIds ? JSON.parse(row.deliveredBoxIds) : [],
       pickedItemIds: row.pickedItemIds ? JSON.parse(row.pickedItemIds) : [],
       deliveredItemIds: row.deliveredItemIds ? JSON.parse(row.deliveredItemIds) : [],
-      flags: row.flags ? JSON.parse(row.flags) : {}
+      flags: row.flags ? JSON.parse(row.flags) : {},
+      confirmedPallets: row.confirmedPallets ? JSON.parse(row.confirmedPallets) : [],
+      confirmedMoveEntryIds: row.confirmedMoveEntryIds ? JSON.parse(row.confirmedMoveEntryIds) : []
     }),
     toDb: (item: any) => ({
       id: item.id,
@@ -841,7 +863,9 @@ const TABLE_SCHEMAS: Record<string, {
       deliveredBoxIds: item.deliveredBoxIds ? JSON.stringify(item.deliveredBoxIds) : null,
       pickedItemIds: item.pickedItemIds ? JSON.stringify(item.pickedItemIds) : null,
       deliveredItemIds: item.deliveredItemIds ? JSON.stringify(item.deliveredItemIds) : null,
-      flags: item.flags ? JSON.stringify(item.flags) : null
+      flags: item.flags ? JSON.stringify(item.flags) : null,
+      confirmedPallets: item.confirmedPallets ? JSON.stringify(item.confirmedPallets) : null,
+      confirmedMoveEntryIds: item.confirmedMoveEntryIds ? JSON.stringify(item.confirmedMoveEntryIds) : null
     })
   },
   butcher_orders: {
@@ -899,6 +923,7 @@ const TABLE_SCHEMAS: Record<string, {
     })
   },
   app_config: {
+    primaryKey: 'key',
     createSql: `
       CREATE TABLE IF NOT EXISTS app_config (
         key TEXT PRIMARY KEY,
@@ -976,8 +1001,97 @@ function initDatabase() {
         console.log("Adding 'wrongLabel' column to off_site_entries table...");
         db.prepare("ALTER TABLE off_site_entries ADD COLUMN wrongLabel TEXT").run();
       }
+      if (offSiteCols.some(c => c.name === 'moveTo')) {
+        console.log("Dropping deprecated 'moveTo' column from off_site_entries table (stored in movement_orders)...");
+        try {
+          db.prepare("ALTER TABLE off_site_entries DROP COLUMN moveTo").run();
+        } catch (dropErr) {
+          console.error("Could not drop moveTo column from off_site_entries table:", dropErr);
+        }
+      }
     } catch (e) {
-      console.error("Error adding columns to off_site_entries:", e);
+      console.error("Error updating columns on off_site_entries:", e);
+    }
+
+    // Drop deprecated isPallet column from freezers table (pallets are stored in dedicated pallets table)
+    try {
+      const freezerCols = db.prepare("PRAGMA table_info(freezers)").all() as any[];
+      if (freezerCols.some(c => c.name === 'isPallet')) {
+        console.log("Dropping deprecated 'isPallet' column from freezers table (pallets now stored in dedicated pallets table)...");
+        try {
+          db.prepare("ALTER TABLE freezers DROP COLUMN isPallet").run();
+        } catch (dropErr) {
+          console.error("Could not drop isPallet column from freezers table:", dropErr);
+        }
+      }
+    } catch (e) {
+      console.error("Error updating columns on freezers:", e);
+    }
+
+    // Drop deprecated boxNotes column from containers table (box notes are stored in dedicated boxes table)
+    try {
+      const containerCols = db.prepare("PRAGMA table_info(containers)").all() as any[];
+      if (containerCols.some(c => c.name === 'boxNotes')) {
+        console.log("Dropping deprecated 'boxNotes' column from containers table (box notes now stored in dedicated boxes table)...");
+        try {
+          db.prepare("ALTER TABLE containers DROP COLUMN boxNotes").run();
+        } catch (dropErr) {
+          console.error("Could not drop boxNotes column from containers table:", dropErr);
+        }
+      }
+    } catch (e) {
+      console.error("Error updating columns on containers:", e);
+    }
+
+    // Clean up legacy off-site mirror rows from containers and freezers tables (offsite boxes & pallets live in dedicated boxes/pallets tables)
+    try {
+      db.prepare(`
+        DELETE FROM containers 
+        WHERE (isBox = 1 OR id LIKE 'box-%' OR (freezerId IS NOT NULL AND freezerId LIKE 'pallet-%')) 
+          AND id NOT IN (SELECT DISTINCT containerId FROM meat_cuts WHERE containerId IS NOT NULL AND quantity > 0)
+      `).run();
+      db.prepare(`
+        DELETE FROM freezers 
+        WHERE id LIKE 'pallet-%'
+      `).run();
+    } catch (cleanupErr) {
+      console.error("Error cleaning up legacy off-site box/pallet duplicates from containers/freezers tables:", cleanupErr);
+    }
+
+    // Ensure history table has undoData, clientDevice, and clientInfo columns for audit history & undo
+    try {
+      const histCols = db.prepare("PRAGMA table_info(history)").all() as any[];
+      if (!histCols.some(col => col.name === 'undoData')) {
+        console.log("Adding 'undoData' column to history table...");
+        db.prepare("ALTER TABLE history ADD COLUMN undoData TEXT").run();
+      }
+      if (!histCols.some(col => col.name === 'clientDevice')) {
+        console.log("Adding 'clientDevice' column to history table...");
+        db.prepare("ALTER TABLE history ADD COLUMN clientDevice TEXT").run();
+      }
+      if (!histCols.some(col => col.name === 'clientInfo')) {
+        console.log("Adding 'clientInfo' column to history table...");
+        db.prepare("ALTER TABLE history ADD COLUMN clientInfo TEXT").run();
+      }
+    } catch (e) {
+      console.error("Error adding undoData/clientDevice/clientInfo columns to history table:", e);
+    }
+
+    // Ensure undo_sql_journal table exists for microsecond inverse SQL row-delta rollback
+    try {
+      db.prepare(`
+        CREATE TABLE IF NOT EXISTS undo_sql_journal (
+          id TEXT PRIMARY KEY,
+          historyId TEXT NOT NULL,
+          description TEXT,
+          inverseOps TEXT NOT NULL,
+          createdAt TEXT NOT NULL
+        )
+      `).run();
+      db.prepare("CREATE INDEX IF NOT EXISTS idx_undo_sql_historyId ON undo_sql_journal(historyId)").run();
+      db.prepare("CREATE INDEX IF NOT EXISTS idx_undo_sql_createdAt ON undo_sql_journal(createdAt)").run();
+    } catch (e) {
+      console.error("Error ensuring undo_sql_journal table:", e);
     }
 
     // 3. Ensure custom_lists and notification_settings have notification & timezone columns
@@ -1132,6 +1246,28 @@ function initDatabase() {
       }
     } catch (e) {
       console.error("Error checking/adding documents or butcherFee column to butcher_orders:", e);
+    }
+
+    // Ensure movement_orders has confirmedPallets and confirmedMoveEntryIds columns
+    try {
+      const movementOrderCols = db.prepare("PRAGMA table_info(movement_orders)").all() as any[];
+      if (!movementOrderCols.some(col => col.name === 'confirmedPallets')) {
+        console.log("Adding 'confirmedPallets' column to movement_orders table...");
+        db.prepare("ALTER TABLE movement_orders ADD COLUMN confirmedPallets TEXT").run();
+      }
+      if (!movementOrderCols.some(col => col.name === 'confirmedMoveEntryIds')) {
+        console.log("Adding 'confirmedMoveEntryIds' column to movement_orders table...");
+        db.prepare("ALTER TABLE movement_orders ADD COLUMN confirmedMoveEntryIds TEXT").run();
+      }
+    } catch (e) {
+      console.error("Error checking/adding partial confirmation columns to movement_orders:", e);
+    }
+
+    // Reclaim disk space and eliminate SSD write amplification by dropping legacy disk-based undo_snapshots table
+    try {
+      db.prepare(`DROP TABLE IF EXISTS undo_snapshots`).run();
+    } catch (undoDropErr) {
+      // Ignore if table does not exist
     }
 
     console.log('Custom indexes initialized successfully.');
@@ -1297,12 +1433,13 @@ function saveTableData(tableName: string, items: any[]) {
     return;
   }
   
+  const pk = schema.primaryKey || (tableName === 'app_config' ? 'key' : 'id');
   const cols = schema.columns;
   const placeholders = cols.map(() => '?').join(', ');
   const insertStmt = db.prepare(`INSERT OR REPLACE INTO ${tableName} (${cols.join(', ')}) VALUES (${placeholders})`);
   
   for (const item of items) {
-    if (item && item.id) {
+    if (item && item[pk] !== undefined && item[pk] !== null && String(item[pk]).trim() !== '') {
       const dbObj = schema.toDb(item);
       const values = cols.map(col => dbObj[col] === undefined ? null : dbObj[col]);
       insertStmt.run(...values);
@@ -1325,74 +1462,147 @@ function loadTableData(tableName: string): any[] {
   }
 }
 
-function syncTableData(tableName: string, items: any[]) {
+interface InverseSqlOp {
+  table: string;
+  type: 'insert' | 'update' | 'delete';
+  sql: string;
+  params: any[];
+}
+
+function syncTableData(tableName: string, items: any[], inverseCollector?: InverseSqlOp[]) {
   const schema = TABLE_SCHEMAS[tableName];
   if (!schema) {
     console.error(`No schema defined for table ${tableName}`);
     return;
   }
   
-  const validItems = (items || []).filter(item => item && item.id);
-  const newIds = new Set(validItems.map(item => item.id));
+  const pk = schema.primaryKey || (tableName === 'app_config' ? 'key' : 'id');
+  const validItems = (items || []).filter(item => item && item[pk] !== undefined && item[pk] !== null && String(item[pk]).trim() !== '');
+  const newIds = new Set(validItems.map(item => String(item[pk])));
   
-  const existingRows = db.prepare(`SELECT id FROM ${tableName}`).all() as { id: string }[];
-  const existingIds = new Set(existingRows.map(row => row.id));
-  
-  const deleteStmt = db.prepare(`DELETE FROM ${tableName} WHERE id = ?`);
+  const existingRows = db.prepare(`SELECT * FROM ${tableName}`).all() as any[];
+  const existingMap = new Map<string, any>();
+  const deleteStmt = db.prepare(`DELETE FROM ${tableName} WHERE ${pk} = ?`);
   
   const cols = schema.columns;
   const placeholders = cols.map(() => '?').join(', ');
   const insertStmt = db.prepare(`INSERT OR REPLACE INTO ${tableName} (${cols.join(', ')}) VALUES (${placeholders})`);
-  
-  for (const id of existingIds) {
-    if (!newIds.has(id)) {
-      deleteStmt.run(id);
+
+  for (const row of existingRows) {
+    const rId = String(row[pk]);
+    existingMap.set(rId, row);
+    if (!newIds.has(rId)) {
+      if (inverseCollector && tableName !== 'history') {
+        const rowValues = cols.map(col => row[col] === undefined ? null : row[col]);
+        inverseCollector.push({
+          table: tableName,
+          type: 'insert',
+          sql: `INSERT OR REPLACE INTO ${tableName} (${cols.join(', ')}) VALUES (${placeholders})`,
+          params: rowValues
+        });
+      }
+      deleteStmt.run(row[pk]);
     }
   }
-  
+
+  // Fast path for history: audit records are immutable, only insert new ones
+  if (tableName === 'history') {
+    for (const item of validItems) {
+      if (!existingMap.has(String(item[pk]))) {
+        const dbObj = schema.toDb(item);
+        const values = cols.map(col => dbObj[col] === undefined ? null : dbObj[col]);
+        insertStmt.run(...values);
+      }
+    }
+    return;
+  }
+
+  // Delta diffing for mutable tables: only insert/replace if row is new or column values changed
   for (const item of validItems) {
     const dbObj = schema.toDb(item);
+    const existing = existingMap.get(String(item[pk]));
+    
+    if (existing) {
+      let isChanged = false;
+      for (const col of cols) {
+        const newVal = dbObj[col] === undefined ? null : dbObj[col];
+        const oldVal = existing[col] === undefined ? null : existing[col];
+        if (newVal !== oldVal) {
+          isChanged = true;
+          break;
+        }
+      }
+      if (!isChanged) {
+        continue; // Row is completely unchanged, skip disk write!
+      }
+      if (inverseCollector && tableName !== 'history') {
+        const oldValues = cols.map(col => existing[col] === undefined ? null : existing[col]);
+        inverseCollector.push({
+          table: tableName,
+          type: 'update',
+          sql: `INSERT OR REPLACE INTO ${tableName} (${cols.join(', ')}) VALUES (${placeholders})`,
+          params: oldValues
+        });
+      }
+    } else {
+      if (inverseCollector && tableName !== 'history') {
+        inverseCollector.push({
+          table: tableName,
+          type: 'delete',
+          sql: `DELETE FROM ${tableName} WHERE ${pk} = ?`,
+          params: [String(item[pk])]
+        });
+      }
+    }
+
     const values = cols.map(col => dbObj[col] === undefined ? null : dbObj[col]);
     insertStmt.run(...values);
   }
 }
+
+let isDatabasePopulated = false;
 
 function loadStateSync(): AppInventoryState {
   if (!db) {
     initDatabase();
   }
   
-  const tables = Object.keys(TABLE_SCHEMAS);
-  let totalRows = 0;
-  for (const table of tables) {
-    const res = db.prepare(`SELECT count(*) as count FROM ${table}`).get() as { count: number };
-    totalRows += res.count;
-  }
-  
-  if (totalRows === 0 && !fs.existsSync(FALLBACK_DB)) {
-    const transaction = db.transaction(() => {
-      saveTableData('freezers', defaultInitialState.freezers || []);
-      saveTableData('containers', defaultInitialState.containers || []);
-      saveTableData('products', defaultInitialState.products || []);
-      saveTableData('categories', defaultInitialState.categories || []);
-      saveTableData('meat_cuts', defaultInitialState.meatCuts || []);
-      saveTableData('history', defaultInitialState.history || []);
-      saveTableData('off_site_entries', defaultInitialState.offSiteEntries || []);
-      saveTableData('butcher_orders', defaultInitialState.butcherOrders || []);
-      saveTableData('custom_lists', defaultInitialState.customLists || []);
-      saveTableData('tags', defaultInitialState.tags || []);
-      saveTableData('locations', defaultInitialState.locations || []);
-      saveTableData('movement_orders', defaultInitialState.movementOrders || []);
-    });
-    transaction();
-    
-    try {
-      fs.writeFileSync(FALLBACK_DB, JSON.stringify(defaultInitialState, null, 2), 'utf-8');
-    } catch (err) {
-      console.error('Error saving initial fallback JSON:', err);
+  if (!isDatabasePopulated) {
+    const tables = Object.keys(TABLE_SCHEMAS);
+    let totalRows = 0;
+    for (const table of tables) {
+      const res = db.prepare(`SELECT count(*) as count FROM ${table}`).get() as { count: number };
+      totalRows += res.count;
     }
     
-    return defaultInitialState;
+    if (totalRows === 0 && !fs.existsSync(FALLBACK_DB)) {
+      const transaction = db.transaction(() => {
+        saveTableData('freezers', defaultInitialState.freezers || []);
+        saveTableData('containers', defaultInitialState.containers || []);
+        saveTableData('products', defaultInitialState.products || []);
+        saveTableData('categories', defaultInitialState.categories || []);
+        saveTableData('meat_cuts', defaultInitialState.meatCuts || []);
+        saveTableData('history', defaultInitialState.history || []);
+        saveTableData('off_site_entries', defaultInitialState.offSiteEntries || []);
+        saveTableData('butcher_orders', defaultInitialState.butcherOrders || []);
+        saveTableData('custom_lists', defaultInitialState.customLists || []);
+        saveTableData('tags', defaultInitialState.tags || []);
+        saveTableData('locations', defaultInitialState.locations || []);
+        saveTableData('movement_orders', defaultInitialState.movementOrders || []);
+      });
+      transaction();
+      
+      try {
+        fs.writeFileSync(FALLBACK_DB, JSON.stringify(defaultInitialState, null, 2), 'utf-8');
+      } catch (err) {
+        console.error('Error saving initial fallback JSON:', err);
+      }
+      
+      isDatabasePopulated = true;
+      return defaultInitialState;
+    } else {
+      isDatabasePopulated = true;
+    }
   }
   
   try {
@@ -1484,7 +1694,8 @@ function loadStateSync(): AppInventoryState {
       locations: loadTableData('locations'),
       movementOrders: loadTableData('movement_orders'),
       notificationSettings: notificationSettings,
-      notificationLogs: loadTableData('notification_logs') || []
+      notificationLogs: loadTableData('notification_logs') || [],
+      appConfig: loadTableData('app_config') || []
     };
   } catch (err) {
     console.error('Error loading state from SQLite:', err);
@@ -1492,92 +1703,152 @@ function loadStateSync(): AppInventoryState {
   }
 }
 
-function saveStateSync(state: AppInventoryState) {
+function saveStateSync(state: AppInventoryState, affectedTables?: string[], historyEntry?: any) {
   if (!db) {
     initDatabase();
   }
   
   try {
-    const transaction = db.transaction(() => {
-      // Filter out dynamically added virtual pallets before syncing to database!
-      const pureFreezers = (state.freezers || []).filter((f: any) => !f.isPallet && !f.id.startsWith('pallet-'));
+    const inverseCollector: InverseSqlOp[] = [];
+    const collectInverse = Boolean(historyEntry && historyEntry.id);
 
-      syncTableData('freezers', pureFreezers);
-      syncTableData('containers', state.containers || []);
-      syncTableData('container_templates', state.containerTemplates || []);
-      syncTableData('products', state.products || []);
-      syncTableData('categories', state.categories || []);
-      syncTableData('meat_cuts', state.meatCuts || []);
-      syncTableData('history', state.history || []);
-      syncTableData('pallets', state.pallets || []);
-      syncTableData('boxes', state.boxes || []);
+    const transaction = db.transaction(() => {
+      const shouldSync = (table: string) => !affectedTables || affectedTables.includes(table);
+
+      // Filter out dynamically added virtual pallets before syncing to database!
+      if (shouldSync('freezers')) {
+        const pureFreezers = (state.freezers || []).filter((f: any) => !f.isPallet && !f.id.startsWith('pallet-'));
+        syncTableData('freezers', pureFreezers, collectInverse ? inverseCollector : undefined);
+      }
+      if (shouldSync('containers')) {
+        syncTableData('containers', state.containers || [], collectInverse ? inverseCollector : undefined);
+      }
+      if (shouldSync('container_templates')) {
+        syncTableData('container_templates', state.containerTemplates || [], collectInverse ? inverseCollector : undefined);
+      }
+      if (shouldSync('products')) {
+        syncTableData('products', state.products || [], collectInverse ? inverseCollector : undefined);
+      }
+      if (shouldSync('categories')) {
+        syncTableData('categories', state.categories || [], collectInverse ? inverseCollector : undefined);
+      }
+      if (shouldSync('meat_cuts')) {
+        syncTableData('meat_cuts', state.meatCuts || [], collectInverse ? inverseCollector : undefined);
+      }
+      if (shouldSync('history')) {
+        syncTableData('history', state.history || []);
+      }
+      if (shouldSync('pallets')) {
+        syncTableData('pallets', state.pallets || [], collectInverse ? inverseCollector : undefined);
+      }
+      if (shouldSync('boxes')) {
+        syncTableData('boxes', state.boxes || [], collectInverse ? inverseCollector : undefined);
+      }
       
       // Combine state.offSiteEntries and state.butcherRecords into off_site_entries table!
-      const mergedOffSiteEntriesMap = new Map<string, any>();
-      for (const e of state.offSiteEntries || []) {
-        mergedOffSiteEntriesMap.set(e.id, { ...e, archived: e.archived ? 1 : 0 });
-      }
-      for (const r of state.butcherRecords || []) {
-        let existing = mergedOffSiteEntriesMap.get(r.id);
-        if (!existing && r.serial && r.serial.trim()) {
-          const serialLower = r.serial.trim().toLowerCase();
-          for (const val of mergedOffSiteEntriesMap.values()) {
-            if (val.serial && val.serial.trim().toLowerCase() === serialLower) {
-              existing = val;
-              break;
+      if (shouldSync('off_site_entries')) {
+        const mergedOffSiteEntriesMap = new Map<string, any>();
+        for (const e of state.offSiteEntries || []) {
+          mergedOffSiteEntriesMap.set(e.id, { ...e, archived: e.archived ? 1 : 0 });
+        }
+        for (const r of state.butcherRecords || []) {
+          let existing = mergedOffSiteEntriesMap.get(r.id);
+          if (!existing && r.serial && r.serial.trim()) {
+            const serialLower = r.serial.trim().toLowerCase();
+            for (const val of mergedOffSiteEntriesMap.values()) {
+              if (val.serial && val.serial.trim().toLowerCase() === serialLower) {
+                existing = val;
+                break;
+              }
             }
           }
-        }
-        
-        if (existing) {
-          existing.orderId = r.orderId || existing.orderId;
-          if (!existing.wrongLabelOriginal && r.originalCutName && r.originalCutName.trim() !== (existing.cuts || '').trim()) {
-            existing.originalCutName = r.originalCutName;
+          
+          if (existing) {
+            existing.orderId = r.orderId || existing.orderId;
+            if (!existing.wrongLabelOriginal && r.originalCutName && r.originalCutName.trim() !== (existing.cuts || '').trim()) {
+              existing.originalCutName = r.originalCutName;
+            }
+            if (r.normalizedCutName && r.normalizedCutName.trim() !== (existing.cuts || '').trim()) {
+              existing.normalizedCutName = r.normalizedCutName;
+            }
+            // Preserve the existing entry's archived status as it represents active off-site inventory
+            existing.archived = (existing.archived === 1 || existing.archived === true) ? 1 : 0;
+          } else {
+            mergedOffSiteEntriesMap.set(r.id, {
+              id: r.id,
+              serial: r.serial || '',
+              cuts: r.normalizedCutName || r.originalCutName || '',
+              originalCutName: r.originalCutName || '',
+              normalizedCutName: r.normalizedCutName || '',
+              packDate: r.packDate || '',
+              lot: r.lot || '',
+              pieces: r.pieces ?? 0,
+              netWeight: r.netWeight ?? 0,
+              box: r.box || '',
+              location: r.location || '',
+              pallet: r.pallet || '',
+              currentLocation: r.currentLocation || '',
+              notes: r.notes || '',
+              storageLocationId: r.storageLocationId || '',
+              boxNotes: r.boxNotes || '',
+              tagIds: r.tagIds || [],
+              orderId: r.orderId,
+              archived: r.importedToOffSite ? 0 : 1
+            });
           }
-          if (r.normalizedCutName && r.normalizedCutName.trim() !== (existing.cuts || '').trim()) {
-            existing.normalizedCutName = r.normalizedCutName;
-          }
-          // Preserve the existing entry's archived status as it represents active off-site inventory
-          existing.archived = (existing.archived === 1 || existing.archived === true) ? 1 : 0;
-        } else {
-          mergedOffSiteEntriesMap.set(r.id, {
-            id: r.id,
-            serial: r.serial || '',
-            cuts: r.normalizedCutName || r.originalCutName || '',
-            originalCutName: r.originalCutName || '',
-            normalizedCutName: r.normalizedCutName || '',
-            packDate: r.packDate || '',
-            lot: r.lot || '',
-            pieces: r.pieces ?? 0,
-            netWeight: r.netWeight ?? 0,
-            box: r.box || '',
-            location: r.location || '',
-            pallet: r.pallet || '',
-            currentLocation: r.currentLocation || '',
-            notes: r.notes || '',
-            storageLocationId: r.storageLocationId || '',
-            boxNotes: r.boxNotes || '',
-            moveTo: r.moveTo || '',
-            tagIds: r.tagIds || [],
-            orderId: r.orderId,
-            archived: r.importedToOffSite ? 0 : 1
-          });
         }
+        const finalOffSiteEntriesList = Array.from(mergedOffSiteEntriesMap.values());
+        syncTableData('off_site_entries', finalOffSiteEntriesList, collectInverse ? inverseCollector : undefined);
       }
-      const finalOffSiteEntriesList = Array.from(mergedOffSiteEntriesMap.values());
-      syncTableData('off_site_entries', finalOffSiteEntriesList);
       
-      syncTableData('butcher_orders', state.butcherOrders || []);
-      // No separate sync of butcher_records anymore as they are merged in off_site_entries!
-      syncTableData('custom_lists', state.customLists || []);
-      syncTableData('tags', state.tags || []);
-      syncTableData('locations', state.locations || []);
-      syncTableData('movement_orders', state.movementOrders || []);
-      if (state.notificationSettings) {
+      if (shouldSync('butcher_orders')) {
+        syncTableData('butcher_orders', state.butcherOrders || [], collectInverse ? inverseCollector : undefined);
+      }
+      if (shouldSync('custom_lists')) {
+        syncTableData('custom_lists', state.customLists || [], collectInverse ? inverseCollector : undefined);
+      }
+      if (shouldSync('tags')) {
+        syncTableData('tags', state.tags || [], collectInverse ? inverseCollector : undefined);
+      }
+      if (shouldSync('locations')) {
+        syncTableData('locations', state.locations || [], collectInverse ? inverseCollector : undefined);
+      }
+      if (shouldSync('movement_orders')) {
+        syncTableData('movement_orders', state.movementOrders || [], collectInverse ? inverseCollector : undefined);
+      }
+      if (shouldSync('notification_settings') && state.notificationSettings) {
         syncTableData('notification_settings', state.notificationSettings);
       }
-      if (state.notificationLogs) {
+      if (shouldSync('notification_logs') && state.notificationLogs) {
         syncTableData('notification_logs', state.notificationLogs);
+      }
+      if (shouldSync('app_config') && state.appConfig) {
+        syncTableData('app_config', state.appConfig);
+      }
+
+      // Record inverse SQL operations for instantaneous row-delta undo
+      if (collectInverse && inverseCollector.length > 0 && historyEntry && historyEntry.id) {
+        try {
+          db.prepare(`
+            INSERT OR REPLACE INTO undo_sql_journal (id, historyId, description, inverseOps, createdAt)
+            VALUES (?, ?, ?, ?, ?)
+          `).run(
+            crypto.randomUUID(),
+            String(historyEntry.id),
+            String(historyEntry.description || ''),
+            JSON.stringify(inverseCollector),
+            new Date().toISOString()
+          );
+          // Keep only last 50 journal actions for memory & disk safety
+          db.prepare(`
+            DELETE FROM undo_sql_journal 
+            WHERE id NOT IN (
+              SELECT id FROM undo_sql_journal ORDER BY createdAt DESC LIMIT 50
+            )
+          `).run();
+        } catch (jErr) {
+          console.error('Failed to write to undo_sql_journal:', jErr);
+        }
       }
     });
     transaction();
@@ -1758,13 +2029,13 @@ function normalizeState(state: AppInventoryState): AppInventoryState {
       }
 
       const wrongLabelVal = (mc.wrongLabel && typeof mc.wrongLabel === 'string' && mc.wrongLabel.trim().length > 0) ? mc.wrongLabel.trim() : undefined;
-      const isWrong = Boolean(wrongLabelVal);
+      const isWrong = Boolean(wrongLabelVal || mc.isWrongLabel);
 
       const { workingFrom, notForSale, ...rest } = mc as any;
       
       return {
         ...rest,
-        originalCutName: mc.originalCutName || undefined,
+        originalCutName: isWrong ? (mc.originalCutName || undefined) : undefined,
         wrongLabel: wrongLabelVal,
         isWrongLabel: isWrong ? true : undefined,
         tagIds: updatedTagIds
@@ -1774,15 +2045,30 @@ function normalizeState(state: AppInventoryState): AppInventoryState {
 
   // Normalize offsite entries
   if (state.offSiteEntries) {
+    const productsMap = new Map<string, any>((state.products || []).map(p => [p.id, p]));
+    const productsByName = new Map<string, any>((state.products || []).map(p => [p.name.trim().toLowerCase(), p]));
+
     state.offSiteEntries = state.offSiteEntries.map(e => {
       const wrongLabelVal = (e.wrongLabel && typeof e.wrongLabel === 'string' && e.wrongLabel.trim().length > 0) ? e.wrongLabel.trim() : undefined;
       const isWrong = Boolean(wrongLabelVal);
 
       let shouldBeArchived = e.archived === true || e.archived === 1 || String(e.archived) === 'true';
+
+      let tagIds = e.tagIds;
+      if (!tagIds || tagIds.length === 0) {
+        const prod = (e.productId ? productsMap.get(e.productId) : undefined) ||
+          (e.cuts ? productsByName.get(e.cuts.trim().toLowerCase()) : undefined) ||
+          (e.originalCutName ? productsByName.get(e.originalCutName.trim().toLowerCase()) : undefined);
+        if (prod?.defaultTagIds && prod.defaultTagIds.length > 0) {
+          tagIds = [...prod.defaultTagIds];
+        } else {
+          tagIds = tagIds || [];
+        }
+      }
       
       return { 
         ...e, 
-        tagIds: e.tagIds || [],
+        tagIds,
         originalCutName: e.originalCutName || undefined,
         wrongLabel: wrongLabelVal,
         isWrongLabel: isWrong,
@@ -1791,8 +2077,7 @@ function normalizeState(state: AppInventoryState): AppInventoryState {
           location: '',
           currentLocation: '',
           pallet: '',
-          storageLocationId: '',
-          moveTo: ''
+          storageLocationId: ''
         } : {})
       };
     });
@@ -1822,119 +2107,6 @@ function normalizeState(state: AppInventoryState): AppInventoryState {
       ...loc,
       hasPallets: true
     }));
-  }
-
-  // Synchronize pallets and boxes into freezers/containers catalogs
-  if (state.offSiteEntries) {
-    let nextFreezers = [...(state.freezers || [])];
-    let nextContainers = [...(state.containers || [])];
-    let catalogsChanged = false;
-
-    // 1. Gather all unique pallets from offSiteEntries and state.pallets
-    const uniquePallets = Array.from(new Set([
-      ...state.offSiteEntries
-        .map(e => e.pallet || e.currentLocation)
-        .filter(p => p && p.trim() !== '' && p.toLowerCase() !== 'home'),
-      ...(state.pallets || []).map(p => p.name).filter(Boolean)
-    ])) as string[];
-
-    for (const pName of uniquePallets) {
-      const palletId = 'pallet-' + pName.replace(/\s+/g, '-').toLowerCase();
-      const existingPallet = nextFreezers.find(f => f.id === palletId || f.name.toLowerCase() === pName.toLowerCase());
-      const pObj = (state.pallets || []).find((p: any) => p.name.toLowerCase().trim() === pName.toLowerCase().trim());
-      const isArchivedPallet = pObj ? !!pObj.isArchived : false;
-
-      if (!existingPallet) {
-        nextFreezers.push({
-          id: palletId,
-          name: pName,
-          isSpecial: false,
-          isLooseOnly: false,
-          isPallet: true,
-          isArchived: isArchivedPallet
-        } as any);
-        catalogsChanged = true;
-      } else {
-        let palletUpdated = false;
-        if (!existingPallet.isPallet) {
-          existingPallet.isPallet = true;
-          palletUpdated = true;
-        }
-        if ((existingPallet as any).isArchived !== isArchivedPallet) {
-          (existingPallet as any).isArchived = isArchivedPallet;
-          palletUpdated = true;
-        }
-        if (palletUpdated) {
-          catalogsChanged = true;
-        }
-      }
-    }
-
-    // 2. Gather all unique boxes from offSiteEntries and state.boxes
-    const uniqueBoxes = Array.from(new Set([
-      ...state.offSiteEntries
-        .map(e => e.box)
-        .filter(b => b && b.trim() !== ''),
-      ...(state.boxes || []).map(b => b.name).filter(Boolean)
-    ])) as string[];
-
-    for (const bName of uniqueBoxes) {
-      const boxId = 'box-' + bName.replace(/\s+/g, '-').toLowerCase();
-      const existingBox = nextContainers.find(c => c.id === boxId || c.name.toLowerCase() === bName.toLowerCase());
-      const bObj = (state.boxes || []).find((b: any) => b.name.toLowerCase().trim() === bName.toLowerCase().trim());
-      const isArchivedBox = bObj ? !!bObj.isArchived : false;
-
-      // Try to find the pallet/freezer this box is currently on
-      const entryWithBox = state.offSiteEntries.find(e => e.box === bName);
-      const parentPalletName = entryWithBox ? (entryWithBox.pallet || entryWithBox.currentLocation) : '';
-      let parentFreezerId: string | undefined = undefined;
-      if (parentPalletName && parentPalletName.trim() !== '' && parentPalletName.toLowerCase() !== 'home') {
-        parentFreezerId = 'pallet-' + parentPalletName.replace(/\s+/g, '-').toLowerCase();
-      }
-
-      if (!existingBox) {
-        nextContainers.push({
-          id: boxId,
-          name: bName,
-          freezerId: parentFreezerId,
-          isBox: true,
-          deleteOnEmpty: true,
-          icon: 'package',
-          isArchived: isArchivedBox
-        });
-        catalogsChanged = true;
-      } else {
-        let boxUpdated = false;
-        if (!existingBox.isBox) {
-          existingBox.isBox = true;
-          boxUpdated = true;
-        }
-        if (!existingBox.deleteOnEmpty) {
-          existingBox.deleteOnEmpty = true;
-          boxUpdated = true;
-        }
-        if (existingBox.templateId) {
-          delete existingBox.templateId;
-          boxUpdated = true;
-        }
-        if (existingBox.isArchived !== isArchivedBox) {
-          existingBox.isArchived = isArchivedBox;
-          boxUpdated = true;
-        }
-        if (existingBox.freezerId !== parentFreezerId) {
-          existingBox.freezerId = parentFreezerId;
-          boxUpdated = true;
-        }
-        if (boxUpdated) {
-          catalogsChanged = true;
-        }
-      }
-    }
-
-    if (catalogsChanged) {
-      state.freezers = nextFreezers;
-      state.containers = nextContainers;
-    }
   }
 
   // Intercept and auto-synchronize relational offsite entries and boxNotes
@@ -2195,38 +2367,38 @@ function normalizeState(state: AppInventoryState): AppInventoryState {
       });
     }
 
-    // Sync pallet and box isArchived with freezers and containers catalogs representation
+    // Ensure freezers only contain actual on-site freezers (pallets live in state.pallets)
     if (state.freezers) {
-      state.freezers = state.freezers.map((f: any) => {
-        if (f.isPallet) {
-          const palletName = f.name;
-          const pObj = state.pallets?.find((p: any) => p.name === palletName || p.id === palletName);
-          if (pObj) {
-            return { ...f, isArchived: !!pObj.isArchived };
-          }
-        }
-        return f;
-      });
+      state.freezers = (state.freezers || []).filter((f: any) => !f.isPallet && !f.id?.startsWith('pallet-'));
     }
 
     if (state.containers) {
       const containerIdsWithCuts = new Set(
         (state.meatCuts || []).filter((mc: any) => mc.quantity > 0).map((mc: any) => mc.containerId)
       );
-      state.containers = state.containers.map((c: any) => {
-        if (c.isBox) {
-          // Containers actively holding on-site meat cuts must NEVER be auto-archived
+      const firstValidFreezerId = (state.freezers || []).find((f: any) => !f.isPallet && !f.id?.startsWith('pallet-'))?.id || (state.freezers && state.freezers[0]?.id);
+
+      state.containers = (state.containers || [])
+        // Filter out legacy empty offsite box mirrors and pallet containers that have no on-site cuts
+        .filter((c: any) => {
+          const isOffsiteMirror = (c.isBox || c.id?.startsWith('box-') || (c.freezerId && c.freezerId.startsWith('pallet-')));
+          if (isOffsiteMirror && !containerIdsWithCuts.has(c.id)) {
+            return false;
+          }
+          return true;
+        })
+        .map((c: any) => {
+          // Containers actively holding on-site meat cuts must NEVER be archived
           if (containerIdsWithCuts.has(c.id)) {
-            return { ...c, isArchived: false };
+            const nextC = { ...c, isArchived: false };
+            // If container has cuts but lost its freezerId due to past archiving, restore to a valid freezer
+            if (!nextC.freezerId && nextC.id !== 'staging_loose' && !nextC.id.endsWith('_loose') && firstValidFreezerId) {
+              nextC.freezerId = firstValidFreezerId;
+            }
+            return nextC;
           }
-          const boxName = c.name;
-          const bObj = state.boxes?.find((b: any) => b.name === boxName || b.id === boxName);
-          if (bObj) {
-            return { ...c, isArchived: !!bObj.isArchived };
-          }
-        }
-        return c;
-      });
+          return c;
+        });
     }
   }
 
@@ -2309,20 +2481,31 @@ function convertAndNormalizeContainerTemplates(state: AppInventoryState): AppInv
     }
   }
 
+  let templateModified = false;
   // Ensure active containers linked to an existing template inherit template properties if applicable
   const normalizedContainers = containers.map(c => {
     if (!c) return c;
     if (c.templateId && templateIdMap.has(c.templateId)) {
       const tpl = templateIdMap.get(c.templateId);
-      return {
-        ...c,
-        name: tpl.name || c.name,
-        icon: tpl.icon || c.icon,
-        imageUrl: tpl.imageUrl !== undefined ? tpl.imageUrl : c.imageUrl
-      };
+      const name = tpl.name || c.name;
+      const icon = tpl.icon || c.icon;
+      const imageUrl = tpl.imageUrl !== undefined ? tpl.imageUrl : c.imageUrl;
+      if (c.name !== name || c.icon !== icon || c.imageUrl !== imageUrl) {
+        templateModified = true;
+        return {
+          ...c,
+          name,
+          icon,
+          imageUrl
+        };
+      }
     }
     return c;
   });
+
+  if (templateModified) {
+    saveStateSync({ ...state, containers: normalizedContainers }, ['containers']);
+  }
 
   return {
     ...state,
@@ -2336,19 +2519,14 @@ async function loadState(): Promise<AppInventoryState> {
   const rawState = loadStateSync();
   const normalized = normalizeState(rawState);
   const converted = convertAndNormalizeContainerTemplates(normalized);
-  
-  // If anything was modified during normalization or template conversion, save it back to persist updates permanently
-  if (JSON.stringify(rawState) !== JSON.stringify(converted)) {
-    saveStateSync(converted);
-  }
   return { ...converted, isDemoMode, isPreviewMode, previewBackupFilename: previewBackupFilename || undefined };
 }
 
-// Unified state saver
-async function saveState(state: AppInventoryState) {
+// Unified state saver with optional targeted tables for ultra-fast delta synchronization
+async function saveState(state: AppInventoryState, affectedTables?: string[], historyEntry?: any) {
   const normalized = normalizeState(state);
   const converted = convertAndNormalizeContainerTemplates(normalized);
-  saveStateSync(converted);
+  saveStateSync(converted, affectedTables, historyEntry);
 }
 
 // ---------------- INVENTORY SYNC ENDPOINTS ----------------
@@ -2486,6 +2664,105 @@ function saveAutoSnapshotConfig(config: AutoSnapshotSettings) {
   }
 }
 
+function getFullBackupConfigObject(): Record<string, any> {
+  const autoSnapshotConfig = loadAutoSnapshotConfig();
+  const appConfigs: Record<string, string> = {};
+  try {
+    if (!db) initDatabase();
+    const rows = db.prepare('SELECT key, value FROM app_config').all() as any[];
+    rows.forEach(r => {
+      appConfigs[r.key] = r.value;
+    });
+  } catch (e) {}
+
+  let notificationSettings: any = null;
+  try {
+    if (!db) initDatabase();
+    notificationSettings = db.prepare('SELECT * FROM notification_settings WHERE id = "global"').get();
+  } catch (e) {}
+
+  return {
+    ...autoSnapshotConfig,
+    reportFromName: appConfigs['report-from-name'] || '',
+    reportFromAddress: appConfigs['report-from-address'] || '',
+    theoreticalBoxWeight: appConfigs['offsite-theoretical-box-weight'] ? (parseFloat(appConfigs['offsite-theoretical-box-weight']) || 40) : 40,
+    theme: appConfigs['freezer-theme'] || '',
+    reportBottomNotes: appConfigs['report-bottom-notes'] || '',
+    appConfigs: appConfigs,
+    notificationSettings: notificationSettings || undefined
+  };
+}
+
+function restoreConfigObject(configObj: any) {
+  if (!configObj || typeof configObj !== 'object') return;
+  try {
+    if (!db) initDatabase();
+    const nowIso = new Date().toISOString();
+    const upsertStmt = db.prepare(`
+      INSERT INTO app_config (key, value, updatedAt)
+      VALUES (?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updatedAt = excluded.updatedAt
+    `);
+
+    db.transaction(() => {
+      // 1. Restore entire appConfigs map if present
+      if (configObj.appConfigs && typeof configObj.appConfigs === 'object') {
+        for (const [k, v] of Object.entries(configObj.appConfigs)) {
+          if (typeof k === 'string' && k.trim()) {
+            const valStr = typeof v === 'string' ? v : JSON.stringify(v);
+            upsertStmt.run(k.trim(), valStr, nowIso);
+          }
+        }
+      }
+
+      // 2. Explicit top-level preference fields
+      if (configObj.reportFromName) {
+        upsertStmt.run('report-from-name', String(configObj.reportFromName), nowIso);
+      }
+      if (configObj.reportFromAddress) {
+        upsertStmt.run('report-from-address', String(configObj.reportFromAddress), nowIso);
+      }
+      if (configObj.theoreticalBoxWeight !== undefined && configObj.theoreticalBoxWeight !== null) {
+        upsertStmt.run('offsite-theoretical-box-weight', String(configObj.theoreticalBoxWeight), nowIso);
+      }
+      if (configObj.theme) {
+        upsertStmt.run('freezer-theme', String(configObj.theme), nowIso);
+      }
+      if (configObj.reportBottomNotes) {
+        upsertStmt.run('report-bottom-notes', String(configObj.reportBottomNotes), nowIso);
+      }
+
+      // 3. Auto snapshot schedules
+      const snapshotKeys = [
+        'rollingEnabled', 'rollingInterval', 'rollingMaxCount',
+        'dbRollingEnabled', 'dbRollingIntervalDays', 'dbRollingMaxCount',
+        'dbBackupHour', 'fullZipRollingEnabled', 'fullZipRollingIntervalDays',
+        'fullZipRollingMaxCount', 'timezone', 'isDemoMode'
+      ];
+      const hasSnapshotKeys = snapshotKeys.some(k => k in configObj);
+      if (hasSnapshotKeys) {
+        const existing = loadAutoSnapshotConfig();
+        const updatedSnapshot: any = { ...existing };
+        for (const k of snapshotKeys) {
+          if (configObj[k] !== undefined) {
+            updatedSnapshot[k] = configObj[k];
+          }
+        }
+        saveAutoSnapshotConfig(updatedSnapshot);
+      }
+
+      // 4. Notification settings if present
+      if (configObj.notificationSettings && typeof configObj.notificationSettings === 'object') {
+        try {
+          syncTableData('notification_settings', [configObj.notificationSettings]);
+        } catch (e) {}
+      }
+    })();
+  } catch (err) {
+    console.error('Error in restoreConfigObject:', err);
+  }
+}
+
 function getUserTimezone(): string {
   try {
     if (!db) initDatabase();
@@ -2592,7 +2869,8 @@ async function runAutomaticRollingSnapshots() {
         zip.addLocalFile(tempDbPath, '', 'inventory.db');
 
         // Add config
-        zip.addFile('config.json', Buffer.from(JSON.stringify(config, null, 2), 'utf-8'));
+        const fullBackupConfig = getFullBackupConfigObject();
+        zip.addFile('config.json', Buffer.from(JSON.stringify(fullBackupConfig, null, 2), 'utf-8'));
 
         // Add Photos
         if (fs.existsSync(UPLOADS_DIR)) {
@@ -3199,6 +3477,87 @@ app.post('/api/app-config', (req, res) => {
   }
 });
 
+app.get('/api/config', (req, res) => {
+  try {
+    if (!db) initDatabase();
+    const rows = db.prepare('SELECT key, value, updatedAt FROM app_config').all() as any[];
+    const configs: Record<string, string> = {};
+    const items: any[] = [];
+    rows.forEach(r => {
+      configs[r.key] = r.value;
+      items.push({ key: r.key, value: r.value, updatedAt: r.updatedAt });
+    });
+    res.json({ configs, items, ...configs });
+  } catch (err: any) {
+    console.error('Error fetching config:', err);
+    res.status(500).json({ error: 'Failed to retrieve config.', details: err.message });
+  }
+});
+
+app.get('/api/config/:key', (req, res) => {
+  try {
+    if (!db) initDatabase();
+    const key = req.params.key;
+    const row = db.prepare('SELECT key, value, updatedAt FROM app_config WHERE key = ?').get(key) as any;
+    if (row) {
+      res.json({ key: row.key, value: row.value, updatedAt: row.updatedAt });
+    } else {
+      res.status(404).json({ error: `Config key "${key}" not found.`, key, value: null });
+    }
+  } catch (err: any) {
+    console.error(`Error fetching config key "${req.params.key}":`, err);
+    res.status(500).json({ error: 'Failed to retrieve config key.', details: err.message });
+  }
+});
+
+app.post('/api/config', (req, res) => {
+  try {
+    if (!db) initDatabase();
+    const { key, value, configs } = req.body;
+    const nowIso = new Date().toISOString();
+
+    const upsertStmt = db.prepare(`
+      INSERT INTO app_config (key, value, updatedAt)
+      VALUES (?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updatedAt = excluded.updatedAt
+    `);
+
+    const updatedKeys: string[] = [];
+
+    const tx = db.transaction(() => {
+      if (configs && typeof configs === 'object') {
+        for (const [k, v] of Object.entries(configs)) {
+          if (typeof k === 'string' && k.trim()) {
+            const valStr = typeof v === 'string' ? v : JSON.stringify(v);
+            upsertStmt.run(k.trim(), valStr, nowIso);
+            updatedKeys.push(k.trim());
+          }
+        }
+      }
+      if (key && typeof key === 'string' && key.trim()) {
+        const valStr = typeof value === 'string' ? value : JSON.stringify(value ?? '');
+        upsertStmt.run(key.trim(), valStr, nowIso);
+        if (!updatedKeys.includes(key.trim())) {
+          updatedKeys.push(key.trim());
+        }
+      }
+    });
+
+    tx();
+
+    const rows = db.prepare('SELECT key, value, updatedAt FROM app_config').all() as any[];
+    const resultConfigs: Record<string, string> = {};
+    rows.forEach(r => {
+      resultConfigs[r.key] = r.value;
+    });
+
+    res.json({ success: true, updatedKeys, configs: resultConfigs });
+  } catch (err: any) {
+    console.error('Error saving config:', err);
+    res.status(500).json({ error: 'Failed to save config.', details: err.message });
+  }
+});
+
 
 // ---------------- DEMO MODE ENDPOINTS ----------------
 
@@ -3429,7 +3788,7 @@ app.post('/api/backups/create', async (req: any, res) => {
       zip.addLocalFile(tempDbPath, '', 'inventory.db');
 
       // 2. Add Config
-      const currentConfig = loadAutoSnapshotConfig();
+      const currentConfig = getFullBackupConfigObject();
       zip.addFile('config.json', Buffer.from(JSON.stringify(currentConfig, null, 2), 'utf-8'));
 
       // 3. Add Photos
@@ -3572,6 +3931,594 @@ app.post('/api/backups/preview-mode/end', async (req, res) => {
   }
 });
 
+export const DATABASE_TABLE_DEFINITIONS = [
+  {
+    name: 'freezers',
+    label: 'Freezers & Storage Units',
+    category: 'layout',
+    categoryLabel: 'On-Site Physical Layout',
+    iconName: 'FolderOpen',
+    description: 'Freezers, walk-in coolers, and on-site refrigeration cabinets',
+    dependents: ['containers']
+  },
+  {
+    name: 'container_templates',
+    label: 'Container Templates',
+    category: 'layout',
+    categoryLabel: 'On-Site Physical Layout',
+    iconName: 'Layers',
+    description: 'Catalog templates for reusable bins, shelves, and totes',
+    dependents: ['containers']
+  },
+  {
+    name: 'containers',
+    label: 'Containers (Bins & Drawers)',
+    category: 'layout',
+    categoryLabel: 'On-Site Physical Layout',
+    iconName: 'Box',
+    description: 'Physical bins, drawers, boxes, and baskets assigned to freezers',
+    dependsOn: [
+      { table: 'freezers', foreignKey: 'freezerId', label: 'Freezers' },
+      { table: 'container_templates', foreignKey: 'templateId', label: 'Container Templates' }
+    ],
+    dependents: ['meat_cuts']
+  },
+  {
+    name: 'categories',
+    label: 'Product Categories',
+    category: 'catalog',
+    categoryLabel: 'Product Catalog & Cuts',
+    iconName: 'Folder',
+    description: 'Primary and subcategory classifications for inventory products',
+    dependents: ['products']
+  },
+  {
+    name: 'products',
+    label: 'Product Catalog Items',
+    category: 'catalog',
+    categoryLabel: 'Product Catalog & Cuts',
+    iconName: 'Library',
+    description: 'Standardized product definitions, SKUs, barcodes, and prices',
+    dependsOn: [
+      { table: 'categories', foreignKey: 'primaryCategory', label: 'Product Categories' }
+    ],
+    dependents: ['meat_cuts', 'off_site_entries']
+  },
+  {
+    name: 'meat_cuts',
+    label: 'On-Site Meat Cuts & Inventory',
+    category: 'inventory',
+    categoryLabel: 'On-Site Inventory',
+    iconName: 'Layers',
+    description: 'Active on-site meat cuts, package counts, weights, and bin placements',
+    dependsOn: [
+      { table: 'containers', foreignKey: 'containerId', label: 'Containers' },
+      { table: 'products', foreignKey: 'productId', label: 'Product Catalog' }
+    ]
+  },
+  {
+    name: 'locations',
+    label: 'Off-Site Hubs & Warehouses',
+    category: 'offsite',
+    categoryLabel: 'Off-Site & Logistics',
+    iconName: 'MapPin',
+    description: 'External commercial freezers, cold storage warehouses, and processing hubs',
+    dependents: ['pallets', 'boxes', 'off_site_entries', 'movement_orders', 'butcher_orders']
+  },
+  {
+    name: 'pallets',
+    label: 'Pallets (Off-Site Storage)',
+    category: 'offsite',
+    categoryLabel: 'Off-Site & Logistics',
+    iconName: 'Grid',
+    description: 'Pallet groupings and identifiers in off-site facilities',
+    dependsOn: [
+      { table: 'locations', foreignKey: 'storageLocationId', label: 'Off-Site Locations' }
+    ],
+    dependents: ['boxes', 'off_site_entries']
+  },
+  {
+    name: 'boxes',
+    label: 'Storage Boxes & Cases',
+    category: 'offsite',
+    categoryLabel: 'Off-Site & Logistics',
+    iconName: 'Package',
+    description: 'Master boxes and cases containing off-site meat packages',
+    dependsOn: [
+      { table: 'pallets', foreignKey: 'palletId', label: 'Pallets' }
+    ],
+    dependents: ['off_site_entries']
+  },
+  {
+    name: 'off_site_entries',
+    label: 'Off-Site Meat Packages & Lots',
+    category: 'offsite',
+    categoryLabel: 'Off-Site & Logistics',
+    iconName: 'FileText',
+    description: 'Tracked cases, package barcodes, serials, weights, lots, and offsite cuts',
+    dependsOn: [
+      { table: 'boxes', foreignKey: 'box', label: 'Storage Boxes' },
+      { table: 'products', foreignKey: 'productId', label: 'Product Catalog' },
+      { table: 'butcher_orders', foreignKey: 'orderId', label: 'Butcher Orders' }
+    ]
+  },
+  {
+    name: 'movement_orders',
+    label: 'Movement & Transfer Orders',
+    category: 'offsite',
+    categoryLabel: 'Off-Site & Logistics',
+    iconName: 'Truck',
+    description: 'Transfer manifests, dispatch logs, and box picking orders',
+    dependsOn: [
+      { table: 'locations', foreignKey: 'locationsInPlay', label: 'Off-Site Locations' }
+    ]
+  },
+  {
+    name: 'butcher_orders',
+    label: 'Butcher Carcass & Cut Orders',
+    category: 'catalog',
+    categoryLabel: 'Product Catalog & Cuts',
+    iconName: 'ClipboardCheck',
+    description: 'Livestock processing orders, live/hanging weights, and harvest dates',
+    dependsOn: [
+      { table: 'locations', foreignKey: 'locationId', label: 'Off-Site Locations' }
+    ],
+    dependents: ['off_site_entries']
+  },
+  {
+    name: 'custom_lists',
+    label: 'Custom Shopping Lists',
+    category: 'lists',
+    categoryLabel: 'Lists & Tags',
+    iconName: 'ListPlus',
+    description: 'Custom pull lists, restock threshold monitors, and shopping agendas'
+  },
+  {
+    name: 'tags',
+    label: 'Quality & Status Tags',
+    category: 'lists',
+    categoryLabel: 'Lists & Tags',
+    iconName: 'Tag',
+    description: 'Custom colored badges (e.g. USDA Prime, Halal, Sample, Reserved)'
+  },
+  {
+    name: 'app_config',
+    label: 'Application Settings & Preferences',
+    category: 'system',
+    categoryLabel: 'System & Preferences',
+    iconName: 'Sliders',
+    description: 'Sender addresses, simulated box weights, auto-snapshot policies, and theme preferences'
+  },
+  {
+    name: 'notification_settings',
+    label: 'Notification & Digest Settings',
+    category: 'system',
+    categoryLabel: 'System & Preferences',
+    iconName: 'Bell',
+    description: 'SMTP email configurations, Home Assistant notify targets, and digest schedules'
+  },
+  {
+    name: 'notification_logs',
+    label: 'Notification Event Logs',
+    category: 'system',
+    categoryLabel: 'System & Preferences',
+    iconName: 'History',
+    description: 'Historical record of delivered digests, webhooks, and alerts'
+  },
+  {
+    name: 'history',
+    label: 'Activity History & Audit Logs',
+    category: 'system',
+    categoryLabel: 'System & Preferences',
+    iconName: 'Clock',
+    description: 'Audit trail of all add, move, consume, and edit events with undo state'
+  }
+];
+
+function checkDatabaseDependencies(srcDb: any, selectedTables: string[]) {
+  const issues: any[] = [];
+  const suggestedTables = new Set<string>();
+
+  const isTableSelected = (tbl: string) => {
+    return selectedTables.includes(tbl) || 
+      (tbl === 'freezers' && selectedTables.includes('freezers')) ||
+      (tbl === 'containers' && selectedTables.includes('containers')) ||
+      (tbl === 'container_templates' && selectedTables.includes('containers')) ||
+      (tbl === 'products' && (selectedTables.includes('products') || selectedTables.includes('catalog'))) ||
+      (tbl === 'categories' && (selectedTables.includes('categories') || selectedTables.includes('catalog'))) ||
+      (tbl === 'meat_cuts' && (selectedTables.includes('meat_cuts') || selectedTables.includes('inventory'))) ||
+      (tbl === 'off_site_entries' && (selectedTables.includes('off_site_entries') || selectedTables.includes('offsite'))) ||
+      (tbl === 'pallets' && (selectedTables.includes('pallets') || selectedTables.includes('offsite'))) ||
+      (tbl === 'boxes' && (selectedTables.includes('boxes') || selectedTables.includes('offsite'))) ||
+      (tbl === 'locations' && (selectedTables.includes('locations') || selectedTables.includes('offsite'))) ||
+      (tbl === 'butcher_orders' && (selectedTables.includes('butcher_orders') || selectedTables.includes('offsite')));
+  };
+
+  const getExistingIds = (targetDb: any, table: string, col = 'id') => {
+    try {
+      const rows = targetDb.prepare(`SELECT ${col} FROM ${table}`).all() as any[];
+      return new Set(rows.map(r => String(r[col]).trim()).filter(Boolean));
+    } catch {
+      return new Set<string>();
+    }
+  };
+
+  // Check meat_cuts dependencies
+  if (isTableSelected('meat_cuts')) {
+    // 1. containers
+    if (!isTableSelected('containers')) {
+      try {
+        const activeContainerIds = getExistingIds(db, 'containers');
+        const cutRows = srcDb.prepare("SELECT containerId, productId FROM meat_cuts WHERE containerId IS NOT NULL AND trim(containerId) != ''").all() as any[];
+        const missingIds = new Set<string>();
+        let missingCount = 0;
+        for (const row of cutRows) {
+          const cid = String(row.containerId).trim();
+          if (cid && !activeContainerIds.has(cid)) {
+            missingIds.add(cid);
+            missingCount++;
+          }
+        }
+        if (missingCount > 0) {
+          issues.push({
+            sourceTable: 'meat_cuts',
+            sourceLabel: 'On-Site Meat Cuts',
+            targetTable: 'containers',
+            targetLabel: 'Containers (Bins)',
+            missingCount,
+            sampleIds: Array.from(missingIds).slice(0, 5),
+            message: `${missingCount} meat cut(s) in the snapshot reference ${missingIds.size} container ID(s) missing from your active database.`,
+            recommendation: 'containers'
+          });
+          suggestedTables.add('containers');
+        }
+      } catch (e) {}
+    }
+
+    // 2. products
+    if (!isTableSelected('products')) {
+      try {
+        const activeProductIds = getExistingIds(db, 'products');
+        const cutRows = srcDb.prepare("SELECT productId FROM meat_cuts WHERE productId IS NOT NULL AND trim(productId) != ''").all() as any[];
+        const missingIds = new Set<string>();
+        let missingCount = 0;
+        for (const row of cutRows) {
+          const pid = String(row.productId).trim();
+          if (pid && !activeProductIds.has(pid)) {
+            missingIds.add(pid);
+            missingCount++;
+          }
+        }
+        if (missingCount > 0) {
+          issues.push({
+            sourceTable: 'meat_cuts',
+            sourceLabel: 'On-Site Meat Cuts',
+            targetTable: 'products',
+            targetLabel: 'Product Catalog Items',
+            missingCount,
+            sampleIds: Array.from(missingIds).slice(0, 5),
+            message: `${missingCount} meat cut(s) in the snapshot reference ${missingIds.size} product ID(s) missing from your active database.`,
+            recommendation: 'products'
+          });
+          suggestedTables.add('products');
+        }
+      } catch (e) {}
+    }
+  }
+
+  // Check containers dependencies
+  if (isTableSelected('containers')) {
+    if (!isTableSelected('freezers')) {
+      try {
+        const activeFreezerIds = getExistingIds(db, 'freezers');
+        const cRows = srcDb.prepare("SELECT freezerId FROM containers WHERE freezerId IS NOT NULL AND trim(freezerId) != ''").all() as any[];
+        const missingIds = new Set<string>();
+        let missingCount = 0;
+        for (const row of cRows) {
+          const fid = String(row.freezerId).trim();
+          if (fid && !activeFreezerIds.has(fid)) {
+            missingIds.add(fid);
+            missingCount++;
+          }
+        }
+        if (missingCount > 0) {
+          issues.push({
+            sourceTable: 'containers',
+            sourceLabel: 'Containers (Bins)',
+            targetTable: 'freezers',
+            targetLabel: 'Freezers & Storage Units',
+            missingCount,
+            sampleIds: Array.from(missingIds).slice(0, 5),
+            message: `${missingCount} container(s) in the snapshot reference ${missingIds.size} freezer ID(s) missing from your active database.`,
+            recommendation: 'freezers'
+          });
+          suggestedTables.add('freezers');
+        }
+      } catch (e) {}
+    }
+
+    if (!isTableSelected('container_templates')) {
+      try {
+        const activeTplIds = getExistingIds(db, 'container_templates');
+        const cRows = srcDb.prepare("SELECT templateId FROM containers WHERE templateId IS NOT NULL AND trim(templateId) != ''").all() as any[];
+        const missingIds = new Set<string>();
+        let missingCount = 0;
+        for (const row of cRows) {
+          const tid = String(row.templateId).trim();
+          if (tid && !activeTplIds.has(tid)) {
+            missingIds.add(tid);
+            missingCount++;
+          }
+        }
+        if (missingCount > 0) {
+          issues.push({
+            sourceTable: 'containers',
+            sourceLabel: 'Containers (Bins)',
+            targetTable: 'container_templates',
+            targetLabel: 'Container Templates',
+            missingCount,
+            sampleIds: Array.from(missingIds).slice(0, 5),
+            message: `${missingCount} container(s) in the snapshot reference template ID(s) missing from active database.`,
+            recommendation: 'container_templates'
+          });
+          suggestedTables.add('container_templates');
+        }
+      } catch (e) {}
+    }
+  }
+
+  // Check boxes dependencies
+  if (isTableSelected('boxes')) {
+    if (!isTableSelected('pallets')) {
+      try {
+        const activePalletIds = getExistingIds(db, 'pallets');
+        const bRows = srcDb.prepare("SELECT palletId FROM boxes WHERE palletId IS NOT NULL AND trim(palletId) != ''").all() as any[];
+        const missingIds = new Set<string>();
+        let missingCount = 0;
+        for (const row of bRows) {
+          const pid = String(row.palletId).trim();
+          if (pid && !activePalletIds.has(pid)) {
+            missingIds.add(pid);
+            missingCount++;
+          }
+        }
+        if (missingCount > 0) {
+          issues.push({
+            sourceTable: 'boxes',
+            sourceLabel: 'Storage Boxes',
+            targetTable: 'pallets',
+            targetLabel: 'Pallets',
+            missingCount,
+            sampleIds: Array.from(missingIds).slice(0, 5),
+            message: `${missingCount} box(es) reference pallet ID(s) missing from active database.`,
+            recommendation: 'pallets'
+          });
+          suggestedTables.add('pallets');
+        }
+      } catch (e) {}
+    }
+  }
+
+  // Check pallets dependencies
+  if (isTableSelected('pallets')) {
+    if (!isTableSelected('locations')) {
+      try {
+        const activeLocIds = getExistingIds(db, 'locations');
+        const pRows = srcDb.prepare("SELECT storageLocationId FROM pallets WHERE storageLocationId IS NOT NULL AND trim(storageLocationId) != ''").all() as any[];
+        const missingIds = new Set<string>();
+        let missingCount = 0;
+        for (const row of pRows) {
+          const lid = String(row.storageLocationId).trim();
+          if (lid && !activeLocIds.has(lid)) {
+            missingIds.add(lid);
+            missingCount++;
+          }
+        }
+        if (missingCount > 0) {
+          issues.push({
+            sourceTable: 'pallets',
+            sourceLabel: 'Pallets',
+            targetTable: 'locations',
+            targetLabel: 'Off-Site Locations',
+            missingCount,
+            sampleIds: Array.from(missingIds).slice(0, 5),
+            message: `${missingCount} pallet(s) reference location ID(s) missing from active database.`,
+            recommendation: 'locations'
+          });
+          suggestedTables.add('locations');
+        }
+      } catch (e) {}
+    }
+  }
+
+  // Check off_site_entries dependencies
+  if (isTableSelected('off_site_entries')) {
+    if (!isTableSelected('boxes')) {
+      try {
+        const activeBoxIds = getExistingIds(db, 'boxes');
+        const activeBoxNames = getExistingIds(db, 'boxes', 'name');
+        const eRows = srcDb.prepare("SELECT box FROM off_site_entries WHERE box IS NOT NULL AND trim(box) != ''").all() as any[];
+        const missingBoxes = new Set<string>();
+        let missingCount = 0;
+        for (const row of eRows) {
+          const b = String(row.box).trim();
+          if (b && !activeBoxIds.has(b) && !activeBoxNames.has(b)) {
+            missingBoxes.add(b);
+            missingCount++;
+          }
+        }
+        if (missingCount > 0) {
+          issues.push({
+            sourceTable: 'off_site_entries',
+            sourceLabel: 'Off-Site Entries',
+            targetTable: 'boxes',
+            targetLabel: 'Storage Boxes',
+            missingCount,
+            sampleIds: Array.from(missingBoxes).slice(0, 5),
+            message: `${missingCount} off-site entry package(s) reference Box name/ID(s) missing from active database.`,
+            recommendation: 'boxes'
+          });
+          suggestedTables.add('boxes');
+        }
+      } catch (e) {}
+    }
+
+    if (!isTableSelected('butcher_orders')) {
+      try {
+        const activeOrderIds = getExistingIds(db, 'butcher_orders');
+        const eRows = srcDb.prepare("SELECT orderId FROM off_site_entries WHERE orderId IS NOT NULL AND trim(orderId) != ''").all() as any[];
+        const missingOrders = new Set<string>();
+        let missingCount = 0;
+        for (const row of eRows) {
+          const oid = String(row.orderId).trim();
+          if (oid && !activeOrderIds.has(oid)) {
+            missingOrders.add(oid);
+            missingCount++;
+          }
+        }
+        if (missingCount > 0) {
+          issues.push({
+            sourceTable: 'off_site_entries',
+            sourceLabel: 'Off-Site Entries',
+            targetTable: 'butcher_orders',
+            targetLabel: 'Butcher Orders',
+            missingCount,
+            sampleIds: Array.from(missingOrders).slice(0, 5),
+            message: `${missingCount} off-site cut(s) reference butcher carcass orders missing from active database.`,
+            recommendation: 'butcher_orders'
+          });
+          suggestedTables.add('butcher_orders');
+        }
+      } catch (e) {}
+    }
+  }
+
+  return {
+    hasMissingDependencies: issues.length > 0,
+    issues,
+    suggestedTablesToAdd: Array.from(suggestedTables)
+  };
+}
+
+function checkJsonDependencies(data: any, selectedTables: string[]) {
+  const issues: any[] = [];
+  const suggestedTables = new Set<string>();
+
+  const isTableSelected = (tbl: string) => {
+    return selectedTables.includes(tbl) || 
+      (tbl === 'freezers' && selectedTables.includes('freezers')) ||
+      (tbl === 'containers' && selectedTables.includes('containers')) ||
+      (tbl === 'container_templates' && selectedTables.includes('containers')) ||
+      (tbl === 'products' && (selectedTables.includes('products') || selectedTables.includes('catalog'))) ||
+      (tbl === 'categories' && (selectedTables.includes('categories') || selectedTables.includes('catalog'))) ||
+      (tbl === 'meat_cuts' && (selectedTables.includes('meat_cuts') || selectedTables.includes('inventory'))) ||
+      (tbl === 'off_site_entries' && (selectedTables.includes('off_site_entries') || selectedTables.includes('offsite'))) ||
+      (tbl === 'pallets' && (selectedTables.includes('pallets') || selectedTables.includes('offsite'))) ||
+      (tbl === 'boxes' && (selectedTables.includes('boxes') || selectedTables.includes('offsite'))) ||
+      (tbl === 'locations' && (selectedTables.includes('locations') || selectedTables.includes('offsite'))) ||
+      (tbl === 'butcher_orders' && (selectedTables.includes('butcher_orders') || selectedTables.includes('offsite')));
+  };
+
+  const getExistingIds = (targetDb: any, table: string, col = 'id') => {
+    try {
+      const rows = targetDb.prepare(`SELECT ${col} FROM ${table}`).all() as any[];
+      return new Set(rows.map(r => String(r[col]).trim()).filter(Boolean));
+    } catch {
+      return new Set<string>();
+    }
+  };
+
+  const meatCuts = data.meatCuts || data.meatcuts || data.inventory || data.stock || [];
+  if (isTableSelected('meat_cuts') && Array.isArray(meatCuts)) {
+    if (!isTableSelected('containers')) {
+      const activeContainerIds = getExistingIds(db, 'containers');
+      const missingIds = new Set<string>();
+      let missingCount = 0;
+      for (const mc of meatCuts) {
+        const cid = String(mc.containerId || '').trim();
+        if (cid && !activeContainerIds.has(cid)) {
+          missingIds.add(cid);
+          missingCount++;
+        }
+      }
+      if (missingCount > 0) {
+        issues.push({
+          sourceTable: 'meat_cuts',
+          sourceLabel: 'On-Site Meat Cuts',
+          targetTable: 'containers',
+          targetLabel: 'Containers (Bins)',
+          missingCount,
+          sampleIds: Array.from(missingIds).slice(0, 5),
+          message: `${missingCount} meat cut(s) reference container ID(s) missing from active database.`,
+          recommendation: 'containers'
+        });
+        suggestedTables.add('containers');
+      }
+    }
+
+    if (!isTableSelected('products')) {
+      const activeProductIds = getExistingIds(db, 'products');
+      const missingIds = new Set<string>();
+      let missingCount = 0;
+      for (const mc of meatCuts) {
+        const pid = String(mc.productId || '').trim();
+        if (pid && !activeProductIds.has(pid)) {
+          missingIds.add(pid);
+          missingCount++;
+        }
+      }
+      if (missingCount > 0) {
+        issues.push({
+          sourceTable: 'meat_cuts',
+          sourceLabel: 'On-Site Meat Cuts',
+          targetTable: 'products',
+          targetLabel: 'Product Catalog Items',
+          missingCount,
+          sampleIds: Array.from(missingIds).slice(0, 5),
+          message: `${missingCount} meat cut(s) reference product ID(s) missing from active database.`,
+          recommendation: 'products'
+        });
+        suggestedTables.add('products');
+      }
+    }
+  }
+
+  const containers = data.containers || data.bins || [];
+  if (isTableSelected('containers') && Array.isArray(containers)) {
+    if (!isTableSelected('freezers')) {
+      const activeFreezerIds = getExistingIds(db, 'freezers');
+      const missingIds = new Set<string>();
+      let missingCount = 0;
+      for (const c of containers) {
+        const fid = String(c.freezerId || '').trim();
+        if (fid && !activeFreezerIds.has(fid)) {
+          missingIds.add(fid);
+          missingCount++;
+        }
+      }
+      if (missingCount > 0) {
+        issues.push({
+          sourceTable: 'containers',
+          sourceLabel: 'Containers (Bins)',
+          targetTable: 'freezers',
+          targetLabel: 'Freezers & Storage Units',
+          missingCount,
+          sampleIds: Array.from(missingIds).slice(0, 5),
+          message: `${missingCount} container(s) reference freezer unit ID(s) missing from active database.`,
+          recommendation: 'freezers'
+        });
+        suggestedTables.add('freezers');
+      }
+    }
+  }
+
+  return {
+    hasMissingDependencies: issues.length > 0,
+    issues,
+    suggestedTablesToAdd: Array.from(suggestedTables)
+  };
+}
+
 function selectiveRestoreFromDb(srcDbPath: string, targetSections: string[]) {
   const srcDb = new Database(srcDbPath, { readonly: true });
   try {
@@ -3602,46 +4549,54 @@ function selectiveRestoreFromDb(srcDbPath: string, targetSections: string[]) {
       }
     };
 
+    const tablesToRestore = new Set<string>();
+    for (const sec of targetSections) {
+      if (sec === 'freezers') {
+        tablesToRestore.add('freezers');
+      } else if (sec === 'containers') {
+        tablesToRestore.add('containers');
+        tablesToRestore.add('container_templates');
+      } else if (sec === 'catalog' || sec === 'products' || sec === 'items') {
+        tablesToRestore.add('products');
+        tablesToRestore.add('categories');
+      } else if (sec === 'inventory' || sec === 'meatCuts' || sec === 'stock') {
+        tablesToRestore.add('meat_cuts');
+      } else if (sec === 'offsite' || sec === 'offSiteEntries') {
+        tablesToRestore.add('off_site_entries');
+        tablesToRestore.add('pallets');
+        tablesToRestore.add('boxes');
+        tablesToRestore.add('butcher_orders');
+      } else if (sec === 'locations') {
+        tablesToRestore.add('locations');
+      } else if (sec === 'customLists') {
+        tablesToRestore.add('custom_lists');
+      } else if (sec === 'tags') {
+        tablesToRestore.add('tags');
+      } else if (sec === 'history' || sec === 'logs' || sec === 'audit') {
+        tablesToRestore.add('history');
+      } else if (sec === 'settings') {
+        tablesToRestore.add('app_config');
+        tablesToRestore.add('notification_settings');
+      } else {
+        // Direct table name (e.g. meat_cuts, containers, freezers, app_config, etc.)
+        tablesToRestore.add(sec);
+      }
+    }
+
     db.transaction(() => {
-      if (targetSections.includes('freezers') || targetSections.includes('locations')) {
-        copyTable('freezers');
-        copyTable('locations');
-      }
-      if (targetSections.includes('containers')) {
-        copyTable('containers');
-        copyTable('container_templates');
-      }
-      if (targetSections.includes('products') || targetSections.includes('catalog')) {
-        copyTable('products');
-        copyTable('categories');
-      }
-      if (targetSections.includes('meatCuts') || targetSections.includes('inventory')) {
-        copyTable('meat_cuts');
-      }
-      if (targetSections.includes('offSiteEntries') || targetSections.includes('offsite')) {
-        copyTable('off_site_entries');
-        copyTable('pallets');
-        copyTable('boxes');
-        copyTable('butcher_orders');
-      }
-      if (targetSections.includes('customLists') || targetSections.includes('settings')) {
-        copyTable('custom_lists');
-        copyTable('movement_orders');
-        copyTable('notification_settings');
-        copyTable('notification_logs');
-        copyTable('app_config');
-      }
-      if (targetSections.includes('tags')) {
-        copyTable('tags');
-      }
-      if (targetSections.includes('history') || targetSections.includes('audit') || targetSections.includes('logs')) {
-        copyTable('history');
+      for (const tbl of tablesToRestore) {
+        copyTable(tbl);
       }
     })();
+
+    if (tablesToRestore.has('app_config') || tablesToRestore.has('settings')) {
+      loadAutoSnapshotConfig();
+    }
   } finally {
     srcDb.close();
   }
 }
+
 
 app.post('/api/backups/restore/:filename', async (req: any, res) => {
   try {
@@ -3824,7 +4779,6 @@ app.post('/api/backups/restore/:filename', async (req: any, res) => {
                     netWeight,
                     mwOrderNumber,
                     box,
-                    moveTo: '',
                     location: locationName,
                     pallet: currentLocation,
                     currentLocation: currentLocation,
@@ -3843,6 +4797,17 @@ app.post('/api/backups/restore/:filename', async (req: any, res) => {
 
         if (restoredAny) {
           await saveState(currentState);
+        }
+      }
+
+      // Restore config.json if present
+      const configEntry = zipEntries.find(e => !e.isDirectory && (e.entryName === 'config.json' || e.entryName.toLowerCase().endsWith('/config.json')));
+      if (configEntry && (isFullRestore || sections?.includes('settings') || sections?.includes('appConfig'))) {
+        try {
+          const configJson = JSON.parse(configEntry.getData().toString('utf8'));
+          restoreConfigObject(configJson);
+        } catch (cfgErr) {
+          console.error('Failed to parse config.json in ZIP restore:', cfgErr);
         }
       }
 
@@ -4125,15 +5090,21 @@ app.get('/api/backups/preview/:filename', async (req, res) => {
           }
         };
 
-        targetSummary.counts.freezers = getCount('freezers');
-        targetSummary.counts.containers = getCount('containers');
-        targetSummary.counts.products = getCount('products');
-        targetSummary.counts.meatCuts = getCount('meat_cuts');
-        targetSummary.counts.offSiteEntries = getCount('off_site_entries');
-        targetSummary.counts.customLists = getCount('custom_lists');
-        targetSummary.counts.tags = getCount('tags');
-        targetSummary.counts.history = getCount('history');
-        targetSummary.counts.butcherOrders = getCount('butcher_orders');
+        targetSummary.tableCounts = {};
+        for (const def of DATABASE_TABLE_DEFINITIONS) {
+          targetSummary.tableCounts[def.name] = getCount(def.name);
+        }
+
+        targetSummary.counts.freezers = targetSummary.tableCounts.freezers;
+        targetSummary.counts.containers = targetSummary.tableCounts.containers;
+        targetSummary.counts.products = targetSummary.tableCounts.products;
+        targetSummary.counts.meatCuts = targetSummary.tableCounts.meat_cuts;
+        targetSummary.counts.offSiteEntries = targetSummary.tableCounts.off_site_entries;
+        targetSummary.counts.customLists = targetSummary.tableCounts.custom_lists;
+        targetSummary.counts.tags = targetSummary.tableCounts.tags;
+        targetSummary.counts.history = targetSummary.tableCounts.history;
+        targetSummary.counts.butcherOrders = targetSummary.tableCounts.butcher_orders;
+        targetSummary.counts.settings = targetSummary.tableCounts.app_config;
 
         let tempButcherRecordsCount = 0;
         try {
@@ -4202,20 +5173,39 @@ app.get('/api/backups/preview/:filename', async (req, res) => {
           return arr.slice(0, limit).map((x: any) => x.name || x.id).filter(Boolean);
         };
 
-        summary.counts.freezers = getArrayLength(data.freezers || data.locations || data.cabinets);
-        summary.counts.containers = getArrayLength(data.containers || data.bins || data.boxes);
-        summary.counts.products = getArrayLength(data.products || data.catalog || data.items);
-        
         const meatCuts = data.meatCuts || data.meatcuts || data.inventory || data.stock || data.stockCounts || data.counts || [];
-        summary.counts.meatCuts = getArrayLength(meatCuts);
-
         const offSiteEntries = data.offSiteEntries || data.offsiteEntries || data.offsite || data.offSite || [];
-        summary.counts.offSiteEntries = getArrayLength(offSiteEntries);
 
-        summary.counts.customLists = getArrayLength(data.customLists || data.customlists || data.lists);
-        summary.counts.tags = getArrayLength(data.tags);
-        summary.counts.history = getArrayLength(data.history || data.logs);
-        summary.counts.butcherOrders = getArrayLength(data.butcherOrders);
+        summary.tableCounts = {
+          freezers: getArrayLength(data.freezers || data.locations || data.cabinets),
+          container_templates: getArrayLength(data.containerTemplates || data.templates),
+          containers: getArrayLength(data.containers || data.bins || data.boxes),
+          categories: getArrayLength(data.categories),
+          products: getArrayLength(data.products || data.catalog || data.items),
+          meat_cuts: getArrayLength(meatCuts),
+          locations: getArrayLength(data.locations),
+          pallets: getArrayLength(data.pallets),
+          boxes: getArrayLength(data.boxes),
+          off_site_entries: getArrayLength(offSiteEntries),
+          movement_orders: getArrayLength(data.movementOrders),
+          butcher_orders: getArrayLength(data.butcherOrders),
+          custom_lists: getArrayLength(data.customLists || data.customlists || data.lists),
+          tags: getArrayLength(data.tags),
+          app_config: data.config ? Object.keys(data.config).length : (data.appConfig ? Object.keys(data.appConfig).length : 0),
+          notification_settings: getArrayLength(data.notificationSettings),
+          notification_logs: getArrayLength(data.notificationLogs),
+          history: getArrayLength(data.history || data.logs)
+        };
+
+        summary.counts.freezers = summary.tableCounts.freezers;
+        summary.counts.containers = summary.tableCounts.containers;
+        summary.counts.products = summary.tableCounts.products;
+        summary.counts.meatCuts = summary.tableCounts.meat_cuts;
+        summary.counts.offSiteEntries = summary.tableCounts.off_site_entries;
+        summary.counts.customLists = summary.tableCounts.custom_lists;
+        summary.counts.tags = summary.tableCounts.tags;
+        summary.counts.history = summary.tableCounts.history;
+        summary.counts.butcherOrders = summary.tableCounts.butcher_orders;
         summary.counts.butcherRecords = getArrayLength(data.butcherRecords);
 
         summary.samples.freezers = getNamesSample(data.freezers || data.locations || data.cabinets);
@@ -4262,6 +5252,7 @@ app.get('/api/backups/preview/:filename', async (req, res) => {
       try {
         const csvText = fs.readFileSync(filepath, 'utf-8');
         const parsedCsv = parseOffSiteCsvData(csvText);
+        summary.tableCounts = { off_site_entries: parsedCsv.count };
         summary.counts.offSiteEntries = parsedCsv.count;
         summary.samples.offSiteCuts = parsedCsv.sampleCuts;
         summary.offSiteSumPieces = parsedCsv.offSiteSumPieces;
@@ -4275,7 +5266,7 @@ app.get('/api/backups/preview/:filename', async (req, res) => {
         const zipEntries = zip.getEntries();
         summary.zipFiles = zipEntries.map(e => ({ name: e.entryName, size: e.header.size }));
         
-        const dbEntry = zipEntries.find(e => e.entryName === 'inventory.db');
+        const dbEntry = zipEntries.find(e => e.entryName === 'inventory.db' || e.entryName.toLowerCase().endsWith('/inventory.db') || e.entryName.toLowerCase().endsWith('.db'));
         if (dbEntry) {
           const tempDbPath = path.join(BACKUPS_DIR, `temp_zip_preview_${Date.now()}_${Math.random().toString(36).substring(2, 6)}.db`);
           fs.writeFileSync(tempDbPath, dbEntry.getData());
@@ -4286,71 +5277,34 @@ app.get('/api/backups/preview/:filename', async (req, res) => {
           }
         }
 
-        const onSiteEntry = zipEntries.find(e => e.entryName === 'inventory-on-site.json');
-        if (onSiteEntry) {
+        const onSiteEntry = zipEntries.find(e => e.entryName === 'inventory-on-site.json' || e.entryName.toLowerCase().endsWith('/inventory-on-site.json'));
+        if (onSiteEntry && !summary.tableCounts) {
           const text = onSiteEntry.getData().toString('utf8');
           const parsed = JSON.parse(text);
           if (parsed) {
             const getArrayLength = (arr: any) => Array.isArray(arr) ? arr.length : 0;
-            if (!summary.counts.freezers) summary.counts.freezers = getArrayLength(parsed.freezers || parsed.locations || parsed.cabinets);
-            if (!summary.counts.containers) summary.counts.containers = getArrayLength(parsed.containers || parsed.bins || parsed.boxes);
-            if (!summary.counts.products) summary.counts.products = getArrayLength(parsed.products || parsed.catalog || parsed.items);
-            
             const meatCuts = parsed.meatCuts || parsed.meatcuts || parsed.inventory || parsed.stock || [];
-            if (!summary.counts.meatCuts) summary.counts.meatCuts = getArrayLength(meatCuts);
-            if (!summary.counts.customLists) summary.counts.customLists = getArrayLength(parsed.customLists || parsed.lists);
-            if (!summary.counts.tags) summary.counts.tags = getArrayLength(parsed.tags);
-            if (!summary.counts.history) summary.counts.history = getArrayLength(parsed.history || parsed.logs);
-
-            if (Array.isArray(meatCuts) && (summary.onSiteSumQty === undefined || summary.onSiteSumQty === 0)) {
-              let onSiteQty = 0;
-              let onSitePieces = 0;
-              let onSiteWeight = 0;
-              meatCuts.forEach((mc: any) => {
-                if ('productId' in mc) {
-                  onSiteQty += Number(mc.quantity || 0);
-                } else {
-                  onSitePieces += Number(mc.pieces || 0);
-                  onSiteWeight += Number(mc.netWeight || 0);
-                }
-              });
-              summary.onSiteSumQty = onSiteQty;
-              summary.onSiteSumPieces = onSitePieces;
-              summary.onSiteSumWeight = onSiteWeight;
-            }
-
-            const jsonOffSite = parsed.offSiteEntries || parsed.offsiteEntries || parsed.offsite || [];
-            if (Array.isArray(jsonOffSite) && jsonOffSite.length > 0 && (!summary.counts.offSiteEntries || summary.counts.offSiteEntries === 0)) {
-              let offSitePieces = 0;
-              let offSiteWeight = 0;
-              const sampleCuts: string[] = [];
-              jsonOffSite.forEach((e: any) => {
-                const cutName = e.cuts || e.originalCutName || e.cutName || '';
-                if (cutName && sampleCuts.length < 5) sampleCuts.push(cutName);
-                offSitePieces += parseFloat(String(e.pieces || 0).replace(/[^0-9.]/g, '')) || 0;
-                offSiteWeight += parseFloat(String(e.netWeight || 0).replace(/[^0-9.]/g, '')) || 0;
-              });
-              summary.counts.offSiteEntries = jsonOffSite.length;
-              summary.offSiteSumPieces = offSitePieces;
-              summary.offSiteSumWeight = offSiteWeight;
-              if (!summary.samples.offSiteCuts || summary.samples.offSiteCuts.length === 0) {
-                summary.samples.offSiteCuts = sampleCuts;
-              }
-            }
-          }
-        }
-
-        const offSiteEntry = zipEntries.find(e => e.entryName === 'inventory-off-site.csv');
-        if (offSiteEntry) {
-          const csvText = offSiteEntry.getData().toString('utf8');
-          const parsedCsv = parseOffSiteCsvData(csvText);
-          if (!summary.counts.offSiteEntries || summary.counts.offSiteEntries === 0 || !summary.offSiteSumPieces || summary.offSiteSumPieces === 0) {
-            summary.counts.offSiteEntries = parsedCsv.count;
-            summary.offSiteSumPieces = parsedCsv.offSiteSumPieces;
-            summary.offSiteSumWeight = parsedCsv.offSiteSumWeight;
-            if (!summary.samples.offSiteCuts || summary.samples.offSiteCuts.length === 0) {
-              summary.samples.offSiteCuts = parsedCsv.sampleCuts;
-            }
+            const offSiteEntries = parsed.offSiteEntries || parsed.offsiteEntries || parsed.offsite || [];
+            summary.tableCounts = {
+              freezers: getArrayLength(parsed.freezers || parsed.locations || parsed.cabinets),
+              container_templates: getArrayLength(parsed.containerTemplates || parsed.templates),
+              containers: getArrayLength(parsed.containers || parsed.bins || parsed.boxes),
+              categories: getArrayLength(parsed.categories),
+              products: getArrayLength(parsed.products || parsed.catalog || parsed.items),
+              meat_cuts: getArrayLength(meatCuts),
+              locations: getArrayLength(parsed.locations),
+              pallets: getArrayLength(parsed.pallets),
+              boxes: getArrayLength(parsed.boxes),
+              off_site_entries: getArrayLength(offSiteEntries),
+              movement_orders: getArrayLength(parsed.movementOrders),
+              butcher_orders: getArrayLength(parsed.butcherOrders),
+              custom_lists: getArrayLength(parsed.customLists || parsed.lists),
+              tags: getArrayLength(parsed.tags),
+              app_config: parsed.config ? Object.keys(parsed.config).length : 0,
+              notification_settings: getArrayLength(parsed.notificationSettings),
+              notification_logs: getArrayLength(parsed.notificationLogs),
+              history: getArrayLength(parsed.history || parsed.logs)
+            };
           }
         }
 
@@ -4363,12 +5317,17 @@ app.get('/api/backups/preview/:filename', async (req, res) => {
           return validImgExts.includes(ext) || lower.includes('images/') || lower.includes('photos/') || lower.includes('uploads/');
         });
         summary.counts.images = imagesFolder.length;
+        if (summary.tableCounts) {
+          summary.tableCounts.images = imagesFolder.length;
+        }
       } catch (zipErr: any) {
         return res.status(500).json({ error: `Failed to parse ZIP backup: ${zipErr.message}` });
       }
     }
 
+    // Live Database Counts across all tables
     const currentCounts: any = {};
+    const currentTableCounts: any = {};
     if (db) {
       const getDbCount = (tbl: string) => {
         try {
@@ -4376,21 +5335,31 @@ app.get('/api/backups/preview/:filename', async (req, res) => {
           return row ? row.c : 0;
         } catch { return 0; }
       };
-      currentCounts.freezers = getDbCount('freezers');
-      currentCounts.containers = getDbCount('containers');
-      currentCounts.products = getDbCount('products');
-      currentCounts.meatCuts = getDbCount('meat_cuts');
-      currentCounts.offSiteEntries = getDbCount('off_site_entries');
-      currentCounts.customLists = getDbCount('custom_lists');
-      currentCounts.tags = getDbCount('tags');
-      currentCounts.history = getDbCount('history');
-      currentCounts.images = fs.existsSync(UPLOADS_DIR) 
+
+      for (const def of DATABASE_TABLE_DEFINITIONS) {
+        currentTableCounts[def.name] = getDbCount(def.name);
+      }
+      currentTableCounts.images = fs.existsSync(UPLOADS_DIR) 
         ? fs.readdirSync(UPLOADS_DIR).filter(f => {
             try { return fs.statSync(path.join(UPLOADS_DIR, f)).isFile(); } catch { return false; }
           }).length 
         : 0;
+
+      currentCounts.freezers = currentTableCounts.freezers;
+      currentCounts.containers = currentTableCounts.containers;
+      currentCounts.products = currentTableCounts.products;
+      currentCounts.meatCuts = currentTableCounts.meat_cuts;
+      currentCounts.offSiteEntries = currentTableCounts.off_site_entries;
+      currentCounts.customLists = currentTableCounts.custom_lists;
+      currentCounts.tags = currentTableCounts.tags;
+      currentCounts.history = currentTableCounts.history;
+      currentCounts.settings = currentTableCounts.app_config;
+      currentCounts.images = currentTableCounts.images;
     }
+
     summary.currentCounts = currentCounts;
+    summary.currentTableCounts = currentTableCounts;
+    summary.tableDefinitions = DATABASE_TABLE_DEFINITIONS;
 
     res.json(summary);
   } catch (err: any) {
@@ -4398,6 +5367,74 @@ app.get('/api/backups/preview/:filename', async (req, res) => {
     res.status(500).json({ error: `Failed to fetch snapshot preview: ${err.message}` });
   }
 });
+
+app.post('/api/backups/check-dependencies/:filename', async (req: any, res) => {
+  try {
+    const { filename } = req.params;
+    const { selectedTables } = req.body;
+    if (filename.includes('..') || filename.includes('/')) {
+      return res.status(400).json({ error: 'Invalid file name' });
+    }
+    const filepath = path.join(BACKUPS_DIR, filename);
+    if (!fs.existsSync(filepath)) {
+      return res.status(404).json({ error: 'Backup file not found.' });
+    }
+
+    const tablesToCheck = Array.isArray(selectedTables) ? selectedTables : [];
+
+    if (filename.endsWith('.db')) {
+      let tempDb: any;
+      try {
+        tempDb = new Database(filepath, { readonly: true });
+        const result = checkDatabaseDependencies(tempDb, tablesToCheck);
+        return res.json(result);
+      } finally {
+        if (tempDb) {
+          try { tempDb.close(); } catch (e) {}
+        }
+      }
+    } else if (filename.endsWith('.zip')) {
+      const zip = new AdmZip(filepath);
+      const zipEntries = zip.getEntries();
+      const dbEntry = zipEntries.find(e => e.entryName === 'inventory.db' || e.entryName.toLowerCase().endsWith('/inventory.db') || e.entryName.toLowerCase().endsWith('.db'));
+      if (dbEntry) {
+        const tempDbPath = path.join(BACKUPS_DIR, `temp_dep_check_${Date.now()}_${Math.random().toString(36).substring(2, 6)}.db`);
+        fs.writeFileSync(tempDbPath, dbEntry.getData());
+        let tempDb: any;
+        try {
+          tempDb = new Database(tempDbPath, { readonly: true });
+          const result = checkDatabaseDependencies(tempDb, tablesToCheck);
+          return res.json(result);
+        } finally {
+          if (tempDb) {
+            try { tempDb.close(); } catch (e) {}
+          }
+          if (fs.existsSync(tempDbPath)) fs.unlinkSync(tempDbPath);
+        }
+      } else {
+        const onSiteEntry = zipEntries.find(e => e.entryName === 'inventory-on-site.json' || e.entryName.toLowerCase().endsWith('/inventory-on-site.json'));
+        if (onSiteEntry) {
+          const text = onSiteEntry.getData().toString('utf8');
+          const data = JSON.parse(text);
+          const result = checkJsonDependencies(data, tablesToCheck);
+          return res.json(result);
+        }
+      }
+      return res.json({ hasMissingDependencies: false, issues: [], suggestedTablesToAdd: [] });
+    } else if (filename.endsWith('.json')) {
+      const content = fs.readFileSync(filepath, 'utf-8');
+      const data = JSON.parse(content);
+      const result = checkJsonDependencies(data, tablesToCheck);
+      return res.json(result);
+    }
+
+    return res.json({ hasMissingDependencies: false, issues: [], suggestedTablesToAdd: [] });
+  } catch (err: any) {
+    console.error('Check dependencies error:', err);
+    res.status(500).json({ error: `Dependency check failed: ${err.message}` });
+  }
+});
+
 
 app.post('/api/backups/upload', async (req: any, res) => {
   try {
@@ -4504,7 +5541,7 @@ app.post('/api/backups/export-zip', async (req: any, res) => {
     }
 
     // 4. Add Config
-    const currentConfig = loadAutoSnapshotConfig();
+    const currentConfig = getFullBackupConfigObject();
     zip.addFile('config.json', Buffer.from(JSON.stringify(currentConfig, null, 2), 'utf-8'));
 
     const zipBuffer = zip.toBuffer();
@@ -4730,7 +5767,6 @@ app.post('/api/backups/import-zip', async (req: any, res) => {
               netWeight,
               mwOrderNumber,
               box,
-              moveTo: '',
               location: locationName,
               pallet: currentLocation,
               currentLocation: currentLocation,
@@ -4768,13 +5804,29 @@ app.post('/api/backups/import-zip', async (req: any, res) => {
       }
     }
 
+    // Restore config.json if present
+    const configEntry = zipEntries.find(e => !e.isDirectory && (e.entryName === 'config.json' || e.entryName.toLowerCase().endsWith('/config.json')));
+    if (configEntry) {
+      try {
+        const configJson = JSON.parse(configEntry.getData().toString('utf8'));
+        restoreConfigObject(configJson);
+        actionsDesc.push('Configuration Settings');
+      } catch (cfgErr) {
+        console.error('Failed to parse config.json in import-zip:', cfgErr);
+      }
+    }
+
     // Add back to history log
+    const zipClientMeta = extractClientInfoFromReq(req);
     state.history = [
       {
         id: crypto.randomUUID(),
         timestamp: new Date().toISOString(),
         description: `Imported comprehensive database ZIP with categories: ${actionsDesc.join(', ') || 'None'}`,
-        targetId: 'system-restore'
+        targetId: 'system-restore',
+        user: extractUserFromReq(req),
+        clientDevice: zipClientMeta.clientDevice,
+        clientInfo: zipClientMeta.clientInfo
       },
       ...(state.history || [])
     ].slice(0, 100);
@@ -4958,41 +6010,316 @@ app.post('/api/backups/upload-chunk', async (req: any, res) => {
 
 // ---------------- SERVER-SENT EVENTS REAL-TIME SYNC ----------------
 
-let sseClients: any[] = [];
-let currentVersion = 1;
-
-function notifyInventoryUpdate() {
-  currentVersion++;
-  const message = JSON.stringify({
-    type: 'update',
-    version: currentVersion
-  });
-  sseClients.forEach(client => {
-    try {
-      client.res.write(`data: ${message}\n\n`);
-      if (typeof client.res.flush === 'function') {
-        client.res.flush();
-      }
-    } catch (err) {
-      console.error('Failed to notify client update:', err);
-    }
-  });
+interface ActiveClient {
+  id: string;
+  userName: string;
+  device: string;
+  browser: string;
+  clientDevice?: string; // 'Desktop Browser' | 'Mobile Browser' | 'HA Companion App'
+  clientInfo?: string;
+  ip: string;
+  connectedAt: number;
+  lastActive: number;
+  zone?: 'onsite' | 'offsite';
+  currentView?: string;
+  res?: any;
 }
 
-function notifyInventoryEditing(excludeClientId?: string) {
-  const message = JSON.stringify({ type: 'editing' });
-  sseClients.forEach(client => {
-    if (client.id !== excludeClientId) {
+const activeClients = new Map<string, ActiveClient>();
+let currentVersion = 1;
+
+function getZoneForView(view?: string): 'onsite' | 'offsite' {
+  if (view === 'offsite' || view === 'butcher_records' || view === 'traceability') {
+    return 'offsite';
+  }
+  return 'onsite';
+}
+
+function parseUserAgentInfo(
+  userAgent?: string,
+  clientDeviceHeader?: string,
+  clientInfoHeader?: string
+): { device: string; browser: string; clientDevice: string; clientInfo: string } {
+  const ua = userAgent || '';
+
+  // 1. Determine clientDevice category ('Desktop Browser', 'Mobile Browser', 'HA Companion App')
+  let clientDevice = 'Desktop Browser';
+  const isCompanion =
+    /Home\s*Assistant|HomeAssistant|io\.robbie\.HomeAssistant|io\.homeassistant\.companion/i.test(ua) ||
+    clientDeviceHeader === 'HA Companion App' ||
+    clientDeviceHeader?.toLowerCase().includes('companion');
+
+  const isMobile = !isCompanion && (
+    /iPhone|iPad|iPod|Android.*Mobile|Mobile.*Android|webOS|BlackBerry|IEMobile|Opera Mini|Windows Phone/i.test(ua) ||
+    /Android|iPhone|iPad|iPod/i.test(ua) ||
+    clientDeviceHeader === 'Mobile Browser' ||
+    clientDeviceHeader?.toLowerCase().includes('mobile')
+  );
+
+  if (isCompanion) {
+    clientDevice = 'HA Companion App';
+  } else if (isMobile) {
+    clientDevice = 'Mobile Browser';
+  } else {
+    clientDevice = 'Desktop Browser';
+  }
+
+  // 2. Specific device / platform name
+  let device = 'Desktop';
+  if (isCompanion) {
+    if (/iPhone|iPad|iOS/i.test(ua)) device = 'Home Assistant App (iOS)';
+    else if (/Android/i.test(ua)) device = 'Home Assistant App (Android)';
+    else device = 'Home Assistant Companion App';
+  } else if (/iPhone/i.test(ua)) {
+    device = 'iPhone';
+  } else if (/iPad/i.test(ua)) {
+    device = 'iPad';
+  } else if (/Android/i.test(ua)) {
+    device = 'Android Device';
+  } else if (/Macintosh|Mac OS X/i.test(ua)) {
+    device = 'Mac';
+  } else if (/Windows NT/i.test(ua)) {
+    device = 'Windows PC';
+  } else if (/CrOS/i.test(ua)) {
+    device = 'Chromebook';
+  } else if (/Linux/i.test(ua)) {
+    device = 'Linux Workstation';
+  }
+
+  // 3. Browser name
+  let browser = 'Browser';
+  if (isCompanion) {
+    browser = 'HA Companion';
+  } else if (/Edg\//i.test(ua)) {
+    browser = 'Microsoft Edge';
+  } else if (/Chrome\//i.test(ua) && !/Edg\//i.test(ua)) {
+    browser = 'Google Chrome';
+  } else if (/Safari\//i.test(ua) && !/Chrome\//i.test(ua)) {
+    browser = 'Apple Safari';
+  } else if (/Firefox\//i.test(ua)) {
+    browser = 'Mozilla Firefox';
+  }
+
+  // 4. Construct comprehensive clientInfo
+  let clientInfo = clientInfoHeader;
+  if (!clientInfo) {
+    if (isCompanion) {
+      const os = /iPhone|iPad|iOS/i.test(ua) ? 'iOS' : /Android/i.test(ua) ? 'Android' : 'Mobile';
+      clientInfo = `HA Companion App (${os})`;
+    } else if (isMobile) {
+      clientInfo = `Mobile Browser (${browser} / ${device})`;
+    } else {
+      clientInfo = `Desktop Browser (${browser} / ${device})`;
+    }
+  }
+
+  return { device, browser, clientDevice, clientInfo };
+}
+
+function cleanStaleClients(): boolean {
+  const initialCount = activeClients.size;
+  const now = Date.now();
+  for (const [id, client] of activeClients.entries()) {
+    const isSocketAlive = client.res && !client.res.writableEnded && !client.res.destroyed && !client.res.socket?.destroyed;
+    if (client.res && !isSocketAlive) {
+      client.res = undefined;
+    }
+    
+    // Prune if client has had no heartbeat/activity for 15 seconds and does not have an active socket
+    const timeSinceActive = now - client.lastActive;
+    if (timeSinceActive > 15000 && !isSocketAlive) {
+      if (client.res) {
+        try {
+          client.res.end();
+        } catch (e) {}
+        client.res = undefined;
+      }
+      activeClients.delete(id);
+    }
+  }
+  return activeClients.size !== initialCount;
+}
+
+function registerOrTouchClient(
+  clientId: string,
+  options?: {
+    userName?: string;
+    userAgent?: string;
+    clientDevice?: string;
+    clientInfo?: string;
+    ip?: string;
+    zone?: 'onsite' | 'offsite';
+    currentView?: string;
+    res?: any;
+  }
+): ActiveClient {
+  const now = Date.now();
+  let client = activeClients.get(clientId);
+  const { device, browser, clientDevice, clientInfo } = parseUserAgentInfo(
+    options?.userAgent,
+    options?.clientDevice,
+    options?.clientInfo
+  );
+
+  let zone = options?.zone;
+  if (!zone && options?.currentView) {
+    zone = getZoneForView(options.currentView);
+  }
+
+  if (!client) {
+    client = {
+      id: clientId,
+      userName: options?.userName || 'User',
+      device,
+      browser,
+      clientDevice,
+      clientInfo,
+      ip: options?.ip || '',
+      connectedAt: now,
+      lastActive: now,
+      zone: zone || 'onsite',
+      currentView: options?.currentView || 'product',
+      res: options?.res
+    };
+    activeClients.set(clientId, client);
+  } else {
+    client.lastActive = now;
+    if (options?.userName && options.userName !== 'User') {
+      client.userName = options.userName;
+    }
+    if (zone) {
+      client.zone = zone;
+    }
+    if (options?.currentView) {
+      client.currentView = options.currentView;
+      if (!options?.zone) {
+        client.zone = getZoneForView(options.currentView);
+      }
+    }
+    if (options?.userAgent || options?.clientDevice || options?.clientInfo) {
+      client.device = device;
+      client.browser = browser;
+      client.clientDevice = clientDevice;
+      client.clientInfo = clientInfo;
+    }
+    if (options?.ip) {
+      client.ip = options.ip;
+    }
+    if (options?.res) {
+      if (client.res && client.res !== options.res) {
+        try {
+          client.res.end();
+        } catch (e) {}
+      }
+      client.res = options.res;
+    }
+  }
+
+  // Also touch any single-user or forced-multi locks held by this client
+  const scopesList: Array<'all' | 'onsite' | 'offsite'> = ['all', 'onsite', 'offsite'];
+  for (const s of scopesList) {
+    if (singleUserLocks[s]?.clientId === clientId) {
+      singleUserLocks[s]!.lastActiveAt = now;
+    }
+    if (forcedMultiStates[s]?.setByClientId === clientId) {
+      forcedMultiStates[s]!.lastActiveAt = now;
+    }
+  }
+
+  return client;
+}
+
+function getConnectedClientsSummary() {
+  cleanStaleClients();
+  return Array.from(activeClients.values()).map(c => ({
+    id: c.id,
+    userName: c.userName || 'User',
+    device: c.device || 'Desktop',
+    browser: c.browser || 'Browser',
+    clientDevice: c.clientDevice || (c.device?.includes('Home Assistant') ? 'HA Companion App' : (c.device?.includes('iPhone') || c.device?.includes('Android') || c.device?.includes('iPad') ? 'Mobile Browser' : 'Desktop Browser')),
+    clientInfo: c.clientInfo || `${c.device} (${c.browser})`,
+    ip: c.ip || '',
+    connectedAt: c.connectedAt,
+    lastActive: c.lastActive,
+    zone: c.zone || 'onsite',
+    currentView: c.currentView || (c.zone === 'offsite' ? 'offsite' : 'product')
+  }));
+}
+
+function getActiveClientCount(): number {
+  cleanStaleClients();
+  return activeClients.size;
+}
+
+function getZoneClientCounts(): { total: number; onsite: number; offsite: number } {
+  cleanStaleClients();
+  let onsite = 0;
+  let offsite = 0;
+  for (const client of activeClients.values()) {
+    if (client.zone === 'offsite') {
+      offsite++;
+    } else {
+      onsite++;
+    }
+  }
+  return { total: activeClients.size, onsite, offsite };
+}
+
+function notifyInventoryUpdate(excludeClientId?: string) {
+  currentVersion++;
+  if (excludeClientId) {
+    const client = activeClients.get(excludeClientId);
+    if (client) {
+      client.lastActive = Date.now();
+    }
+  }
+  const message = JSON.stringify({
+    type: 'update',
+    version: currentVersion,
+    sourceClientId: excludeClientId
+  });
+  cleanStaleClients();
+  for (const client of activeClients.values()) {
+    if (excludeClientId && client.id === excludeClientId) {
+      continue;
+    }
+    if (client.res && !client.res.writableEnded && !client.res.destroyed && !client.res.socket?.destroyed) {
       try {
         client.res.write(`data: ${message}\n\n`);
         if (typeof client.res.flush === 'function') {
           client.res.flush();
         }
       } catch (err) {
-        console.error('Failed to notify client editing:', err);
+        client.res = undefined;
       }
     }
-  });
+  }
+}
+
+function notifyInventoryEditing(excludeClientId?: string) {
+  if (excludeClientId) {
+    const client = activeClients.get(excludeClientId);
+    if (client) {
+      client.lastActive = Date.now();
+    }
+  }
+  const message = JSON.stringify({ type: 'editing', sourceClientId: excludeClientId });
+  cleanStaleClients();
+  for (const client of activeClients.values()) {
+    if (client.id === excludeClientId) {
+      continue;
+    }
+    if (client.res && !client.res.writableEnded && !client.res.destroyed && !client.res.socket?.destroyed) {
+      try {
+        client.res.write(`data: ${message}\n\n`);
+        if (typeof client.res.flush === 'function') {
+          client.res.flush();
+        }
+      } catch (err) {
+        client.res = undefined;
+      }
+    }
+  }
 }
 
 interface SingleUserLock {
@@ -5000,6 +6327,7 @@ interface SingleUserLock {
   holderName: string;
   acquiredAt: number;
   lastActiveAt: number;
+  scope: 'all' | 'onsite' | 'offsite';
   breakInRequest?: {
     requestedByClientId: string;
     requestedByName: string;
@@ -5007,130 +6335,478 @@ interface SingleUserLock {
   } | null;
 }
 
-let singleUserLock: SingleUserLock | null = null;
+interface ForcedMultiState {
+  enabled: boolean;
+  setByClientId: string;
+  setByName: string;
+  activatedAt: number;
+  lastActiveAt: number;
+  scope: 'all' | 'onsite' | 'offsite';
+}
 
-function broadcastSSE(data: any, excludeClientId?: string) {
-  const message = JSON.stringify(data);
-  sseClients.forEach(client => {
-    if (!excludeClientId || client.id !== excludeClientId) {
-      try {
-        client.res.write(`data: ${message}\n\n`);
-        if (typeof client.res.flush === 'function') {
-          client.res.flush();
-        }
-      } catch (err) {
-        // Suppress stream write errors for disconnected clients
-      }
-    }
+const singleUserLocks: Record<'all' | 'onsite' | 'offsite', SingleUserLock | null> = {
+  all: null,
+  onsite: null,
+  offsite: null
+};
+
+const forcedMultiStates: Record<'all' | 'onsite' | 'offsite', ForcedMultiState | null> = {
+  all: null,
+  onsite: null,
+  offsite: null
+};
+
+function getActiveSingleUserLockForScope(scope: 'all' | 'onsite' | 'offsite'): SingleUserLock | null {
+  if (singleUserLocks.all) return singleUserLocks.all;
+  if (scope === 'all') return singleUserLocks.onsite || singleUserLocks.offsite || null;
+  return singleUserLocks[scope] || null;
+}
+
+function getActiveForcedMultiForScope(scope: 'all' | 'onsite' | 'offsite'): ForcedMultiState | null {
+  if (forcedMultiStates.all) return forcedMultiStates.all;
+  if (scope === 'all') return forcedMultiStates.onsite || forcedMultiStates.offsite || null;
+  return forcedMultiStates[scope] || null;
+}
+
+function broadcastLockAndModeChange() {
+  broadcastSSE({
+    type: 'single_user_lock_changed',
+    locks: { ...singleUserLocks },
+    lock: singleUserLocks.all || singleUserLocks.onsite || singleUserLocks.offsite || null,
+    forcedMultis: { ...forcedMultiStates },
+    forcedMulti: forcedMultiStates.all || forcedMultiStates.onsite || forcedMultiStates.offsite || null
   });
 }
 
-function isClientConnected(clientId: string): boolean {
-  return sseClients.some(client => client.id === clientId);
+function checkForcedMultiStaleness(): boolean {
+  cleanStaleClients();
+  let changed = false;
+  const scopes: Array<'all' | 'onsite' | 'offsite'> = ['all', 'onsite', 'offsite'];
+  const now = Date.now();
+
+  for (const scope of scopes) {
+    const forced = forcedMultiStates[scope];
+    if (forced) {
+      const isHolderConnected = activeClients.has(forced.setByClientId);
+      const inactiveDuration = now - forced.lastActiveAt;
+
+      // 1. Auto-release if setter is no longer connected in active clients and inactive for > 20s
+      if (!isHolderConnected && inactiveDuration > 20000) {
+        console.log(`Forced Multi mode (${scope}) auto-cleared because setter "${forced.setByName}" is no longer connected.`);
+        forcedMultiStates[scope] = null;
+        changed = true;
+      }
+      // 2. Auto-expire if inactive for 5 minutes (300,000 ms)
+      else if (inactiveDuration > 5 * 60 * 1000) {
+        console.log(`Forced Multi mode (${scope}) auto-expired due to 5m inactivity from "${forced.setByName}".`);
+        forcedMultiStates[scope] = null;
+        changed = true;
+      }
+    }
+  }
+
+  if (changed) {
+    broadcastLockAndModeChange();
+  }
+  return changed;
 }
 
-function checkSingleUserLockStaleness() {
-  if (singleUserLock) {
-    const inactiveDuration = Date.now() - singleUserLock.lastActiveAt;
-    // Auto-expire lock if holder has been inactive for over 5 minutes (300,000 ms)
-    if (inactiveDuration > 5 * 60 * 1000) {
-      console.log(`Single-User lock for "${singleUserLock.holderName}" auto-expired due to inactivity.`);
-      singleUserLock = null;
-      broadcastSSE({ type: 'single_user_lock_changed', lock: null });
+function broadcastSSE(data: any, excludeClientId?: string) {
+  cleanStaleClients();
+  const message = JSON.stringify(data);
+  for (const client of activeClients.values()) {
+    if (!excludeClientId || client.id !== excludeClientId) {
+      if (client.res && !client.res.writableEnded && !client.res.destroyed && !client.res.socket?.destroyed) {
+        try {
+          client.res.write(`data: ${message}\n\n`);
+          if (typeof client.res.flush === 'function') {
+            client.res.flush();
+          }
+        } catch (err) {
+          client.res = undefined;
+        }
+      }
     }
   }
 }
 
+function isClientConnected(clientId: string): boolean {
+  cleanStaleClients();
+  return activeClients.has(clientId);
+}
+
+function checkSingleUserLockStaleness(): boolean {
+  cleanStaleClients();
+  let changed = false;
+  const scopes: Array<'all' | 'onsite' | 'offsite'> = ['all', 'onsite', 'offsite'];
+  const now = Date.now();
+
+  for (const scope of scopes) {
+    const lock = singleUserLocks[scope];
+    if (lock) {
+      const isHolderConnected = activeClients.has(lock.clientId);
+      const inactiveDuration = now - lock.lastActiveAt;
+
+      // 1. Auto-release if the lock holder is no longer connected in active clients and inactive for > 20s
+      if (!isHolderConnected && inactiveDuration > 20000) {
+        console.log(`Single-User lock (${scope}) for "${lock.holderName}" auto-released because lock owner is no longer connected.`);
+        singleUserLocks[scope] = null;
+        changed = true;
+      }
+      // 2. Auto-expire lock if holder has been inactive for over 60 seconds (no heartbeats or actions)
+      else if (inactiveDuration > 60 * 1000) {
+        console.log(`Single-User lock (${scope}) for "${lock.holderName}" auto-expired due to 60s inactivity.`);
+        singleUserLocks[scope] = null;
+        changed = true;
+      }
+    }
+  }
+
+  if (changed) {
+    broadcastLockAndModeChange();
+  }
+  return changed;
+}
+
 app.get('/api/single-user/status', (req, res) => {
   checkSingleUserLockStaleness();
-  res.json({ lock: singleUserLock });
+  checkForcedMultiStaleness();
+  const zone = ((req.query.zone as string) || (req.query.clientZone as string) || (req.headers['x-client-zone'] as string) || 'onsite') as 'onsite' | 'offsite';
+  const lock = getActiveSingleUserLockForScope(zone);
+  const forcedMulti = getActiveForcedMultiForScope(zone);
+  res.json({ lock, locks: { ...singleUserLocks }, forcedMulti, forcedMultis: { ...forcedMultiStates } });
+});
+
+app.get('/api/operating-mode/status', (req, res) => {
+  checkSingleUserLockStaleness();
+  checkForcedMultiStaleness();
+  const zone = ((req.query.zone as string) || (req.query.clientZone as string) || (req.headers['x-client-zone'] as string) || 'onsite') as 'onsite' | 'offsite';
+  const lock = getActiveSingleUserLockForScope(zone);
+  const forcedMulti = getActiveForcedMultiForScope(zone);
+  res.json({
+    operatingMode: lock ? 'single' : (forcedMulti ? 'multi' : 'auto'),
+    lock,
+    locks: { ...singleUserLocks },
+    forcedMulti,
+    forcedMultis: { ...forcedMultiStates }
+  });
+});
+
+app.post('/api/operating-mode/set', (req, res) => {
+  const clientId = (req.headers['x-client-id'] as string) || req.body.clientId;
+  const userName = (req.headers['x-user-name'] as string) || req.body.userName || 'User';
+  const zone = ((req.headers['x-client-zone'] as string) || req.body.zone || req.body.scope || 'onsite') as 'onsite' | 'offsite' | 'all';
+  const { mode } = req.body || {};
+
+  if (clientId) {
+    registerOrTouchClient(clientId, { userName, zone: zone === 'all' ? 'onsite' : zone });
+  }
+  checkSingleUserLockStaleness();
+  checkForcedMultiStaleness();
+
+    if (mode === 'multi') {
+    // Release any single user lock held by this client in all scopes
+    const scopesList: Array<'all' | 'onsite' | 'offsite'> = ['all', 'onsite', 'offsite'];
+    for (const s of scopesList) {
+      if (singleUserLocks[s]?.clientId === clientId) {
+        singleUserLocks[s] = null;
+      }
+    }
+
+    forcedMultiStates[zone] = {
+      enabled: true,
+      setByClientId: clientId,
+      setByName: userName,
+      activatedAt: Date.now(),
+      lastActiveAt: Date.now(),
+      scope: zone
+    };
+
+    broadcastSSE({
+      type: 'operating_mode_changed',
+      mode: 'multi',
+      scope: zone,
+      forcedMultis: { ...forcedMultiStates },
+      forcedMulti: forcedMultiStates[zone],
+      locks: { ...singleUserLocks },
+      lock: getActiveSingleUserLockForScope(zone === 'all' ? 'onsite' : zone)
+    });
+    return res.json({
+      success: true,
+      mode: 'multi',
+      scope: zone,
+      forcedMulti: forcedMultiStates[zone],
+      forcedMultis: { ...forcedMultiStates },
+      locks: { ...singleUserLocks },
+      lock: getActiveSingleUserLockForScope(zone === 'all' ? 'onsite' : zone)
+    });
+  } else if (mode === 'auto') {
+    // Release all single user locks and forced multi states held by this client across all scopes
+    const scopesList: Array<'all' | 'onsite' | 'offsite'> = ['all', 'onsite', 'offsite'];
+    for (const s of scopesList) {
+      if (singleUserLocks[s]?.clientId === clientId) {
+        singleUserLocks[s] = null;
+      }
+      if (forcedMultiStates[s]?.setByClientId === clientId) {
+        forcedMultiStates[s] = null;
+      }
+    }
+
+    broadcastSSE({
+      type: 'operating_mode_changed',
+      mode: 'auto',
+      scope: zone,
+      forcedMultis: { ...forcedMultiStates },
+      forcedMulti: null,
+      locks: { ...singleUserLocks },
+      lock: getActiveSingleUserLockForScope(zone === 'all' ? 'onsite' : zone)
+    });
+    return res.json({
+      success: true,
+      mode: 'auto',
+      scope: zone,
+      forcedMulti: null,
+      forcedMultis: { ...forcedMultiStates },
+      locks: { ...singleUserLocks },
+      lock: getActiveSingleUserLockForScope(zone === 'all' ? 'onsite' : zone)
+    });
+  }
+
+  const activeLock = getActiveSingleUserLockForScope(zone === 'all' ? 'onsite' : zone);
+  const activeForced = getActiveForcedMultiForScope(zone === 'all' ? 'onsite' : zone);
+  res.json({
+    success: true,
+    mode: activeLock ? 'single' : (activeForced ? 'multi' : 'auto'),
+    forcedMulti: activeForced,
+    forcedMultis: { ...forcedMultiStates },
+    lock: activeLock,
+    locks: { ...singleUserLocks }
+  });
 });
 
 app.post('/api/single-user/claim', (req, res) => {
-  checkSingleUserLockStaleness();
   const clientId = (req.headers['x-client-id'] as string) || req.body.clientId;
   const userName = (req.headers['x-user-name'] as string) || req.body.userName || 'User';
+  const clientZone = ((req.headers['x-client-zone'] as string) || 'onsite') as 'onsite' | 'offsite';
+  const scope: 'all' | 'onsite' | 'offsite' = req.body.scope || (clientZone === 'offsite' ? 'offsite' : 'onsite');
 
   if (!clientId) {
     return res.status(400).json({ error: 'Client ID is required.' });
   }
 
-  // Automatically release lock if the lock holder is no longer connected to SSE
-  if (singleUserLock && !isClientConnected(singleUserLock.clientId)) {
-    console.log(`Releasing lock held by disconnected client "${singleUserLock.holderName}" for new claim.`);
-    singleUserLock = null;
+  registerOrTouchClient(clientId, { userName, zone: scope === 'all' ? clientZone : scope });
+  checkSingleUserLockStaleness();
+  checkForcedMultiStaleness();
+
+  // Clear forced multi state for this scope if held by this client
+  if (scope === 'all') {
+    forcedMultiStates.all = null;
+    forcedMultiStates.onsite = null;
+    forcedMultiStates.offsite = null;
+  } else {
+    forcedMultiStates[scope] = null;
   }
 
-  if (singleUserLock && singleUserLock.clientId !== clientId) {
-    return res.status(409).json({
-      success: false,
-      lock: singleUserLock,
-      message: `Single-User Mode is currently locked by ${singleUserLock.holderName}.`
-    });
+  // Check conflicts
+  if (scope === 'all') {
+    // If ANY scope has an active lock held by someone else who is connected
+    const conflictingLock = [singleUserLocks.all, singleUserLocks.onsite, singleUserLocks.offsite].find(
+      l => l && l.clientId !== clientId && isClientConnected(l.clientId)
+    );
+    if (conflictingLock) {
+      return res.status(409).json({
+        success: false,
+        lock: conflictingLock,
+        locks: { ...singleUserLocks },
+        message: `Single-User Mode is currently locked by ${conflictingLock.holderName} (${conflictingLock.scope || 'global'}).`
+      });
+    }
+    // Claim global lock and clear scoped locks
+    singleUserLocks.all = {
+      clientId,
+      holderName: userName,
+      acquiredAt: Date.now(),
+      lastActiveAt: Date.now(),
+      scope: 'all',
+      breakInRequest: null
+    };
+    if (singleUserLocks.onsite?.clientId === clientId) singleUserLocks.onsite = null;
+    if (singleUserLocks.offsite?.clientId === clientId) singleUserLocks.offsite = null;
+  } else {
+    // Scope is 'onsite' or 'offsite'
+    // Check if global lock is held by someone else
+    if (singleUserLocks.all && singleUserLocks.all.clientId !== clientId && isClientConnected(singleUserLocks.all.clientId)) {
+      return res.status(409).json({
+        success: false,
+        lock: singleUserLocks.all,
+        locks: { ...singleUserLocks },
+        message: `Single-User Mode is globally locked by ${singleUserLocks.all.holderName}.`
+      });
+    }
+    // Check if THIS specific zone is held by someone else
+    const zoneLock = singleUserLocks[scope];
+    if (zoneLock && zoneLock.clientId !== clientId && isClientConnected(zoneLock.clientId)) {
+      return res.status(409).json({
+        success: false,
+        lock: zoneLock,
+        locks: { ...singleUserLocks },
+        message: `Single-User Mode for ${scope === 'offsite' ? 'Off-Site' : 'On-Site'} is locked by ${zoneLock.holderName}.`
+      });
+    }
+
+    // Set lock for this zone
+    singleUserLocks[scope] = {
+      clientId,
+      holderName: userName,
+      acquiredAt: Date.now(),
+      lastActiveAt: Date.now(),
+      scope,
+      breakInRequest: null
+    };
   }
 
-  singleUserLock = {
-    clientId,
-    holderName: userName,
-    acquiredAt: Date.now(),
-    lastActiveAt: Date.now(),
-    breakInRequest: null
-  };
-
-  broadcastSSE({ type: 'single_user_lock_changed', lock: singleUserLock });
-  res.json({ success: true, lock: singleUserLock });
+  const resultLock = singleUserLocks[scope];
+  broadcastSSE({
+    type: 'single_user_lock_changed',
+    locks: { ...singleUserLocks },
+    lock: resultLock,
+    forcedMultis: { ...forcedMultiStates },
+    forcedMulti: null
+  });
+  broadcastSSE({
+    type: 'operating_mode_changed',
+    mode: 'single',
+    scope,
+    locks: { ...singleUserLocks },
+    lock: resultLock,
+    forcedMultis: { ...forcedMultiStates },
+    forcedMulti: null
+  });
+  res.json({
+    success: true,
+    lock: resultLock,
+    locks: { ...singleUserLocks },
+    forcedMulti: null,
+    forcedMultis: { ...forcedMultiStates }
+  });
 });
 
 app.post('/api/single-user/heartbeat', (req, res) => {
-  checkSingleUserLockStaleness();
   const clientId = (req.headers['x-client-id'] as string) || req.body.clientId;
+  const clientZone = ((req.headers['x-client-zone'] as string) || req.body.zone || 'onsite') as 'onsite' | 'offsite';
 
-  if (singleUserLock && singleUserLock.clientId === clientId) {
-    singleUserLock.lastActiveAt = Date.now();
+  if (clientId) {
+    registerOrTouchClient(clientId, { zone: clientZone });
+  }
+  checkSingleUserLockStaleness();
+  checkForcedMultiStaleness();
+
+  const scopes: Array<'all' | 'onsite' | 'offsite'> = ['all', 'onsite', 'offsite'];
+  for (const s of scopes) {
+    if (singleUserLocks[s]?.clientId === clientId) {
+      singleUserLocks[s]!.lastActiveAt = Date.now();
+    }
+    if (forcedMultiStates[s]?.setByClientId === clientId) {
+      forcedMultiStates[s]!.lastActiveAt = Date.now();
+    }
   }
 
-  res.json({ success: true, lock: singleUserLock });
+  res.json({
+    success: true,
+    lock: getActiveSingleUserLockForScope(clientZone),
+    locks: { ...singleUserLocks },
+    forcedMulti: getActiveForcedMultiForScope(clientZone),
+    forcedMultis: { ...forcedMultiStates }
+  });
 });
 
 app.post('/api/single-user/release', (req, res) => {
   const clientId = (req.headers['x-client-id'] as string) || req.body.clientId;
+  const clientZone = ((req.headers['x-client-zone'] as string) || req.body.zone || req.body.scope || 'onsite') as 'onsite' | 'offsite' | 'all';
 
-  if (singleUserLock && singleUserLock.clientId === clientId) {
-    singleUserLock = null;
-    broadcastSSE({ type: 'single_user_lock_changed', lock: null });
+  let changed = false;
+  const scopesList: Array<'all' | 'onsite' | 'offsite'> = ['all', 'onsite', 'offsite'];
+  for (const s of scopesList) {
+    if (singleUserLocks[s]?.clientId === clientId) {
+      singleUserLocks[s] = null;
+      changed = true;
+    }
   }
 
-  res.json({ success: true });
+  if (changed) {
+    broadcastLockAndModeChange();
+  }
+
+  res.json({
+    success: true,
+    locks: { ...singleUserLocks },
+    lock: getActiveSingleUserLockForScope(clientZone === 'all' ? 'onsite' : clientZone),
+    forcedMultis: { ...forcedMultiStates },
+    forcedMulti: getActiveForcedMultiForScope(clientZone === 'all' ? 'onsite' : clientZone)
+  });
+});
+
+app.post('/api/single-user/force-release', (req, res) => {
+  singleUserLocks.all = null;
+  singleUserLocks.onsite = null;
+  singleUserLocks.offsite = null;
+  forcedMultiStates.all = null;
+  forcedMultiStates.onsite = null;
+  forcedMultiStates.offsite = null;
+  broadcastSSE({
+    type: 'single_user_lock_changed',
+    locks: { ...singleUserLocks },
+    lock: null,
+    forcedMultis: { ...forcedMultiStates },
+    forcedMulti: null
+  });
+  broadcastSSE({
+    type: 'operating_mode_changed',
+    mode: 'auto',
+    locks: { ...singleUserLocks },
+    lock: null,
+    forcedMultis: { ...forcedMultiStates },
+    forcedMulti: null
+  });
+  res.json({ success: true, lock: null, locks: { ...singleUserLocks }, forcedMulti: null, forcedMultis: { ...forcedMultiStates } });
 });
 
 app.post('/api/single-user/request-break-in', (req, res) => {
   checkSingleUserLockStaleness();
   const clientId = (req.headers['x-client-id'] as string) || req.body.clientId;
   const userName = (req.headers['x-user-name'] as string) || req.body.userName || 'Another User';
+  const clientZone = ((req.headers['x-client-zone'] as string) || req.body.zone || req.body.scope || 'onsite') as 'onsite' | 'offsite';
 
-  if (!singleUserLock) {
-    return res.json({ success: true, lock: null, message: 'No active Single-User lock.' });
+  const targetLock = getActiveSingleUserLockForScope(clientZone);
+  if (!targetLock) {
+    return res.json({ success: true, lock: null, locks: { ...singleUserLocks }, message: 'No active Single-User lock in this zone.' });
   }
 
-  if (singleUserLock.clientId === clientId) {
-    return res.json({ success: true, lock: singleUserLock });
+  if (targetLock.clientId === clientId) {
+    return res.json({ success: true, lock: targetLock, locks: { ...singleUserLocks } });
   }
 
   // If current lock holder is no longer connected to SSE, break in and claim immediately
-  if (!isClientConnected(singleUserLock.clientId)) {
-    console.log(`Lock holder "${singleUserLock.holderName}" is disconnected. Automatically breaking in and assigning lock to "${userName}".`);
-    singleUserLock = {
+  if (!isClientConnected(targetLock.clientId)) {
+    console.log(`Lock holder "${targetLock.holderName}" (${targetLock.scope}) is disconnected. Automatically breaking in and assigning lock to "${userName}".`);
+    const newLock: SingleUserLock = {
       clientId,
       holderName: userName,
       acquiredAt: Date.now(),
       lastActiveAt: Date.now(),
+      scope: targetLock.scope || clientZone,
       breakInRequest: null
     };
-    broadcastSSE({ type: 'single_user_lock_changed', lock: singleUserLock });
-    return res.json({ success: true, lock: singleUserLock });
+    singleUserLocks[targetLock.scope || clientZone] = newLock;
+    broadcastSSE({
+      type: 'single_user_lock_changed',
+      locks: { ...singleUserLocks },
+      lock: newLock
+    });
+    return res.json({ success: true, lock: newLock, locks: { ...singleUserLocks } });
   }
 
-  singleUserLock.breakInRequest = {
+  targetLock.breakInRequest = {
     requestedByClientId: clientId,
     requestedByName: userName,
     requestedAt: Date.now()
@@ -5138,29 +6814,67 @@ app.post('/api/single-user/request-break-in', (req, res) => {
 
   broadcastSSE({
     type: 'break_in_requested',
-    lock: singleUserLock,
-    breakIn: singleUserLock.breakInRequest
+    scope: targetLock.scope,
+    lock: targetLock,
+    locks: { ...singleUserLocks },
+    breakIn: targetLock.breakInRequest
   });
 
-  res.json({ success: true, lock: singleUserLock });
+  res.json({ success: true, lock: targetLock, locks: { ...singleUserLocks } });
 });
 
 app.post('/api/single-user/cancel-break-in', (req, res) => {
   const clientId = (req.headers['x-client-id'] as string) || req.body.clientId;
-
-  if (singleUserLock && singleUserLock.clientId === clientId) {
-    singleUserLock.breakInRequest = null;
-    broadcastSSE({
-      type: 'break_in_cancelled',
-      lock: singleUserLock
-    });
+  const scopes: Array<'all' | 'onsite' | 'offsite'> = ['all', 'onsite', 'offsite'];
+  for (const s of scopes) {
+    const l = singleUserLocks[s];
+    if (l && (l.clientId === clientId || l.breakInRequest?.requestedByClientId === clientId)) {
+      l.breakInRequest = null;
+    }
   }
 
-  res.json({ success: true, lock: singleUserLock });
+  broadcastSSE({
+    type: 'break_in_cancelled',
+    locks: { ...singleUserLocks },
+    lock: singleUserLocks.all || singleUserLocks.onsite || singleUserLocks.offsite || null
+  });
+
+  res.json({ success: true, locks: { ...singleUserLocks } });
+});
+
+app.post('/api/single-user/sync-state', async (req, res) => {
+  const clientId = (req.headers['x-client-id'] as string) || req.body.clientId;
+  const { fullState } = req.body || {};
+
+  if (fullState) {
+    try {
+      await saveState(fullState);
+    } catch (err: any) {
+      console.error('Failed to save full state in sync-state:', err);
+    }
+  }
+
+  const scopes: Array<'all' | 'onsite' | 'offsite'> = ['all', 'onsite', 'offsite'];
+  for (const s of scopes) {
+    if (singleUserLocks[s]?.clientId === clientId) {
+      singleUserLocks[s]!.lastActiveAt = Date.now();
+    }
+  }
+
+  const finalState = await loadState();
+  notifyInventoryUpdate(clientId);
+
+  res.json({
+    success: true,
+    state: finalState,
+    locks: { ...singleUserLocks },
+    lock: singleUserLocks.all || singleUserLocks.onsite || singleUserLocks.offsite || null
+  });
 });
 
 app.post('/api/single-user/sync-and-release', async (req, res) => {
   const clientId = (req.headers['x-client-id'] as string) || req.body.clientId;
+  const clientZone = ((req.headers['x-client-zone'] as string) || req.body.zone || req.body.scope || 'onsite') as 'onsite' | 'offsite' | 'all';
   const { fullState } = req.body || {};
 
   if (fullState) {
@@ -5171,15 +6885,20 @@ app.post('/api/single-user/sync-and-release', async (req, res) => {
     }
   }
 
-  if (singleUserLock && singleUserLock.clientId === clientId) {
-    singleUserLock = null;
+  if (clientZone === 'all') {
+    if (singleUserLocks.all?.clientId === clientId) singleUserLocks.all = null;
+    if (singleUserLocks.onsite?.clientId === clientId) singleUserLocks.onsite = null;
+    if (singleUserLocks.offsite?.clientId === clientId) singleUserLocks.offsite = null;
+  } else {
+    if (singleUserLocks[clientZone]?.clientId === clientId) singleUserLocks[clientZone] = null;
+    if (singleUserLocks.all?.clientId === clientId) singleUserLocks.all = null;
   }
 
   const finalState = await loadState();
-  broadcastSSE({ type: 'update' });
-  broadcastSSE({ type: 'single_user_lock_changed', lock: null });
+  notifyInventoryUpdate();
+  broadcastLockAndModeChange();
 
-  res.json({ success: true, state: finalState });
+  res.json({ success: true, state: finalState, locks: { ...singleUserLocks } });
 });
 
 app.post('/api/inventory/editing', (req, res) => {
@@ -5199,40 +6918,242 @@ app.get('/api/inventory/stream', (req: any, res: any) => {
     res.flushHeaders();
   }
 
-  const clientId = req.query.clientId || String(Date.now() + Math.random());
-  const newClient = {
-    id: clientId,
-    res
-  };
-  sseClients.push(newClient);
+  const clientId = (req.query.clientId as string) || (req.headers['x-client-id'] as string) || String(Date.now() + Math.random());
+  const userName = (req.query.userName as string) || (req.headers['x-user-name'] as string) || 'User';
+  const userAgent = (req.headers['user-agent'] as string) || '';
+  const clientDevice = (req.query.clientDevice as string) || (req.headers['x-client-device'] as string) || '';
+  const clientInfo = (req.query.clientInfo as string) || (req.headers['x-client-info'] as string) || '';
+  const zone = ((req.query.zone as string) || (req.query.clientZone as string) || (req.headers['x-client-zone'] as string) || '') as 'onsite' | 'offsite' | undefined;
+  const currentView = (req.query.currentView as string) || (req.query.clientView as string) || (req.headers['x-client-view'] as string) || undefined;
+  const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.socket?.remoteAddress || '';
 
-  // Send initial load details including current single user lock status
-  res.write(`data: ${JSON.stringify({ type: 'init', version: currentVersion, lock: singleUserLock })}\n\n`);
+  registerOrTouchClient(clientId, { userName, userAgent, clientDevice, clientInfo, ip, zone, currentView, res });
+
+  checkSingleUserLockStaleness();
+  checkForcedMultiStaleness();
+
+  const clientSummary = getConnectedClientsSummary();
+  const count = getActiveClientCount();
+  const zoneCounts = getZoneClientCounts();
+  const clientZone = zone || 'onsite';
+  const targetLock = getActiveSingleUserLockForScope(clientZone);
+  const targetForcedMulti = getActiveForcedMultiForScope(clientZone);
+
+  // Send initial load details including current single user lock status, active client count, zone counts, and clients list
+  res.write(`data: ${JSON.stringify({ 
+    type: 'init', 
+    version: currentVersion, 
+    lock: targetLock,
+    locks: { ...singleUserLocks },
+    forcedMulti: targetForcedMulti,
+    forcedMultis: { ...forcedMultiStates },
+    clientCount: count,
+    zoneCounts,
+    clients: clientSummary 
+  })}\n\n`);
   if (typeof res.flush === 'function') {
     res.flush();
   }
+  broadcastSSE({ type: 'clients_changed', count, zoneCounts, clients: clientSummary });
   
-  // Keep connection alive with 15-second pings
+  // Keep connection alive with 5-second pings and active connection health checks
   const keepAliveInterval = setInterval(() => {
     try {
+      if (res.writableEnded || res.destroyed || res.socket?.destroyed) {
+        clearInterval(keepAliveInterval);
+        const client = activeClients.get(clientId);
+        if (client && client.res === res) {
+          client.res = undefined;
+        }
+        if (cleanStaleClients()) {
+          broadcastSSE({ type: 'clients_changed', count: getActiveClientCount(), zoneCounts: getZoneClientCounts(), clients: getConnectedClientsSummary() });
+        }
+        return;
+      }
       res.write(': ping\n\n');
       if (typeof res.flush === 'function') {
         res.flush();
       }
+      // Note: Do NOT update client.lastActive here. client.lastActive must only be refreshed by client heartbeats or active user requests.
     } catch (err) {
       clearInterval(keepAliveInterval);
+      const client = activeClients.get(clientId);
+      if (client && client.res === res) {
+        client.res = undefined;
+      }
+      if (cleanStaleClients()) {
+        broadcastSSE({ type: 'clients_changed', count: getActiveClientCount(), zoneCounts: getZoneClientCounts(), clients: getConnectedClientsSummary() });
+      }
     }
-  }, 15000);
+  }, 5000);
 
   req.on('close', () => {
     clearInterval(keepAliveInterval);
-    sseClients = sseClients.filter(c => c.id !== clientId);
+    const client = activeClients.get(clientId);
+    if (client && client.res === res) {
+      client.res = undefined;
+      activeClients.delete(clientId);
+    }
+    cleanStaleClients();
+    checkSingleUserLockStaleness();
+    checkForcedMultiStaleness();
+    const newCount = getActiveClientCount();
+    const summary = getConnectedClientsSummary();
+    const zCounts = getZoneClientCounts();
+    broadcastSSE({ type: 'clients_changed', count: newCount, zoneCounts: zCounts, clients: summary });
   });
+});
+
+// Endpoint for active client heartbeat ping (sent every 4s while client is visible)
+app.post('/api/inventory/clients/heartbeat', (req, res) => {
+  const reqClientId = (req.headers['x-client-id'] as string) || req.body?.clientId || (req.query?.clientId as string);
+  const userName = (req.headers['x-user-name'] as string) || req.body?.userName || (req.query?.userName as string);
+  const userAgent = (req.headers['user-agent'] as string) || '';
+  const clientDevice = (req.headers['x-client-device'] as string) || req.body?.clientDevice || (req.query?.clientDevice as string) || '';
+  const clientInfo = (req.headers['x-client-info'] as string) || req.body?.clientInfo || (req.query?.clientInfo as string) || '';
+  const zone = ((req.headers['x-client-zone'] as string) || req.body?.zone || (req.query?.zone as string) || '') as 'onsite' | 'offsite' | undefined;
+  const currentView = (req.headers['x-client-view'] as string) || req.body?.currentView || (req.query?.currentView as string) || undefined;
+  const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.socket?.remoteAddress || '';
+
+  if (reqClientId) {
+    const isNew = !activeClients.has(reqClientId);
+    const existingClient = activeClients.get(reqClientId);
+    const prevZone = existingClient?.zone;
+    registerOrTouchClient(reqClientId, { userName, userAgent, clientDevice, clientInfo, ip, zone, currentView });
+    if (isNew || (zone && prevZone && prevZone !== zone)) {
+      broadcastSSE({ type: 'clients_changed', count: getActiveClientCount(), zoneCounts: getZoneClientCounts(), clients: getConnectedClientsSummary() });
+    }
+  } else {
+    cleanStaleClients();
+  }
+
+  checkSingleUserLockStaleness();
+  checkForcedMultiStaleness();
+  res.json({ success: true, count: getActiveClientCount(), zoneCounts: getZoneClientCounts() });
+});
+
+// Periodic background cleanup: prunes inactive clients every 3 seconds and broadcasts updates
+setInterval(() => {
+  if (cleanStaleClients()) {
+    checkSingleUserLockStaleness();
+    checkForcedMultiStaleness();
+    const count = getActiveClientCount();
+    const clients = getConnectedClientsSummary();
+    const zoneCounts = getZoneClientCounts();
+    broadcastSSE({ type: 'clients_changed', count, zoneCounts, clients });
+  }
+}, 3000);
+
+// Endpoint for instant client departure (called on pagehide / beforeunload / window close via sendBeacon)
+app.post('/api/inventory/clients/leave', (req, res) => {
+  const clientId = (req.headers['x-client-id'] as string) || req.body?.clientId || (req.query?.clientId as string);
+  if (clientId) {
+    const client = activeClients.get(clientId);
+    if (client) {
+      if (client.res) {
+        try {
+          client.res.end();
+        } catch (e) {}
+        client.res = undefined;
+      }
+      activeClients.delete(clientId);
+    }
+    cleanStaleClients();
+    checkSingleUserLockStaleness();
+    checkForcedMultiStaleness();
+    const newCount = getActiveClientCount();
+    const summary = getConnectedClientsSummary();
+    const zoneCounts = getZoneClientCounts();
+    broadcastSSE({ type: 'clients_changed', count: newCount, zoneCounts, clients: summary });
+  }
+  res.json({ success: true, count: getActiveClientCount(), zoneCounts: getZoneClientCounts() });
+});
+
+// Endpoint to fetch active connected clients
+app.get('/api/inventory/clients', (req, res) => {
+  const reqClientId = (req.headers['x-client-id'] as string) || (req.query.clientId as string);
+  const userName = (req.headers['x-user-name'] as string) || (req.query.userName as string);
+  const userAgent = (req.headers['user-agent'] as string) || '';
+  const clientDevice = (req.headers['x-client-device'] as string) || (req.query.clientDevice as string) || '';
+  const clientInfo = (req.headers['x-client-info'] as string) || (req.query.clientInfo as string) || '';
+  const zone = ((req.headers['x-client-zone'] as string) || (req.query.zone as string) || '') as 'onsite' | 'offsite' | undefined;
+  const currentView = (req.headers['x-client-view'] as string) || (req.query.currentView as string) || undefined;
+  const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.socket?.remoteAddress || '';
+  
+  if (reqClientId) {
+    const isNew = !activeClients.has(reqClientId);
+    const existingClient = activeClients.get(reqClientId);
+    const prevZone = existingClient?.zone;
+    registerOrTouchClient(reqClientId, { userName, userAgent, clientDevice, clientInfo, ip, zone, currentView });
+    if (isNew || (zone && prevZone && prevZone !== zone)) {
+      broadcastSSE({ type: 'clients_changed', count: getActiveClientCount(), zoneCounts: getZoneClientCounts(), clients: getConnectedClientsSummary() });
+    }
+  } else {
+    cleanStaleClients();
+  }
+
+  checkSingleUserLockStaleness();
+  checkForcedMultiStaleness();
+  
+  const summary = getConnectedClientsSummary();
+  const count = getActiveClientCount();
+  const zoneCounts = getZoneClientCounts();
+  const clientZone = zone || 'onsite';
+  res.json({ 
+    clients: summary, 
+    count, 
+    zoneCounts, 
+    lock: getActiveSingleUserLockForScope(clientZone),
+    locks: { ...singleUserLocks },
+    forcedMulti: getActiveForcedMultiForScope(clientZone),
+    forcedMultis: { ...forcedMultiStates }
+  });
+});
+
+// Endpoint to broadcast force sync / cache flush request to all active clients
+app.post('/api/inventory/clients/force-sync', (req, res) => {
+  cleanStaleClients();
+  broadcastSSE({ type: 'force_flush' });
+  setTimeout(() => {
+    notifyInventoryUpdate();
+  }, 350);
+  res.json({ success: true, count: getActiveClientCount() });
+});
+
+// Endpoint to disconnect/purge a specific client session with pre-flush
+app.post('/api/inventory/clients/disconnect/:id', (req, res) => {
+  const targetId = req.params.id;
+  const client = activeClients.get(targetId);
+  if (client) {
+    try {
+      if (client.res) {
+        // Send a targeted force_flush to this specific client so it commits unsaved memory cache
+        client.res.write(`data: ${JSON.stringify({ type: 'force_flush', targetClientId: targetId })}\n\n`);
+        if (typeof client.res.flush === 'function') {
+          client.res.flush();
+        }
+        setTimeout(() => {
+          try {
+            client.res?.end();
+          } catch (e) {}
+        }, 600);
+      }
+    } catch (e) {}
+
+    activeClients.delete(targetId);
+    broadcastSSE({ type: 'clients_changed', count: getActiveClientCount(), clients: getConnectedClientsSummary() });
+    res.json({ success: true, count: getActiveClientCount() });
+  } else {
+    res.json({ success: false, message: 'Client not found or already closed', count: getActiveClientCount() });
+  }
 });
 
 // Fetch entire visual freezer states
 app.get('/api/inventory', async (req, res) => {
   try {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
     const state = await loadState();
     res.json(state);
   } catch (err: any) {
@@ -5331,6 +7252,797 @@ function extractUserFromReq(req: any): string {
   return userStr || 'Home Assistant';
 }
 
+function extractClientInfoFromReq(req: any): { clientDevice: string; clientInfo: string } {
+  const userAgent = (req.headers['user-agent'] as string) || '';
+  const headerDevice = (req.headers['x-client-device'] as string) ||
+                       req.body?.clientDevice ||
+                       req.body?.action?.clientDevice;
+  const headerInfo = (req.headers['x-client-info'] as string) ||
+                     req.body?.clientInfo ||
+                     req.body?.action?.clientInfo;
+
+  const parsed = parseUserAgentInfo(userAgent, headerDevice, headerInfo);
+  return {
+    clientDevice: headerDevice || parsed.clientDevice,
+    clientInfo: headerInfo || parsed.clientInfo
+  };
+}
+
+// ---------------- AUDIT-LOG-BASED ACTION UNDO RECONSTRUCTION ENGINE ----------------
+
+function reconstructUndoFromAuditLog(entry: any, state: AppInventoryState): { success: boolean; affectedTables: string[]; error?: string } {
+  const affectedTables = new Set<string>(['history']);
+  const undoData = entry.undoData;
+
+  if (undoData && typeof undoData === 'object') {
+    switch (undoData.type) {
+      case 'RESTORE_MEAT_CUT_QUANTITY': {
+        const { meatCutId, previousQuantity, productId, containerId, notes, tagIds, originalCutName, container } = undoData;
+        const cuts = state.meatCuts || [];
+        let cut = cuts.find((c: any) => c.id === meatCutId);
+        if (cut) {
+          if (previousQuantity <= 0) {
+            state.meatCuts = cuts.filter((c: any) => c.id !== meatCutId);
+          } else {
+            cut.quantity = previousQuantity;
+          }
+        } else if (previousQuantity > 0) {
+          state.meatCuts = [
+            ...cuts,
+            {
+              id: meatCutId,
+              productId: productId || entry.targetId,
+              containerId: containerId || 'staging_loose',
+              quantity: previousQuantity,
+              notes: notes || undefined,
+              tagIds: tagIds || [],
+              originalCutName: originalCutName || undefined
+            }
+          ];
+        }
+
+        // Also restore/un-archive container if it was emptied or retired
+        if (container) {
+          const cont = (state.containers || []).find((c: any) => c.id === container.id);
+          const targetFreezerId = container.previousFreezerId !== undefined ? container.previousFreezerId : container.freezerId;
+          if (cont) {
+            cont.freezerId = targetFreezerId !== undefined ? targetFreezerId : cont.freezerId;
+            cont.isArchived = false;
+          } else {
+            state.containers = [...(state.containers || []), { ...container, freezerId: targetFreezerId, isArchived: false }];
+          }
+        } else if (containerId && containerId !== 'staging_loose' && !containerId.endsWith('_loose')) {
+          const cont = (state.containers || []).find((c: any) => c.id === containerId);
+          if (cont) {
+            cont.isArchived = false;
+          }
+        }
+
+        affectedTables.add('meat_cuts');
+        affectedTables.add('containers');
+        return { success: true, affectedTables: Array.from(affectedTables) };
+      }
+
+      case 'BATCH_RESTORE_MEAT_QUANTITY': {
+        const { previousQuantities, previousCuts, previousContainers } = undoData;
+        if (previousQuantities && typeof previousQuantities === 'object') {
+          for (const [id, qty] of Object.entries(previousQuantities)) {
+            const cut = (state.meatCuts || []).find((c: any) => c.id === id);
+            if (cut) {
+              if (Number(qty) <= 0) {
+                state.meatCuts = (state.meatCuts || []).filter((c: any) => c.id !== id);
+              } else {
+                cut.quantity = Number(qty);
+              }
+            }
+          }
+        }
+        if (previousCuts && Array.isArray(previousCuts)) {
+          for (const pCut of previousCuts) {
+            const exists = (state.meatCuts || []).some((c: any) => c.id === pCut.id);
+            if (!exists && pCut.quantity > 0) {
+              state.meatCuts = [...(state.meatCuts || []), { ...pCut }];
+            }
+          }
+        }
+        if (previousContainers && Array.isArray(previousContainers)) {
+          for (const pCont of previousContainers) {
+            const cont = (state.containers || []).find((c: any) => c.id === pCont.id);
+            if (cont) {
+              cont.freezerId = pCont.freezerId;
+              cont.isArchived = false;
+            } else {
+              state.containers = [...(state.containers || []), { ...pCont, isArchived: false }];
+            }
+          }
+        }
+        affectedTables.add('meat_cuts');
+        affectedTables.add('containers');
+        return { success: true, affectedTables: Array.from(affectedTables) };
+      }
+
+      case 'DELETE_MEAT_CUT': {
+        const { meatCutId } = undoData;
+        state.meatCuts = (state.meatCuts || []).filter((c: any) => c.id !== meatCutId);
+        affectedTables.add('meat_cuts');
+        affectedTables.add('containers');
+        return { success: true, affectedTables: Array.from(affectedTables) };
+      }
+
+      case 'RESTORE_MOVE_MEAT': {
+        const { sourceCutId, prevSourceQuantity, destCutId, isNewDestCut, prevDestQuantity, sourceContainer } = undoData;
+        const sourceCut = (state.meatCuts || []).find((c: any) => c.id === sourceCutId);
+        if (sourceCut) {
+          sourceCut.quantity = prevSourceQuantity;
+        }
+        if (isNewDestCut) {
+          state.meatCuts = (state.meatCuts || []).filter((c: any) => c.id !== destCutId);
+        } else {
+          const destCut = (state.meatCuts || []).find((c: any) => c.id === destCutId);
+          if (destCut) {
+            if (prevDestQuantity <= 0) {
+              state.meatCuts = (state.meatCuts || []).filter((c: any) => c.id !== destCutId);
+            } else {
+              destCut.quantity = prevDestQuantity;
+            }
+          }
+        }
+        if (sourceContainer) {
+          const cont = (state.containers || []).find((c: any) => c.id === sourceContainer.id);
+          const targetFreezerId = sourceContainer.previousFreezerId !== undefined ? sourceContainer.previousFreezerId : sourceContainer.freezerId;
+          if (cont) {
+            cont.freezerId = targetFreezerId !== undefined ? targetFreezerId : cont.freezerId;
+            cont.isArchived = false;
+          } else {
+            state.containers = [...(state.containers || []), { ...sourceContainer, freezerId: targetFreezerId, isArchived: false }];
+          }
+        }
+        affectedTables.add('meat_cuts');
+        affectedTables.add('containers');
+        return { success: true, affectedTables: Array.from(affectedTables) };
+      }
+
+      case 'RESTORE_MEAT_NOTES': {
+        const { meatCutId, previousNotes, previousOriginalCutName } = undoData;
+        const cut = (state.meatCuts || []).find((c: any) => c.id === meatCutId);
+        if (cut) {
+          cut.notes = previousNotes;
+          cut.originalCutName = previousOriginalCutName;
+        }
+        affectedTables.add('meat_cuts');
+        return { success: true, affectedTables: Array.from(affectedTables) };
+      }
+
+      case 'RESTORE_MEAT_LABEL': {
+        const { meatCutId, previousProductId, previousWrongLabel, previousIsWrongLabel, previousOriginalCutName } = undoData;
+        const cut = (state.meatCuts || []).find((c: any) => c.id === meatCutId);
+        if (cut) {
+          cut.productId = previousProductId;
+          cut.wrongLabel = previousWrongLabel;
+          cut.isWrongLabel = previousIsWrongLabel;
+          cut.originalCutName = previousOriginalCutName;
+        }
+        affectedTables.add('meat_cuts');
+        return { success: true, affectedTables: Array.from(affectedTables) };
+      }
+
+      case 'RESTORE_MEAT_TAGS': {
+        const { meatCutId, previousTagIds } = undoData;
+        const cut = (state.meatCuts || []).find((c: any) => c.id === meatCutId);
+        if (cut) {
+          cut.tagIds = previousTagIds || [];
+        }
+        affectedTables.add('meat_cuts');
+        return { success: true, affectedTables: Array.from(affectedTables) };
+      }
+
+      case 'RESTORE_SPLIT_CUT': {
+        const { originalCutId, prevOriginalQuantity, createdSplitCutId } = undoData;
+        const origCut = (state.meatCuts || []).find((c: any) => c.id === originalCutId);
+        if (origCut) {
+          origCut.quantity = prevOriginalQuantity;
+        }
+        state.meatCuts = (state.meatCuts || []).filter((c: any) => c.id !== createdSplitCutId);
+        affectedTables.add('meat_cuts');
+        return { success: true, affectedTables: Array.from(affectedTables) };
+      }
+
+      case 'RESTORE_CONTAINER': {
+        const { previousContainer } = undoData;
+        if (previousContainer) {
+          const exists = (state.containers || []).some((c: any) => c.id === previousContainer.id);
+          if (exists) {
+            state.containers = (state.containers || []).map((c: any) => c.id === previousContainer.id ? { ...c, ...previousContainer, isArchived: false } : c);
+          } else {
+            state.containers = [...(state.containers || []), { ...previousContainer, isArchived: false }];
+          }
+        }
+        affectedTables.add('containers');
+        return { success: true, affectedTables: Array.from(affectedTables) };
+      }
+
+      case 'RESTORE_DELETED_CONTAINER': {
+        const { container, cutsMovedToStaging } = undoData;
+        if (container) {
+          const exists = (state.containers || []).some((c: any) => c.id === container.id);
+          if (exists) {
+            state.containers = (state.containers || []).map((c: any) => c.id === container.id ? { ...c, ...container, isArchived: false } : c);
+          } else {
+            state.containers = [...(state.containers || []), { ...container, isArchived: false }];
+          }
+          affectedTables.add('containers');
+
+          if (cutsMovedToStaging && Array.isArray(cutsMovedToStaging)) {
+            for (const cutRef of cutsMovedToStaging) {
+              const cut = (state.meatCuts || []).find((mc: any) => mc.id === cutRef.id);
+              if (cut) {
+                cut.containerId = cutRef.previousContainerId || container.id;
+              }
+            }
+            affectedTables.add('meat_cuts');
+          }
+        }
+        return { success: true, affectedTables: Array.from(affectedTables) };
+      }
+
+      case 'RESTORE_EMPTIED_CONTAINER': {
+        const { containerId, previousFreezerId, container } = undoData;
+        const exists = (state.containers || []).some((c: any) => c.id === containerId);
+        const targetFreezerId = previousFreezerId !== undefined ? previousFreezerId : (container?.previousFreezerId !== undefined ? container.previousFreezerId : (container?.freezerId));
+        if (exists) {
+          state.containers = (state.containers || []).map((c: any) => {
+            if (c.id === containerId) {
+              return {
+                ...c,
+                freezerId: targetFreezerId !== undefined ? targetFreezerId : c.freezerId,
+                isArchived: false
+              };
+            }
+            return c;
+          });
+        } else if (container) {
+          state.containers = [...(state.containers || []), { ...container, freezerId: targetFreezerId, isArchived: false }];
+        }
+        affectedTables.add('containers');
+
+        // Check if there are cuts in this container. If empty, check for an adjacent history entry that emptied it so no empty container is left
+        const hasCuts = (state.meatCuts || []).some((mc: any) => mc.containerId === containerId && mc.quantity > 0);
+        if (!hasCuts) {
+          const cutLog = (state.history || []).find((h: any) => 
+            (h.undoData?.containerId === containerId || h.targetId === containerId) && 
+            (h.undoData?.type === 'RESTORE_MEAT_CUT_QUANTITY' || Number(h.undoData?.previousQuantity) > 0)
+          );
+          if (cutLog && cutLog.undoData && cutLog.undoData.meatCutId) {
+            const { meatCutId, previousQuantity, productId, notes, tagIds, originalCutName } = cutLog.undoData;
+            const cuts = state.meatCuts || [];
+            if (!cuts.some((c: any) => c.id === meatCutId) && previousQuantity > 0) {
+              state.meatCuts = [
+                ...cuts,
+                {
+                  id: meatCutId,
+                  productId: productId || cutLog.targetId,
+                  containerId: containerId,
+                  quantity: previousQuantity,
+                  notes: notes || undefined,
+                  tagIds: tagIds || [],
+                  originalCutName: originalCutName || undefined
+                }
+              ];
+              affectedTables.add('meat_cuts');
+            }
+          }
+        }
+        return { success: true, affectedTables: Array.from(affectedTables) };
+      }
+
+      case 'DELETE_CONTAINER': {
+        const { containerId } = undoData;
+        state.containers = (state.containers || []).filter((c: any) => c.id !== containerId);
+        affectedTables.add('containers');
+        return { success: true, affectedTables: Array.from(affectedTables) };
+      }
+
+      case 'RESTORE_MOVE_CONTAINER': {
+        const { containerId, previousFreezerId } = undoData;
+        const cont = (state.containers || []).find((c: any) => c.id === containerId);
+        if (cont) {
+          cont.freezerId = previousFreezerId;
+        }
+        affectedTables.add('containers');
+        return { success: true, affectedTables: Array.from(affectedTables) };
+      }
+
+      case 'RESTORE_CONTAINER_ARCHIVE': {
+        const { containerId, previousIsArchived, previousFreezerId } = undoData;
+        const cont = (state.containers || []).find((c: any) => c.id === containerId);
+        if (cont) {
+          cont.isArchived = previousIsArchived;
+          cont.freezerId = previousFreezerId;
+        }
+        affectedTables.add('containers');
+        return { success: true, affectedTables: Array.from(affectedTables) };
+      }
+
+      case 'RESTORE_PRODUCT': {
+        const { previousProduct } = undoData;
+        if (previousProduct) {
+          state.products = (state.products || []).map((p: any) => p.id === previousProduct.id ? previousProduct : p);
+        }
+        affectedTables.add('products');
+        return { success: true, affectedTables: Array.from(affectedTables) };
+      }
+
+      case 'DELETE_PRODUCT': {
+        const { productId } = undoData;
+        state.products = (state.products || []).filter((p: any) => p.id !== productId);
+        affectedTables.add('products');
+        return { success: true, affectedTables: Array.from(affectedTables) };
+      }
+
+      case 'RESTORE_OFFSITE_ENTRY': {
+        const { previousEntry } = undoData;
+        if (previousEntry) {
+          const exists = (state.offSiteEntries || []).some((e: any) => e.id === previousEntry.id);
+          if (exists) {
+            state.offSiteEntries = (state.offSiteEntries || []).map((e: any) => e.id === previousEntry.id ? previousEntry : e);
+          } else {
+            state.offSiteEntries = [...(state.offSiteEntries || []), previousEntry];
+          }
+        }
+        affectedTables.add('off_site_entries');
+        return { success: true, affectedTables: Array.from(affectedTables) };
+      }
+
+      case 'DELETE_OFFSITE_ENTRY': {
+        const { entryId } = undoData;
+        state.offSiteEntries = (state.offSiteEntries || []).filter((e: any) => e.id !== entryId);
+        affectedTables.add('off_site_entries');
+        return { success: true, affectedTables: Array.from(affectedTables) };
+      }
+
+      case 'RESTORE_TAG': {
+        const { previousTag } = undoData;
+        if (previousTag) {
+          state.tags = (state.tags || []).map((t: any) => t.id === previousTag.id ? previousTag : t);
+        }
+        affectedTables.add('tags');
+        return { success: true, affectedTables: Array.from(affectedTables) };
+      }
+
+      default:
+        break;
+    }
+  }
+
+  // Fallback: Reconstruct directly from audit log description and targetId
+  const desc = entry.description || '';
+  const targetId = entry.targetId || '';
+
+  // Pattern A: "Quantity of ... changed from X to Y"
+  const qtyChangedMatch = desc.match(/changed from (\d+) to (\d+)/i);
+  if (qtyChangedMatch) {
+    const prevQty = parseInt(qtyChangedMatch[1], 10);
+    const cut = (state.meatCuts || []).find((c: any) => c.id === targetId);
+    if (cut) {
+      cut.quantity = prevQty;
+      affectedTables.add('meat_cuts');
+      return { success: true, affectedTables: Array.from(affectedTables) };
+    }
+  }
+
+  // Pattern B: "Added Xx ... new total Y"
+  const addedMatch = desc.match(/Added (\d+)x .*?, new total (\d+)/i);
+  if (addedMatch) {
+    const addedQty = parseInt(addedMatch[1], 10);
+    const cut = (state.meatCuts || []).find((c: any) => c.id === targetId);
+    if (cut) {
+      cut.quantity = Math.max(0, cut.quantity - addedQty);
+      if (cut.quantity === 0) {
+        state.meatCuts = state.meatCuts.filter((c: any) => c.id !== targetId);
+      }
+      affectedTables.add('meat_cuts');
+      return { success: true, affectedTables: Array.from(affectedTables) };
+    }
+  }
+
+  // Pattern C: "Xx ... added in/to ..."
+  const newCutAddedMatch = desc.match(/^(\d+)x .*? added/i);
+  if (newCutAddedMatch) {
+    const addedQty = parseInt(newCutAddedMatch[1], 10);
+    const cut = (state.meatCuts || []).find((c: any) => c.id === targetId);
+    if (cut) {
+      if (cut.quantity <= addedQty) {
+        state.meatCuts = state.meatCuts.filter((c: any) => c.id !== targetId);
+      } else {
+        cut.quantity -= addedQty;
+      }
+      affectedTables.add('meat_cuts');
+      return { success: true, affectedTables: Array.from(affectedTables) };
+    }
+  }
+
+  // Pattern D: "Moved Xx ... from ... to ... Source remaining: Y"
+  const moveMatch = desc.match(/Moved (\d+)x .*? from .*? to .*?\. Source remaining: (\d+)/i);
+  if (moveMatch) {
+    const moveQty = parseInt(moveMatch[1], 10);
+    const sourceCut = (state.meatCuts || []).find((c: any) => c.id === targetId);
+    if (sourceCut) {
+      sourceCut.quantity += moveQty;
+      affectedTables.add('meat_cuts');
+      return { success: true, affectedTables: Array.from(affectedTables) };
+    }
+  }
+
+  // Pattern E: Container created
+  if (desc.includes('created and placed in') || desc.includes('created as unassigned')) {
+    state.containers = (state.containers || []).filter((c: any) => c.id !== targetId);
+    affectedTables.add('containers');
+    return { success: true, affectedTables: Array.from(affectedTables) };
+  }
+
+  // Pattern F: Container emptied, retired, or archived
+  if (desc.includes('was emptied and archived') || desc.includes('was archived') || desc.includes('was emptied and retired')) {
+    let cont = (state.containers || []).find((c: any) => c.id === targetId);
+    let targetFreezerId: string | undefined = undefined;
+
+    const match = desc.match(/\(removed from ([^)]+)\)/);
+    if (match && match[1]) {
+      const fName = match[1].trim();
+      const targetFreezer = (state.freezers || []).find((f: any) => f.name.toLowerCase() === fName.toLowerCase());
+      if (targetFreezer) {
+        targetFreezerId = targetFreezer.id;
+      }
+    }
+
+    if (cont) {
+      cont.isArchived = false;
+      if (!cont.freezerId && targetFreezerId) {
+        cont.freezerId = targetFreezerId;
+      }
+      affectedTables.add('containers');
+      return { success: true, affectedTables: Array.from(affectedTables) };
+    } else {
+      // Re-create basic container if it was retired/deleted
+      const nameMatch = desc.match(/Container "([^"]+)"/);
+      const containerName = nameMatch ? nameMatch[1] : 'Restored Container';
+      const newCont = {
+        id: targetId,
+        name: containerName,
+        freezerId: targetFreezerId,
+        isArchived: false,
+        createdAt: new Date().toISOString()
+      };
+      state.containers = [...(state.containers || []), newCont];
+      affectedTables.add('containers');
+      return { success: true, affectedTables: Array.from(affectedTables) };
+    }
+  }
+
+  return {
+    success: false,
+    affectedTables: ['history'],
+    error: `Cannot automatically reconstruct action from audit log: "${desc}"`
+  };
+}
+
+function getRecentUndoEntriesFromState(state: AppInventoryState) {
+  const list = (state.history || []).filter((h: any) => 
+    h &&
+    h.description &&
+    !h.description.startsWith('Undid action:') &&
+    !h.description.startsWith('Archived & purged') &&
+    !h.description.startsWith('State restored')
+  );
+  return list.slice(0, 15).map((h: any) => ({
+    id: h.id,
+    historyId: h.id,
+    actionType: h.undoData?.type || 'AUDIT_LOG_ACTION',
+    description: h.description,
+    timestamp: h.timestamp,
+    user: h.user || 'User',
+    targetId: h.targetId,
+    createdAt: new Date(h.timestamp).getTime() || Date.now()
+  }));
+}
+
+async function getRecentUndoSnapshots() {
+  try {
+    const currentState = await loadState();
+    return getRecentUndoEntriesFromState(currentState);
+  } catch (err) {
+    console.error('Failed to fetch audit log undo snapshots:', err);
+    return [];
+  }
+}
+
+async function executeUndoInternal(target: {
+  snapshotId?: string;
+  historyId?: string;
+  user?: string;
+  clientDevice?: string;
+  clientInfo?: string;
+  clientId?: string;
+}): Promise<{
+  success: boolean;
+  notFound?: boolean;
+  undoneDescription?: string;
+  message?: string;
+  state?: any;
+  error?: string;
+}> {
+  if (!db) {
+    initDatabase();
+  }
+  const currentState = await loadState();
+  const historyList = currentState.history || [];
+
+  let targetEntry: any = null;
+  if (target.historyId || target.snapshotId) {
+    const searchId = target.historyId || target.snapshotId;
+    targetEntry = historyList.find((h: any) => h.id === searchId || h.targetId === searchId);
+  } else {
+    // Pick the most recent undoable audit log entry
+    targetEntry = historyList.find((h: any) => 
+      h &&
+      h.description &&
+      !h.description.startsWith('Undid action:') &&
+      !h.description.startsWith('Archived & purged') &&
+      !h.description.startsWith('State restored')
+    );
+  }
+
+  if (!targetEntry) {
+    return {
+      success: false,
+      notFound: true,
+      error: 'No undoable action found in audit history log.'
+    };
+  }
+
+  // 1. Check SQL Inverse Journal first for instant exact reconstruction
+  let appliedSqlJournal = false;
+  try {
+    const journalRow: any = db.prepare(
+      'SELECT * FROM undo_sql_journal WHERE historyId = ? ORDER BY createdAt DESC LIMIT 1'
+    ).get(targetEntry.id);
+
+    if (journalRow && journalRow.inverseOps) {
+      const ops: InverseSqlOp[] = JSON.parse(journalRow.inverseOps);
+      if (Array.isArray(ops) && ops.length > 0) {
+        const undoTransaction = db.transaction(() => {
+          // Execute inverse statements in reverse order
+          for (let i = ops.length - 1; i >= 0; i--) {
+            const op = ops[i];
+            db.prepare(op.sql).run(...(op.params || []));
+          }
+          // Remove consumed journal entry
+          db.prepare('DELETE FROM undo_sql_journal WHERE id = ?').run(journalRow.id);
+
+          // Append undo entry to history table
+          const undoAuditDesc = `Undid action: "${targetEntry.description}" (originally performed by ${targetEntry.user || 'User'})`;
+          const undoHistory = {
+            id: crypto.randomUUID(),
+            timestamp: new Date().toISOString(),
+            description: undoAuditDesc,
+            targetId: targetEntry.targetId || 'undo-action',
+            user: String(target.user || 'User'),
+            clientDevice: target.clientDevice || undefined,
+            clientInfo: target.clientInfo || undefined
+          };
+          const histSchema = TABLE_SCHEMAS.history;
+          const dbHist = histSchema.toDb(undoHistory);
+          const histCols = histSchema.columns;
+          const placeholders = histCols.map(() => '?').join(', ');
+          db.prepare(`INSERT OR REPLACE INTO history (${histCols.join(', ')}) VALUES (${placeholders})`)
+            .run(...histCols.map(c => dbHist[c] === undefined ? null : dbHist[c]));
+        });
+        undoTransaction();
+        appliedSqlJournal = true;
+      }
+    }
+  } catch (sqlErr) {
+    console.error('SQL journal undo attempt encountered an issue, falling back to audit log reconstruction:', sqlErr);
+  }
+
+  if (appliedSqlJournal) {
+    notifyInventoryUpdate(target.clientId);
+    const finalState = await loadState();
+    return {
+      success: true,
+      undoneDescription: targetEntry.description,
+      message: `Undid action: "${targetEntry.description}"`,
+      state: finalState
+    };
+  }
+
+  // 2. Fallback to audit log reconstruction if no SQL journal record exists
+  const restoredState: any = { ...currentState };
+  const reconstruction = reconstructUndoFromAuditLog(targetEntry, restoredState);
+
+  if (!reconstruction.success) {
+    return {
+      success: false,
+      error: reconstruction.error || 'Could not reconstruct previous state from audit log entry.'
+    };
+  }
+
+  const undoAuditDesc = `Undid action: "${targetEntry.description}" (originally performed by ${targetEntry.user || 'User'})`;
+  const undoHistory = {
+    id: crypto.randomUUID(),
+    timestamp: new Date().toISOString(),
+    description: undoAuditDesc,
+    targetId: targetEntry.targetId || 'undo-action',
+    user: String(target.user || 'User'),
+    clientDevice: target.clientDevice || undefined,
+    clientInfo: target.clientInfo || undefined
+  };
+
+  // Add the undo event to the audit log
+  restoredState.history = [undoHistory, ...(restoredState.history || [])];
+
+  // Fast delta save: only sync the tables affected by the reconstructed undo directly to SQLite
+  await saveState(restoredState, reconstruction.affectedTables);
+  notifyInventoryUpdate(target.clientId);
+
+  const finalState = await loadState();
+  return {
+    success: true,
+    undoneDescription: targetEntry.description,
+    message: undoAuditDesc,
+    state: finalState
+  };
+}
+
+app.get('/api/inventory/undo/recent', async (req, res) => {
+  try {
+    const recentSnapshots = await getRecentUndoSnapshots();
+    res.json({
+      recentSnapshots,
+      count: recentSnapshots.length
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to fetch undo snapshots.', details: err.message });
+  }
+});
+
+app.post('/api/inventory/undo', async (req: any, res) => {
+  try {
+    const { snapshotId, historyId } = req.body || {};
+    const ingressUser = extractUserFromReq(req);
+    const clientMeta = extractClientInfoFromReq(req);
+    const clientId = (req.headers['x-client-id'] as string) || req.body.clientId;
+    const result = await executeUndoInternal({
+      snapshotId,
+      historyId,
+      user: String(ingressUser || 'User'),
+      clientDevice: clientMeta.clientDevice,
+      clientInfo: clientMeta.clientInfo,
+      clientId
+    });
+    if (!result.success) {
+      return res.status(result.notFound ? 404 : 400).json({
+        error: result.error || 'Failed to undo action.'
+      });
+    }
+    res.json(result);
+  } catch (err: any) {
+    console.error('Unexpected error in /api/inventory/undo:', err);
+    res.status(500).json({
+      error: err.message || 'Failed to undo action.'
+    });
+  }
+});
+
+function getAffectedTablesForAction(actionType: string): string[] | undefined {
+  switch (actionType) {
+    case 'ADD_MEAT_CUT':
+    case 'BATCH_UPDATE_MEAT_QUANTITY':
+    case 'UPDATE_MEAT_QUANTITY':
+    case 'UPDATE_MEAT_NOTES':
+    case 'SPLIT_MEAT_CUT':
+    case 'CORRECT_MEAT_LABEL':
+    case 'REVERT_MEAT_LABEL':
+    case 'TOGGLE_MEAT_TAG':
+    case 'RECONCILE_QUANTITIES':
+    case 'MOVE_MEAT_QUANTITY':
+    case 'BULK_ADD_MEAT_CUTS':
+      return ['meat_cuts', 'containers', 'history'];
+
+    case 'ADD_CONTAINER':
+    case 'EDIT_CONTAINER':
+    case 'DELETE_CONTAINER':
+    case 'MOVE_CONTAINER':
+    case 'TOGGLE_CONTAINER_ARCHIVED':
+      return ['containers', 'freezers', 'meat_cuts', 'history'];
+
+    case 'ADD_CONTAINER_TEMPLATE':
+    case 'EDIT_CONTAINER_TEMPLATE':
+    case 'DELETE_CONTAINER_TEMPLATE':
+      return ['container_templates', 'containers', 'history'];
+
+    case 'ADD_FREEZER':
+    case 'EDIT_FREEZER':
+    case 'DELETE_FREEZER':
+      return ['freezers', 'containers', 'history'];
+
+    case 'ADD_PRODUCT':
+    case 'EDIT_PRODUCT':
+    case 'DELETE_PRODUCT':
+    case 'BULK_DELETE_PRODUCTS':
+    case 'BULK_EDIT_PRODUCTS':
+      return ['products', 'history'];
+
+    case 'DELETE_CATEGORY':
+    case 'RENAME_CATEGORY':
+    case 'UPDATE_CATEGORY_DECORATION':
+      return ['categories', 'products', 'history'];
+
+    case 'ADD_TAG':
+    case 'EDIT_TAG':
+    case 'DELETE_TAG':
+      return ['tags', 'meat_cuts', 'history'];
+
+    case 'CORRECT_OFFSITE_LABEL':
+    case 'BULK_CORRECT_OFFSITE_LABEL':
+    case 'REVERT_OFFSITE_LABEL':
+    case 'BULK_REVERT_OFFSITE_LABEL':
+    case 'ADD_OFFSITE_ENTRY':
+    case 'UPDATE_OFFSITE_ENTRY':
+    case 'UPDATE_OFFSITE_BOX_COLORS':
+    case 'TOGGLE_OFFSITE_ENTRY_TAG':
+    case 'DELETE_OFFSITE_ENTRY':
+    case 'BULK_DELETE_OFFSITE_ENTRIES':
+    case 'BULK_EDIT_OFFSITE_ENTRIES':
+    case 'IMPORT_OFFSITE_ENTRIES':
+    case 'CLEAR_OFFSITE_ENTRIES':
+    case 'MOVE_STAGING_TO_OFFSITE':
+    case 'FINALIZE_OFFSITE_STAGING':
+      return ['off_site_entries', 'pallets', 'boxes', 'containers', 'meat_cuts', 'history'];
+
+    case 'RENAME_PALLET':
+    case 'ASSIGN_PALLET_LOCATION':
+    case 'UPDATE_PALLET_NOTES':
+      return ['pallets', 'off_site_entries', 'boxes', 'history'];
+
+    case 'ADD_BUTCHER_ORDER':
+    case 'DELETE_BUTCHER_ORDER':
+    case 'EDIT_BUTCHER_ORDER':
+    case 'UPDATE_BUTCHER_STATUS':
+    case 'LINK_BUTCHER_CONTAINER':
+      return ['butcher_orders', 'off_site_entries', 'containers', 'meat_cuts', 'history'];
+
+    case 'ADD_MOVEMENT_ORDER':
+    case 'UPDATE_MOVEMENT_ORDER':
+    case 'DELETE_MOVEMENT_ORDER':
+    case 'EXECUTE_MOVEMENT_ORDER':
+    case 'REVERT_MOVEMENT_ORDER':
+      return ['movement_orders', 'off_site_entries', 'pallets', 'boxes', 'meat_cuts', 'containers', 'history'];
+
+    case 'ADD_CUSTOM_LIST':
+    case 'EDIT_CUSTOM_LIST':
+    case 'DELETE_CUSTOM_LIST':
+    case 'TOGGLE_PRODUCT_ON_LIST':
+    case 'BATCH_TOGGLE_PRODUCTS_ON_LIST':
+    case 'UPDATE_LIST_ITEM_CONTROL_SOURCE':
+    case 'UPDATE_LIST_ITEM_THRESHOLD':
+    case 'UPDATE_LIST_ITEM_NOTE':
+    case 'TOGGLE_LIST_ITEM_NOTIFICATION':
+      return ['custom_lists', 'products', 'history'];
+
+    case 'UPDATE_NOTIFICATION_SETTINGS':
+      return ['notification_settings', 'history'];
+
+    case 'ADD_LOCATION':
+    case 'EDIT_LOCATION':
+    case 'DELETE_LOCATION':
+    case 'SET_HOME_LOCATION':
+      return ['locations', 'history'];
+
+    default:
+      return undefined;
+  }
+}
+
 // Process a single action on the backend and return the new unified database state safely
 app.post('/api/inventory/action', async (req: any, res) => {
   const { action } = req.body;
@@ -5339,38 +8051,95 @@ app.post('/api/inventory/action', async (req: any, res) => {
   }
 
   checkSingleUserLockStaleness();
+  checkForcedMultiStaleness();
   const clientId = (req.headers['x-client-id'] as string) || req.body.clientId;
-  if (singleUserLock && !isClientConnected(singleUserLock.clientId)) {
-    console.log(`Lock holder "${singleUserLock.holderName}" is disconnected. Automatically releasing lock in action endpoint.`);
-    singleUserLock = null;
-    broadcastSSE({ type: 'single_user_lock_changed', lock: null });
+
+  const offSiteActions = new Set([
+    'UPDATE_MOVEMENT_ORDER',
+    'APPEND_MOVEMENT_ORDER_IDS',
+    'REMOVE_MOVEMENT_ORDER_IDS',
+    'ADD_MOVEMENT_ORDER',
+    'DELETE_MOVEMENT_ORDER',
+    'EXECUTE_MOVEMENT_ORDER',
+    'REVERT_MOVEMENT_ORDER',
+    'ADD_OFFSITE_ENTRY',
+    'ADD_OFF_SITE_ENTRY',
+    'UPDATE_OFFSITE_ENTRY',
+    'UPDATE_OFF_SITE_ENTRY',
+    'DELETE_OFFSITE_ENTRY',
+    'DELETE_OFF_SITE_ENTRY',
+    'BULK_DELETE_OFFSITE_ENTRIES',
+    'BULK_EDIT_OFFSITE_ENTRIES',
+    'IMPORT_OFFSITE_ENTRIES',
+    'CLEAR_OFFSITE_ENTRIES',
+    'MOVE_STAGING_TO_OFFSITE',
+    'FINALIZE_OFFSITE_STAGING',
+    'TRANSFER_OFF_SITE_PALLET',
+    'CORRECT_OFFSITE_LABEL',
+    'BULK_CORRECT_OFFSITE_LABEL',
+    'REVERT_OFFSITE_LABEL',
+    'BULK_REVERT_OFFSITE_LABEL',
+    'UPDATE_OFFSITE_BOX_COLORS',
+    'TOGGLE_OFFSITE_ENTRY_TAG',
+    'RENAME_PALLET',
+    'ASSIGN_PALLET_LOCATION',
+    'UPDATE_PALLET_NOTES',
+    'ADD_BUTCHER_ORDER',
+    'EDIT_BUTCHER_ORDER',
+    'DELETE_BUTCHER_ORDER',
+    'UPDATE_BUTCHER_STATUS',
+    'LINK_BUTCHER_CONTAINER'
+  ]);
+
+  const isOffSiteAction = offSiteActions.has(action.type);
+  const actionZone: 'onsite' | 'offsite' = isOffSiteAction ? 'offsite' : 'onsite';
+
+  const relevantLock = getActiveSingleUserLockForScope(actionZone);
+
+  if (relevantLock && relevantLock.clientId !== clientId && action.type !== 'REPLACE_STATE') {
+    if (!isClientConnected(relevantLock.clientId)) {
+      console.log(`Single-User lock (${relevantLock.scope}) for "${relevantLock.holderName}" auto-released during action because lock owner is disconnected.`);
+      singleUserLocks[relevantLock.scope] = null;
+      broadcastSSE({
+        type: 'single_user_lock_changed',
+        locks: { ...singleUserLocks },
+        lock: null
+      });
+    } else {
+      return res.status(409).json({
+        error: 'SINGLE_USER_LOCKED',
+        holderName: relevantLock.holderName,
+        scope: relevantLock.scope,
+        message: `Application is locked in Single-User Mode (${relevantLock.scope}) by ${relevantLock.holderName}.`
+      });
+    }
   }
 
-  if (singleUserLock && singleUserLock.clientId !== clientId && action.type !== 'REPLACE_STATE') {
-    return res.status(409).json({
-      error: 'SINGLE_USER_LOCKED',
-      holderName: singleUserLock.holderName,
-      message: `Application is locked in Single-User Mode by ${singleUserLock.holderName}.`
-    });
-  }
-  if (singleUserLock && singleUserLock.clientId === clientId) {
-    singleUserLock.lastActiveAt = Date.now();
+  const scopesList: Array<'all' | 'onsite' | 'offsite'> = ['all', 'onsite', 'offsite'];
+  for (const s of scopesList) {
+    if (singleUserLocks[s]?.clientId === clientId) {
+      singleUserLocks[s]!.lastActiveAt = Date.now();
+    }
+    if (forcedMultiStates[s]?.setByClientId === clientId) {
+      forcedMultiStates[s]!.lastActiveAt = Date.now();
+    }
   }
 
   try {
     const state = await loadState();
 
     const ingressUser = extractUserFromReq(req);
+    const clientMeta = extractClientInfoFromReq(req);
 
-    // Replay reducer logic locally with active backend user info
-    const MAX_HISTORY_PER_ITEM = 10;
-    
-    const newHistoryEntry = (description: string, targetId: string) => ({
+    const newHistoryEntry = (description: string, targetId: string, undoData?: any) => ({
       id: crypto.randomUUID(),
       timestamp: new Date().toISOString(),
       description,
       targetId,
-      user: String(ingressUser)
+      user: String(ingressUser),
+      clientDevice: clientMeta.clientDevice,
+      clientInfo: clientMeta.clientInfo,
+      undoData: undoData || undefined
     });
 
     const getLocationPhrase = (containerId: string | undefined, currentState: any) => {
@@ -5387,20 +8156,27 @@ app.post('/api/inventory/action', async (req: any, res) => {
     };
     
     const addHistory = (currentState: any, entry: any) => {
-        const relatedHistory = currentState.history.filter((h: any) => h.targetId === entry.targetId);
-        const updatedHistory = [entry, ...relatedHistory].slice(0, MAX_HISTORY_PER_ITEM);
-        const otherHistory = currentState.history.filter((h: any) => h.targetId !== entry.targetId);
-        return [...otherHistory, ...updatedHistory];
+        // Keep permanent chain of custody logs without auto-truncation
+        return [entry, ...(currentState.history || [])];
     };
 
-    const handleEmptyContainer = (containerId: string, currentState: any) => {
-        const isContainerEmpty = !currentState.meatCuts.some((mc: any) => mc.containerId === containerId);
+    const handleEmptyContainer = (
+      containerId: string,
+      currentState: any,
+      options?: { combineWithLatestHistory?: boolean }
+    ) => {
+        const isContainerEmpty = !(currentState.meatCuts || []).some((mc: any) => mc.containerId === containerId && mc.quantity > 0);
         if (!isContainerEmpty) {
             return currentState;
         }
         
-        const container = currentState.containers.find((c: any) => c.id === containerId);
+        const container = (currentState.containers || []).find((c: any) => c.id === containerId);
         if (!container) return currentState;
+
+        // If already archived with no freezer, nothing to do
+        if (container.isArchived && !container.freezerId) {
+            return currentState;
+        }
 
         const isBuiltIn = container.id === 'staging_loose' || container.id.endsWith('_loose') ||
                           container.name.toLowerCase().includes('shelf') || 
@@ -5411,22 +8187,94 @@ app.post('/api/inventory/action', async (req: any, res) => {
                           container.name.toLowerCase().includes('bin 2') || 
                           container.name.toLowerCase().includes('bin 3');
 
+        const oldFreezer = (currentState.freezers || []).find((f: any) => f.id === container.freezerId);
+        const freezerPhrase = oldFreezer ? ` (removed from ${oldFreezer.name})` : '';
+
+        const shouldCombine = options?.combineWithLatestHistory !== false;
+        const latestHistory = currentState.history && currentState.history.length > 0 ? currentState.history[0] : null;
+
+        const canCombineWithLatest = shouldCombine && latestHistory && (
+          latestHistory.targetId === containerId ||
+          latestHistory.undoData?.containerId === containerId ||
+          latestHistory.undoData?.type === 'RESTORE_MEAT_CUT_QUANTITY' ||
+          latestHistory.undoData?.type === 'BATCH_RESTORE_MEAT_QUANTITY' ||
+          latestHistory.undoData?.type === 'RESTORE_MOVE_MEAT' ||
+          latestHistory.description.includes(`"${container.name}"`) ||
+          latestHistory.targetId === 'bulk-product-delete' ||
+          latestHistory.targetId === 'category-delete'
+        );
+
         if (isBuiltIn) {
-            const history = newHistoryEntry(`Container "${container.name}" is now empty.`, containerId);
-            return {
-                ...currentState,
-                history: addHistory(currentState, history)
-            };
+            if (canCombineWithLatest) {
+                latestHistory.description = `${latestHistory.description.replace(/\.$/, '')} (container "${container.name}" is now empty).`;
+                return currentState;
+            } else {
+                const history = newHistoryEntry(`Container "${container.name}" is now empty.`, containerId);
+                return {
+                    ...currentState,
+                    history: addHistory(currentState, history)
+                };
+            }
+        } else if (container.deleteOnEmpty) {
+            // Container marked to delete/retire when empty
+            if (canCombineWithLatest) {
+                latestHistory.description = `${latestHistory.description.replace(/\.$/, '')} (container "${container.name}" emptied & retired${freezerPhrase}).`;
+                latestHistory.undoData = {
+                    ...(latestHistory.undoData || {}),
+                    container: { ...container, previousFreezerId: container.freezerId, isArchived: false }
+                };
+                return {
+                    ...currentState,
+                    containers: currentState.containers.filter((c: any) => c.id !== containerId)
+                };
+            } else {
+                const history = newHistoryEntry(
+                    `Container "${container.name}" was emptied and retired${freezerPhrase}.`,
+                    containerId,
+                    {
+                        type: 'RESTORE_DELETED_CONTAINER',
+                        container: { ...container, previousFreezerId: container.freezerId, isArchived: false }
+                    }
+                );
+                return {
+                    ...currentState,
+                    containers: currentState.containers.filter((c: any) => c.id !== containerId),
+                    history: addHistory(currentState, history)
+                };
+            }
         } else {
             // Archive active container when emptied so history/rollback capability is preserved
-            const history = newHistoryEntry(`Container "${container.name}" was emptied and archived.`, containerId);
-            return {
-                ...currentState,
-                containers: currentState.containers.map((c: any) => 
-                    c.id === containerId ? { ...c, freezerId: undefined, isArchived: true } : c
-                ),
-                history: addHistory(currentState, history)
-            };
+            if (canCombineWithLatest) {
+                latestHistory.description = `${latestHistory.description.replace(/\.$/, '')} (container "${container.name}" emptied & archived${freezerPhrase}).`;
+                latestHistory.undoData = {
+                    ...(latestHistory.undoData || {}),
+                    container: { ...container, previousFreezerId: container.freezerId, isArchived: false }
+                };
+                return {
+                    ...currentState,
+                    containers: currentState.containers.map((c: any) => 
+                        c.id === containerId ? { ...c, freezerId: undefined, isArchived: true } : c
+                    )
+                };
+            } else {
+                const history = newHistoryEntry(
+                    `Container "${container.name}" was emptied and archived${freezerPhrase}.`,
+                    containerId,
+                    {
+                        type: 'RESTORE_EMPTIED_CONTAINER',
+                        containerId: container.id,
+                        previousFreezerId: container.freezerId,
+                        container: { ...container, previousFreezerId: container.freezerId, isArchived: false }
+                    }
+                );
+                return {
+                    ...currentState,
+                    containers: currentState.containers.map((c: any) => 
+                        c.id === containerId ? { ...c, freezerId: undefined, isArchived: true } : c
+                    ),
+                    history: addHistory(currentState, history)
+                };
+            }
         }
     };
 
@@ -5640,7 +8488,16 @@ app.post('/api/inventory/action', async (req: any, res) => {
         }
 
         const statusText = isArchived ? 'archived' : 'restored/unarchived';
-        const history = newHistoryEntry(`Container "${container.name}" was ${statusText}${cutsDesc}.`, containerId);
+        const history = newHistoryEntry(
+          `Container "${container.name}" was ${statusText}${cutsDesc}.`,
+          containerId,
+          {
+            type: 'RESTORE_CONTAINER_ARCHIVE',
+            containerId,
+            previousIsArchived: container.isArchived,
+            previousFreezerId: container.freezerId
+          }
+        );
         nextState.history = addHistory(nextState, history);
         break;
       }
@@ -5653,10 +8510,8 @@ app.post('/api/inventory/action', async (req: any, res) => {
         if (!container) break;
 
         const containerName = container.name || 'Unknown Container';
-        // Archive active container instead of hard deleting to preserve historical records and rollback support
-        nextState.containers = nextState.containers.map(c => 
-          c.id === containerId ? { ...c, freezerId: undefined, isArchived: true } : c
-        );
+        const oldFreezer = (nextState.freezers || []).find((f: any) => f.id === container.freezerId);
+        const freezerPhrase = oldFreezer ? ` (removed from ${oldFreezer.name})` : '';
 
         // Relocate any cuts inside this container to the Sorting Table (staging_loose)
         const cutsInContainer = (nextState.meatCuts || []).filter(mc => mc.containerId === containerId);
@@ -5668,8 +8523,21 @@ app.post('/api/inventory/action', async (req: any, res) => {
         }
 
         const cutsDesc = cutsInContainer.length > 0 ? ` and ${cutsInContainer.length} item(s) moved to the Sorting Table (Staging Area)` : '';
-        const history = newHistoryEntry(`Container "${containerName}" was archived${cutsDesc}.`, containerId);
+        const history = newHistoryEntry(
+          `Container "${containerName}" was archived${freezerPhrase}${cutsDesc}.`,
+          containerId,
+          {
+            type: 'RESTORE_DELETED_CONTAINER',
+            container: { ...container },
+            cutsMovedToStaging: cutsInContainer.map(c => ({ id: c.id, previousContainerId: containerId }))
+          }
+        );
         nextState.history = addHistory(nextState, history);
+
+        // Archive active container instead of hard deleting to preserve historical records and rollback support
+        nextState.containers = nextState.containers.map(c => 
+          c.id === containerId ? { ...c, freezerId: undefined, isArchived: true } : c
+        );
         break;
       }
       case 'ADD_PRODUCT': {
@@ -5832,7 +8700,7 @@ app.post('/api/inventory/action', async (req: any, res) => {
 
         // Process empty checks
         for (const containerId of affectedContainers) {
-          nextState = handleEmptyContainer(containerId, nextState);
+          nextState = handleEmptyContainer(containerId, nextState, { combineWithLatestHistory: true });
         }
         break;
       }
@@ -5863,7 +8731,7 @@ app.post('/api/inventory/action', async (req: any, res) => {
         nextState.history = addHistory(nextState, history);
         
         for (const containerId of Array.from(affectedContainers)) {
-          nextState = handleEmptyContainer(containerId, nextState);
+          nextState = handleEmptyContainer(containerId, nextState, { combineWithLatestHistory: true });
         }
         break;
       }
@@ -5940,7 +8808,7 @@ app.post('/api/inventory/action', async (req: any, res) => {
 
         // Process empty checks
         for (const containerId of affectedContainers) {
-          nextState = handleEmptyContainer(containerId, nextState);
+          nextState = handleEmptyContainer(containerId, nextState, { combineWithLatestHistory: true });
         }
         break;
       }
@@ -5999,7 +8867,10 @@ app.post('/api/inventory/action', async (req: any, res) => {
         const { updates } = action.payload; // Record<meatCutId, newQuantity>
         
         let anyChanges = false;
-        
+        const previousQuantities: Record<string, number> = {};
+        const previousCuts: any[] = [];
+        const affectedContainerIds = new Set<string>();
+
         for (const [meatCutId, newQuantity] of Object.entries(updates)) {
             const meatCut = nextState.meatCuts.find(m => m.id === meatCutId);
             if (!meatCut) continue;
@@ -6008,8 +8879,23 @@ app.post('/api/inventory/action', async (req: any, res) => {
             if (!product) continue;
 
             if (meatCut.quantity !== newQuantity) {
+                previousQuantities[meatCutId] = meatCut.quantity;
+                previousCuts.push({ ...meatCut });
+                if (meatCut.containerId) affectedContainerIds.add(meatCut.containerId);
+
+                const contBefore = nextState.containers.find((c: any) => c.id === meatCut.containerId);
                 const locPhrase = getLocationPhrase(meatCut.containerId, nextState);
-                const history = newHistoryEntry(`Quantity of "${product.name}" ${locPhrase} changed from ${meatCut.quantity} to ${newQuantity} (batch).`, meatCutId);
+                const history = newHistoryEntry(`Quantity of "${product.name}" ${locPhrase} changed from ${meatCut.quantity} to ${newQuantity} (batch).`, meatCutId, {
+                    type: 'RESTORE_MEAT_CUT_QUANTITY',
+                    meatCutId,
+                    previousQuantity: meatCut.quantity,
+                    productId: meatCut.productId,
+                    containerId: meatCut.containerId,
+                    notes: meatCut.notes,
+                    tagIds: meatCut.tagIds,
+                    originalCutName: meatCut.originalCutName,
+                    container: contBefore ? { ...contBefore, previousFreezerId: contBefore.freezerId, isArchived: false } : undefined
+                });
                 nextState.history = addHistory(nextState, history);
                 meatCut.quantity = newQuantity;
                 anyChanges = true;
@@ -6017,6 +8903,11 @@ app.post('/api/inventory/action', async (req: any, res) => {
         }
         
         if (anyChanges) {
+            // Collect containers before possible empty cleanup
+            const previousContainers = (nextState.containers || [])
+              .filter((c: any) => affectedContainerIds.has(c.id))
+              .map((c: any) => ({ ...c }));
+
             // Remove zero-quantity items and cleanup containers
             const emptyContainerIds = new Set<string>();
             nextState.meatCuts = nextState.meatCuts.filter(m => {
@@ -6027,9 +8918,9 @@ app.post('/api/inventory/action', async (req: any, res) => {
                 return true;
             });
 
-            // Cleanup containers that became empty
+            // Cleanup containers that became empty (combined into latest history)
             for (const containerId of emptyContainerIds) {
-                nextState = handleEmptyContainer(containerId, nextState);
+                nextState = handleEmptyContainer(containerId, nextState, { combineWithLatestHistory: true });
             }
         }
         break;
@@ -6041,15 +8932,30 @@ app.post('/api/inventory/action', async (req: any, res) => {
         const product = nextState.products.find(p => p.id === meatCut.productId);
         if (!product) return res.status(400).json({ error: 'Product not found.' });
 
+        const contBefore = nextState.containers.find((c: any) => c.id === meatCut.containerId);
         const locPhrase = getLocationPhrase(meatCut.containerId, nextState);
-        const history = newHistoryEntry(`Quantity of "${product.name}" ${locPhrase} changed from ${meatCut.quantity} to ${newQuantity}.`, meatCutId);
+        const history = newHistoryEntry(
+          `Quantity of "${product.name}" ${locPhrase} changed from ${meatCut.quantity} to ${newQuantity}.`,
+          meatCutId,
+          {
+            type: 'RESTORE_MEAT_CUT_QUANTITY',
+            meatCutId,
+            previousQuantity: meatCut.quantity,
+            productId: meatCut.productId,
+            containerId: meatCut.containerId,
+            notes: meatCut.notes,
+            tagIds: meatCut.tagIds,
+            originalCutName: meatCut.originalCutName,
+            container: contBefore ? { ...contBefore, previousFreezerId: contBefore.freezerId, isArchived: false } : undefined
+          }
+        );
         const updatedMeatCuts = nextState.meatCuts.map(m => 
             m.id === meatCutId ? { ...m, quantity: newQuantity } : m
         ).filter(m => m.quantity > 0);
         
         nextState.meatCuts = updatedMeatCuts;
         nextState.history = addHistory(nextState, history);
-        nextState = handleEmptyContainer(meatCut.containerId, nextState);
+        nextState = handleEmptyContainer(meatCut.containerId, nextState, { combineWithLatestHistory: true });
         break;
       }
       case 'UPDATE_MEAT_NOTES': {
@@ -6123,6 +9029,9 @@ app.post('/api/inventory/action', async (req: any, res) => {
           meatCut.wrongLabel = meatCut.productId;
         }
         meatCut.isWrongLabel = true;
+        if (!meatCut.originalCutName) {
+          meatCut.originalCutName = oldName;
+        }
         
         // Set the meat cut's product to the new correct product ID
         meatCut.productId = correctProductId;
@@ -6245,6 +9154,7 @@ app.post('/api/inventory/action', async (req: any, res) => {
         meatCut.productId = restoredProductId;
         meatCut.wrongLabel = undefined;
         meatCut.isWrongLabel = undefined;
+        meatCut.originalCutName = undefined;
 
         const locPhrase = getLocationPhrase(meatCut.containerId, nextState);
         const history = newHistoryEntry(`Label correction reverted back to original product "${restoredName || 'Original'}" ${locPhrase}.`, meatCutId);
@@ -6425,8 +9335,19 @@ app.post('/api/inventory/action', async (req: any, res) => {
           const product = nextState.products.find(p => p.id === meatCut.productId);
           if (!product) continue;
 
+          const contBefore = nextState.containers.find((c: any) => c.id === meatCut.containerId);
           const locPhrase = getLocationPhrase(meatCut.containerId, nextState);
-          const history = newHistoryEntry(`Reconciliation: Quantity of "${product.name}" ${locPhrase} changed from ${meatCut.quantity} to ${newQuantity}.`, meatCutId);
+          const history = newHistoryEntry(`Reconciliation: Quantity of "${product.name}" ${locPhrase} changed from ${meatCut.quantity} to ${newQuantity}.`, meatCutId, {
+            type: 'RESTORE_MEAT_CUT_QUANTITY',
+            meatCutId,
+            previousQuantity: meatCut.quantity,
+            productId: meatCut.productId,
+            containerId: meatCut.containerId,
+            notes: meatCut.notes,
+            tagIds: meatCut.tagIds,
+            originalCutName: meatCut.originalCutName,
+            container: contBefore ? { ...contBefore, previousFreezerId: contBefore.freezerId, isArchived: false } : undefined
+          });
           nextState.history = addHistory(nextState, history);
 
           const updatedMeatCuts = nextState.meatCuts.map(m => 
@@ -6434,7 +9355,7 @@ app.post('/api/inventory/action', async (req: any, res) => {
           ).filter(m => m.quantity > 0);
           
           nextState.meatCuts = updatedMeatCuts;
-          nextState = handleEmptyContainer(meatCut.containerId, nextState);
+          nextState = handleEmptyContainer(meatCut.containerId, nextState, { combineWithLatestHistory: true });
         }
         break;
       }
@@ -6480,7 +9401,12 @@ app.post('/api/inventory/action', async (req: any, res) => {
           .map(mc => mc.id === resolvedSourceCutId ? { ...mc, quantity: newSourceQuantity } : mc)
           .filter(mc => mc.quantity > 0);
         
-        const h1 = newHistoryEntry(`Moved ${moveQty}x "${product.name}" from ${oldLoc} to ${newLoc}. Source remaining: ${newSourceQuantity}.`, resolvedSourceCutId);
+        const h1 = newHistoryEntry(`Moved ${moveQty}x "${product.name}" from ${oldLoc} to ${newLoc}. Source remaining: ${newSourceQuantity}.`, resolvedSourceCutId, {
+          type: 'RESTORE_MOVE_MEAT',
+          sourceCutId: resolvedSourceCutId,
+          prevSourceQuantity: sourceCut.quantity,
+          sourceContainer: oldContainer ? { ...oldContainer, previousFreezerId: oldContainer.freezerId, isArchived: false } : undefined
+        });
         nextState.history = addHistory(nextState, h1);
 
         const destCut = nextState.meatCuts.find(mc => mc.containerId === newContainerId && isSameVariant(mc, sourceCut.productId, sourceCut.notes, sourceCut.tagIds, sourceCut.originalCutName));
@@ -6512,7 +9438,7 @@ app.post('/api/inventory/action', async (req: any, res) => {
         
         // Maintain Staging Area location for target container intact (do not automatically assign it back to the source container's freezer)
 
-        nextState = handleEmptyContainer(actualSourceContainerId, nextState);
+        nextState = handleEmptyContainer(actualSourceContainerId, nextState, { combineWithLatestHistory: true });
         break;
       }
       case 'MOVE_CONTAINER': {
@@ -6821,7 +9747,22 @@ app.post('/api/inventory/action', async (req: any, res) => {
       }
       case 'ADD_OFFSITE_ENTRY': {
         const entries = nextState.offSiteEntries || [];
-        nextState.offSiteEntries = [...entries, action.payload.entry];
+        const entry = action.payload.entry;
+        let matchedProduct = entry.productId ? nextState.products?.find(p => p.id === entry.productId) : undefined;
+        if (!matchedProduct && (entry.cuts || entry.originalCutName)) {
+          const cutName = (entry.cuts || entry.originalCutName || '').trim().toLowerCase();
+          matchedProduct = nextState.products?.find(p => p.name.trim().toLowerCase() === cutName);
+        }
+        const defaultTagIds = matchedProduct?.defaultTagIds || [];
+        const finalTagIds = (entry.tagIds && entry.tagIds.length > 0)
+          ? entry.tagIds
+          : [...defaultTagIds];
+        const newEntry = {
+          ...entry,
+          ...(matchedProduct && !entry.productId ? { productId: matchedProduct.id } : {}),
+          tagIds: finalTagIds
+        };
+        nextState.offSiteEntries = [...entries, newEntry];
         break;
       }
       
@@ -6840,8 +9781,9 @@ app.post('/api/inventory/action', async (req: any, res) => {
           // Find or create product
           const productName = (r.normalizedCutName || r.originalCutName || '').trim();
           let productId = null;
+          let matchedProduct: any = undefined;
           if (productName) {
-            let matchedProduct = r.productId ? products.find((p: any) => p.id === r.productId) : undefined;
+            matchedProduct = r.productId ? products.find((p: any) => p.id === r.productId) : undefined;
             if (!matchedProduct) {
               matchedProduct = products.find((p: any) => p.name.trim().toLowerCase() === productName.toLowerCase());
             }
@@ -6882,6 +9824,11 @@ app.post('/api/inventory/action', async (req: any, res) => {
           const isArchived = !r.importedToOffSite;
           const rLoc = (r.location || locationName).trim();
           const rPallet = (r.pallet || r.targetPallet || r.currentLocation || defaultPalletName).trim();
+
+          const defaultTagIds = matchedProduct?.defaultTagIds || [];
+          const resolvedTagIds = (r.tagIds && r.tagIds.length > 0)
+            ? r.tagIds
+            : [...defaultTagIds];
           
           if (existingEntry) {
             existingEntry.orderId = action.payload.order.id;
@@ -6892,6 +9839,9 @@ app.post('/api/inventory/action', async (req: any, res) => {
             if (!existingEntry.pieces || existingEntry.pieces === 0) existingEntry.pieces = r.pieces ?? 0;
             if (!existingEntry.netWeight || existingEntry.netWeight === 0) existingEntry.netWeight = r.netWeight ?? 0;
             if (boxId && !existingEntry.box) existingEntry.box = boxId;
+            if ((!existingEntry.tagIds || existingEntry.tagIds.length === 0) && resolvedTagIds.length > 0) {
+              existingEntry.tagIds = resolvedTagIds;
+            }
             
             const wasArchived = !!(existingEntry.archived === 1 || existingEntry.archived === true || String(existingEntry.archived) === 'true');
             const shouldBeArchivedNow = wasArchived || isArchived;
@@ -6901,7 +9851,6 @@ app.post('/api/inventory/action', async (req: any, res) => {
               existingEntry.pallet = '';
               existingEntry.currentLocation = '';
               existingEntry.storageLocationId = '';
-              existingEntry.moveTo = '';
               existingEntry.archived = true;
             } else {
               if (!existingEntry.location || existingEntry.location === '') existingEntry.location = rLoc;
@@ -6927,7 +9876,8 @@ app.post('/api/inventory/action', async (req: any, res) => {
               notes: r.notes || '',
               orderId: action.payload.order.id,
               archived: isArchived,
-              storageLocationId: isArchived ? '' : (selectedLoc?.id || '')
+              storageLocationId: isArchived ? '' : (selectedLoc?.id || ''),
+              tagIds: resolvedTagIds
             });
           }
 
@@ -7162,8 +10112,8 @@ app.post('/api/inventory/action', async (req: any, res) => {
           const container = stagedContainers.find(c => c.id === mc.containerId);
           const boxName = container && !container.id.endsWith('_loose') ? container.name : '';
 
-          const isActuallyWrongLabel = Boolean(mc.originalCutName || (mc as any).isWrongLabel || (mc as any).wrongLabel || (mc as any).wrongLabelOriginal);
-          const originalName = (mc as any).wrongLabelOriginal || mc.originalCutName || cutsName;
+          const isActuallyWrongLabel = Boolean((mc as any).isWrongLabel || (mc as any).wrongLabel || (mc as any).wrongLabelOriginal);
+          const originalName = isActuallyWrongLabel ? ((mc as any).wrongLabelOriginal || mc.originalCutName || cutsName) : cutsName;
 
           newOffSiteEntries.push({
             id: crypto.randomUUID(),
@@ -7335,7 +10285,21 @@ app.post('/api/inventory/action', async (req: any, res) => {
         const currentEntries = isReplace ? [] : (nextState.offSiteEntries || []);
         const newEntries = action.payload.entries;
         if (isReplace) {
-          nextState.offSiteEntries = newEntries;
+          nextState.offSiteEntries = newEntries.map((incoming: any) => {
+            if (incoming.tagIds && incoming.tagIds.length > 0) return incoming;
+            const matchedProduct = incoming.productId 
+              ? nextState.products?.find((p: any) => p.id === incoming.productId)
+              : nextState.products?.find((p: any) => p.name.trim().toLowerCase() === (incoming.cuts || incoming.originalCutName || '').trim().toLowerCase());
+            const defaultTags = matchedProduct?.defaultTagIds || [];
+            if (defaultTags.length > 0) {
+              return {
+                ...incoming,
+                ...(matchedProduct && !incoming.productId ? { productId: matchedProduct.id } : {}),
+                tagIds: [...defaultTags]
+              };
+            }
+            return incoming;
+          });
         } else {
           const nextEntries = currentEntries.map((e: any) => ({ ...e }));
           const newEntriesToPush: any[] = [];
@@ -7377,15 +10341,34 @@ app.post('/api/inventory/action', async (req: any, res) => {
               if (!existing.currentLocation) existing.currentLocation = incoming.currentLocation || '';
               if (!existing.notes) existing.notes = incoming.notes || '';
               if (!existing.orderId) existing.orderId = incoming.orderId || '';
-              
-              // Ensure we don't drop moveTo if provided by the incoming update
-              if (incoming.moveTo !== undefined) {
-                existing.moveTo = incoming.moveTo;
+
+              if (!existing.tagIds || existing.tagIds.length === 0) {
+                if (incoming.tagIds && incoming.tagIds.length > 0) {
+                  existing.tagIds = incoming.tagIds;
+                } else {
+                  const matchedP = existing.productId ? nextState.products?.find((p: any) => p.id === existing.productId) : null;
+                  if (matchedP?.defaultTagIds && matchedP.defaultTagIds.length > 0) {
+                    existing.tagIds = [...matchedP.defaultTagIds];
+                  }
+                }
               }
               continue;
             }
             
-            newEntriesToPush.push(incoming);
+            const matchedProduct = incoming.productId 
+              ? nextState.products?.find((p: any) => p.id === incoming.productId)
+              : nextState.products?.find((p: any) => p.name.trim().toLowerCase() === (incoming.cuts || incoming.originalCutName || '').trim().toLowerCase());
+            
+            const defaultTags = matchedProduct?.defaultTagIds || [];
+            const finalTagIds = (incoming.tagIds && incoming.tagIds.length > 0)
+              ? incoming.tagIds
+              : [...defaultTags];
+
+            newEntriesToPush.push({
+              ...incoming,
+              ...(matchedProduct && !incoming.productId ? { productId: matchedProduct.id } : {}),
+              tagIds: finalTagIds
+            });
           }
           nextState.offSiteEntries = [...nextEntries, ...newEntriesToPush];
           const importedProductIds = new Set(newEntries.map((e: any) => e.productId).filter(Boolean));
@@ -7420,29 +10403,107 @@ app.post('/api/inventory/action', async (req: any, res) => {
         const orders = nextState.movementOrders || [];
         const order = orders.find(o => o.id === action.payload.id);
         if (order && nextState.offSiteEntries) {
-          const { moveToStaging = false, removeFromInventoryDestIds = [] } = action.payload;
+          const { 
+            moveToStaging = false, 
+            stagingDestIds,
+            removeFromInventoryDestIds = [], 
+            palletNames, 
+            destinationIds, 
+            entryIds 
+          } = action.payload as any;
+
+          // Determine whether this is a full execution or a partial/pallet-level execution
+          const isPartialExecution = !!(
+            (palletNames && palletNames.length > 0) ||
+            (destinationIds && destinationIds.length > 0) ||
+            (entryIds && entryIds.length > 0)
+          );
 
           // Record original entries and locations before executing so we can undo it
-          order.originalEntries = nextState.offSiteEntries.filter(e => 
-            order.moves.some(m => m.entryId === e.id)
-          ).map(e => ({ ...e }));
+          if (!order.originalEntries || order.originalEntries.length === 0) {
+            order.originalEntries = nextState.offSiteEntries.filter(e => 
+              order.moves.some(m => m.entryId === e.id)
+            ).map(e => ({ ...e }));
+          } else {
+            const existingOrigIds = new Set(order.originalEntries.map(e => e.id));
+            const newOrigs = nextState.offSiteEntries.filter(e => 
+              order.moves.some(m => m.entryId === e.id) && !existingOrigIds.has(e.id)
+            ).map(e => ({ ...e }));
+            if (newOrigs.length > 0) {
+              order.originalEntries = [...order.originalEntries, ...newOrigs];
+            }
+          }
 
           order.moves = order.moves.map(m => {
-            const entry = nextState.offSiteEntries?.find(e => e.id === m.entryId);
+            const entry = nextState.offSiteEntries?.find(e => e.id === m.entryId) || order.originalEntries?.find(e => e.id === m.entryId);
             return {
               ...m,
-              originalLocation: entry?.location || '',
-              originalCurrentLocation: entry?.currentLocation || ''
+              originalLocation: m.originalLocation || entry?.location || '',
+              originalCurrentLocation: m.originalCurrentLocation || entry?.currentLocation || ''
             };
           });
 
+          // Determine which entries to execute in this execution turn
+          const alreadyConfirmedSet = new Set(order.confirmedMoveEntryIds || []);
+          let targetEntryIdsToExecute = new Set<string>();
+
+          if (entryIds && entryIds.length > 0) {
+            entryIds.forEach((id: string) => {
+              if (!alreadyConfirmedSet.has(id)) targetEntryIdsToExecute.add(id);
+            });
+          } else if (destinationIds && destinationIds.length > 0) {
+            const destIdSet = new Set(destinationIds);
+            order.moves.forEach(m => {
+              const dId = m.actualLocation || m.targetLocation;
+              if (destIdSet.has(dId) && !alreadyConfirmedSet.has(m.entryId)) {
+                targetEntryIdsToExecute.add(m.entryId);
+              }
+            });
+          } else if (palletNames && palletNames.length > 0) {
+            const palletLowerSet = new Set(palletNames.map((p: string) => (p || '').trim().toLowerCase()));
+            order.moves.forEach(m => {
+              const dId = m.actualLocation || m.targetLocation;
+              const dest = order.targetDestinations?.find(d => d.id === dId);
+              const pName = (dest?.palletName || '').trim().toLowerCase();
+              const entry = nextState.offSiteEntries?.find(e => e.id === m.entryId) || order.originalEntries?.find(e => e.id === m.entryId);
+              const sourcePallet = (entry?.currentLocation || entry?.pallet || '').trim().toLowerCase();
+              if ((palletLowerSet.has(pName) || palletLowerSet.has(sourcePallet)) && !alreadyConfirmedSet.has(m.entryId)) {
+                targetEntryIdsToExecute.add(m.entryId);
+              }
+            });
+          } else {
+            // Full execution: execute all unconfirmed moves
+            order.moves.forEach(m => {
+              if (!alreadyConfirmedSet.has(m.entryId)) {
+                targetEntryIdsToExecute.add(m.entryId);
+              }
+            });
+          }
+
+          // If no new entries need execution, check if all moves are confirmed and finalize
+          if (targetEntryIdsToExecute.size === 0) {
+            const allConfirmed = order.moves.length > 0 && order.moves.every(m => alreadyConfirmedSet.has(m.entryId));
+            if (allConfirmed) {
+              order.status = 'completed';
+              order.executedAt = order.executedAt || new Date().toISOString();
+            }
+            nextState.movementOrders = orders.map(o => o.id === order.id ? order : o);
+            break;
+          }
+
           // execute moves
-          const movesMap = new Map(order.moves.map(m => [m.entryId, m.actualLocation || m.targetLocation]));
+          const movesMap = new Map<string, string>();
+          order.moves.forEach(m => {
+            if (targetEntryIdsToExecute.has(m.entryId)) {
+              movesMap.set(m.entryId, m.actualLocation || m.targetLocation);
+            }
+          });
 
           // STEP 1: CREATE OR UPDATE PALLETS FOR ALL TARGET DESTINATIONS IN THE CORRECT LOCATIONS
           if (order.targetDestinations) {
+            const relevantDestIds = new Set(Array.from(movesMap.values()));
             for (const dest of order.targetDestinations) {
-              if (dest.palletName && dest.palletName.trim()) {
+              if (relevantDestIds.has(dest.id) && dest.palletName && dest.palletName.trim()) {
                 const palletNameStr = dest.palletName.trim();
                 let palletObj = nextState.pallets?.find(p => p.id === palletNameStr || p.name === palletNameStr);
                 if (!palletObj) {
@@ -7498,7 +10559,8 @@ app.post('/api/inventory/action', async (req: any, res) => {
                 }
                 const loc = dest ? nextState.locations?.find((l: any) => l.id === dest.locationId) : null;
                 const isHomeLoc = !!(loc && loc.isHome);
-                if (moveToStaging && isHomeLoc) {
+                const isStaging = (stagingDestIds ? stagingDestIds.includes(dest.id) : moveToStaging) && isHomeLoc;
+                if (isStaging) {
                   destKey = `staging::${destId}`;
                 } else {
                   destKey = `offsite::${destId}`;
@@ -7542,15 +10604,16 @@ app.post('/api/inventory/action', async (req: any, res) => {
                 const histDesc = `Removed "${e.serial || ''} ${e.cuts || ''}" from offsite inventory after delivery to "${dest.locationName}".`;
                 const history = newHistoryEntry(histDesc, 'offsite-removal');
                 nextState.history = addHistory(nextState, history);
-                nextOffSiteEntries.push({ ...e, archived: true, currentLocation: undefined, moveTo: '' });
+                nextOffSiteEntries.push({ ...e, archived: true, currentLocation: undefined });
                 continue;
               }
 
               // B) Move to staging?
               const loc = dest ? nextState.locations?.find((l: any) => l.id === dest.locationId) : null;
               const isHomeLoc = !!(loc && loc.isHome);
+              const isStaging = (stagingDestIds ? stagingDestIds.includes(dest.id) : moveToStaging) && isHomeLoc;
 
-              if (moveToStaging && isHomeLoc) {
+              if (isStaging) {
                 const rawBox = (e.box || '').trim();
                 let boxName = 'Staging Box';
                 if (rawBox) {
@@ -7616,19 +10679,36 @@ app.post('/api/inventory/action', async (req: any, res) => {
                 }
 
                 const wrongLabelVal = (e.wrongLabel && typeof e.wrongLabel === 'string' && e.wrongLabel.trim()) ? e.wrongLabel.trim() : undefined;
-                const isActuallyWrongLabel = Boolean(wrongLabelVal);
+                const isActuallyWrongLabel = Boolean(wrongLabelVal || e.isWrongLabel || (e as any).wrongLabelOriginal);
 
-                const existingCut = nextState.meatCuts?.find(mc => mc.containerId === container.id && isSameVariant(mc, prod.id, e.notes, e.tagIds, e.originalCutName, wrongLabelVal));
+                let resolvedWrongLabelName: string | undefined = undefined;
+                if (isActuallyWrongLabel) {
+                  if (wrongLabelVal) {
+                    const origP = nextState.products?.find((p: any) => p.id === wrongLabelVal);
+                    resolvedWrongLabelName = origP ? origP.name : wrongLabelVal;
+                  }
+                  if (!resolvedWrongLabelName && (e as any).wrongLabelOriginal) {
+                    resolvedWrongLabelName = (e as any).wrongLabelOriginal;
+                  }
+                  if (!resolvedWrongLabelName && e.originalCutName) {
+                    resolvedWrongLabelName = e.originalCutName;
+                  }
+                }
+                const finalOriginalCutName = isActuallyWrongLabel ? resolvedWrongLabelName : undefined;
+
+                const existingCut = nextState.meatCuts?.find(mc => mc.containerId === container.id && isSameVariant(mc, prod.id, e.notes, e.tagIds, finalOriginalCutName, isActuallyWrongLabel ? wrongLabelVal : undefined));
                 const piecesCount = e.pieces || 1;
 
                 if (existingCut) {
                   existingCut.quantity += piecesCount;
-                  if (isActuallyWrongLabel && !existingCut.wrongLabel) {
-                    existingCut.wrongLabel = wrongLabelVal;
+                  if (isActuallyWrongLabel) {
+                    if (!existingCut.wrongLabel && wrongLabelVal) {
+                      existingCut.wrongLabel = wrongLabelVal;
+                    }
                     existingCut.isWrongLabel = true;
-                  }
-                  if (e.originalCutName && !existingCut.originalCutName) {
-                    existingCut.originalCutName = e.originalCutName;
+                    if (!existingCut.originalCutName && finalOriginalCutName) {
+                      existingCut.originalCutName = finalOriginalCutName;
+                    }
                   }
                   const histDesc = `Added ${piecesCount}x "${prod.name}" via Staging transition (from offsite movement order: ${order.name}), new total ${existingCut.quantity}.`;
                   const history = newHistoryEntry(histDesc, existingCut.id);
@@ -7642,9 +10722,10 @@ app.post('/api/inventory/action', async (req: any, res) => {
                     containerId: container.id,
                     notes: e.notes || '',
                     tagIds: tagIds,
-                    originalCutName: e.originalCutName || undefined,
-                    wrongLabel: wrongLabelVal,
+                    originalCutName: finalOriginalCutName,
+                    wrongLabel: isActuallyWrongLabel ? wrongLabelVal : undefined,
                     isWrongLabel: isActuallyWrongLabel ? true : undefined,
+                    wrongLabelOriginal: isActuallyWrongLabel ? (resolvedWrongLabelName || undefined) : undefined,
                     serial: e.serial || undefined,
                     packDate: e.packDate || undefined,
                     weight: e.netWeight || undefined
@@ -7654,7 +10735,7 @@ app.post('/api/inventory/action', async (req: any, res) => {
                   const history = newHistoryEntry(histDesc, newMeatCut.id);
                   nextState.history = addHistory(nextState, history);
                 }
-                nextOffSiteEntries.push({ ...e, archived: true, currentLocation: undefined, moveTo: '' });
+                nextOffSiteEntries.push({ ...e, archived: true, currentLocation: undefined });
                 continue;
               }
 
@@ -7716,7 +10797,6 @@ app.post('/api/inventory/action', async (req: any, res) => {
                   pallet: targetPalletName,
                   storageLocationId: dest.locationId,
                   location: dest.locationName,
-                  moveTo: '',
                   archived: false
                 });
               } else {
@@ -7724,7 +10804,6 @@ app.post('/api/inventory/action', async (req: any, res) => {
                   ...e, 
                   currentLocation: destId, 
                   pallet: destId,
-                  moveTo: '',
                   archived: false
                 });
               }
@@ -7798,8 +10877,51 @@ app.post('/api/inventory/action', async (req: any, res) => {
             }
           }
 
-          order.status = 'completed';
-          order.executedAt = new Date().toISOString();
+          // STEP 5: Update confirmation and delivery tracking
+          const newlyExecutedIds = Array.from(targetEntryIdsToExecute);
+          const updatedConfirmedMoveEntryIds = Array.from(new Set([...(order.confirmedMoveEntryIds || []), ...newlyExecutedIds]));
+          order.confirmedMoveEntryIds = updatedConfirmedMoveEntryIds;
+
+          const updatedConfirmedPallets = new Set<string>(order.confirmedPallets || []);
+          if (order.targetDestinations) {
+            for (const dest of order.targetDestinations) {
+              const destMoves = order.moves.filter(m => (m.actualLocation || m.targetLocation) === dest.id);
+              if (destMoves.length > 0 && destMoves.every(m => updatedConfirmedMoveEntryIds.includes(m.entryId))) {
+                if (dest.palletName) updatedConfirmedPallets.add(dest.palletName);
+                updatedConfirmedPallets.add(dest.id);
+              }
+            }
+          }
+          if (palletNames && palletNames.length > 0) {
+            palletNames.forEach((p: string) => updatedConfirmedPallets.add(p));
+          }
+          order.confirmedPallets = Array.from(updatedConfirmedPallets);
+
+          // Update delivered tracking for scanner
+          const executedBoxes = new Set<string>();
+          newlyExecutedIds.forEach(id => {
+            const e = nextState.offSiteEntries?.find(x => x.id === id) || order.originalEntries?.find(x => x.id === id);
+            if (e?.box) executedBoxes.add(e.box);
+          });
+          order.deliveredItemIds = Array.from(new Set([...(order.deliveredItemIds || []), ...newlyExecutedIds]));
+          order.deliveredBoxIds = Array.from(new Set([...(order.deliveredBoxIds || []), ...Array.from(executedBoxes)]));
+
+          // Check whether all moves have now been confirmed
+          const allMovesConfirmed = order.moves.length > 0 && order.moves.every(m => updatedConfirmedMoveEntryIds.includes(m.entryId));
+
+          if (allMovesConfirmed || !isPartialExecution) {
+            order.status = 'completed';
+            order.executedAt = order.executedAt || new Date().toISOString();
+            const histDesc = `Executed and completed all movements for order "${order.name}".`;
+            const hist = newHistoryEntry(histDesc, 'movement-completed');
+            nextState.history = addHistory(nextState, hist);
+          } else {
+            order.status = 'finalized';
+            const histDesc = `Confirmed pallet/drop-off for order "${order.name}" (${newlyExecutedIds.length} cuts processed, ${order.moves.length - updatedConfirmedMoveEntryIds.length} remaining).`;
+            const hist = newHistoryEntry(histDesc, 'movement-partial');
+            nextState.history = addHistory(nextState, hist);
+          }
+
           nextState.movementOrders = orders.map(o => o.id === order.id ? order : o);
         }
         break;
@@ -7807,7 +10929,47 @@ app.post('/api/inventory/action', async (req: any, res) => {
       case 'REVERT_MOVEMENT_ORDER': {
         const orders = nextState.movementOrders || [];
         const order = orders.find(o => o.id === action.payload.id);
-        if (order && order.status === 'completed' && nextState.offSiteEntries) {
+        if (order && (order.status === 'completed' || order.status === 'finalized') && nextState.offSiteEntries) {
+          const { palletNames, destinationIds, entryIds } = (action.payload || {}) as any;
+          const isPartialRevert = !!(
+            (palletNames && palletNames.length > 0) ||
+            (destinationIds && destinationIds.length > 0) ||
+            (entryIds && entryIds.length > 0)
+          );
+
+          // Determine which entries to revert
+          const confirmedIds = new Set<string>(order.confirmedMoveEntryIds || (order.moves || []).map(m => m.entryId));
+          let targetEntryIdsToRevert = new Set<string>();
+
+          if (entryIds && entryIds.length > 0) {
+            entryIds.forEach((id: string) => {
+              if (confirmedIds.has(id)) targetEntryIdsToRevert.add(id);
+            });
+          } else if (destinationIds && destinationIds.length > 0) {
+            const destIdSet = new Set(destinationIds);
+            order.moves.forEach(m => {
+              const dId = m.actualLocation || m.targetLocation;
+              if (destIdSet.has(dId) && confirmedIds.has(m.entryId)) {
+                targetEntryIdsToRevert.add(m.entryId);
+              }
+            });
+          } else if (palletNames && palletNames.length > 0) {
+            const palletLowerSet = new Set(palletNames.map((p: string) => (p || '').trim().toLowerCase()));
+            order.moves.forEach(m => {
+              const dId = m.actualLocation || m.targetLocation;
+              const dest = order.targetDestinations?.find(d => d.id === dId);
+              const pName = (dest?.palletName || '').trim().toLowerCase();
+              const entry = nextState.offSiteEntries?.find(e => e.id === m.entryId) || order.originalEntries?.find(e => e.id === m.entryId);
+              const sourcePallet = (entry?.currentLocation || entry?.pallet || '').trim().toLowerCase();
+              if ((palletLowerSet.has(pName) || palletLowerSet.has(sourcePallet)) && confirmedIds.has(m.entryId)) {
+                targetEntryIdsToRevert.add(m.entryId);
+              }
+            });
+          } else {
+            // Full revert: revert all confirmed moves
+            confirmedIds.forEach(id => targetEntryIdsToRevert.add(id));
+          }
+
           const originalBoxNames = new Set<string>();
 
           if (order.originalEntries && order.originalEntries.length > 0) {
@@ -7820,7 +10982,9 @@ app.post('/api/inventory/action', async (req: any, res) => {
               }
             }
 
-            for (const e of originalEntries) {
+            const entriesToRevert = originalEntries.filter(oe => targetEntryIdsToRevert.has(oe.id));
+
+            for (const e of entriesToRevert) {
               const move = order.moves.find(m => m.entryId === e.id);
               if (move) {
                 const destId = move.actualLocation || move.targetLocation;
@@ -7862,7 +11026,22 @@ app.post('/api/inventory/action', async (req: any, res) => {
                     );
                     if (prod) {
                       const wrongLabelVal = (e.wrongLabel && typeof e.wrongLabel === 'string' && e.wrongLabel.trim()) ? e.wrongLabel.trim() : undefined;
-                      const existingCut = nextState.meatCuts?.find(mc => mc.containerId === container.id && isSameVariant(mc, prod.id, e.notes, e.tagIds, e.originalCutName, wrongLabelVal));
+                      const isActuallyWrongLabel = Boolean(wrongLabelVal || e.isWrongLabel || (e as any).wrongLabelOriginal);
+                      let resolvedWrongLabelName: string | undefined = undefined;
+                      if (isActuallyWrongLabel) {
+                        if (wrongLabelVal) {
+                          const origP = nextState.products?.find((p: any) => p.id === wrongLabelVal);
+                          resolvedWrongLabelName = origP ? origP.name : wrongLabelVal;
+                        }
+                        if (!resolvedWrongLabelName && (e as any).wrongLabelOriginal) {
+                          resolvedWrongLabelName = (e as any).wrongLabelOriginal;
+                        }
+                        if (!resolvedWrongLabelName && e.originalCutName) {
+                          resolvedWrongLabelName = e.originalCutName;
+                        }
+                      }
+                      const finalOriginalCutName = isActuallyWrongLabel ? resolvedWrongLabelName : undefined;
+                      const existingCut = nextState.meatCuts?.find(mc => mc.containerId === container.id && isSameVariant(mc, prod.id, e.notes, e.tagIds, finalOriginalCutName, isActuallyWrongLabel ? wrongLabelVal : undefined));
                       if (existingCut) {
                         existingCut.quantity -= e.pieces || 1;
                         if (existingCut.quantity <= 0) {
@@ -7885,6 +11064,7 @@ app.post('/api/inventory/action', async (req: any, res) => {
           }
 
           nextState.offSiteEntries = nextState.offSiteEntries.map(e => {
+            if (!targetEntryIdsToRevert.has(e.id)) return e;
             const move = order.moves.find(m => m.entryId === e.id);
             const currentBox = (e.box || '').trim();
             let restoredBox = e.box;
@@ -7931,7 +11111,6 @@ app.post('/api/inventory/action', async (req: any, res) => {
                 pallet: origEntry ? origEntry.pallet : e.pallet,
                 storageLocationId: origEntry ? origEntry.storageLocationId : e.storageLocationId,
                 location: origEntry ? origEntry.location : e.location,
-                moveTo: '',
                 archived: origEntry ? !!origEntry.archived : false
               };
             }
@@ -7942,13 +11121,41 @@ app.post('/api/inventory/action', async (req: any, res) => {
             return e;
           });
 
-          order.status = 'finalized';
-          delete order.executedAt;
-          delete order.originalEntries;
-          order.moves = order.moves.map(m => {
-            const { originalLocation, originalCurrentLocation, ...rest } = m;
-            return rest;
-          });
+          // Update confirmed sets after revert
+          const remainingConfirmedIds = (order.confirmedMoveEntryIds || []).filter(id => !targetEntryIdsToRevert.has(id));
+          order.confirmedMoveEntryIds = remainingConfirmedIds;
+
+          // Re-calculate confirmed pallets
+          const remainingConfirmedPallets: string[] = [];
+          if (order.targetDestinations) {
+            for (const dest of order.targetDestinations) {
+              const destMoves = order.moves.filter(m => (m.actualLocation || m.targetLocation) === dest.id);
+              if (destMoves.length > 0 && destMoves.every(m => remainingConfirmedIds.includes(m.entryId))) {
+                if (dest.palletName) remainingConfirmedPallets.push(dest.palletName);
+                remainingConfirmedPallets.push(dest.id);
+              }
+            }
+          }
+          order.confirmedPallets = remainingConfirmedPallets;
+
+          if (!isPartialRevert || remainingConfirmedIds.length === 0) {
+            order.status = 'finalized';
+            delete order.executedAt;
+            delete order.originalEntries;
+            order.confirmedPallets = [];
+            order.confirmedMoveEntryIds = [];
+            order.moves = order.moves.map(m => {
+              const { originalLocation, originalCurrentLocation, ...rest } = m;
+              return rest;
+            });
+          } else {
+            order.status = 'finalized';
+          }
+
+          const histDesc = `Reverted movement execution for order "${order.name}" (${targetEntryIdsToRevert.size} cuts restored).`;
+          const hist = newHistoryEntry(histDesc, 'movement-revert');
+          nextState.history = addHistory(nextState, hist);
+
           nextState.movementOrders = orders.map(o => o.id === order.id ? order : o);
         }
         break;
@@ -8221,7 +11428,7 @@ app.post('/api/inventory/action', async (req: any, res) => {
         nextState.locations = updatedLocs.map(l => l.id === locationId ? { ...l, ...forcedUpdates } : l);
         const editedLocName = locs.find(l => l.id === locationId)?.name || 'Unknown Location';
         const auditDesc = `Location "${editedLocName}" was updated.`;
-        nextState.history = addHistory(nextState, locationId ? newHistoryEntry(auditDesc, locationId) : { id: crypto.randomUUID(), timestamp: new Date().toISOString(), description: auditDesc, targetId: 'location' });
+        nextState.history = addHistory(nextState, newHistoryEntry(auditDesc, locationId || 'location'));
         break;
       }
       case 'DELETE_LOCATION': {
@@ -8230,7 +11437,7 @@ app.post('/api/inventory/action', async (req: any, res) => {
         const deletedLocName = locs.find(l => l.id === locationId)?.name || 'Unknown Location';
         nextState.locations = locs.filter(l => l.id !== locationId);
         const auditDesc = `Location "${deletedLocName}" was permanently deleted.`;
-        nextState.history = addHistory(nextState, locationId ? newHistoryEntry(auditDesc, locationId) : { id: crypto.randomUUID(), timestamp: new Date().toISOString(), description: auditDesc, targetId: 'location' });
+        nextState.history = addHistory(nextState, newHistoryEntry(auditDesc, locationId || 'location'));
         break;
       }
       case 'SET_HOME_LOCATION': {
@@ -8242,53 +11449,46 @@ app.post('/api/inventory/action', async (req: any, res) => {
           isHome: l.id === locationId
         }));
         const auditDesc = `Location "${newHomeLocName}" is now set as the primary Home/On-Site location.`;
-        nextState.history = addHistory(nextState, locationId ? newHistoryEntry(auditDesc, locationId) : { id: crypto.randomUUID(), timestamp: new Date().toISOString(), description: auditDesc, targetId: 'location' });
+        nextState.history = addHistory(nextState, newHistoryEntry(auditDesc, locationId || 'location'));
         break;
       }
       case 'REPLACE_STATE': {
         nextState = { ...action.payload };
         break;
       }
-      case 'PURGE_HISTORY': {
-        const { olderThanDays, keepMax, clearAll } = action.payload || {};
-        const initialCount = (nextState.history || []).length;
-        if (clearAll) {
-          nextState.history = [
-            {
-              id: crypto.randomUUID(),
-              timestamp: new Date().toISOString(),
-              description: `Cleared all ${initialCount} historical audit entries.`,
-              targetId: 'history-maintenance',
-              user: String(ingressUser)
-            }
-          ];
-        } else if (typeof olderThanDays === 'number' && olderThanDays > 0) {
-          const cutoff = Date.now() - (olderThanDays * 86400 * 1000);
-          const kept = (nextState.history || []).filter(h => {
-            const t = new Date(h.timestamp).getTime();
-            return !isNaN(t) && t >= cutoff;
+      case 'UNDO': {
+        const { snapshotId, historyId } = action.payload || {};
+        const undoResult = await executeUndoInternal({
+          snapshotId,
+          historyId,
+          user: String(ingressUser || 'User'),
+          clientDevice: clientMeta.clientDevice,
+          clientInfo: clientMeta.clientInfo
+        });
+        if (!undoResult.success) {
+          return res.status(undoResult.notFound ? 404 : 400).json({
+            error: undoResult.error || 'No undoable action found in memory history.'
           });
-          const removed = initialCount - kept.length;
+        }
+        return res.json(undoResult.state);
+      }
+      case 'PURGE_HISTORY': {
+        const { olderThanDays } = action.payload || {};
+        // Enforce multi-year threshold (minimum 365 days / 1 year)
+        // CRITICAL RULE: History is preserved while a package is in the system.
+        // It is only purged when the package has been departed/out of custody for > olderThanDays.
+        if (typeof olderThanDays === 'number' && olderThanDays >= 365) {
+          const retentionResult = calculateHistoryRetention(nextState.history || [], nextState, olderThanDays);
           const auditEntry = {
             id: crypto.randomUUID(),
             timestamp: new Date().toISOString(),
-            description: `Purged ${removed} audit entries older than ${olderThanDays} days (${kept.length} entries remaining).`,
+            description: `Archived & purged ${retentionResult.purgedCount} historical audit entries for packages/records departed >${olderThanDays} days (${retentionResult.keptCount} entries retained; active packages in system protected 100%).`,
             targetId: 'history-maintenance',
-            user: String(ingressUser)
+            user: String(ingressUser),
+            clientDevice: clientMeta.clientDevice,
+            clientInfo: clientMeta.clientInfo
           };
-          nextState.history = [auditEntry, ...kept];
-        } else if (typeof keepMax === 'number' && keepMax > 0) {
-          const sorted = [...(nextState.history || [])].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-          const trimmed = sorted.slice(0, keepMax);
-          const removed = initialCount - trimmed.length;
-          const auditEntry = {
-            id: crypto.randomUUID(),
-            timestamp: new Date().toISOString(),
-            description: `Purged ${removed} older audit entries (retained top ${keepMax} most recent entries).`,
-            targetId: 'history-maintenance',
-            user: String(ingressUser)
-          };
-          nextState.history = [auditEntry, ...trimmed];
+          nextState.history = [auditEntry, ...retentionResult.toKeep];
         }
         break;
       }
@@ -8296,15 +11496,85 @@ app.post('/api/inventory/action', async (req: any, res) => {
         return res.status(400).json({ error: 'Unsupported action type.' });
     }
 
-    // Save state back to active storage (MySQL or local fallback)
-    await saveState(nextState);
+    // Ensure new audit log entry has clientDevice and clientInfo if not already populated
+    if (action.type !== 'REPLACE_STATE' && action.type !== 'UNDO') {
+      const newHistory = nextState.history?.[0];
+      if (newHistory) {
+        if (!newHistory.clientDevice) {
+          newHistory.clientDevice = clientMeta.clientDevice;
+        }
+        if (!newHistory.clientInfo) {
+          newHistory.clientInfo = clientMeta.clientInfo;
+        }
+      }
+    }
 
-    // Broadcast change to other active restockers in real-time
-    notifyInventoryUpdate();
+    // Enrich new audit log entry with undo reconstruction data if not already set
+    if (action.type !== 'REPLACE_STATE' && action.type !== 'UNDO' && action.type !== 'PURGE_HISTORY') {
+      const newHistory = nextState.history?.[0];
+      if (newHistory && !newHistory.undoData) {
+        if (action.type === 'UPDATE_MEAT_QUANTITY') {
+          const priorCut = (state.meatCuts || []).find((c: any) => c.id === action.payload?.meatCutId);
+          if (priorCut) {
+            newHistory.undoData = {
+              type: 'RESTORE_MEAT_CUT_QUANTITY',
+              meatCutId: priorCut.id,
+              previousQuantity: priorCut.quantity,
+              productId: priorCut.productId,
+              containerId: priorCut.containerId,
+              notes: priorCut.notes,
+              tagIds: priorCut.tagIds,
+              originalCutName: priorCut.originalCutName
+            };
+          }
+        } else if (action.type === 'MOVE_CONTAINER') {
+          const priorContainer = (state.containers || []).find((c: any) => c.id === action.payload?.containerId);
+          if (priorContainer) {
+            newHistory.undoData = {
+              type: 'RESTORE_MOVE_CONTAINER',
+              containerId: priorContainer.id,
+              previousFreezerId: priorContainer.freezerId
+            };
+          }
+        } else if (action.type === 'EDIT_CONTAINER') {
+          const priorContainer = (state.containers || []).find((c: any) => c.id === action.payload?.id);
+          if (priorContainer) {
+            newHistory.undoData = {
+              type: 'RESTORE_CONTAINER',
+              previousContainer: { ...priorContainer }
+            };
+          }
+        } else if (action.type === 'EDIT_PRODUCT') {
+          const priorProduct = (state.products || []).find((p: any) => p.id === action.payload?.productId);
+          if (priorProduct) {
+            newHistory.undoData = {
+              type: 'RESTORE_PRODUCT',
+              previousProduct: { ...priorProduct }
+            };
+          }
+        } else if (action.type === 'DELETE_CONTAINER') {
+          const priorContainer = (state.containers || []).find((c: any) => c.id === action.payload?.containerId);
+          if (priorContainer) {
+            newHistory.undoData = {
+              type: 'RESTORE_DELETED_CONTAINER',
+              container: { ...priorContainer }
+            };
+          }
+        }
+      }
+    }
 
-    // Return the updated state loaded fresh from database to ensure absolute consistency
-    const finalState = await loadState();
-    res.json(finalState);
+    // Determine targeted tables for fast SQLite delta sync
+    const affectedTables = getAffectedTablesForAction(action.type);
+    const latestHistoryRecord = nextState.history?.[0];
+    await saveState(nextState, affectedTables, latestHistoryRecord);
+
+    // Broadcast change to other active restockers in real-time (exclude sender to prevent double-refresh race conditions)
+    notifyInventoryUpdate(clientId);
+
+    // Return the updated state directly to avoid unnecessary disk re-reads and ensure instant response
+    (nextState as any)._affectedTables = affectedTables;
+    res.json(nextState);
 
   } catch (err: any) {
     console.error('Error applying inventory action backend:', err);

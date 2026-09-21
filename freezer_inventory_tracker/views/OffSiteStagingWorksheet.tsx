@@ -1329,12 +1329,15 @@ export const OffSiteStagingWorksheet: React.FC<OffSiteStagingWorksheetProps> = (
 
       {/* --- RENDER STANDARD FLAT LIST LAYOUT --- */}
       {viewMode === 'list' && (
-        <div className="bg-cool-gray-900/80 rounded-2xl border border-cool-gray-800 shadow-xl overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full border-collapse text-left">
-              <thead>
-                <tr className="bg-cool-gray-850/50 border-b border-cool-gray-800 text-[10px] sm:text-xs font-bold text-cool-gray-400 uppercase tracking-wider">
-                  <th className="py-4 px-4 w-10">
+        <div className="bg-cool-gray-900/80 rounded-2xl border border-cool-gray-800 shadow-xl">
+          <div className="min-h-[480px]">
+            <table className="w-full border-separate border-spacing-0 text-left">
+              <thead className="bg-cool-gray-850">
+                <tr className="bg-cool-gray-850 border-b border-cool-gray-800 text-[10px] sm:text-xs font-bold text-cool-gray-400 uppercase tracking-wider">
+                  <th 
+                    className="sticky bg-cool-gray-850 z-20 border-b border-cool-gray-800 py-4 px-4 w-10 first:rounded-tl-2xl last:rounded-tr-2xl"
+                    style={{ top: 'var(--header-height, 68px)' }}
+                  >
                     <button
                       type="button"
                       onClick={() => handleToggleSelectAll(selectedIds.size < items.length)}
@@ -1349,15 +1352,60 @@ export const OffSiteStagingWorksheet: React.FC<OffSiteStagingWorksheetProps> = (
                       )}
                     </button>
                   </th>
-                  <th className="py-4 px-3">Cut / Product</th>
-                  <th className="py-4 px-3 w-40">Tags</th>
-                  <th className="py-4 px-3 w-28">Pieces (Qty)</th>
-                  <th className="py-4 px-3 w-28">Weight (lbs)</th>
-                  <th className="py-4 px-3 w-44">Destination Location</th>
-                  <th className="py-4 px-3 w-44">Pallet</th>
-                  <th className="py-4 px-3 w-36">Box Name</th>
-                  <th className="py-4 px-3 min-w-[140px]">Notes</th>
-                  <th className="py-4 px-4 sm:px-6 text-right w-36">Projected Serial</th>
+                  <th 
+                    className="sticky bg-cool-gray-800 z-20 border-b border-cool-gray-800 py-4 px-3 first:rounded-tl-2xl last:rounded-tr-2xl"
+                    style={{ top: 'var(--header-height, 68px)' }}
+                  >
+                    Cut / Product
+                  </th>
+                  <th 
+                    className="sticky bg-cool-gray-800 z-20 border-b border-cool-gray-800 py-4 px-3 w-40 first:rounded-tl-2xl last:rounded-tr-2xl"
+                    style={{ top: 'var(--header-height, 68px)' }}
+                  >
+                    Tags
+                  </th>
+                  <th 
+                    className="sticky bg-cool-gray-800 z-20 border-b border-cool-gray-800 py-4 px-3 w-28 first:rounded-tl-2xl last:rounded-tr-2xl"
+                    style={{ top: 'var(--header-height, 68px)' }}
+                  >
+                    Pieces (Qty)
+                  </th>
+                  <th 
+                    className="sticky bg-cool-gray-800 z-20 border-b border-cool-gray-800 py-4 px-3 w-28 first:rounded-tl-2xl last:rounded-tr-2xl"
+                    style={{ top: 'var(--header-height, 68px)' }}
+                  >
+                    Weight (lbs)
+                  </th>
+                  <th 
+                    className="sticky bg-cool-gray-800 z-20 border-b border-cool-gray-800 py-4 px-3 w-44 first:rounded-tl-2xl last:rounded-tr-2xl"
+                    style={{ top: 'var(--header-height, 68px)' }}
+                  >
+                    Destination Location
+                  </th>
+                  <th 
+                    className="sticky bg-cool-gray-800 z-20 border-b border-cool-gray-800 py-4 px-3 w-44 first:rounded-tl-2xl last:rounded-tr-2xl"
+                    style={{ top: 'var(--header-height, 68px)' }}
+                  >
+                    Pallet
+                  </th>
+                  <th 
+                    className="sticky bg-cool-gray-800 z-20 border-b border-cool-gray-800 py-4 px-3 w-36 first:rounded-tl-2xl last:rounded-tr-2xl"
+                    style={{ top: 'var(--header-height, 68px)' }}
+                  >
+                    Box Name
+                  </th>
+                  <th 
+                    className="sticky bg-cool-gray-800 z-20 border-b border-cool-gray-800 py-4 px-3 min-w-[140px] first:rounded-tl-2xl last:rounded-tr-2xl"
+                    style={{ top: 'var(--header-height, 68px)' }}
+                  >
+                    Notes
+                  </th>
+                  <th 
+                    className="sticky bg-cool-gray-800 z-20 border-b border-cool-gray-800 py-4 px-4 sm:px-6 text-right w-36 first:rounded-tl-2xl last:rounded-tr-2xl"
+                    style={{ top: 'var(--header-height, 68px)' }}
+                  >
+                    Projected Serial
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-cool-gray-800/60 text-xs sm:text-sm">

@@ -12,9 +12,11 @@
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",
+    "@types/compression": "^1.8.1",
     "adm-zip": "^0.5.17",
     "autoprefixer": "^10.4.20",
     "better-sqlite3": "^12.11.1",
+    "compression": "^1.8.2",
     "html5-qrcode": "^2.3.8",
     "jsbarcode": "^3.12.3",
     "jszip": "^3.10.1",

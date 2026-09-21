@@ -5,6 +5,7 @@ import { ButcherOrder, ButcherRecord, AppLocation, Product, ButcherOrderDocument
 import { SearchableProductSelect } from './OffSiteStorageView';
 import { ManagementForms } from '../components/ManagementForms';
 import { ButcherSpreadsheetView } from './ButcherSpreadsheetView';
+import { ManualButcherEntryModal, ManualCutItem } from '../components/ManualButcherEntryModal';
 
 const MultiSelectDropdown = ({ 
   options, 
@@ -379,6 +380,8 @@ export const ButcherRecordsView = ({ state, dispatch }) => {
   const [search, setSearch] = useState('');
   const [expandedOrder, setExpandedOrder] = useState<string | null>(null);
   const [editingOrder, setEditingOrder] = useState<ButcherOrder | null>(null);
+  const [isManualEntryOpen, setIsManualEntryOpen] = useState(false);
+  const [manualEntryTargetOrder, setManualEntryTargetOrder] = useState<ButcherOrder | null>(null);
   
   // Report filters
   const [reportFilter, setReportFilter] = useState({
@@ -662,6 +665,22 @@ export const ButcherRecordsView = ({ state, dispatch }) => {
   const activeTargetLocationId = importForm.targetLocationId || importForm.locationId || '';
   const activeTargetLocation = locations.find(l => l.id === activeTargetLocationId);
   const activeTargetLocationName = activeTargetLocation?.name || '';
+
+  const handleAddManualCutsToImportForm = (cuts: ManualCutItem[]) => {
+    const converted = cuts.map(c => ({
+      serial: c.serial,
+      originalCutName: c.originalCutName,
+      packDate: c.packDate,
+      lot: c.lot,
+      pieces: c.pieces,
+      netWeight: c.netWeight,
+      box: c.box,
+      pallet: importForm.targetPallet || '',
+      location: activeTargetLocationName || ''
+    }));
+    setParsedRecords(prev => [...prev, ...converted]);
+    setActiveTab('import');
+  };
 
   // Active pallets scoped strictly to the selected destination, along with a cross-location mapping for conflict prevention
   const { existingActivePalletsForDestination, palletLocationMap } = useMemo(() => {
@@ -1014,6 +1033,7 @@ export const ButcherRecordsView = ({ state, dispatch }) => {
       }
       
       const targetLocName = importForm.targetLocationId ? (locations.find(l => l.id === importForm.targetLocationId)?.name || '') : '';
+      const defaultTags = matchedProduct?.defaultTagIds || [];
 
       return {
         id: crypto.randomUUID(),
@@ -1031,7 +1051,8 @@ export const ButcherRecordsView = ({ state, dispatch }) => {
           : (r.box || ''),
         importedToOffSite: importForm.importToOffSite,
         pallet: r.pallet || importForm.targetPallet || '',
-        location: r.location || targetLocName || ''
+        location: r.location || targetLocName || '',
+        tagIds: (r.tagIds && r.tagIds.length > 0) ? r.tagIds : [...defaultTags]
       };
     });
 
@@ -1096,7 +1117,12 @@ export const ButcherRecordsView = ({ state, dispatch }) => {
             const newNumbers = [...(existingProduct.productNumbers || []), uncut.itemNumber];
             await dispatch({ type: 'EDIT_PRODUCT', payload: { productId: existingProduct.id, updates: { productNumbers: newNumbers } } });
           }
-          finalRecords = finalRecords.map(r => r.originalCutName.trim() === uncut.rawCut ? { ...r, normalizedCutName: existingProduct.name, productId: existingProduct.id } : r);
+          finalRecords = finalRecords.map(r => r.originalCutName.trim() === uncut.rawCut ? { 
+            ...r, 
+            normalizedCutName: existingProduct.name, 
+            productId: existingProduct.id,
+            tagIds: (r.tagIds && r.tagIds.length > 0) ? r.tagIds : [...(existingProduct.defaultTagIds || [])]
+          } : r);
         }
       }
     }
@@ -1364,6 +1390,20 @@ export const ButcherRecordsView = ({ state, dispatch }) => {
                             </div>
                             
                             <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setManualEntryTargetOrder(order);
+                                  setIsManualEntryOpen(true);
+                                }}
+                                className="flex items-center gap-1.5 px-3 py-1.5 bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 border border-cyan-500/30 rounded-xl text-xs font-bold transition cursor-pointer shadow-sm hover:scale-[1.02] active:scale-[0.98]"
+                                title={`Manually enter cuts, weights, and serial numbers for Order #${order.orderNumber}`}
+                              >
+                                <Plus size={15} />
+                                <span>Add Items Manually</span>
+                              </button>
+
                               <button
                                 type="button"
                                 onClick={(e) => {
@@ -1663,11 +1703,32 @@ export const ButcherRecordsView = ({ state, dispatch }) => {
                                 
                                 <div className="space-y-2 max-h-[300px] overflow-y-auto pr-1">
                                   {breakdown.length === 0 ? (
-                                    <div className="text-center py-6 px-4 bg-cool-gray-900 border border-cool-gray-800 rounded-xl space-y-2">
+                                    <div className="text-center py-6 px-4 bg-cool-gray-900 border border-cool-gray-800 rounded-xl space-y-3">
                                       <p className="text-xs font-bold text-amber-400">No cut records uploaded yet</p>
-                                      <p className="text-[11px] text-cool-gray-400">
-                                        This drop-off order was started without a CSV. You can upload cuts anytime by clicking the <strong>Upload Cutsheet CSV</strong> button above.
+                                      <p className="text-[11px] text-cool-gray-400 max-w-md mx-auto">
+                                        This drop-off order was started without cuts. You can add cuts manually or upload a butcher CSV cutsheet anytime.
                                       </p>
+                                      <div className="flex items-center justify-center gap-2 pt-1 flex-wrap">
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setManualEntryTargetOrder(order);
+                                            setIsManualEntryOpen(true);
+                                          }}
+                                          className="px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-sm"
+                                        >
+                                          <Plus size={14} />
+                                          Add Cuts Manually
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleStartReceiveMoreCuts(order)}
+                                          className="px-3 py-1.5 bg-cool-gray-800 hover:bg-cool-gray-700 text-cool-gray-200 border border-cool-gray-700 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
+                                        >
+                                          <Upload size={14} />
+                                          Upload Cutsheet CSV
+                                        </button>
+                                      </div>
                                     </div>
                                   ) : (
                                     breakdown.map(cut => {
@@ -1958,12 +2019,38 @@ export const ButcherRecordsView = ({ state, dispatch }) => {
                       onChange={handleFileUpload} 
                     />
                   </label>
+
+                  {/* Manual Entry alternative option */}
+                  <div className="flex items-center justify-between p-3.5 bg-gradient-to-r from-cool-gray-850 to-cool-gray-900 border border-cool-gray-750 rounded-xl shadow-xs">
+                    <div className="space-y-0.5 pr-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-bold text-white">Different butcher without a CSV?</span>
+                        <span className="text-[10px] bg-cyan-950 text-cyan-300 border border-cyan-800/80 px-2 py-0.5 rounded font-bold uppercase">Manual</span>
+                      </div>
+                      <p className="text-[11px] text-cool-gray-400">
+                        Use the interactive form to select cuts, enter individual or bulk weights, and assign serials.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const existing = targetOrderId ? orders.find(o => o.id === targetOrderId) || null : null;
+                        setManualEntryTargetOrder(existing);
+                        setIsManualEntryOpen(true);
+                      }}
+                      className="px-3.5 py-2 bg-cyan-600 hover:bg-cyan-500 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-sm shrink-0 active:scale-95"
+                    >
+                      <Plus size={15} />
+                      <span>Enter Cuts Manually</span>
+                    </button>
+                  </div>
+
                   {parsedRecords.length > 0 && (
                     <div className="p-3 bg-emerald-950/40 border border-emerald-800/50 rounded-xl text-xs text-emerald-300 font-semibold space-y-1.5">
                       <div className="flex items-center justify-between">
                         <span className="flex items-center gap-1.5 font-bold">
                           <CheckCircle2 size={15} className="text-emerald-400 shrink-0" />
-                          Parsed {parsedRecords.length} cuts from CSV
+                          Ready for Intake: {parsedRecords.length} cuts
                         </span>
                         {targetOrderId && targetOrderStats && (
                           <span className="bg-emerald-900/70 border border-emerald-700/60 px-2 py-0.5 rounded text-[11px] font-mono font-bold text-emerald-200">
@@ -3978,20 +4065,34 @@ export const ButcherRecordsView = ({ state, dispatch }) => {
                   </div>
                 </div>
 
-                <div className="mt-6 flex justify-end gap-3 pt-4 border-t border-cool-gray-750">
+                <div className="mt-6 flex justify-between items-center gap-3 pt-4 border-t border-cool-gray-750">
                   <button 
                     type="button"
-                    onClick={() => setEditingOrder(null)}
-                    className="px-4 py-2 bg-cool-gray-700 hover:bg-cool-gray-600 text-white rounded-lg text-sm font-bold transition"
+                    onClick={() => {
+                      setManualEntryTargetOrder(editingOrder);
+                      setIsManualEntryOpen(true);
+                    }}
+                    className="px-3 py-2 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
+                    title="Open manual cut entry for this order"
                   >
-                    Cancel
+                    <Plus size={14} />
+                    Add Cuts Manually
                   </button>
-                  <button 
-                    type="submit"
-                    className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg text-sm font-bold transition"
-                  >
-                    Save Changes
-                  </button>
+                  <div className="flex gap-2">
+                    <button 
+                      type="button"
+                      onClick={() => setEditingOrder(null)}
+                      className="px-4 py-2 bg-cool-gray-700 hover:bg-cool-gray-600 text-white rounded-lg text-sm font-bold transition"
+                    >
+                      Cancel
+                    </button>
+                    <button 
+                      type="submit"
+                      className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg text-sm font-bold transition"
+                    >
+                      Save Changes
+                    </button>
+                  </div>
                 </div>
               </form>
             </div>
@@ -4030,6 +4131,20 @@ export const ButcherRecordsView = ({ state, dispatch }) => {
               </div>
             </div>
           </div>
+        )}
+
+        {/* Manual Butcher Item Entry Modal */}
+        {isManualEntryOpen && (
+          <ManualButcherEntryModal
+            state={state}
+            dispatch={dispatch}
+            initialOrder={manualEntryTargetOrder}
+            onClose={() => {
+              setIsManualEntryOpen(false);
+              setManualEntryTargetOrder(null);
+            }}
+            onAddToImportForm={handleAddManualCutsToImportForm}
+          />
         )}
       </div>
     </div>

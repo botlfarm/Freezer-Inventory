@@ -1,67 +1,325 @@
 import React, { useState, useMemo, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { Search, ChevronDown, ChevronRight, PackageOpen, ArrowRightCircle, Trash2, Edit3, X, Filter, Plus, PlusCircle, FileText, Flag, Tag, Download, Eye, EyeOff, AlertTriangle, RotateCcw } from 'lucide-react';
 import { Tag as AppTag, CustomList, Action } from '../types';
 import { compareBoxLabels } from '../utils/boxSort';
 import { SearchableProductSelect } from '../components/SearchableProductSelect';
 
-const NestedCategoryMultiSelect = ({ 
+export const OffsiteCategoryFilterModal = ({
   primaryOptions,
-  subOptions, 
+  subOptions,
   selectedPrimary,
   selectedSub,
   onChange,
-  placeholder
+  onClose
 }: {
-  primaryOptions: string[],
-  subOptions: Record<string, string[]>,
-  selectedPrimary: string[],
-  selectedSub: string[],
-  onChange: (primary: string[], sub: string[]) => void,
-  placeholder: string
+  primaryOptions: string[];
+  subOptions: Record<string, string[]>;
+  selectedPrimary: Set<string>;
+  selectedSub: Set<string>;
+  onChange: (primary: Set<string>, sub: Set<string>) => void;
+  onClose: () => void;
 }) => {
-  const [isOpen, setIsOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  // Expanded by default across all categories
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+
+  // Filter primary options and sub options based on search query
+  const filteredPrimary = useMemo(() => {
+    if (!search.trim()) return primaryOptions;
+    const q = search.toLowerCase();
+    return primaryOptions.filter(p => {
+      if (p.toLowerCase().includes(q)) return true;
+      const subs = subOptions[p] || [];
+      return subs.some(s => s.toLowerCase().includes(q));
+    });
+  }, [primaryOptions, subOptions, search]);
+
+  const totalSubsCount = useMemo(() => {
+    return Object.values(subOptions).reduce((acc, list) => acc + list.length, 0);
+  }, [subOptions]);
+
+  const activeCount = selectedPrimary.size + selectedSub.size;
+
+  const toggleCollapse = (p: string) => {
+    setCollapsed(prev => {
+      const next = new Set(prev);
+      if (next.has(p)) next.delete(p);
+      else next.add(p);
+      return next;
+    });
+  };
+
+  const expandAll = () => setCollapsed(new Set());
+  const collapseAll = () => setCollapsed(new Set(primaryOptions));
+
+  const handleSelectAll = () => {
+    const allP = new Set(primaryOptions);
+    const allS = new Set<string>();
+    Object.values(subOptions).forEach(list => list.forEach(s => allS.add(s)));
+    onChange(allP, allS);
+  };
+
+  const handleClear = () => {
+    onChange(new Set(), new Set());
+  };
+
+  const handleTogglePrimary = (p: string) => {
+    const nextP = new Set(selectedPrimary);
+    const nextS = new Set(selectedSub);
+    const subs = subOptions[p] || [];
+
+    const checkedSubs = subs.filter(s => nextS.has(s));
+    const isCurrentlyChecked = nextP.has(p) || (subs.length > 0 && checkedSubs.length === subs.length);
+    const isPartiallyChecked = !isCurrentlyChecked && checkedSubs.length > 0;
+
+    if (isCurrentlyChecked || isPartiallyChecked) {
+      // Uncheck parent and all its children
+      nextP.delete(p);
+      subs.forEach(s => nextS.delete(s));
+    } else {
+      // Check parent and all its children
+      nextP.add(p);
+      subs.forEach(s => nextS.add(s));
+    }
+
+    onChange(nextP, nextS);
+  };
+
+  const handleToggleSub = (p: string, s: string) => {
+    const nextP = new Set(selectedPrimary);
+    const nextS = new Set(selectedSub);
+    const subs = subOptions[p] || [];
+
+    if (nextS.has(s)) {
+      nextS.delete(s);
+      const remainingSubsInParent = subs.some(sub => sub !== s && nextS.has(sub));
+      if (!remainingSubsInParent) {
+        nextP.delete(p);
+      }
+    } else {
+      nextS.add(s);
+      nextP.add(p);
+    }
+
+    onChange(nextP, nextS);
+  };
 
   return (
-    <div className="relative" onClick={(e) => e.stopPropagation()}>
+    <>
+      <div className="fixed inset-0 z-[120] bg-black/60 backdrop-blur-xs" onClick={(e) => { e.stopPropagation(); onClose(); }}></div>
       <div 
-        className="w-full bg-cool-gray-900 border border-cool-gray-700 rounded-lg px-3 py-2 text-white cursor-pointer flex justify-between items-center"
-        onClick={() => setIsOpen(!isOpen)}
+        id="offsite-column-filter-primaryCategory"
+        className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-cool-gray-800 border border-cool-gray-700 rounded-2xl p-4 z-[130] shadow-2xl w-80 sm:w-96 md:w-[480px] max-w-[95vw] max-h-[85vh] space-y-3 flex flex-col text-left font-normal animate-scale-up"
+        onClick={(e) => e.stopPropagation()}
       >
-        <span className="truncate text-sm">
-          {selectedPrimary.length > 0 || selectedSub.length > 0 ? `${selectedPrimary.length}P / ${selectedSub.length}S selected` : placeholder}
-        </span>
-        <ChevronDown size={16} className="text-cool-gray-400" />
-      </div>
-      {isOpen && (
-        <>
-          <div className="fixed inset-0 z-10" onClick={() => setIsOpen(false)}></div>
-          <div className="absolute z-20 w-64 mt-1 bg-cool-gray-800 border border-cool-gray-600 rounded-lg shadow-xl max-h-80 overflow-y-auto">
-            {primaryOptions.map(p => (
-              <div key={p}>
-                <label className="flex items-center gap-2 p-2 hover:bg-cool-gray-700 rounded cursor-pointer font-bold text-white text-sm">
-                  <input type="checkbox" className="rounded bg-cool-gray-950 border-cool-gray-700 text-emerald-500 focus:ring-emerald-500/50 cursor-pointer" checked={selectedPrimary.includes(p)} onChange={() => {
-                    const nextPrimary = selectedPrimary.includes(p) ? selectedPrimary.filter(x => x !== p) : [...selectedPrimary, p];
-                    onChange(nextPrimary, selectedSub);
-                  }} />
-                  {p}
-                </label>
-                <div className="pl-6">
-                  {(subOptions[p] || []).map(s => (
-                    <label key={s} className="flex items-center gap-1 p-1 hover:bg-cool-gray-700 rounded cursor-pointer text-sm text-cool-gray-200">
-                      <input type="checkbox" className="rounded bg-cool-gray-950 border-cool-gray-700 text-emerald-500 focus:ring-emerald-500/50 cursor-pointer" checked={selectedSub.includes(s)} onChange={() => {
-                        const nextSub = selectedSub.includes(s) ? selectedSub.filter(x => x !== s) : [...selectedSub, s];
-                        onChange(selectedPrimary, nextSub);
-                      }} />
-                      {s}
-                    </label>
-                  ))}
-                </div>
-              </div>
-            ))}
+        {/* Header Bar */}
+        <div className="flex items-center justify-between pb-2 border-b border-cool-gray-750 shrink-0">
+          <div className="flex items-center gap-2">
+            <div className="p-1 rounded-lg bg-emerald-950/80 border border-emerald-500/40 text-emerald-400">
+              <Filter size={14} />
+            </div>
+            <div>
+              <h3 className="text-xs font-bold text-white leading-tight">Filter by Category</h3>
+              <span className="text-[10px] text-cool-gray-400 font-mono">
+                {primaryOptions.length} categories • {totalSubsCount} subcategories
+              </span>
+            </div>
           </div>
-        </>
-      )}
-    </div>
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onClose(); }}
+            className="p-1.5 rounded-lg text-cool-gray-400 hover:text-white hover:bg-cool-gray-700 transition cursor-pointer"
+            title="Close filter"
+          >
+            <X size={15} />
+          </button>
+        </div>
+
+        {/* Search Input */}
+        <div className="relative shrink-0">
+          <Search className="absolute left-3 top-2.5 text-cool-gray-400" size={14} />
+          <input
+            type="text"
+            placeholder="Search categories or subcategories..."
+            className="w-full bg-cool-gray-900 border border-cool-gray-700 rounded-xl pl-9 pr-8 py-2 text-xs text-white placeholder-cool-gray-500 focus:outline-none focus:ring-1 focus:ring-emerald-500/60"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            onClick={(e) => e.stopPropagation()}
+          />
+          {search && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); setSearch(''); }}
+              className="absolute right-2.5 top-2.5 text-cool-gray-400 hover:text-white cursor-pointer"
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
+
+        {/* Action Toolbar */}
+        <div className="flex justify-between items-center text-xs text-cool-gray-400 font-bold px-1 border-b border-cool-gray-750 pb-2 shrink-0">
+          <div className="flex items-center gap-2.5 sm:gap-3 flex-wrap">
+            <button
+              type="button"
+              className="hover:text-emerald-400 transition-colors cursor-pointer text-[11px]"
+              onClick={handleSelectAll}
+            >
+              Select All
+            </button>
+            <span className="text-cool-gray-600">•</span>
+            <button
+              type="button"
+              className="hover:text-rose-400 transition-colors cursor-pointer text-[11px]"
+              onClick={handleClear}
+            >
+              Clear Filter
+            </button>
+            <span className="text-cool-gray-600">•</span>
+            {collapsed.size > 0 ? (
+              <button
+                type="button"
+                className="hover:text-cyan-400 transition-colors cursor-pointer text-[11px]"
+                onClick={expandAll}
+              >
+                Expand All
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="hover:text-cyan-400 transition-colors cursor-pointer text-[11px]"
+                onClick={collapseAll}
+              >
+                Collapse All
+              </button>
+            )}
+          </div>
+          {activeCount > 0 && (
+            <span className="text-[10px] text-emerald-400 font-bold bg-emerald-950/60 border border-emerald-500/30 px-2 py-0.5 rounded-full font-mono shrink-0">
+              {activeCount} active
+            </span>
+          )}
+        </div>
+
+        {/* Categories Tree - Single Scroll Container, Expanded by Default */}
+        <div className="overflow-y-auto max-h-72 sm:max-h-96 space-y-1.5 pr-1.5 overscroll-contain">
+          {filteredPrimary.map(p => {
+            const subs = subOptions[p] || [];
+            const isCollapsed = collapsed.has(p);
+            const hasSubs = subs.length > 0;
+            const checkedSubs = subs.filter(s => selectedSub.has(s));
+            const isPrimaryChecked = selectedPrimary.has(p) || (hasSubs && checkedSubs.length === subs.length);
+            const isPartiallyChecked = !isPrimaryChecked && checkedSubs.length > 0;
+
+            const filteredSubs = search.trim() 
+              ? subs.filter(s => s.toLowerCase().includes(search.toLowerCase()) || p.toLowerCase().includes(search.toLowerCase()))
+              : subs;
+
+            return (
+              <div key={p} className="bg-cool-gray-850/80 border border-cool-gray-750/70 rounded-xl p-2 transition-colors hover:border-cool-gray-650">
+                {/* Primary Category Row */}
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0 flex-1">
+                    {hasSubs ? (
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); toggleCollapse(p); }}
+                        className="p-1 rounded hover:bg-cool-gray-700/60 text-cool-gray-400 hover:text-white transition cursor-pointer shrink-0"
+                        title={isCollapsed ? "Expand subcategories" : "Collapse subcategories"}
+                      >
+                        {isCollapsed ? <ChevronRight size={15} /> : <ChevronDown size={15} />}
+                      </button>
+                    ) : (
+                      <div className="w-5 shrink-0" />
+                    )}
+                    <label 
+                      className="flex items-center gap-2 cursor-pointer select-none min-w-0 flex-1 py-0.5"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <input 
+                        type="checkbox" 
+                        className="rounded bg-cool-gray-950 border-cool-gray-700 text-emerald-500 focus:ring-emerald-500/50 cursor-pointer w-4 h-4 shrink-0" 
+                        checked={isPrimaryChecked}
+                        ref={el => {
+                          if (el) el.indeterminate = isPartiallyChecked;
+                        }}
+                        onChange={() => handleTogglePrimary(p)} 
+                      />
+                      <span className={`text-xs truncate ${isPrimaryChecked || isPartiallyChecked ? 'text-emerald-300 font-bold' : 'text-white font-semibold'}`}>
+                        {p}
+                      </span>
+                    </label>
+                  </div>
+                  {hasSubs && (
+                    <span className="text-[10px] text-cool-gray-400 font-mono bg-cool-gray-900/60 px-2 py-0.5 rounded-full border border-cool-gray-750 shrink-0">
+                      {checkedSubs.length > 0 ? `${checkedSubs.length}/${subs.length}` : `${subs.length}`}
+                    </span>
+                  )}
+                </div>
+
+                {/* Subcategories (Expanded by Default) */}
+                {hasSubs && !isCollapsed && (
+                  <div className="mt-1.5 pt-1.5 border-t border-cool-gray-750/50 pl-7 pr-1 space-y-1">
+                    {filteredSubs.map(s => {
+                      const isSubChecked = selectedSub.has(s);
+                      return (
+                        <label 
+                          key={s} 
+                          className={`flex items-center gap-2.5 px-2 py-1.5 hover:bg-cool-gray-750/60 rounded-lg cursor-pointer text-xs select-none transition-colors ${
+                            isSubChecked ? 'bg-cool-gray-750/40 text-emerald-300 font-medium' : 'text-cool-gray-200'
+                          }`}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <input 
+                            type="checkbox" 
+                            className="rounded bg-cool-gray-950 border-cool-gray-700 text-emerald-500 focus:ring-emerald-500/50 cursor-pointer w-3.5 h-3.5 shrink-0" 
+                            checked={isSubChecked} 
+                            onChange={() => handleToggleSub(p, s)} 
+                          />
+                          <span className="truncate" title={s}>{s}</span>
+                        </label>
+                      );
+                    })}
+                    {filteredSubs.length === 0 && (
+                      <div className="text-[11px] text-cool-gray-500 italic py-1 pl-1">
+                        No subcategories match "{search}"
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+
+          {filteredPrimary.length === 0 && (
+            <div className="text-center text-xs text-cool-gray-400 italic py-8">
+              No categories found matching "{search}"
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="pt-2.5 border-t border-cool-gray-750 flex items-center justify-between shrink-0">
+          <div className="text-[11px] text-cool-gray-400">
+            {activeCount === 0 ? (
+              <span className="text-cool-gray-500">All categories included</span>
+            ) : (
+              <span className="text-emerald-400 font-medium">
+                {selectedPrimary.size} primary, {selectedSub.size} sub selected
+              </span>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onClose(); }}
+            className="px-4 py-2 text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl transition-colors cursor-pointer shadow-md active:scale-95"
+          >
+            Apply & Close
+          </button>
+        </div>
+      </div>
+    </>
   );
 };
 
@@ -141,13 +399,23 @@ export const OffSiteSpreadsheet = ({
   viewUngrouped,
   setViewUngrouped,
   visibleColumns,
-  setVisibleColumns
-}) => {
+  setVisibleColumns,
+  activeOrderId,
+  onSelectActiveOrder
+}: any) => {
   const [isExportDropdownOpen, setIsExportDropdownOpen] = useState(false);
 
   const [filterOnlySplitBoxes, setFilterOnlySplitBoxes] = useState<boolean>(() => {
     try {
       return localStorage.getItem('offsite_filter_only_split_boxes') === 'true';
+    } catch (_) {
+      return false;
+    }
+  });
+
+  const [filterOnlyConflicts, setFilterOnlyConflicts] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('offsite_filter_only_conflicts') === 'true';
     } catch (_) {
       return false;
     }
@@ -160,6 +428,12 @@ export const OffSiteSpreadsheet = ({
       localStorage.setItem('offsite_filter_only_split_boxes', String(filterOnlySplitBoxes));
     } catch (_) {}
   }, [filterOnlySplitBoxes]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('offsite_filter_only_conflicts', String(filterOnlyConflicts));
+    } catch (_) {}
+  }, [filterOnlyConflicts]);
 
   const toggleExpandBox = (boxId: string) => {
     setExpandedBoxes(prev => {
@@ -233,7 +507,19 @@ export const OffSiteSpreadsheet = ({
   }, [rawEntries, products]);
 
   const orders = state.movementOrders || [];
-  const activeOrder = orders.find((o: any) => o.status === 'planning' || o.status === 'finalized');
+  const activeOrders = useMemo(() => {
+    return orders.filter((o: any) => o.status === 'planning' || o.status === 'finalized');
+  }, [orders]);
+
+  const activeOrder = useMemo(() => {
+    if (activeOrders.length === 0) return null;
+    const targetId = activeOrderId || localStorage.getItem('selected-movement-order-id');
+    if (targetId) {
+      const match = activeOrders.find((o: any) => o.id === targetId);
+      if (match) return match;
+    }
+    return activeOrders[0];
+  }, [activeOrders, activeOrderId]);
 
   const entries = useMemo(() => {
     let baseList = rawEntries;
@@ -339,7 +625,7 @@ export const OffSiteSpreadsheet = ({
     };
 
     const rows = entriesToExport.map(e => {
-      let mt = e.moveTo || '';
+      let mt = '';
       if (activeOrder) {
         const m = activeOrder.moves.find((mv: any) => mv.entryId === e.id);
         if (m && m.targetLocation) mt = m.targetLocation;
@@ -385,6 +671,7 @@ export const OffSiteSpreadsheet = ({
 
   const updateMoveTargetGroup = async (items: any[], target: string) => {
     if (!activeOrder || activeOrder.status !== 'planning') return;
+    if (target === '__mixed__') return;
     let moves = [...activeOrder.moves];
     items.forEach(item => {
       const existingIdx = moves.findIndex((m: any) => m.entryId === item.id);
@@ -648,10 +935,10 @@ export const OffSiteSpreadsheet = ({
       onClose();
     };
 
-    return (
+    const modal = (
       <>
-        <div className="fixed inset-0 z-[90] bg-black/40 backdrop-blur-sm" onClick={(e) => { e.stopPropagation(); onClose(); }}></div>
-        <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[100] bg-cool-gray-850 border border-cool-gray-750 p-3 rounded-xl shadow-2xl flex flex-col gap-2 min-w-[220px] animate-scale-up text-left max-h-[80vh] overflow-y-auto">
+        <div className="fixed inset-0 z-[120] bg-black/60 backdrop-blur-xs" onClick={(e) => { e.stopPropagation(); onClose(); }}></div>
+        <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[130] bg-cool-gray-850 border border-cool-gray-750 p-3 rounded-xl shadow-2xl flex flex-col gap-2 min-w-[220px] animate-scale-up text-left max-h-[80vh] overflow-y-auto">
           <span className="text-[10px] font-bold text-cool-gray-400 uppercase tracking-wider border-b border-cool-gray-750 pb-1">
             Select Tags
           </span>
@@ -705,6 +992,8 @@ export const OffSiteSpreadsheet = ({
         </div>
       </>
     );
+
+    return typeof document !== 'undefined' ? createPortal(modal, document.body) : modal;
   };
 
   const renderItemTagSelector = (item: any) => {
@@ -767,10 +1056,10 @@ export const OffSiteSpreadsheet = ({
           />
         </button>
 
-        {isOpen && (
+        {isOpen && typeof document !== 'undefined' && createPortal(
           <>
-            <div className="fixed inset-0 z-[90] bg-black/40 backdrop-blur-sm" onClick={(e) => { e.stopPropagation(); setOpenFlagSelectorId(null); }}></div>
-            <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[100] bg-cool-gray-850 border border-cool-gray-750 p-3 rounded-xl shadow-2xl flex flex-col gap-3 min-w-[200px] animate-scale-up text-left">
+            <div className="fixed inset-0 z-[120] bg-black/60 backdrop-blur-xs" onClick={(e) => { e.stopPropagation(); setOpenFlagSelectorId(null); }}></div>
+            <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[130] bg-cool-gray-850 border border-cool-gray-750 p-3 rounded-xl shadow-2xl flex flex-col gap-3 min-w-[200px] animate-scale-up text-left">
               <span className="text-[10px] font-bold text-cool-gray-400 uppercase tracking-wider border-b border-cool-gray-750 pb-1.5">
                 Select Flag
               </span>
@@ -806,7 +1095,8 @@ export const OffSiteSpreadsheet = ({
               </button>
             )}
           </div>
-          </>
+          </>,
+          document.body
         )}
       </div>
     );
@@ -815,6 +1105,8 @@ export const OffSiteSpreadsheet = ({
   const [editForm, setEditForm] = useState<any>({});
   const [newItemForm, setNewItemForm] = useState<any>({
     cuts: '',
+    productId: '',
+    originalCutName: '',
     box: '',
     serial: '',
     netWeight: '',
@@ -824,7 +1116,8 @@ export const OffSiteSpreadsheet = ({
     notes: '',
     packDate: '',
     lot: '',
-      });
+    tagIds: []
+  });
 
   const allCutSuggestions = useMemo(() => {
     const suggestions = new Set<string>();
@@ -890,12 +1183,21 @@ export const OffSiteSpreadsheet = ({
     const serialVal = (newItemForm.serial || '').trim() || Math.floor(1000000 + Math.random() * 9000000).toString();
     const netWeightNum = parseFloat(newItemForm.netWeight);
     const piecesInt = parseInt(newItemForm.pieces, 10);
+
+    let matchedProduct = newItemForm.productId ? state.products?.find((p: any) => p.id === newItemForm.productId) : undefined;
+    if (!matchedProduct && newItemForm.cuts) {
+      matchedProduct = state.products?.find((p: any) => p.name.trim().toLowerCase() === newItemForm.cuts.trim().toLowerCase());
+    }
+    const defaultTagIds = matchedProduct?.defaultTagIds || [];
+    const finalTagIds = (newItemForm.tagIds && newItemForm.tagIds.length > 0)
+      ? newItemForm.tagIds
+      : [...defaultTagIds];
     
     const newEntry = {
       id: 'entry_' + Math.random().toString(36).substr(2, 9),
       serial: serialVal,
       cuts: newItemForm.cuts,
-      productId: newItemForm.productId || undefined,
+      productId: matchedProduct ? matchedProduct.id : (newItemForm.productId || undefined),
       originalCutName: newItemForm.originalCutName || '',
       box: (newItemForm.box || '').trim(),
       netWeight: isNaN(netWeightNum) ? 0 : netWeightNum,
@@ -905,6 +1207,7 @@ export const OffSiteSpreadsheet = ({
       notes: newItemForm.notes,
       packDate: newItemForm.packDate,
       lot: newItemForm.lot,
+      tagIds: finalTagIds
     };
 
     await dispatch({
@@ -926,6 +1229,7 @@ export const OffSiteSpreadsheet = ({
       notes: '',
       packDate: '',
       lot: '',
+      tagIds: []
     });
   };
 
@@ -1375,33 +1679,206 @@ export const OffSiteSpreadsheet = ({
   const allSerials = Array.from(new Set(entries.map((e: any) => e.serial || '-'))).sort() as string[];
   const allLots = Array.from(new Set(entries.map((e: any) => e.lot || '-'))).sort() as string[];
   const allPackDates = Array.from(new Set(entries.map((e: any) => e.packDate || '-'))).sort() as string[];
-  const getMoveToName = (idOrName: string) => {
+  const getMoveToName = (idOrName: string, specificOrder?: any) => {
     if (!idOrName || idOrName === 'Staying put') return 'Staying put';
+    if (idOrName === '__conflicted__') return '⚠️ Conflicted (Multiple Orders)';
+    if (specificOrder?.targetDestinations) {
+      const dest = specificOrder.targetDestinations.find((d: any) => d.id === idOrName);
+      if (dest) {
+        return dest.palletName ? `${dest.palletName} - ${dest.locationName}` : dest.locationName;
+      }
+    }
     if (activeOrder && activeOrder.targetDestinations) {
       const dest = activeOrder.targetDestinations.find((d: any) => d.id === idOrName);
       if (dest) {
         return dest.palletName ? `${dest.palletName} - ${dest.locationName}` : dest.locationName;
       }
     }
+    for (const ord of activeOrders) {
+      if (ord.targetDestinations) {
+        const dest = ord.targetDestinations.find((d: any) => d.id === idOrName);
+        if (dest) {
+          return dest.palletName ? `${dest.palletName} - ${dest.locationName}` : dest.locationName;
+        }
+      }
+    }
+    const loc = state.locations?.find((l: any) => l.id === idOrName);
+    if (loc) return loc.name;
+    const pal = state.pallets?.find((p: any) => p.id === idOrName);
+    if (pal) return pal.name;
     return idOrName;
   };
 
-  const allMoveTo = Array.from(new Set([
-    '',
-    ...entries.map((e: any) => {
-      if (activeOrder) {
-        const m = activeOrder.moves.find((mv: any) => mv.entryId === e.id);
-        if (m && m.targetLocation) return m.targetLocation;
-        return '';
+  // Multi-Order Movement & Cross-Order Conflict Management Engine
+  const openOrdersMovementData = useMemo(() => {
+    // 1. Map entryId -> list of movements across all open orders
+    const entryOrderMoves = new Map<string, {
+      orderId: string;
+      orderName: string;
+      orderStatus: string;
+      targetLocation: string;
+      destName: string;
+      isCurrentOrder: boolean;
+    }[]>();
+
+    // 2. Map boxId -> list of order assignments
+    const boxOrderAssignments = new Map<string, {
+      orderId: string;
+      orderName: string;
+      orderStatus: string;
+      isCurrentOrder: boolean;
+      destinations: {
+        destId: string;
+        destName: string;
+        cutsCount: number;
+        weight: number;
+        pieces: number;
+      }[];
+      totalCuts: number;
+      totalWeight: number;
+      totalPieces: number;
+    }[]>();
+
+    const conflictedBoxIds = new Set<string>();
+    const conflictedEntryIds = new Set<string>();
+
+    // Build entryOrderMoves across all planning and finalized orders
+    activeOrders.forEach((ord: any) => {
+      const isCurrentOrder = Boolean(activeOrder && activeOrder.id === ord.id);
+      (ord.moves || []).forEach((m: any) => {
+        if (!m.entryId || !m.targetLocation) return;
+        if (!entryOrderMoves.has(m.entryId)) {
+          entryOrderMoves.set(m.entryId, []);
+        }
+        const destName = getMoveToName(m.targetLocation, ord);
+        entryOrderMoves.get(m.entryId)!.push({
+          orderId: ord.id,
+          orderName: ord.name || 'Unnamed Order',
+          orderStatus: ord.status,
+          targetLocation: m.targetLocation,
+          destName,
+          isCurrentOrder
+        });
+      });
+    });
+
+    // Detect entries assigned in multiple open orders
+    entryOrderMoves.forEach((movesList, entryId) => {
+      if (movesList.length > 1) {
+        conflictedEntryIds.add(entryId);
       }
-      return e.moveTo || '';
-    }),
-    ...(activeOrder?.targetDestinations?.map(d => d.id) || [])
-  ] as string[])).sort((a, b) => {
-    if (a === '') return -1;
-    if (b === '') return 1;
-    return getMoveToName(a).localeCompare(getMoveToName(b));
-  });
+    });
+
+    // Group by box to track full box movements & multi-order assignments
+    const boxToEntries = new Map<string, any[]>();
+    entries.forEach((e: any) => {
+      const bId = (e.box || '').trim() || 'Unassigned-Box';
+      if (!boxToEntries.has(bId)) {
+        boxToEntries.set(bId, []);
+      }
+      boxToEntries.get(bId)!.push(e);
+    });
+
+    boxToEntries.forEach((bEntries, bId) => {
+      const orderGroupsMap = new Map<string, {
+        orderId: string;
+        orderName: string;
+        orderStatus: string;
+        isCurrentOrder: boolean;
+        destMap: Map<string, { destId: string; destName: string; cutsCount: number; weight: number; pieces: number }>;
+        totalCuts: number;
+        totalWeight: number;
+        totalPieces: number;
+      }>();
+
+      bEntries.forEach((item: any) => {
+        const itemMoves = entryOrderMoves.get(item.id) || [];
+        itemMoves.forEach(mv => {
+          if (!orderGroupsMap.has(mv.orderId)) {
+            orderGroupsMap.set(mv.orderId, {
+              orderId: mv.orderId,
+              orderName: mv.orderName,
+              orderStatus: mv.orderStatus,
+              isCurrentOrder: mv.isCurrentOrder,
+              destMap: new Map(),
+              totalCuts: 0,
+              totalWeight: 0,
+              totalPieces: 0
+            });
+          }
+          const ordGrp = orderGroupsMap.get(mv.orderId)!;
+          ordGrp.totalCuts += 1;
+          ordGrp.totalWeight += (item.netWeight || 0);
+          ordGrp.totalPieces += (item.pieces || 0);
+
+          if (!ordGrp.destMap.has(mv.targetLocation)) {
+            ordGrp.destMap.set(mv.targetLocation, {
+              destId: mv.targetLocation,
+              destName: mv.destName,
+              cutsCount: 0,
+              weight: 0,
+              pieces: 0
+            });
+          }
+          const dEntry = ordGrp.destMap.get(mv.targetLocation)!;
+          dEntry.cutsCount += 1;
+          dEntry.weight += (item.netWeight || 0);
+          dEntry.pieces += (item.pieces || 0);
+        });
+      });
+
+      if (orderGroupsMap.size > 0) {
+        const assignments = Array.from(orderGroupsMap.values()).map(og => ({
+          orderId: og.orderId,
+          orderName: og.orderName,
+          orderStatus: og.orderStatus,
+          isCurrentOrder: og.isCurrentOrder,
+          destinations: Array.from(og.destMap.values()),
+          totalCuts: og.totalCuts,
+          totalWeight: og.totalWeight,
+          totalPieces: og.totalPieces
+        }));
+
+        boxOrderAssignments.set(bId, assignments);
+
+        // If more than 1 open order is moving items from this box, OR if any item inside has conflicts
+        if (assignments.length > 1 || bEntries.some((it: any) => conflictedEntryIds.has(it.id))) {
+          conflictedBoxIds.add(bId);
+        }
+      }
+    });
+
+    return {
+      entryOrderMoves,
+      boxOrderAssignments,
+      conflictedBoxIds,
+      conflictedEntryIds
+    };
+  }, [activeOrders, activeOrder, entries, state.products, state.locations, state.pallets]);
+
+  const allMoveTo = useMemo(() => {
+    const set = new Set<string>(['']);
+    if (openOrdersMovementData.conflictedBoxIds.size > 0) {
+      set.add('__conflicted__');
+    }
+    // Collect all destinations across all open orders
+    activeOrders.forEach((ord: any) => {
+      (ord.targetDestinations || []).forEach((d: any) => {
+        if (d.id) set.add(d.id);
+      });
+      (ord.moves || []).forEach((m: any) => {
+        if (m.targetLocation) set.add(m.targetLocation);
+      });
+    });
+
+    return Array.from(set).sort((a, b) => {
+      if (a === '') return -1;
+      if (b === '') return 1;
+      if (a === '__conflicted__') return -1;
+      if (b === '__conflicted__') return 1;
+      return getMoveToName(a).localeCompare(getMoveToName(b));
+    });
+  }, [activeOrders, entries, openOrdersMovementData.conflictedBoxIds]);
 
   const renderFilterDropdown = (
     type: string,
@@ -1411,6 +1888,20 @@ export const OffSiteSpreadsheet = ({
     searchVal: string,
     setSearchVal: (v: string) => void
   ) => {
+    const getColumnTitle = () => {
+      switch (type) {
+        case 'box': return 'Box Number';
+        case 'cuts': return 'Product / Cut';
+        case 'locations': return 'Location';
+        case 'pallets': return 'Pallet';
+        case 'moveTo': return 'Move Destination';
+        case 'serial': return 'Box Serial';
+        case 'lot': return 'Lot Number';
+        case 'packDate': return 'Pack Date';
+        default: return type;
+      }
+    };
+
     const getOptionDisplayName = (opt: string) => {
       if (type === 'moveTo') return getMoveToName(opt);
       if (type === 'pallets') {
@@ -1426,125 +1917,184 @@ export const OffSiteSpreadsheet = ({
       return display.toLowerCase().includes(searchVal.toLowerCase());
     });
 
-    return (
+    const columnTitle = getColumnTitle();
+
+    const modalContent = (
       <>
-        <div className="fixed inset-0 z-[90] bg-black/40 backdrop-blur-sm" onClick={(e) => { e.stopPropagation(); setOpenFilter(null); }}></div>
+        <div className="fixed inset-0 z-[120] bg-black/60 backdrop-blur-xs" onClick={(e) => { e.stopPropagation(); setOpenFilter(null); }}></div>
         <div 
-          className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-cool-gray-800 border border-cool-gray-700 rounded-xl p-3 z-[100] w-64 shadow-2xl space-y-2 flex flex-col max-h-[350px] text-left font-normal max-w-[90vw]"
+          id={`offsite-column-filter-${type}`}
+          className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-cool-gray-800 border border-cool-gray-700 rounded-2xl p-4 z-[130] w-80 sm:w-96 md:w-[440px] shadow-2xl space-y-3 flex flex-col max-h-[85vh] text-left font-normal max-w-[95vw] animate-scale-up"
           onClick={(e) => e.stopPropagation()}
         >
-          <div className="relative">
-          <Search className="absolute left-2.5 top-2.5 text-cool-gray-500" size={13} />
-          <input
-            type="text"
-            placeholder="Search options..."
-            className="w-full bg-cool-gray-900 border border-cool-gray-700 rounded-lg pl-8 pr-7 py-1.5 text-xs text-white placeholder-cool-gray-500 focus:outline-none focus:ring-1 focus:ring-emerald-500/50"
-            value={searchVal}
-            onChange={(e) => setSearchVal(e.target.value)}
-            onClick={(e) => e.stopPropagation()}
-            autoFocus
-          />
-          {searchVal && (
+          {/* Header Bar */}
+          <div className="flex items-center justify-between pb-2 border-b border-cool-gray-750 shrink-0">
+            <div className="flex items-center gap-2">
+              <div className="p-1 rounded-lg bg-emerald-950/80 border border-emerald-500/40 text-emerald-400">
+                <Filter size={14} />
+              </div>
+              <div>
+                <h3 className="text-xs font-bold text-white leading-tight">Filter by {columnTitle}</h3>
+                <span className="text-[10px] text-cool-gray-400 font-mono">
+                  {filteredOptions.length} of {allOptions.length} options available
+                </span>
+              </div>
+            </div>
             <button
-              onClick={(e) => { e.stopPropagation(); setSearchVal(''); }}
-              className="absolute right-2 top-2.5 text-cool-gray-500 hover:text-white"
+              type="button"
+              onClick={(e) => { e.stopPropagation(); setOpenFilter(null); }}
+              className="p-1.5 rounded-lg text-cool-gray-400 hover:text-white hover:bg-cool-gray-700 transition cursor-pointer"
+              title="Close filter"
             >
-              <X size={12} />
+              <X size={15} />
             </button>
-          )}
-        </div>
-
-        {type === 'moveTo' && (
-          <div className="bg-cool-gray-900/50 p-2 rounded-lg border border-cool-gray-750 flex items-center justify-between gap-2 select-none shrink-0">
-            <span className="text-xs font-semibold text-cool-gray-300">⚠️ Only Split Boxes</span>
-            <input
-              type="checkbox"
-              className="rounded bg-cool-gray-950 border-cool-gray-700 text-amber-500 focus:ring-amber-500/50 cursor-pointer w-4 h-4"
-              checked={filterOnlySplitBoxes}
-              onChange={(e) => setFilterOnlySplitBoxes(e.target.checked)}
-            />
           </div>
-        )}
 
-        <div className="flex justify-between items-center text-[10px] text-cool-gray-400 font-bold px-1 border-b border-cool-gray-750 pb-1.5">
-          <button
-            type="button"
-            className="hover:text-emerald-400 transition-colors"
-            onClick={(e) => {
-              e.stopPropagation();
-              const updated = new Set(selectedSet);
-              filteredOptions.forEach(o => updated.add(o));
-              setSelectedSet(updated);
-            }}
-          >
-            Select All
-          </button>
-          <button
-            type="button"
-            className="hover:text-rose-400 transition-colors"
-            onClick={(e) => {
-              e.stopPropagation();
-              const updated = new Set<string>();
-              setSelectedSet(updated);
-            }}
-          >
-            Clear Filter
-          </button>
-        </div>
-
-        <div className="overflow-y-auto max-h-40 space-y-1 pr-1 divide-y divide-cool-gray-750/30">
-          {filteredOptions.map(opt => {
-            const isChecked = selectedSet.has(opt);
-            const displayName = getOptionDisplayName(opt);
-
-            return (
-              <label
-                key={opt}
-                className="flex items-center gap-2 px-1.5 py-1.5 hover:bg-cool-gray-750 rounded-lg cursor-pointer text-xs select-none first:pt-1 text-white transition-colors"
-                onClick={(e) => e.stopPropagation()}
+          {/* Search Input */}
+          <div className="relative shrink-0">
+            <Search className="absolute left-3 top-2.5 text-cool-gray-400" size={14} />
+            <input
+              type="text"
+              placeholder={`Search ${columnTitle.toLowerCase()}...`}
+              className="w-full bg-cool-gray-900 border border-cool-gray-700 rounded-xl pl-9 pr-8 py-2 text-xs text-white placeholder-cool-gray-500 focus:outline-none focus:ring-1 focus:ring-emerald-500/60"
+              value={searchVal}
+              onChange={(e) => setSearchVal(e.target.value)}
+              onClick={(e) => e.stopPropagation()}
+              autoFocus
+            />
+            {searchVal && (
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); setSearchVal(''); }}
+                className="absolute right-2.5 top-2.5 text-cool-gray-400 hover:text-white cursor-pointer"
               >
+                <X size={14} />
+              </button>
+            )}
+          </div>
+
+          {type === 'moveTo' && (
+            <div className="space-y-1.5 shrink-0">
+              <div className="bg-cool-gray-900/50 p-2.5 rounded-xl border border-cool-gray-750 flex items-center justify-between gap-2 select-none">
+                <span className="text-xs font-semibold text-cool-gray-300">⚠️ Only Split Boxes</span>
                 <input
                   type="checkbox"
-                  className="rounded bg-cool-gray-950 border-cool-gray-700 text-emerald-500 focus:ring-emerald-500/50 cursor-pointer w-3.5 h-3.5"
-                  checked={isChecked}
-                  onChange={() => {
-                    const next = new Set(selectedSet);
-                    if (next.has(opt)) next.delete(opt);
-                    else next.add(opt);
-                    setSelectedSet(next);
-                  }}
+                  className="rounded bg-cool-gray-950 border-cool-gray-700 text-amber-500 focus:ring-amber-500/50 cursor-pointer w-4 h-4"
+                  checked={filterOnlySplitBoxes}
+                  onChange={(e) => setFilterOnlySplitBoxes(e.target.checked)}
                 />
-                <span className="truncate" title={displayName}>{displayName}</span>
-              </label>
-            );
-          })}
-          {filteredOptions.length === 0 && (
-            <div className="text-center text-[11px] text-cool-gray-500 italic py-4">
-              No results found
+              </div>
+              <div className="bg-amber-950/40 p-2.5 rounded-xl border border-amber-800/60 flex items-center justify-between gap-2 select-none">
+                <span className="text-xs font-bold text-amber-300 flex items-center gap-1.5">
+                  <AlertTriangle size={14} className="text-amber-400 shrink-0" />
+                  <span>Only Conflicted Boxes</span>
+                </span>
+                <input
+                  type="checkbox"
+                  className="rounded bg-cool-gray-950 border-amber-700 text-amber-400 focus:ring-amber-500/50 cursor-pointer w-4 h-4"
+                  checked={filterOnlyConflicts}
+                  onChange={(e) => setFilterOnlyConflicts(e.target.checked)}
+                />
+              </div>
             </div>
           )}
-        </div>
 
-        <div className="pt-1.5 border-t border-cool-gray-750 flex justify-between gap-2 items-center">
-          {selectedSet.size > 0 ? (
-            <span className="text-[10px] text-emerald-400 font-bold bg-emerald-950/40 border border-emerald-500/20 px-1.5 py-0.5 rounded">
-              {selectedSet.size} active
-            </span>
-          ) : <span />}
-          <button
-            type="button"
-            className="bg-cool-gray-700 hover:bg-cool-gray-650 text-white font-bold text-[10px] px-2.5 py-1 rounded transition-colors"
-            onClick={(e) => {
-              e.stopPropagation();
-              setOpenFilter(null);
-            }}
-          >
-            Done
-          </button>
+          {/* Quick Bulk Actions */}
+          <div className="flex justify-between items-center text-xs text-cool-gray-400 font-bold px-1 border-b border-cool-gray-750 pb-2 shrink-0">
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                className="hover:text-emerald-400 transition-colors cursor-pointer text-[11px]"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const updated = new Set(selectedSet);
+                  filteredOptions.forEach(o => updated.add(o));
+                  setSelectedSet(updated);
+                }}
+              >
+                Select All ({filteredOptions.length})
+              </button>
+              <span className="text-cool-gray-600">•</span>
+              <button
+                type="button"
+                className="hover:text-rose-400 transition-colors cursor-pointer text-[11px]"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const updated = new Set<string>();
+                  setSelectedSet(updated);
+                }}
+              >
+                Clear Filter
+              </button>
+            </div>
+            {selectedSet.size > 0 && (
+              <span className="text-[10px] text-emerald-400 font-bold bg-emerald-950/60 border border-emerald-500/30 px-2 py-0.5 rounded-full font-mono">
+                {selectedSet.size} active
+              </span>
+            )}
+          </div>
+
+          {/* Expanded Scrollable Options Container */}
+          <div className="overflow-y-auto max-h-72 sm:max-h-96 space-y-1 pr-1.5 divide-y divide-cool-gray-750/30 overscroll-contain">
+            {filteredOptions.map(opt => {
+              const isChecked = selectedSet.has(opt);
+              const displayName = getOptionDisplayName(opt);
+
+              return (
+                <label
+                  key={opt}
+                  className={`flex items-center gap-2.5 px-2.5 py-2 hover:bg-cool-gray-750/80 rounded-lg cursor-pointer text-xs select-none first:pt-1 text-white transition-colors ${
+                    isChecked ? 'bg-cool-gray-750/40 font-semibold text-emerald-300' : ''
+                  }`}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <input
+                    type="checkbox"
+                    className="rounded bg-cool-gray-950 border-cool-gray-700 text-emerald-500 focus:ring-emerald-500/50 cursor-pointer w-4 h-4 shrink-0"
+                    checked={isChecked}
+                    onChange={() => {
+                      const next = new Set(selectedSet);
+                      if (next.has(opt)) next.delete(opt);
+                      else next.add(opt);
+                      setSelectedSet(next);
+                    }}
+                  />
+                  <span className="truncate" title={displayName}>{displayName}</span>
+                </label>
+              );
+            })}
+            {filteredOptions.length === 0 && (
+              <div className="text-center text-xs text-cool-gray-400 italic py-8">
+                No matching options found
+              </div>
+            )}
+          </div>
+
+          {/* Footer with Summary and Close Button */}
+          <div className="pt-2.5 border-t border-cool-gray-750 flex justify-between gap-2 items-center shrink-0">
+            <div className="text-[11px] text-cool-gray-400">
+              {selectedSet.size === 0 ? (
+                <span className="text-cool-gray-500">Showing all</span>
+              ) : (
+                <span className="text-emerald-400 font-medium">{selectedSet.size} selected</span>
+              )}
+            </div>
+            <button
+              type="button"
+              className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs px-4 py-2 rounded-xl transition-colors cursor-pointer shadow-md active:scale-95"
+              onClick={(e) => {
+                e.stopPropagation();
+                setOpenFilter(null);
+              }}
+            >
+              Apply & Close
+            </button>
+          </div>
         </div>
-      </div>
       </>
     );
+
+    return typeof document !== 'undefined' ? createPortal(modalContent, document.body) : modalContent;
   };
 
   const splitBoxIds = useMemo(() => {
@@ -1553,7 +2103,7 @@ export const OffSiteSpreadsheet = ({
       const bId = (e.box || '').trim() || 'Unassigned-Box';
       if (!boxDestinations[bId]) boxDestinations[bId] = new Set();
       
-      let mt = e.moveTo || '';
+      let mt = '';
       if (activeOrder) {
         const m = activeOrder.moves.find((mv: any) => mv.entryId === e.id);
         if (m && m.targetLocation) mt = m.targetLocation;
@@ -1583,7 +2133,9 @@ export const OffSiteSpreadsheet = ({
   // Filtered entries tracking for CSV exports
   const filteredEntries = useMemo(() => {
     return entries.filter(e => {
-      if (filterOnlySplitBoxes && !splitBoxIds.has((e.box || '').trim() || 'Unassigned-Box')) return false;
+      const bId = (e.box || '').trim() || 'Unassigned-Box';
+      if (filterOnlySplitBoxes && !splitBoxIds.has(bId)) return false;
+      if (filterOnlyConflicts && !openOrdersMovementData.conflictedBoxIds.has(bId) && !openOrdersMovementData.conflictedEntryIds.has(e.id)) return false;
 
       if (searchTerm) {
         const term = searchTerm.toLowerCase();
@@ -1593,7 +2145,7 @@ export const OffSiteSpreadsheet = ({
         const matchesPallet = (e.currentLocation || '').toLowerCase().includes(term);
         const matchesLocation = (e.location || '').toLowerCase().includes(term);
 
-        let mt = e.moveTo || '';
+        let mt = '';
         if (activeOrder) {
           const m = activeOrder.moves.find((mv: any) => mv.entryId === e.id);
           if (m && m.targetLocation) mt = m.targetLocation;
@@ -1601,7 +2153,13 @@ export const OffSiteSpreadsheet = ({
         const moveToName = getMoveToName(mt);
         const matchesMoveTo = (moveToName || '').toLowerCase().includes(term);
 
-        if (!matchesCuts && !matchesOriginalCut && !matchesBox && !matchesPallet && !matchesLocation && !matchesMoveTo) {
+        // Check other open orders for search match
+        const otherMoves = (openOrdersMovementData.entryOrderMoves.get(e.id) || []);
+        const matchesOtherOrders = otherMoves.some(om => 
+          om.orderName.toLowerCase().includes(term) || om.destName.toLowerCase().includes(term)
+        );
+
+        if (!matchesCuts && !matchesOriginalCut && !matchesBox && !matchesPallet && !matchesLocation && !matchesMoveTo && !matchesOtherOrders) {
           return false;
         }
       }
@@ -1623,12 +2181,23 @@ export const OffSiteSpreadsheet = ({
       if (filterTags.size > 0 && !(e.tagIds || []).some(t => filterTags.has(t))) return false;
       if (filterLists.size > 0 && !(e.matchedProduct && (state.customLists || []).filter(l => filterLists.has(l.id)).some(l => l.items.some(item => item.productId === e.matchedProduct.id)))) return false;
       if (filterMoveTo.size > 0) {
-        let mt = e.moveTo || '';
-        if (activeOrder) {
-          const m = activeOrder.moves.find((mv: any) => mv.entryId === e.id);
-          if (m && m.targetLocation) mt = m.targetLocation;
+        let isMatch = false;
+        if (filterMoveTo.has('__conflicted__') && (openOrdersMovementData.conflictedBoxIds.has(bId) || openOrdersMovementData.conflictedEntryIds.has(e.id))) {
+          isMatch = true;
         }
-        if (!filterMoveTo.has(mt)) return false;
+        if (!isMatch) {
+          if (activeOrder) {
+            const m = activeOrder.moves.find((mv: any) => mv.entryId === e.id);
+            const mt = (m && m.targetLocation) ? m.targetLocation : '';
+            if (filterMoveTo.has(mt)) isMatch = true;
+          } else {
+            const entryMoves = openOrdersMovementData.entryOrderMoves.get(e.id);
+            if (entryMoves && entryMoves.length > 0) {
+              if (entryMoves.some(mv => filterMoveTo.has(mv.targetLocation))) isMatch = true;
+            }
+          }
+        }
+        if (!isMatch) return false;
       }
       if (breakdownSearch && !(state.products?.find((p: any) => p.id === e.productId)?.name || e.originalCutName)?.toLowerCase().includes(breakdownSearch.toLowerCase()) && !(e.originalCutName?.toLowerCase() || '').includes(breakdownSearch.toLowerCase())) return false;
       if (breakdownCategory && breakdownCategory !== 'All') {
@@ -1637,7 +2206,7 @@ export const OffSiteSpreadsheet = ({
       }
       return true;
     });
-  }, [entries, searchTerm, filterCuts, filterPrimaryCategories, filterSubCategories, filterPallets, filterLocations, filterBoxes, filterSerials, filterLots, filterPackDates, filterMoveTo, filterTags, filterLists, activeOrder, breakdownSearch, breakdownCategory, products, viewOriginalNames, state.customLists, filterOnlySplitBoxes, splitBoxIds]);
+  }, [entries, searchTerm, filterCuts, filterPrimaryCategories, filterSubCategories, filterPallets, filterLocations, filterBoxes, filterSerials, filterLots, filterPackDates, filterMoveTo, filterTags, filterLists, activeOrder, breakdownSearch, breakdownCategory, products, viewOriginalNames, state.customLists, filterOnlySplitBoxes, splitBoxIds, filterOnlyConflicts, openOrdersMovementData]);
 
   // Propagate filtered entries up to the parent component for exports
   useEffect(() => {
@@ -1685,7 +2254,10 @@ export const OffSiteSpreadsheet = ({
         const m = activeOrder.moves.find((mv: any) => mv.entryId === e.id);
         groups[groupId].moveTo.add(m?.targetLocation || '');
       } else {
-        groups[groupId].moveTo.add(e.moveTo || '');
+        const entryMoves = openOrdersMovementData.entryOrderMoves.get(e.id);
+        if (entryMoves && entryMoves.length > 0) {
+          entryMoves.forEach(mv => groups[groupId].moveTo.add(mv.targetLocation));
+        }
       }
       groups[groupId].totalWeight += (e.netWeight || 0);
       groups[groupId].totalPieces += (e.pieces || 0);
@@ -2071,12 +2643,12 @@ export const OffSiteSpreadsheet = ({
               </div>
             </div>
 
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs whitespace-nowrap border-t border-cool-gray-750/60">
-                <thead>
-                  <tr className="text-cool-gray-400 font-bold border-b border-cool-gray-750/60 bg-cool-gray-850/35 select-none">
+            <div className="overflow-auto max-h-96 rounded-xl border border-cool-gray-750/60">
+              <table className="w-full text-left text-xs whitespace-nowrap border-separate border-spacing-0">
+                <thead className="sticky top-0 z-10 bg-cool-gray-850">
+                  <tr className="text-cool-gray-400 font-bold border-b border-cool-gray-750/60 bg-cool-gray-850 select-none">
                     <th 
-                      className="py-2.5 px-3 cursor-pointer hover:text-white transition-colors group"
+                      className="sticky top-0 bg-cool-gray-850 z-10 border-b border-cool-gray-750/60 py-2.5 px-3 cursor-pointer hover:text-white transition-colors group"
                       onClick={() => toggleBreakdownSort('name')}
                     >
                       <div className="flex items-center gap-1">
@@ -2087,7 +2659,7 @@ export const OffSiteSpreadsheet = ({
                       </div>
                     </th>
                     <th 
-                      className="py-2.5 px-3 cursor-pointer hover:text-white transition-colors group"
+                      className="sticky top-0 bg-cool-gray-850 z-10 border-b border-cool-gray-750/60 py-2.5 px-3 cursor-pointer hover:text-white transition-colors group"
                       onClick={() => toggleBreakdownSort('category')}
                     >
                       <div className="flex items-center gap-1">
@@ -2098,7 +2670,7 @@ export const OffSiteSpreadsheet = ({
                       </div>
                     </th>
                     <th 
-                      className="py-2.5 px-3 cursor-pointer hover:text-white transition-colors group"
+                      className="sticky top-0 bg-cool-gray-850 z-10 border-b border-cool-gray-750/60 py-2.5 px-3 cursor-pointer hover:text-white transition-colors group"
                       onClick={() => toggleBreakdownSort('pallet')}
                     >
                       <div className="flex items-center gap-1">
@@ -2109,7 +2681,7 @@ export const OffSiteSpreadsheet = ({
                       </div>
                     </th>
                     <th 
-                      className="py-2.5 px-3 text-right cursor-pointer hover:text-white transition-colors group"
+                      className="sticky top-0 bg-cool-gray-850 z-10 border-b border-cool-gray-750/60 py-2.5 px-3 text-right cursor-pointer hover:text-white transition-colors group"
                       onClick={() => toggleBreakdownSort('boxes')}
                     >
                       <div className="flex items-center gap-1 justify-end">
@@ -2120,7 +2692,7 @@ export const OffSiteSpreadsheet = ({
                       </div>
                     </th>
                     <th 
-                      className="py-2.5 px-3 text-right cursor-pointer hover:text-white transition-colors group"
+                      className="sticky top-0 bg-cool-gray-850 z-10 border-b border-cool-gray-750/60 py-2.5 px-3 text-right cursor-pointer hover:text-white transition-colors group"
                       onClick={() => toggleBreakdownSort('weight')}
                     >
                       <div className="flex items-center gap-1 justify-end">
@@ -2131,7 +2703,7 @@ export const OffSiteSpreadsheet = ({
                       </div>
                     </th>
                     <th 
-                      className="py-2.5 px-3 text-right cursor-pointer hover:text-white transition-colors group"
+                      className="sticky top-0 bg-cool-gray-850 z-10 border-b border-cool-gray-750/60 py-2.5 px-3 text-right cursor-pointer hover:text-white transition-colors group"
                       onClick={() => toggleBreakdownSort('pieces')}
                     >
                       <div className="flex items-center gap-1 justify-end">
@@ -2200,6 +2772,49 @@ export const OffSiteSpreadsheet = ({
         )}
       </div>
 
+      {/* Conflict Management Alert Banner */}
+      {openOrdersMovementData.conflictedBoxIds.size > 0 && (
+        <div className="mb-4 bg-amber-950/50 border-2 border-amber-600/80 rounded-2xl p-3.5 shadow-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-3 text-amber-200 backdrop-blur-xs">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-amber-500/20 border border-amber-500/40 rounded-xl text-amber-400 shrink-0">
+              <AlertTriangle size={20} />
+            </div>
+            <div>
+              <div className="text-sm font-black text-amber-300 flex items-center gap-2">
+                <span>Movement Conflicts Detected!</span>
+                <span className="text-[10px] bg-amber-500/30 text-amber-200 border border-amber-500/40 px-2 py-0.5 rounded-full font-bold uppercase">
+                  {openOrdersMovementData.conflictedBoxIds.size} {openOrdersMovementData.conflictedBoxIds.size === 1 ? 'Box' : 'Boxes'}
+                </span>
+              </div>
+              <p className="text-xs text-amber-300/80 mt-0.5 leading-relaxed">
+                Items or boxes are currently assigned to multiple open movement orders at once. Look for the highlighted <span className="font-bold text-amber-200">⚠️ Conflict</span> tags in the spreadsheet below.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={() => setFilterOnlyConflicts(!filterOnlyConflicts)}
+              className={`px-3 py-1.5 rounded-xl text-xs font-black border transition-all cursor-pointer flex items-center gap-1.5 ${
+                filterOnlyConflicts
+                  ? 'bg-amber-500 text-cool-gray-950 border-amber-400 shadow-md shadow-amber-950/40'
+                  : 'bg-amber-950/80 hover:bg-amber-900/80 text-amber-300 border-amber-700/60'
+              }`}
+            >
+              <AlertTriangle size={13} />
+              <span>{filterOnlyConflicts ? 'Showing Conflicted Only' : 'Isolate Conflicted Boxes'}</span>
+            </button>
+            {filterOnlyConflicts && (
+              <button
+                onClick={() => setFilterOnlyConflicts(false)}
+                className="text-xs text-cool-gray-400 hover:text-white px-2 py-1 font-semibold transition-colors cursor-pointer"
+              >
+                Reset
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Top Bar */}
       {isDirectEdit && (
         <div className="flex justify-end mb-4">
@@ -2229,8 +2844,7 @@ export const OffSiteSpreadsheet = ({
 
         {(selectedBoxIds.size > 0 || selectedItemIds.size > 0) && (
           <div 
-            style={{ top: 'calc(var(--header-height, 130px) + 4px)' }}
-            className="sticky z-30 mb-5 flex flex-col gap-3.5 bg-cyan-950/95 border-2 border-cyan-500 rounded-xl p-4 shadow-2xl animate-fade-in w-full backdrop-blur-md"
+            className="mb-5 flex flex-col gap-3.5 bg-cyan-950/95 border-2 border-cyan-500 rounded-xl p-4 shadow-2xl animate-fade-in w-full backdrop-blur-md"
           >
             {/* Top Row: Summaries of Checked Items */}
             <div className="flex flex-col gap-2.5 border-b border-cyan-500/20 pb-3">
@@ -2305,6 +2919,23 @@ export const OffSiteSpreadsheet = ({
                 {activeOrder && activeOrder.status === 'planning' && (
                   <div className="flex items-center gap-2 bg-blue-950/40 border border-blue-900/40 rounded-lg p-1.5 px-2">
                     <span className="text-[10px] text-blue-300 font-bold uppercase tracking-wider">Plan:</span>
+                    {activeOrders.length > 1 && (
+                      <select
+                        className="bg-cool-gray-900 border border-indigo-500/50 text-indigo-200 rounded-md px-2 py-1 text-xs font-bold focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer max-w-[160px] truncate"
+                        value={activeOrder.id}
+                        onChange={(e) => {
+                          localStorage.setItem('selected-movement-order-id', e.target.value);
+                          if (onSelectActiveOrder) onSelectActiveOrder(e.target.value);
+                        }}
+                        title="Switch active movement order"
+                      >
+                        {activeOrders.map((o: any) => (
+                          <option key={o.id} value={o.id}>
+                            🚚 {o.name}
+                          </option>
+                        ))}
+                      </select>
+                    )}
                     <select
                       className="bg-cool-gray-900 border border-cool-gray-750 text-white rounded-md px-2.5 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
                       value={bulkTargetDest}
@@ -2408,9 +3039,15 @@ export const OffSiteSpreadsheet = ({
         )}
 
       {/* Active Filter Indicators & Clear Actions */}
-      {(filterCuts.size > 0 || filterPallets.size > 0 || filterLocations.size > 0 || filterMoveTo.size > 0 || filterBoxes.size > 0 || filterSerials.size > 0 || filterLots.size > 0 || filterPackDates.size > 0 || breakdownSearch || filterOnlySplitBoxes || (breakdownCategory && breakdownCategory !== 'All')) && (
+      {(filterCuts.size > 0 || filterPallets.size > 0 || filterLocations.size > 0 || filterMoveTo.size > 0 || filterBoxes.size > 0 || filterSerials.size > 0 || filterLots.size > 0 || filterPackDates.size > 0 || breakdownSearch || filterOnlySplitBoxes || filterOnlyConflicts || (breakdownCategory && breakdownCategory !== 'All')) && (
         <div className="flex flex-wrap items-center gap-2 bg-emerald-950/20 border border-emerald-900/40 rounded-xl p-3 text-xs">
           <span className="font-bold text-cool-gray-400 uppercase tracking-wider text-[10px]">Active Filters:</span>
+          {filterOnlyConflicts && (
+            <span className="bg-amber-950/80 border border-amber-500/60 rounded-lg px-2 py-1 text-amber-300 flex items-center gap-1.5 font-bold animate-fade-in shadow-xs">
+              <AlertTriangle size={12} className="text-amber-400" /> Conflicted Boxes Only
+              <button onClick={() => setFilterOnlyConflicts(false)} className="hover:text-white transition-colors cursor-pointer text-[10px] pl-0.5 font-black">✕</button>
+            </span>
+          )}
           {filterCuts.size > 0 && (
             <span className="bg-emerald-950/60 border border-emerald-800/50 px-2 py-1 rounded-lg text-emerald-450 flex items-center gap-1.5 font-bold">
               ✂️ Cuts ({filterCuts.size})
@@ -2498,7 +3135,7 @@ export const OffSiteSpreadsheet = ({
         </div>
       )}
 
-      <div className="bg-cool-gray-850 rounded-2xl border border-cool-gray-750 overflow-hidden shadow-xl">
+      <div className="bg-cool-gray-850 rounded-2xl border border-cool-gray-750 shadow-xl">
         {(() => {
           const showMovedTo = !!(visibleColumns?.has('movedTo') && activeOrder);
           const showFlag = !!(activeOrder && visibleColumns?.has('flag'));
@@ -2517,12 +3154,18 @@ export const OffSiteSpreadsheet = ({
           }
           const totalCols = (isDirectEdit || activeOrder ? 1 : 0) + 1 + displayColsCount + (showFlag ? 1 : 0);
           return (
-            <div className="overflow-x-auto min-h-[480px]">
-              <table className="w-full text-left text-sm whitespace-nowrap">
-                <thead>
+            <div 
+              id="offsite-spreadsheet-table-container"
+              className="min-h-[480px]"
+            >
+              <table className="w-full text-left text-sm whitespace-nowrap border-separate border-spacing-0">
+                <thead className="bg-cool-gray-800">
                   <tr className="border-b border-cool-gray-750 bg-cool-gray-800 text-cool-gray-400">
                     {(isDirectEdit || activeOrder) && (
-                      <th className="py-1.5 px-2 w-10 text-center">
+                      <th 
+                        className="sticky bg-cool-gray-800 z-20 py-1.5 px-2 w-10 text-center border-b border-cool-gray-750 shadow-xs select-none first:rounded-tl-2xl"
+                        style={{ top: 'var(--header-height, 68px)' }}
+                      >
                         {(isDirectEdit || (activeOrder && activeOrder.status === 'planning')) && (
                           <input 
                             type="checkbox"
@@ -2542,180 +3185,204 @@ export const OffSiteSpreadsheet = ({
                         )}
                       </th>
                     )}
-                    <th className="py-1.5 px-2 w-8"></th>
+                    <th 
+                      className="sticky bg-cool-gray-800 z-20 py-1.5 px-2 w-8 border-b border-cool-gray-750 shadow-xs first:rounded-tl-2xl"
+                      style={{ top: 'var(--header-height, 68px)' }}
+                    ></th>
                     {visibleColumns?.has('box') && (
-  <th className="py-1.5 px-2.5 relative select-none" style={{ width: columnWidths.box, minWidth: columnWidths.box }}>
-                      <div className="flex items-center gap-2 overflow-hidden">
-                        <span className="cursor-pointer hover:text-white truncate" onClick={() => toggleSort('box')}>
-                          box {sortField === 'box' && (sortAsc ? '↑' : '↓')}
-                        </span>
-                        <div className="relative shrink-0">
-                          <Filter 
-                            size={14} 
-                            className={`cursor-pointer transition-colors ${filterBoxes.size > 0 ? 'text-emerald-400 hover:text-emerald-350' : 'text-cool-gray-400 hover:text-white'}`} 
-                            onClick={(e) => { e.stopPropagation(); setOpenFilter(openFilter === 'box' ? null : 'box'); }} 
-                          />
-                          {openFilter === 'box' && renderFilterDropdown('box', allBoxes, filterBoxes, setFilterBoxes, boxesSearch, setBoxesSearch)}
+                      <th 
+                        className="sticky bg-cool-gray-800 z-20 py-1.5 px-2.5 select-none border-b border-cool-gray-750 shadow-xs first:rounded-tl-2xl last:rounded-tr-2xl" 
+                        style={{ top: 'var(--header-height, 68px)', width: columnWidths.box, minWidth: columnWidths.box }}
+                      >
+                        <div className="flex items-center gap-2 overflow-hidden">
+                          <span className="cursor-pointer hover:text-white truncate" onClick={() => toggleSort('box')}>
+                            box {sortField === 'box' && (sortAsc ? '↑' : '↓')}
+                          </span>
+                          <div className="relative shrink-0">
+                            <Filter 
+                              size={14} 
+                              className={`cursor-pointer transition-colors ${filterBoxes.size > 0 ? 'text-emerald-400 hover:text-emerald-350' : 'text-cool-gray-400 hover:text-white'}`} 
+                              onClick={(e) => { e.stopPropagation(); setOpenFilter(openFilter === 'box' ? null : 'box'); }} 
+                            />
+                            {openFilter === 'box' && renderFilterDropdown('box', allBoxes, filterBoxes, setFilterBoxes, boxesSearch, setBoxesSearch)}
+                          </div>
                         </div>
-                      </div>
-                      <div 
-                        className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-emerald-500/50 active:bg-emerald-500 transition-colors z-10"
-                        onMouseDown={(e) => handleResizeStart(e, 'box')}
-                      />
-                    </th>
-)}
+                        <div 
+                          className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-emerald-500/50 active:bg-emerald-500 transition-colors z-30"
+                          onMouseDown={(e) => handleResizeStart(e, 'box')}
+                        />
+                      </th>
+                    )}
                     {visibleColumns?.has('cuts') && (
-  <th className="py-1.5 px-2.5 relative select-none" style={{ width: columnWidths.cuts, minWidth: columnWidths.cuts }}>
-                      <div className="flex items-center gap-2 overflow-hidden">
-                        <span className="truncate">Cuts</span>
-                        <div className="relative shrink-0">
-                          <Filter 
-                            size={14} 
-                            className={`cursor-pointer transition-colors ${filterCuts.size > 0 ? 'text-emerald-400 hover:text-emerald-350' : 'text-cool-gray-400 hover:text-white'}`} 
-                            onClick={(e) => { e.stopPropagation(); setOpenFilter(openFilter === 'cuts' ? null : 'cuts'); }} 
-                          />
-                          {openFilter === 'cuts' && renderFilterDropdown('cuts', allCuts, filterCuts, setFilterCuts, cutsSearch, setCutsSearch)}
+                      <th 
+                        className="sticky bg-cool-gray-800 z-20 py-1.5 px-2.5 select-none border-b border-cool-gray-750 shadow-xs first:rounded-tl-2xl last:rounded-tr-2xl" 
+                        style={{ top: 'var(--header-height, 68px)', width: columnWidths.cuts, minWidth: columnWidths.cuts }}
+                      >
+                        <div className="flex items-center gap-2 overflow-hidden">
+                          <span className="truncate">Cuts</span>
+                          <div className="relative shrink-0">
+                            <Filter 
+                              size={14} 
+                              className={`cursor-pointer transition-colors ${filterCuts.size > 0 ? 'text-emerald-400 hover:text-emerald-350' : 'text-cool-gray-400 hover:text-white'}`} 
+                              onClick={(e) => { e.stopPropagation(); setOpenFilter(openFilter === 'cuts' ? null : 'cuts'); }} 
+                            />
+                            {openFilter === 'cuts' && renderFilterDropdown('cuts', allCuts, filterCuts, setFilterCuts, cutsSearch, setCutsSearch)}
+                          </div>
                         </div>
-                      </div>
-                      <div 
-                        className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-emerald-500/50 active:bg-emerald-500 transition-colors z-10"
-                        onMouseDown={(e) => handleResizeStart(e, 'cuts')}
-                      />
-                    </th>
-)}
+                        <div 
+                          className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-emerald-500/50 active:bg-emerald-500 transition-colors z-30"
+                          onMouseDown={(e) => handleResizeStart(e, 'cuts')}
+                        />
+                      </th>
+                    )}
                     {visibleColumns?.has('category') && (
-  <th className="py-1.5 px-2.5 relative select-none" style={{ width: columnWidths.category, minWidth: columnWidths.category }}>
-                      <div className="flex items-center gap-2 overflow-hidden">
-                        <span className="cursor-pointer hover:text-white truncate" onClick={() => toggleSort('primaryCategory')}>
-                          Category {sortField === 'primaryCategory' && (sortAsc ? '↑' : '↓')}
-                        </span>
-                        <div className="relative shrink-0">
-                          <Filter 
-                            size={14} 
-                            className={`cursor-pointer transition-colors ${(filterPrimaryCategories.size > 0 || filterSubCategories.size > 0) ? 'text-emerald-400 hover:text-emerald-350' : 'text-cool-gray-400 hover:text-white'}`} 
-                            onClick={(e) => { e.stopPropagation(); setOpenFilter(openFilter === 'primaryCategory' ? null : 'primaryCategory'); }} 
-                          />
-                          {openFilter === 'primaryCategory' && (
-                            <>
-                              <div className="fixed inset-0 z-[90] bg-black/40 backdrop-blur-sm" onClick={(e) => { e.stopPropagation(); setOpenFilter(null); }}></div>
-                              <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-cool-gray-800 border border-cool-gray-700 rounded-xl p-3 z-[100] shadow-2xl w-64 max-w-[90vw] max-h-[80vh] overflow-y-auto">
-                                <NestedCategoryMultiSelect
+                      <th 
+                        className="sticky bg-cool-gray-800 z-20 py-1.5 px-2.5 select-none border-b border-cool-gray-750 shadow-xs first:rounded-tl-2xl last:rounded-tr-2xl" 
+                        style={{ top: 'var(--header-height, 68px)', width: columnWidths.category, minWidth: columnWidths.category }}
+                      >
+                        <div className="flex items-center gap-2 overflow-hidden">
+                          <span className="cursor-pointer hover:text-white truncate" onClick={() => toggleSort('primaryCategory')}>
+                            Category {sortField === 'primaryCategory' && (sortAsc ? '↑' : '↓')}
+                          </span>
+                          <div className="relative shrink-0">
+                            <Filter 
+                              size={14} 
+                              className={`cursor-pointer transition-colors ${(filterPrimaryCategories.size > 0 || filterSubCategories.size > 0) ? 'text-emerald-400 hover:text-emerald-350' : 'text-cool-gray-400 hover:text-white'}`} 
+                              onClick={(e) => { e.stopPropagation(); setOpenFilter(openFilter === 'primaryCategory' ? null : 'primaryCategory'); }} 
+                            />
+                            {openFilter === 'primaryCategory' && (
+                              typeof document !== 'undefined' ? createPortal(
+                                <OffsiteCategoryFilterModal
                                   primaryOptions={allPrimaryCategories}
                                   subOptions={categoryMap}
-                                  selectedPrimary={Array.from(filterPrimaryCategories)}
-                                  selectedSub={Array.from(filterSubCategories)}
-                                  onChange={(p, s) => { 
-                                      setFilterPrimaryCategories(new Set(p)); 
-                                      setFilterSubCategories(new Set(s));
+                                  selectedPrimary={filterPrimaryCategories}
+                                  selectedSub={filterSubCategories}
+                                  onChange={(p, s) => {
+                                    setFilterPrimaryCategories(p);
+                                    setFilterSubCategories(s);
                                   }}
-                                  placeholder="All Categories"
-                                />
-                                <div className="mt-3 pt-2 border-t border-cool-gray-750 text-right">
-                                  <button
-                                    type="button"
-                                    onClick={(e) => { e.stopPropagation(); setOpenFilter(null); }}
-                                    className="px-3 py-1.5 text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white rounded transition-colors"
-                                  >
-                                    Done
-                                  </button>
-                                </div>
-                              </div>
-                            </>
-                          )}
+                                  onClose={() => setOpenFilter(null)}
+                                />,
+                                document.body
+                              ) : null
+                            )}
+                          </div>
                         </div>
-                      </div>
-                      <div 
-                        className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-emerald-500/50 active:bg-emerald-500 transition-colors z-10"
-                        onMouseDown={(e) => handleResizeStart(e, 'category')}
-                      />
-                    </th>
-)}
+                        <div 
+                          className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-emerald-500/50 active:bg-emerald-500 transition-colors z-30"
+                          onMouseDown={(e) => handleResizeStart(e, 'category')}
+                        />
+                      </th>
+                    )}
                     {visibleColumns?.has('weight') && (
-  <th className="py-1.5 px-2.5 relative select-none cursor-pointer hover:text-white" style={{ width: columnWidths.weight, minWidth: columnWidths.weight }} onClick={() => toggleSort('weight')}>
-                      <span className="truncate">Weight {sortField === 'weight' && (sortAsc ? '↑' : '↓')}</span>
-                      <div 
-                        className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-emerald-500/50 active:bg-emerald-500 transition-colors z-10"
-                        onMouseDown={(e) => { e.stopPropagation(); handleResizeStart(e, 'weight'); }}
-                      />
-                    </th>
-)}
+                      <th 
+                        className="sticky bg-cool-gray-800 z-20 py-1.5 px-2.5 select-none cursor-pointer hover:text-white border-b border-cool-gray-750 shadow-xs first:rounded-tl-2xl last:rounded-tr-2xl" 
+                        style={{ top: 'var(--header-height, 68px)', width: columnWidths.weight, minWidth: columnWidths.weight }} 
+                        onClick={() => toggleSort('weight')}
+                      >
+                        <span className="truncate">Weight {sortField === 'weight' && (sortAsc ? '↑' : '↓')}</span>
+                        <div 
+                          className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-emerald-500/50 active:bg-emerald-500 transition-colors z-30"
+                          onMouseDown={(e) => { e.stopPropagation(); handleResizeStart(e, 'weight'); }}
+                        />
+                      </th>
+                    )}
                     {visibleColumns?.has('pieces') && (
-  <th className="py-1.5 px-2.5 relative select-none cursor-pointer hover:text-white" style={{ width: columnWidths.pieces, minWidth: columnWidths.pieces }} onClick={() => toggleSort('pieces')}>
-                      <span className="truncate">Pieces {sortField === 'pieces' && (sortAsc ? '↑' : '↓')}</span>
-                      <div 
-                        className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-emerald-500/50 active:bg-emerald-500 transition-colors z-10"
-                        onMouseDown={(e) => { e.stopPropagation(); handleResizeStart(e, 'pieces'); }}
-                      />
-                    </th>
-)}
+                      <th 
+                        className="sticky bg-cool-gray-800 z-20 py-1.5 px-2.5 select-none cursor-pointer hover:text-white border-b border-cool-gray-750 shadow-xs first:rounded-tl-2xl last:rounded-tr-2xl" 
+                        style={{ top: 'var(--header-height, 68px)', width: columnWidths.pieces, minWidth: columnWidths.pieces }} 
+                        onClick={() => toggleSort('pieces')}
+                      >
+                        <span className="truncate">Pieces {sortField === 'pieces' && (sortAsc ? '↑' : '↓')}</span>
+                        <div 
+                          className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-emerald-500/50 active:bg-emerald-500 transition-colors z-30"
+                          onMouseDown={(e) => { e.stopPropagation(); handleResizeStart(e, 'pieces'); }}
+                        />
+                      </th>
+                    )}
                     {visibleColumns?.has('location') && (
-  <th className="py-1.5 px-2.5 relative select-none" style={{ width: columnWidths.location, minWidth: columnWidths.location }}>
-                      <div className="flex items-center gap-2 overflow-hidden">
-                        <span className="truncate">location</span>
-                        <div className="relative shrink-0">
-                          <Filter 
-                            size={14} 
-                            className={`cursor-pointer transition-colors ${filterLocations.size > 0 ? 'text-emerald-450 hover:text-emerald-350' : 'text-cool-gray-400 hover:text-white'}`} 
-                            onClick={(e) => { e.stopPropagation(); setOpenFilter(openFilter === 'locations' ? null : 'locations'); }} 
-                          />
-                          {openFilter === 'locations' && renderFilterDropdown('locations', allLocations, filterLocations, setFilterLocations, locationsSearch, setLocationsSearch)}
+                      <th 
+                        className="sticky bg-cool-gray-800 z-20 py-1.5 px-2.5 select-none border-b border-cool-gray-750 shadow-xs first:rounded-tl-2xl last:rounded-tr-2xl" 
+                        style={{ top: 'var(--header-height, 68px)', width: columnWidths.location, minWidth: columnWidths.location }}
+                      >
+                        <div className="flex items-center gap-2 overflow-hidden">
+                          <span className="truncate">location</span>
+                          <div className="relative shrink-0">
+                            <Filter 
+                              size={14} 
+                              className={`cursor-pointer transition-colors ${filterLocations.size > 0 ? 'text-emerald-450 hover:text-emerald-350' : 'text-cool-gray-400 hover:text-white'}`} 
+                              onClick={(e) => { e.stopPropagation(); setOpenFilter(openFilter === 'locations' ? null : 'locations'); }} 
+                            />
+                            {openFilter === 'locations' && renderFilterDropdown('locations', allLocations, filterLocations, setFilterLocations, locationsSearch, setLocationsSearch)}
+                          </div>
                         </div>
-                      </div>
-                      <div 
-                        className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-emerald-500/50 active:bg-emerald-500 transition-colors z-10"
-                        onMouseDown={(e) => handleResizeStart(e, 'location')}
-                      />
-                    </th>
-)}
+                        <div 
+                          className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-emerald-500/50 active:bg-emerald-500 transition-colors z-30"
+                          onMouseDown={(e) => handleResizeStart(e, 'location')}
+                        />
+                      </th>
+                    )}
                     {visibleColumns?.has('pallet') && (
-  <th className="py-1.5 px-2.5 relative select-none" style={{ width: columnWidths.pallet, minWidth: columnWidths.pallet }}>
-                      <div className="flex items-center gap-2 overflow-hidden">
-                        <span className="truncate">Pallet</span>
-                        <div className="relative shrink-0">
-                          <Filter 
-                            size={14} 
-                            className={`cursor-pointer transition-colors ${filterPallets.size > 0 ? 'text-emerald-400 hover:text-emerald-350' : 'text-cool-gray-400 hover:text-white'}`} 
-                            onClick={(e) => { e.stopPropagation(); setOpenFilter(openFilter === 'pallets' ? null : 'pallets'); }} 
-                          />
-                          {openFilter === 'pallets' && renderFilterDropdown('pallets', allPallets, filterPallets, setFilterPallets, palletsSearch, setPalletsSearch)}
+                      <th 
+                        className="sticky bg-cool-gray-800 z-20 py-1.5 px-2.5 select-none border-b border-cool-gray-750 shadow-xs first:rounded-tl-2xl last:rounded-tr-2xl" 
+                        style={{ top: 'var(--header-height, 68px)', width: columnWidths.pallet, minWidth: columnWidths.pallet }}
+                      >
+                        <div className="flex items-center gap-2 overflow-hidden">
+                          <span className="truncate">Pallet</span>
+                          <div className="relative shrink-0">
+                            <Filter 
+                              size={14} 
+                              className={`cursor-pointer transition-colors ${filterPallets.size > 0 ? 'text-emerald-400 hover:text-emerald-350' : 'text-cool-gray-400 hover:text-white'}`} 
+                              onClick={(e) => { e.stopPropagation(); setOpenFilter(openFilter === 'pallets' ? null : 'pallets'); }} 
+                            />
+                            {openFilter === 'pallets' && renderFilterDropdown('pallets', allPallets, filterPallets, setFilterPallets, palletsSearch, setPalletsSearch)}
+                          </div>
                         </div>
-                      </div>
-                      <div 
-                        className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-emerald-500/50 active:bg-emerald-500 transition-colors z-10"
-                        onMouseDown={(e) => handleResizeStart(e, 'pallet')}
-                      />
-                    </th>
-)}
+                        <div 
+                          className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-emerald-500/50 active:bg-emerald-500 transition-colors z-30"
+                          onMouseDown={(e) => handleResizeStart(e, 'pallet')}
+                        />
+                      </th>
+                    )}
                     {showMovedTo && (
-  <th className="py-1.5 px-2.5 relative select-none" style={{ width: columnWidths.movedTo, minWidth: columnWidths.movedTo }}>
-                      <div className="flex items-center gap-2 overflow-hidden">
-                        <span className="truncate">Moved To</span>
-                        <div className="relative shrink-0">
-                          <Filter 
-                            size={14} 
-                            className={`cursor-pointer transition-colors ${filterMoveTo.size > 0 ? 'text-emerald-400 hover:text-emerald-350' : 'text-cool-gray-400 hover:text-white'}`} 
-                            onClick={(e) => { e.stopPropagation(); setOpenFilter(openFilter === 'moveTo' ? null : 'moveTo'); }} 
-                          />
-                          {openFilter === 'moveTo' && renderFilterDropdown('moveTo', allMoveTo, filterMoveTo, setFilterMoveTo, moveToSearch, setMoveToSearch)}
+                      <th 
+                        className="sticky bg-cool-gray-800 z-20 py-1.5 px-2.5 select-none border-b border-cool-gray-750 shadow-xs first:rounded-tl-2xl last:rounded-tr-2xl" 
+                        style={{ top: 'var(--header-height, 68px)', width: columnWidths.movedTo, minWidth: columnWidths.movedTo }}
+                      >
+                        <div className="flex items-center gap-2 overflow-hidden">
+                          <span className="truncate">Moved To</span>
+                          <div className="relative shrink-0">
+                            <Filter 
+                              size={14} 
+                              className={`cursor-pointer transition-colors ${filterMoveTo.size > 0 ? 'text-emerald-400 hover:text-emerald-350' : 'text-cool-gray-400 hover:text-white'}`} 
+                              onClick={(e) => { e.stopPropagation(); setOpenFilter(openFilter === 'moveTo' ? null : 'moveTo'); }} 
+                            />
+                            {openFilter === 'moveTo' && renderFilterDropdown('moveTo', allMoveTo, filterMoveTo, setFilterMoveTo, moveToSearch, setMoveToSearch)}
+                          </div>
                         </div>
-                      </div>
-                      <div 
-                        className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-emerald-500/50 active:bg-emerald-500 transition-colors z-10"
-                        onMouseDown={(e) => handleResizeStart(e, 'movedTo')}
-                      />
-                    </th>
-)}
+                        <div 
+                          className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-emerald-500/50 active:bg-emerald-500 transition-colors z-30"
+                          onMouseDown={(e) => handleResizeStart(e, 'movedTo')}
+                        />
+                      </th>
+                    )}
                     {activeOrder && visibleColumns?.has('flag') && (
-  <th className="py-1.5 px-2.5 text-center relative select-none" style={{ width: columnWidths.flag, minWidth: columnWidths.flag }}>
+                      <th 
+                        className="sticky bg-cool-gray-800 z-20 py-1.5 px-2.5 text-center select-none border-b border-cool-gray-750 shadow-xs first:rounded-tl-2xl last:rounded-tr-2xl" 
+                        style={{ top: 'var(--header-height, 68px)', width: columnWidths.flag, minWidth: columnWidths.flag }}
+                      >
                         <span className="truncate">Flag</span>
                         <div 
-                          className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-emerald-500/50 active:bg-emerald-500 transition-colors z-10"
+                          className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-emerald-500/50 active:bg-emerald-500 transition-colors z-30"
                           onMouseDown={(e) => handleResizeStart(e, 'flag')}
                         />
                       </th>
-)}
+                    )}
                     {visibleColumns?.has('serial') && (
-                                             <th className="py-1.5 px-2.5 relative select-none" style={{ width: columnWidths.serial, minWidth: columnWidths.serial }}>
+                      <th 
+                        className="sticky bg-cool-gray-800 z-20 py-1.5 px-2.5 select-none border-b border-cool-gray-750 shadow-xs first:rounded-tl-2xl last:rounded-tr-2xl" 
+                        style={{ top: 'var(--header-height, 68px)', width: columnWidths.serial, minWidth: columnWidths.serial }}
+                      >
                         <div className="flex items-center gap-2 overflow-hidden">
                           <span className="cursor-pointer hover:text-white truncate" onClick={() => toggleSort('serial')}>
                             Serial {sortField === 'serial' && (sortAsc ? '↑' : '↓')}
@@ -2730,13 +3397,16 @@ export const OffSiteSpreadsheet = ({
                           </div>
                         </div>
                         <div 
-                          className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-emerald-500/50 active:bg-emerald-500 transition-colors z-10"
+                          className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-emerald-500/50 active:bg-emerald-500 transition-colors z-30"
                           onMouseDown={(e) => handleResizeStart(e, 'serial')}
                         />
                       </th>
                     )}
                     {visibleColumns?.has('lotNumber') && (
-                                             <th className="py-1.5 px-2.5 relative select-none" style={{ width: columnWidths.lotNumber, minWidth: columnWidths.lotNumber }}>
+                      <th 
+                        className="sticky bg-cool-gray-800 z-20 py-1.5 px-2.5 select-none border-b border-cool-gray-750 shadow-xs first:rounded-tl-2xl last:rounded-tr-2xl" 
+                        style={{ top: 'var(--header-height, 68px)', width: columnWidths.lotNumber, minWidth: columnWidths.lotNumber }}
+                      >
                         <div className="flex items-center gap-2 overflow-hidden">
                           <span className="cursor-pointer hover:text-white truncate" onClick={() => toggleSort('lot')}>
                             Lot Number {sortField === 'lot' && (sortAsc ? '↑' : '↓')}
@@ -2751,13 +3421,16 @@ export const OffSiteSpreadsheet = ({
                           </div>
                         </div>
                         <div 
-                          className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-emerald-500/50 active:bg-emerald-500 transition-colors z-10"
+                          className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-emerald-500/50 active:bg-emerald-500 transition-colors z-30"
                           onMouseDown={(e) => handleResizeStart(e, 'lotNumber')}
                         />
                       </th>
                     )}
                     {visibleColumns?.has('packDate') && (
-                                             <th className="py-1.5 px-2.5 relative select-none" style={{ width: columnWidths.packDate, minWidth: columnWidths.packDate }}>
+                      <th 
+                        className="sticky bg-cool-gray-800 z-20 py-1.5 px-2.5 select-none border-b border-cool-gray-750 shadow-xs first:rounded-tl-2xl last:rounded-tr-2xl" 
+                        style={{ top: 'var(--header-height, 68px)', width: columnWidths.packDate, minWidth: columnWidths.packDate }}
+                      >
                         <div className="flex items-center gap-2 overflow-hidden">
                           <span className="cursor-pointer hover:text-white truncate" onClick={() => toggleSort('packDate')}>
                             Pack Date {sortField === 'packDate' && (sortAsc ? '↑' : '↓')}
@@ -2772,7 +3445,7 @@ export const OffSiteSpreadsheet = ({
                           </div>
                         </div>
                         <div 
-                          className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-emerald-500/50 active:bg-emerald-500 transition-colors z-10"
+                          className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-emerald-500/50 active:bg-emerald-500 transition-colors z-30"
                           onMouseDown={(e) => handleResizeStart(e, 'packDate')}
                         />
                       </th>
@@ -2792,9 +3465,53 @@ export const OffSiteSpreadsheet = ({
                   groupSelectValue = '__mixed__';
                 }
 
+                // Compute destination breakdown for this box group
+                const groupDestMap = new Map<string, {
+                  destId: string;
+                  destName: string;
+                  count: number;
+                  weight: number;
+                  pieces: number;
+                  cuts: string[];
+                }>();
+
+                group.items.forEach(item => {
+                  const destId = activeOrder
+                    ? (activeOrder.moves.find((m: any) => m.entryId === item.id)?.targetLocation || '')
+                    : '';
+                  const destName = destId ? getMoveToName(destId) : 'Staying put';
+                  const cutName = (viewOriginalNames && item.originalCutName)
+                    ? item.originalCutName
+                    : ((state.products?.find((p: any) => p.id === item.productId)?.name || item.originalCutName) || '');
+
+                  if (!groupDestMap.has(destId)) {
+                    groupDestMap.set(destId, {
+                      destId,
+                      destName,
+                      count: 0,
+                      weight: 0,
+                      pieces: 0,
+                      cuts: []
+                    });
+                  }
+                  const entry = groupDestMap.get(destId)!;
+                  entry.count += 1;
+                  entry.weight += (item.netWeight || 0);
+                  entry.pieces += (item.pieces || 0);
+                  if (cutName && !entry.cuts.includes(cutName)) {
+                    entry.cuts.push(cutName);
+                  }
+                });
+
+                const groupDestList = Array.from(groupDestMap.values()).sort((a, b) => {
+                  if (!a.destId) return 1;
+                  if (!b.destId) return -1;
+                  return a.destName.localeCompare(b.destName);
+                });
+
                 return (
                   <React.Fragment key={rowId}>
-                    <tr className="hover:bg-cool-gray-800/50 transition-colors group">
+                    <tr className="hover:bg-cool-gray-800/50 transition-colors group align-top">
                       {(isDirectEdit || activeOrder) && (
                         <td 
                           className="py-1.5 px-2.5 text-center cursor-pointer select-none" 
@@ -3065,29 +3782,196 @@ export const OffSiteSpreadsheet = ({
                       </td>
 )}
                       {showMovedTo && (
-  <td className="py-1.5 px-2.5 text-blue-400 font-bold" style={{ width: columnWidths.movedTo, minWidth: columnWidths.movedTo, maxWidth: columnWidths.movedTo }}>
-                        <div className="overflow-hidden truncate">
-                          {activeOrder ? (
-                            <select
-                              className="w-full bg-blue-950/30 border border-blue-900 text-blue-300 rounded px-2 py-1 text-xs focus:outline-none focus:border-blue-500 disabled:opacity-50 cursor-pointer"
-                              value={groupSelectValue}
-                              onChange={(e) => updateMoveTargetGroup(group.items, e.target.value)}
-                              onClick={e => e.stopPropagation()}
-                              disabled={activeOrder.status !== 'planning'}
-                            >
-                              {group.moveTo.size > 1 && (
-                                <option value="__mixed__">⚠️ Split Box</option>
-                              )}
-                              <option value="">Staying put</option>
-                              {(activeOrder.targetDestinations || []).map((dest: any, idx: number) => (
-                                <option key={`opt-${dest.id}-${idx}`} value={dest.id}>
-                                  {dest.palletName ? `${dest.palletName} - ${dest.locationName}` : dest.locationName}
-                                </option>
-                              ))}
-                            </select>
-                          ) : (
-                            Array.from(group.moveTo).filter(Boolean).map(getMoveToName).join(', ') || 'Staying put'
-                          )}
+  <td className="py-1.5 px-2.5 text-blue-400 font-bold align-top" style={{ width: columnWidths.movedTo, minWidth: columnWidths.movedTo, maxWidth: columnWidths.movedTo }}>
+                        <div className="overflow-hidden space-y-1.5">
+                          {(() => {
+                            const boxAssignments = openOrdersMovementData.boxOrderAssignments.get(group.boxId) || [];
+                            const otherOrderAssignments = boxAssignments.filter(ba => !ba.isCurrentOrder);
+                            const isBoxConflicted = openOrdersMovementData.conflictedBoxIds.has(group.boxId);
+                            const hasItemConflict = group.items.some(it => openOrdersMovementData.conflictedEntryIds.has(it.id));
+                            const hasConflict = isBoxConflicted || hasItemConflict;
+
+                            return (
+                              <>
+                                {/* Conflict warning tag */}
+                                {hasConflict && (
+                                  <div 
+                                    className="p-1 px-1.5 bg-amber-500/25 border border-amber-500/60 rounded text-[10px] text-amber-300 font-black flex items-center justify-between gap-1 shadow-xs animate-pulse select-none"
+                                    title={`Items from this box are assigned across ${boxAssignments.length} open movement orders!`}
+                                  >
+                                    <div className="flex items-center gap-1 min-w-0">
+                                      <AlertTriangle size={11} className="text-amber-400 shrink-0" />
+                                      <span className="truncate">Conflict: In {boxAssignments.length} Orders</span>
+                                    </div>
+                                  </div>
+                                )}
+
+                                {activeOrder ? (
+                                  <div className="space-y-1">
+                                    <select
+                                      className="w-full bg-blue-950/30 border border-blue-900 text-blue-300 rounded px-2 py-1 text-xs focus:outline-none focus:border-blue-500 disabled:opacity-50 cursor-pointer truncate"
+                                      value={groupSelectValue}
+                                      onChange={(e) => updateMoveTargetGroup(group.items, e.target.value)}
+                                      onClick={e => e.stopPropagation()}
+                                      disabled={activeOrder.status !== 'planning'}
+                                      title={group.moveTo.size > 1 ? `Split Box across ${groupDestList.length} locations` : undefined}
+                                    >
+                                      {group.moveTo.size > 1 && (
+                                        <option value="__mixed__">⚠️ Split Box ({groupDestList.length} locations)</option>
+                                      )}
+                                      <option value="">Staying put</option>
+                                      {(activeOrder.targetDestinations || []).map((dest: any, idx: number) => (
+                                        <option key={`opt-${dest.id}-${idx}`} value={dest.id}>
+                                          {dest.palletName ? `${dest.palletName} - ${dest.locationName}` : dest.locationName}
+                                        </option>
+                                      ))}
+                                    </select>
+
+                                    {/* Directly list all destination locations under the dropdown for split boxes within active order */}
+                                    {group.moveTo.size > 1 && (
+                                      <div 
+                                        className="mt-1.5 pt-1.5 border-t border-blue-900/40 flex flex-col gap-1 text-[11px] font-normal"
+                                        onClick={e => e.stopPropagation()}
+                                      >
+                                        <div className="flex items-center justify-between text-[9px] font-bold text-cool-gray-400 uppercase tracking-wider px-0.5 select-none">
+                                          <span>Locations ({groupDestList.length})</span>
+                                          <span>Cuts / Wt</span>
+                                        </div>
+                                        <div className="flex flex-col gap-1">
+                                          {groupDestList.map((d) => {
+                                            const isStayingPut = !d.destId || d.destId === 'Staying put';
+                                            return (
+                                              <div
+                                                key={d.destId || '__staying_put__'}
+                                                className={`flex items-center justify-between gap-1.5 px-2 py-1 rounded-md border text-[10px] leading-tight select-text transition-all ${
+                                                  isStayingPut
+                                                    ? 'bg-cool-gray-900/80 border-cool-gray-750 text-cool-gray-300'
+                                                    : 'bg-blue-950/70 border-blue-800/70 text-blue-200'
+                                                }`}
+                                                title={`${d.destName}\n• ${d.count} cut(s) (${d.pieces} pcs)\n• Net Weight: ${d.weight.toFixed(2)} lbs\n• Cuts: ${d.cuts.join(', ')}`}
+                                              >
+                                                <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                                                  <span className="shrink-0 text-[10px] leading-none">
+                                                    {isStayingPut ? '⏹️' : '📍'}
+                                                  </span>
+                                                  <span className="truncate font-semibold text-cool-gray-100" title={d.destName}>
+                                                    {d.destName}
+                                                  </span>
+                                                </div>
+                                                <div className="shrink-0 font-mono text-[9px] flex items-center gap-1 opacity-90">
+                                                  <span className="bg-cool-gray-950/70 px-1 py-0.2 rounded text-cool-gray-300 border border-cool-gray-800/80 font-bold">
+                                                    {d.count} {d.count === 1 ? 'cut' : 'cuts'}
+                                                  </span>
+                                                  <span className="text-cool-gray-300 font-semibold whitespace-nowrap">
+                                                    {d.weight.toFixed(1)}#
+                                                  </span>
+                                                </div>
+                                              </div>
+                                            );
+                                          })}
+                                        </div>
+                                      </div>
+                                    )}
+
+                                    {/* Cross-Order Movements: Show destinations from other open movement orders */}
+                                    {otherOrderAssignments.length > 0 && (
+                                      <div className="mt-2 pt-1.5 border-t border-amber-900/50 flex flex-col gap-1 text-[10px] font-normal" onClick={e => e.stopPropagation()}>
+                                        <div className="text-[9px] font-bold text-amber-400 uppercase tracking-wider px-0.5 flex items-center gap-1 select-none">
+                                          <span>⚠️ Other Order Movements:</span>
+                                        </div>
+                                        {otherOrderAssignments.map(oa => (
+                                          <div key={oa.orderId} className="bg-amber-950/40 border border-amber-800/60 rounded p-1.5 space-y-1">
+                                            <div className="flex items-center justify-between gap-1 text-[10px] font-bold">
+                                              <span className="text-amber-300 truncate" title={oa.orderName}>📋 {oa.orderName}</span>
+                                              <span className="text-[8px] bg-amber-900/80 text-amber-200 border border-amber-700/60 px-1 py-0.2 rounded uppercase font-black shrink-0">
+                                                {oa.orderStatus}
+                                              </span>
+                                            </div>
+                                            <div className="space-y-0.5">
+                                              {oa.destinations.map((d, dIdx) => (
+                                                <div key={dIdx} className="flex items-center justify-between gap-1 text-[9px] bg-cool-gray-950/60 rounded px-1.5 py-0.5 text-amber-200">
+                                                  <div className="flex items-center gap-1 min-w-0 flex-1">
+                                                    <span className="text-amber-400 shrink-0">📍</span>
+                                                    <span className="truncate">{d.destName}</span>
+                                                  </div>
+                                                  <span className="shrink-0 font-mono text-amber-300 font-semibold">
+                                                    {d.cutsCount} cuts ({d.weight.toFixed(1)}#)
+                                                  </span>
+                                                </div>
+                                              ))}
+                                            </div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                ) : (
+                                  /* No active order selected: display destinations from all open orders */
+                                  boxAssignments.length > 0 ? (
+                                    <div className="space-y-1 text-left font-normal text-[10px]">
+                                      {boxAssignments.map(oa => (
+                                        <div key={oa.orderId} className="bg-cool-gray-900/90 border border-cool-gray-750 rounded p-1.5 space-y-1">
+                                          <div className="flex items-center justify-between gap-1 font-bold">
+                                            <span className="text-blue-300 truncate" title={oa.orderName}>📋 {oa.orderName}</span>
+                                            <span className="text-[8px] bg-cool-gray-800 text-cool-gray-300 border border-cool-gray-700 px-1 py-0.2 rounded uppercase font-black shrink-0">
+                                              {oa.orderStatus}
+                                            </span>
+                                          </div>
+                                          <div className="space-y-0.5">
+                                            {oa.destinations.map((d, dIdx) => (
+                                              <div key={dIdx} className="flex items-center justify-between gap-1 text-[9px] bg-cool-gray-950/70 rounded px-1.5 py-0.5 text-cool-gray-200">
+                                                <div className="flex items-center gap-1 min-w-0 flex-1">
+                                                  <span className="text-emerald-400 shrink-0">📍</span>
+                                                  <span className="truncate">{d.destName}</span>
+                                                </div>
+                                                <span className="shrink-0 font-mono text-cool-gray-300 font-semibold">
+                                                  {d.cutsCount} cuts ({d.weight.toFixed(1)}#)
+                                                </span>
+                                              </div>
+                                            ))}
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  ) : (
+                                    group.moveTo.size > 1 ? (
+                                      <div className="space-y-1">
+                                        <div className="text-amber-400 text-xs font-bold flex items-center gap-1">
+                                          <span>⚠️</span> Split Box ({groupDestList.length} locations)
+                                        </div>
+                                        <div className="flex flex-col gap-1 text-[10px] font-normal">
+                                          {groupDestList.map((d) => {
+                                            const isStayingPut = !d.destId || d.destId === 'Staying put';
+                                            return (
+                                              <div
+                                                key={d.destId || '__staying_put__'}
+                                                className={`flex items-center justify-between gap-1 px-2 py-0.5 rounded border text-[10px] ${
+                                                  isStayingPut
+                                                    ? 'bg-cool-gray-900/80 border-cool-gray-750 text-cool-gray-400'
+                                                    : 'bg-blue-950/70 border-blue-800/70 text-blue-200'
+                                                }`}
+                                                title={`${d.destName}\n• ${d.count} cut(s) (${d.pieces} pcs)\n• Weight: ${d.weight.toFixed(2)} lbs\n• Cuts: ${d.cuts.join(', ')}`}
+                                              >
+                                                <div className="flex items-center gap-1 min-w-0 flex-1">
+                                                  <span className="shrink-0 text-[10px]">{isStayingPut ? '⏹️' : '📍'}</span>
+                                                  <span className="truncate font-medium text-cool-gray-200">{d.destName}</span>
+                                                </div>
+                                                <span className="shrink-0 font-mono text-[9px] text-cool-gray-400">
+                                                  {d.count} cuts ({d.weight.toFixed(1)}#)
+                                                </span>
+                                              </div>
+                                            );
+                                          })}
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      Array.from(group.moveTo).filter(Boolean).map(getMoveToName).join(', ') || 'Staying put'
+                                    )
+                                  )
+                                )}
+                              </>
+                            );
+                          })()}
                         </div>
                       </td>
 )}
@@ -3577,24 +4461,64 @@ export const OffSiteSpreadsheet = ({
                                 </td>
                               )}
                               {showMovedTo && (
-                                <td className="py-1 px-2.5 text-xs truncate" style={{ width: columnWidths.movedTo, minWidth: columnWidths.movedTo, maxWidth: columnWidths.movedTo }}>
-                                  {activeOrder ? (
-                                    <select
-                                      className="bg-blue-950/45 border border-blue-900/60 text-blue-300 rounded px-2 py-1 text-[10px] focus:outline-none focus:border-blue-500 disabled:opacity-50 cursor-pointer w-full"
-                                      value={itemTarget}
-                                      onChange={(e) => updateMoveTargetItem(item.id, e.target.value)}
-                                      disabled={activeOrder.status !== 'planning'}
-                                    >
-                                      <option value="">Staying put</option>
-                                      {(activeOrder.targetDestinations || []).map((dest: any, idx: number) => (
-                                        <option key={`item-opt-${item.id}-${dest.id}-${idx}`} value={dest.id}>
-                                          {dest.palletName ? `${dest.palletName} - ${dest.locationName}` : dest.locationName}
-                                        </option>
-                                      ))}
-                                    </select>
-                                  ) : (
-                                    <span className="text-cool-gray-400">{getMoveToName(item.moveTo) || '-'}</span>
-                                  )}
+                                <td className="py-1 px-2.5 text-xs align-top" style={{ width: columnWidths.movedTo, minWidth: columnWidths.movedTo, maxWidth: columnWidths.movedTo }}>
+                                  <div className="space-y-1 overflow-hidden">
+                                    {(() => {
+                                      const itemAllMoves = openOrdersMovementData.entryOrderMoves.get(item.id) || [];
+                                      const isItemConflicted = openOrdersMovementData.conflictedEntryIds.has(item.id);
+                                      const otherMoves = itemAllMoves.filter(m => !m.isCurrentOrder);
+
+                                      return (
+                                        <>
+                                          {isItemConflicted && (
+                                            <div className="flex items-center gap-1 text-[9px] font-black text-amber-300 bg-amber-500/25 px-1.5 py-0.5 rounded border border-amber-500/40 animate-pulse select-none">
+                                              <AlertTriangle size={10} className="text-amber-400 shrink-0" />
+                                              <span>In {itemAllMoves.length} open orders!</span>
+                                            </div>
+                                          )}
+
+                                          {activeOrder ? (
+                                            <select
+                                              className="bg-blue-950/45 border border-blue-900/60 text-blue-300 rounded px-2 py-1 text-[10px] focus:outline-none focus:border-blue-500 disabled:opacity-50 cursor-pointer w-full"
+                                              value={itemTarget}
+                                              onChange={(e) => updateMoveTargetItem(item.id, e.target.value)}
+                                              disabled={activeOrder.status !== 'planning'}
+                                            >
+                                              <option value="">Staying put</option>
+                                              {(activeOrder.targetDestinations || []).map((dest: any, idx: number) => (
+                                                <option key={`item-opt-${item.id}-${dest.id}-${idx}`} value={dest.id}>
+                                                  {dest.palletName ? `${dest.palletName} - ${dest.locationName}` : dest.locationName}
+                                                </option>
+                                              ))}
+                                            </select>
+                                          ) : null}
+
+                                          {otherMoves.length > 0 && (
+                                            <div className="space-y-0.5 pt-0.5">
+                                              {otherMoves.map((om, omIdx) => (
+                                                <div 
+                                                  key={omIdx}
+                                                  className="flex items-center justify-between gap-1 text-[9px] bg-amber-950/50 border border-amber-800/60 rounded px-1.5 py-0.5 text-amber-200"
+                                                  title={`Assigned in ${om.orderName} (${om.orderStatus}) to ${om.destName}`}
+                                                >
+                                                  <span className="truncate font-semibold text-amber-300" title={om.orderName}>
+                                                    📋 {om.orderName}
+                                                  </span>
+                                                  <span className="shrink-0 font-medium text-amber-200 truncate max-w-[85px]" title={om.destName}>
+                                                    📍 {om.destName}
+                                                  </span>
+                                                </div>
+                                              ))}
+                                            </div>
+                                          )}
+
+                                          {!activeOrder && otherMoves.length === 0 && (
+                                            <span className="text-cool-gray-400 text-[11px]">-</span>
+                                          )}
+                                        </>
+                                      );
+                                    })()}
+                                  </div>
                                 </td>
                               )}
                               {activeOrder && visibleColumns?.has('flag') && (
@@ -3670,7 +4594,8 @@ export const OffSiteSpreadsheet = ({
                       setNewItemForm({ 
                         ...newItemForm, 
                         productId: prodId,
-                        cuts: prod ? prod.name : newItemForm.cuts
+                        cuts: prod ? prod.name : newItemForm.cuts,
+                        tagIds: prod?.defaultTagIds ? [...prod.defaultTagIds] : (newItemForm.tagIds || [])
                       });
                     }}
                   >
@@ -3689,7 +4614,18 @@ export const OffSiteSpreadsheet = ({
                     required
                     className="w-full bg-cool-gray-950 border border-cool-gray-700 rounded px-2.5 py-1.5 text-white focus:outline-none focus:ring-1 focus:ring-emerald-500 text-xs"
                     value={newItemForm.cuts || ''}
-                    onChange={e => setNewItemForm({ ...newItemForm, cuts: e.target.value })}
+                    onChange={e => {
+                      const val = e.target.value;
+                      const matched = state.products?.find((p: any) => p.name.trim().toLowerCase() === val.trim().toLowerCase());
+                      setNewItemForm((prev: any) => ({
+                        ...prev,
+                        cuts: val,
+                        ...(matched && !prev.productId ? {
+                          productId: matched.id,
+                          tagIds: (prev.tagIds && prev.tagIds.length > 0) ? prev.tagIds : [...(matched.defaultTagIds || [])]
+                        } : {})
+                      }));
+                    }}
                     placeholder="e.g. 14082 PORK TRIM"
                   />
                 </div>
@@ -3821,6 +4757,37 @@ export const OffSiteSpreadsheet = ({
                     placeholder="e.g. L-5432"
                   />
                 </div>
+
+                {state.tags && state.tags.length > 0 && (
+                  <div className="col-span-2">
+                    <label className="block text-xs text-cool-gray-400 font-bold mb-1.5 uppercase tracking-wider">Item Tags</label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {state.tags.map((tag: any) => {
+                        const isSelected = (newItemForm.tagIds || []).includes(tag.id);
+                        return (
+                          <button
+                            key={tag.id}
+                            type="button"
+                            onClick={() => {
+                              const current = newItemForm.tagIds || [];
+                              const next = isSelected ? current.filter((id: string) => id !== tag.id) : [...current, tag.id];
+                              setNewItemForm({ ...newItemForm, tagIds: next });
+                            }}
+                            style={{
+                              backgroundColor: isSelected ? `${tag.color}25` : 'transparent',
+                              borderColor: isSelected ? tag.color || '#60a5fa' : '#374151',
+                              color: isSelected ? '#ffffff' : '#9ca3af'
+                            }}
+                            className="text-[11px] px-2.5 py-1 rounded-full border transition font-medium flex items-center gap-1.5 cursor-pointer"
+                          >
+                            <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: tag.color || '#60a5fa' }} />
+                            {tag.name}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 

@@ -4,6 +4,12 @@ import { MeatIcon, PlusIcon, MinusIcon, PackageIcon } from '../components/icons'
 import { getContainerIcon } from '../components/ContainerIconsMap';
 import { MoreVertical, Move, History, Tag, Edit, Package, Search, PlusCircle, AlertTriangle } from 'lucide-react';
 import { evaluateMathExpression } from '../components/QuickCalculatorPanel';
+import { 
+    loadSortOrderConfig, 
+    sortPrimaryCategories, 
+    sortSubCategories, 
+    sortProductsHierarchy 
+} from '../utils/sortOrder';
 
 interface ProductLocationRowProps {
     meatCut: MeatCut;
@@ -34,8 +40,6 @@ const ProductLocationRow: React.FC<ProductLocationRowProps> = ({
     const [openUpwards, setOpenUpwards] = useState(false);
 
     const menuRef = useRef<HTMLDivElement>(null);
-    const lastQuantityRef = useRef<number>(meatCut.quantity);
-    const lastDispatchedQuantityRef = useRef<number | null>(null);
 
     // Evaluate math formulas like +20, -5, or 10+5
     const evaluateMathExpression = (input: string, baseValue: number): number | null => {
@@ -69,16 +73,8 @@ const ProductLocationRow: React.FC<ProductLocationRowProps> = ({
     };
 
     useEffect(() => {
-        // Sync with global state if it changes
-        // Only update if we are not actively editing, AND if either:
-        // 1. lastDispatchedQuantityRef is null (not in a click sequence)
-        // 2. The incoming meatCut.quantity has caught up to our last dispatched quantity
-        if (lastDispatchedQuantityRef.current === null || meatCut.quantity === lastDispatchedQuantityRef.current) {
-            lastQuantityRef.current = meatCut.quantity;
-            if (!isEditing) {
-                setLocalQuantity(meatCut.quantity.toString());
-            }
-            lastDispatchedQuantityRef.current = null; // Clear out since we've caught up
+        if (!isEditing) {
+            setLocalQuantity(meatCut.quantity.toString());
         }
     }, [meatCut.quantity, isEditing]);
 
@@ -114,11 +110,23 @@ const ProductLocationRow: React.FC<ProductLocationRowProps> = ({
     }, [isMenuOpen]);
 
     const handleQuantityChange = (amount: number) => {
-        const newQuantity = Math.max(0, lastQuantityRef.current + amount);
-        lastQuantityRef.current = newQuantity;
-        lastDispatchedQuantityRef.current = newQuantity;
+        const currentQty = isEditing ? (parseInt(localQuantity, 10) || 0) : meatCut.quantity;
+        const newQuantity = Math.max(0, currentQty + amount);
         setLocalQuantity(newQuantity.toString());
-        dispatch({ type: 'UPDATE_MEAT_QUANTITY', payload: { meatCutId: meatCut.id, newQuantity } });
+        if (meatCut.id.startsWith('virtual_zero_')) {
+            if (newQuantity > 0) {
+                dispatch({
+                    type: 'ADD_MEAT',
+                    payload: {
+                        productId: meatCut.productId,
+                        containerId: container.id,
+                        quantity: newQuantity
+                    }
+                });
+            }
+        } else {
+            dispatch({ type: 'UPDATE_MEAT_QUANTITY', payload: { meatCutId: meatCut.id, newQuantity } });
+        }
     };
     
     const handleDirectInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -126,11 +134,24 @@ const ProductLocationRow: React.FC<ProductLocationRowProps> = ({
     };
 
     const handleCommitQuantity = () => {
-        const evaluated = evaluateMathExpression(localQuantity, meatCut.quantity);
-        if (evaluated !== null && evaluated >= 0 && evaluated !== meatCut.quantity) {
-            lastQuantityRef.current = evaluated;
-            lastDispatchedQuantityRef.current = evaluated;
-            dispatch({ type: 'UPDATE_MEAT_QUANTITY', payload: { meatCutId: meatCut.id, newQuantity: evaluated } });
+        const baseVal = meatCut.quantity;
+        const evaluated = evaluateMathExpression(localQuantity, baseVal);
+        if (evaluated !== null && evaluated >= 0 && evaluated !== baseVal) {
+            setLocalQuantity(evaluated.toString());
+            if (meatCut.id.startsWith('virtual_zero_')) {
+                if (evaluated > 0) {
+                    dispatch({
+                        type: 'ADD_MEAT',
+                        payload: {
+                            productId: meatCut.productId,
+                            containerId: container.id,
+                            quantity: evaluated
+                        }
+                    });
+                }
+            } else {
+                dispatch({ type: 'UPDATE_MEAT_QUANTITY', payload: { meatCutId: meatCut.id, newQuantity: evaluated } });
+            }
         } else {
             setLocalQuantity(meatCut.quantity.toString());
         }
@@ -139,10 +160,12 @@ const ProductLocationRow: React.FC<ProductLocationRowProps> = ({
     const ContainerIcon = getContainerIcon(container?.icon || 'generic');
     const product = state.products.find(p => p.id === meatCut.productId);
 
+    const displayedOriginalName = meatCut.originalCutName || (meatCut.wrongLabel ? state.products.find(p => p.id === meatCut.wrongLabel)?.name : undefined);
     const isLabeledDifferently = Boolean(
-      meatCut.originalCutName && (
+      (meatCut.isWrongLabel || meatCut.wrongLabel) &&
+      displayedOriginalName && (
         !product || 
-        meatCut.originalCutName.trim().toLowerCase() !== product.name.trim().toLowerCase()
+        displayedOriginalName.trim().toLowerCase() !== product.name.trim().toLowerCase()
       )
     );
 
@@ -252,8 +275,8 @@ const ProductLocationRow: React.FC<ProductLocationRowProps> = ({
                         })}
                     </div>
                     {isLabeledDifferently && (
-                        <p className="text-[10px] text-red-400 font-semibold mt-0.5 break-words whitespace-normal" title={meatCut.originalCutName}>
-                            ⚠️ Labeled As: <span className="underline">{meatCut.originalCutName}</span>
+                        <p className="text-[10px] text-red-400 font-semibold mt-0.5 break-words whitespace-normal" title={displayedOriginalName}>
+                            ⚠️ Labeled As: <span className="underline">{displayedOriginalName}</span>
                         </p>
                     )}
                     {meatCut.notes && <p className="text-[10px] text-amber-500/80 mt-0.5 break-words whitespace-normal" title={meatCut.notes}>Notes: {meatCut.notes}</p>}
@@ -325,56 +348,58 @@ const ProductLocationRow: React.FC<ProductLocationRowProps> = ({
                                 <Search className="w-3.5 h-3.5 text-cyan-400" /> View Product Info
                             </button>
 
-                            <button 
-                                onClick={() => { setIsMenuOpen(false); openModal({ type: 'MOVE_MEAT', meatCutId: meatCut.id }); }} 
-                                className="w-full text-left px-3 py-2 text-xs text-cool-gray-250 hover:bg-cool-gray-800 transition flex items-center gap-2 font-medium"
-                            >
-                                <Move className="w-3.5 h-3.5 text-cyan-455" /> Move to Container
-                            </button>
+                            {!meatCut.id.startsWith('virtual_zero_') && (
+                                <>
+                                    <button 
+                                        onClick={() => { setIsMenuOpen(false); openModal({ type: 'MOVE_MEAT', meatCutId: meatCut.id }); }} 
+                                        className="w-full text-left px-3 py-2 text-xs text-cool-gray-250 hover:bg-cool-gray-800 transition flex items-center gap-2 font-medium"
+                                    >
+                                        <Move className="w-3.5 h-3.5 text-cyan-455" /> Move to Container
+                                    </button>
 
-                            {!container.id.endsWith('_loose') && (
-                                <button 
-                                    onClick={() => { setIsMenuOpen(false); openModal({ type: 'MOVE_CONTAINER', containerId: container.id }); }} 
-                                    className="w-full text-left px-3 py-2 text-xs text-cool-gray-250 hover:bg-cool-gray-800 transition flex items-center gap-2 font-medium"
-                                    title={`Move the entire container "${container.name}" to another freezer`}
-                                >
-                                    <span className="w-3.5 h-3.5 text-emerald-400 font-bold flex items-center justify-center">📦</span>
-                                    Move Entire Container
-                                </button>
+                                    {!container.id.endsWith('_loose') && (
+                                        <button 
+                                            onClick={() => { setIsMenuOpen(false); openModal({ type: 'MOVE_CONTAINER', containerId: container.id }); }} 
+                                            className="w-full text-left px-3 py-2 text-xs text-cool-gray-250 hover:bg-cool-gray-800 transition flex items-center gap-2 font-medium"
+                                            title={`Move the entire container "${container.name}" to another freezer`}
+                                        >
+                                            <span className="w-3.5 h-3.5 text-emerald-400 font-bold flex items-center justify-center">📦</span>
+                                            Move Entire Container
+                                        </button>
+                                    )}
+                                    
+                                    <button 
+                                        onClick={() => { setIsMenuOpen(false); openModal({ type: 'EDIT_NOTE', meatCutId: meatCut.id, initialNotes: meatCut.notes || '', initialOriginalCutName: meatCut.originalCutName || '' }); }} 
+                                        className="w-full text-left px-3 py-2 text-xs text-cool-gray-250 hover:bg-cool-gray-800 transition flex items-center gap-2 font-medium"
+                                    >
+                                        <Tag className="w-3.5 h-3.5 text-amber-400" /> Edit Note
+                                    </button>
+
+                                    <button 
+                                        onClick={() => { setIsMenuOpen(false); openModal({ type: 'WRONG_LABEL', meatCutId: meatCut.id }); }} 
+                                        className="w-full text-left px-3 py-2 text-xs text-cool-gray-250 hover:bg-cool-gray-800 transition flex items-center gap-2 font-medium border-t border-cool-gray-800/80"
+                                    >
+                                        <AlertTriangle className="w-3.5 h-3.5 text-red-400" /> Labeled Wrong
+                                    </button>
+
+                                    <button 
+                                        onClick={() => { 
+                                          setIsMenuOpen(false); 
+                                          openModal({ type: 'SELECT_MEAT_TAGS', meatCutId: meatCut.id }); 
+                                        }} 
+                                        className="w-full text-left px-3 py-2 text-xs text-cool-gray-250 hover:bg-cool-gray-800 transition flex items-center gap-2 font-medium"
+                                    >
+                                        <Tag className="w-3.5 h-3.5 text-cyan-400" /> Select Tags...
+                                    </button>
+
+                                    <button 
+                                        onClick={() => { setIsMenuOpen(false); openModal({ type: 'HISTORY', targetId: meatCut.id, targetName: `${product?.name || 'Item'} in ${container.name}` }); }} 
+                                        className="w-full text-left px-3 py-2 text-xs text-cool-gray-255 hover:bg-cool-gray-800 transition flex items-center gap-2 font-medium"
+                                    >
+                                        <History className="w-3.5 h-3.5 text-indigo-405" /> View Item History
+                                    </button>
+                                </>
                             )}
-                            
-                            <button 
-                                onClick={() => { setIsMenuOpen(false); openModal({ type: 'EDIT_NOTE', meatCutId: meatCut.id, initialNotes: meatCut.notes || '', initialOriginalCutName: meatCut.originalCutName || '' }); }} 
-                                className="w-full text-left px-3 py-2 text-xs text-cool-gray-250 hover:bg-cool-gray-800 transition flex items-center gap-2 font-medium"
-                            >
-                                <Tag className="w-3.5 h-3.5 text-amber-400" /> Edit Note
-                            </button>
-
-                            <button 
-                                onClick={() => { setIsMenuOpen(false); openModal({ type: 'WRONG_LABEL', meatCutId: meatCut.id }); }} 
-                                className="w-full text-left px-3 py-2 text-xs text-cool-gray-250 hover:bg-cool-gray-800 transition flex items-center gap-2 font-medium border-t border-cool-gray-800/80"
-                            >
-                                <AlertTriangle className="w-3.5 h-3.5 text-red-400" /> Labeled Wrong
-                            </button>
-
-                            <button 
-                                onClick={() => { 
-                                  setIsMenuOpen(false); 
-                                  openModal({ type: 'SELECT_MEAT_TAGS', meatCutId: meatCut.id }); 
-                                }} 
-                                className="w-full text-left px-3 py-2 text-xs text-cool-gray-250 hover:bg-cool-gray-800 transition flex items-center gap-2 font-medium"
-                            >
-                                <Tag className="w-3.5 h-3.5 text-cyan-400" /> Select Tags...
-                            </button>
-
-
-
-                            <button 
-                                onClick={() => { setIsMenuOpen(false); openModal({ type: 'HISTORY', targetId: meatCut.id, targetName: `${product?.name || 'Item'} in ${container.name}` }); }} 
-                                className="w-full text-left px-3 py-2 text-xs text-cool-gray-255 hover:bg-cool-gray-800 transition flex items-center gap-2 font-medium"
-                            >
-                                <History className="w-3.5 h-3.5 text-indigo-405" /> View Item History
-                            </button>
 
                             {product && (
                                 <>
@@ -965,7 +990,7 @@ export const DisplayCaseView: React.FC<DisplayCaseViewProps> = ({
 
     // Find display case locations ONLY (freezer.isSpecial === true)
     const findDisplayLocations = (productId: string) => {
-        return state.meatCuts
+        const existingDisplayLocs = state.meatCuts
             .filter(mc => mc.productId === productId)
             .map(mc => {
                 const container = state.containers.find(c => c.id === mc.containerId);
@@ -987,6 +1012,47 @@ export const DisplayCaseView: React.FC<DisplayCaseViewProps> = ({
 
                 return true;
             }) as { meatCut: MeatCut, container: Container, freezer: Freezer }[];
+
+        if (existingDisplayLocs.length > 0) {
+            return existingDisplayLocs;
+        }
+
+        // If product is in stock (has quantity in non-display storage) but NOT in display, create a 0-quantity location for display freezers
+        const productHasStockInStorage = state.meatCuts.some(
+            mc => mc.productId === productId && mc.quantity > 0 && !isCutExcludedFromRestock(mc)
+        );
+
+        if (productHasStockInStorage && displayFreezers.length > 0) {
+            const targetFreezers = selectedFreezerId !== 'all' 
+                ? displayFreezers.filter(f => f.id === selectedFreezerId)
+                : displayFreezers;
+
+            const zeroLocs = targetFreezers.map(df => {
+                const containerId = df.id + '_loose';
+                let container = state.containers.find(c => c.id === containerId);
+                if (!container) {
+                    container = {
+                        id: containerId,
+                        name: 'Loose Stock',
+                        freezerId: df.id,
+                        icon: 'loose'
+                    };
+                }
+                return {
+                    meatCut: {
+                        id: `virtual_zero_${productId}_${df.id}`,
+                        productId,
+                        quantity: 0,
+                        containerId
+                    },
+                    container,
+                    freezer: df
+                };
+            });
+            return zeroLocs;
+        }
+
+        return existingDisplayLocs;
     };
 
     const groupedProducts = useMemo(() => {
@@ -1144,11 +1210,15 @@ export const DisplayCaseView: React.FC<DisplayCaseViewProps> = ({
         }
     };
 
+    const sortConfig = useMemo(() => loadSortOrderConfig(state.appConfig), [state.appConfig]);
+
     // Precompute sections for scroll-spy TOC and jump triggers
     const categorySections = useMemo(() => {
         const sections: { primary: string; sub: string; id: string }[] = [];
-        Object.keys(groupedProducts).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })).forEach(primary => {
-            Object.keys(groupedProducts[primary]).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })).forEach(sub => {
+        const sortedPrimaries = sortPrimaryCategories(Object.keys(groupedProducts), sortConfig.displaySortMode, sortConfig.customOrder);
+        sortedPrimaries.forEach(primary => {
+            const sortedSubs = sortSubCategories(Object.keys(groupedProducts[primary]), primary, sortConfig.displaySortMode, sortConfig.customOrder);
+            sortedSubs.forEach(sub => {
                 sections.push({
                     primary,
                     sub,
@@ -1157,7 +1227,7 @@ export const DisplayCaseView: React.FC<DisplayCaseViewProps> = ({
             });
         });
         return sections;
-    }, [groupedProducts]);
+    }, [groupedProducts, sortConfig]);
 
     // Track active scroll-spy items accurately as the user scrolls
     useEffect(() => {
@@ -1245,7 +1315,7 @@ export const DisplayCaseView: React.FC<DisplayCaseViewProps> = ({
     };
 
     return (
-        <div className="flex flex-col gap-4 relative w-full" id="display-panel-container">
+        <div className="flex flex-col gap-2.5 sm:gap-3 relative w-full" id="display-panel-container">
             
             {/* Sticky Horizontal Navigation Bar for All Screen Sizes */}
             {categorySections.length > 1 && (
@@ -1351,16 +1421,16 @@ export const DisplayCaseView: React.FC<DisplayCaseViewProps> = ({
             )}
 
             {/* Main Products Area */}
-            <div className="flex-grow w-full bg-cool-gray-800 rounded-lg shadow-lg p-1.5 sm:p-4 border border-cool-gray-700 animate-fade-in text-left" id="display-cards-panel">
+            <div className="flex-grow w-full bg-cool-gray-800 rounded-lg shadow-lg p-2 sm:p-3 sm:pt-2 border border-cool-gray-750 animate-fade-in text-left" id="display-cards-panel">
                 {/* Grouped Display List */}
                 {Object.keys(groupedProducts).length === 0 ? (
                     <div className="text-center py-16 bg-cool-gray-900 rounded-xl border border-cool-gray-750">
                         <p className="text-cool-gray-400 font-medium">No display case stock matches active filters.</p>
                     </div>
                 ) : (
-                    Object.keys(groupedProducts).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })).map(primaryCategory => (
-                        <div key={primaryCategory} className="space-y-4 mb-4">
-                            {Object.keys(groupedProducts[primaryCategory]).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })).map(subCategory => {
+                    sortPrimaryCategories(Object.keys(groupedProducts), sortConfig.displaySortMode, sortConfig.customOrder).map(primaryCategory => (
+                        <div key={primaryCategory} className="space-y-3 mb-4">
+                            {sortSubCategories(Object.keys(groupedProducts[primaryCategory]), primaryCategory, sortConfig.displaySortMode, sortConfig.customOrder).map(subCategory => {
                                 const sectionId = `display-section-${primaryCategory.replaceAll(/\s+/g, '-')}-${subCategory.replaceAll(/\s+/g, '-')}`;
                                 
                                 const primaryDec = state.categories?.find(c => c.type === 'primary' && c.name.toLowerCase().trim() === primaryCategory.toLowerCase().trim());
@@ -1373,11 +1443,11 @@ export const DisplayCaseView: React.FC<DisplayCaseViewProps> = ({
                                     <div 
                                         key={subCategory}
                                         id={sectionId}
-                                        className="scroll-mt-[185px] lg:scroll-mt-[140px] transition-all duration-300 space-y-4"
+                                        className="scroll-mt-[185px] lg:scroll-mt-[140px] transition-all duration-300 space-y-3"
                                     >
                                         
                                         {/* Pure human labels - Categorical heading banner in the scroll stream */}
-                                        <div className="pt-4 pb-2 border-b border-cool-gray-750/70">
+                                        <div className="pt-1.5 pb-2 border-b border-cool-gray-750/70">
                                             <div className="flex items-center gap-2 select-none">
                                                 <span className={`text-[10px] sm:text-[11px] uppercase tracking-wider font-extrabold px-2 py-0.5 rounded border flex items-center gap-1 ${
                                                     primaryColorConfig
@@ -1400,7 +1470,7 @@ export const DisplayCaseView: React.FC<DisplayCaseViewProps> = ({
                                         </div>
 
                                         <div className="space-y-4">
-                                            {groupedProducts[primaryCategory][subCategory].sort((a,b)=> a.product.name.localeCompare(b.product.name, undefined, { numeric: true, sensitivity: 'base' })).map(({ product, locations, totalQuantity }) => {
+                                            {sortProductsHierarchy(groupedProducts[primaryCategory][subCategory], primaryCategory, subCategory, sortConfig.displaySortMode, sortConfig.customOrder).map(({ product, locations, totalQuantity }) => {
                                                 const backStockLocations = state.meatCuts
                                                     .filter(mc => mc.productId === product.id && mc.quantity > 0 && !isCutExcludedFromRestock(mc))
                                                     .map(mc => {
@@ -1451,8 +1521,8 @@ export const DisplayCaseView: React.FC<DisplayCaseViewProps> = ({
                                                                         <span className="truncate">{primaryCategory}</span>
                                                                         <span className="text-cool-gray-650 font-light">•</span>
                                                                         <span className="truncate">{subCategory}</span>
-                                                                        {product.sku && (
-                                                                            <span className="font-mono text-[9px] bg-cool-gray-900 px-1 py-0.2 rounded border border-cool-gray-850 text-cool-gray-455 ml-1">SKU: {product.sku}</span>
+                                                                        {((product as any).sku || product.productNumbers?.[0]) && (
+                                                                            <span className="font-mono text-[9px] bg-cool-gray-900 px-1 py-0.2 rounded border border-cool-gray-850 text-cool-gray-455 ml-1">SKU: {(product as any).sku || product.productNumbers?.[0]}</span>
                                                                         )}
                                                                     </div>
                                                                     <span className="text-amber-400 font-bold text-xs sm:text-sm md:text-base truncate">

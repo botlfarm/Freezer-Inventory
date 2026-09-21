@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { 
   Search, ChevronDown, ChevronRight, FileSpreadsheet, Download, 
   Tag as TagIcon, Edit3, Trash2, X, Filter, Check, ArrowUpDown, 
@@ -594,21 +595,63 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({ 
     searchVal: string,
     setSearchVal: (v: string) => void
   ) => {
-    const filteredOptions = allOptions.filter(opt => opt.toLowerCase().includes(searchVal.toLowerCase()));
+    const getColumnTitle = () => {
+      switch (type) {
+        case 'box': return 'Box Number';
+        case 'cutName': return 'Product / Cut';
+        case 'category': return 'Category';
+        case 'location': return 'Location';
+        case 'pallet': return 'Pallet';
+        case 'serial': return 'Box Serial';
+        case 'lotNumber': return 'Lot Number';
+        case 'packDate': return 'Pack Date';
+        case 'status': return 'Status';
+        case 'archived': return 'Archived';
+        default: return type;
+      }
+    };
 
-    return (
+    const filteredOptions = allOptions.filter(opt => opt.toLowerCase().includes(searchVal.toLowerCase()));
+    const columnTitle = getColumnTitle();
+
+    const modalContent = (
       <>
-        <div className="fixed inset-0 z-[90] bg-black/40 backdrop-blur-sm" onClick={(e) => { e.stopPropagation(); setOpenFilter(null); }}></div>
+        <div className="fixed inset-0 z-[120] bg-black/60 backdrop-blur-xs" onClick={(e) => { e.stopPropagation(); setOpenFilter(null); }}></div>
         <div 
-          className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-cool-gray-800 border border-cool-gray-700 rounded-xl p-3 z-[100] w-64 shadow-2xl space-y-2 flex flex-col max-h-[350px] text-left font-normal max-w-[90vw]"
+          id={`butcher-column-filter-${type}`}
+          className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-cool-gray-800 border border-cool-gray-700 rounded-2xl p-4 z-[130] w-80 sm:w-96 md:w-[440px] shadow-2xl space-y-3 flex flex-col max-h-[85vh] text-left font-normal max-w-[95vw] animate-scale-up"
           onClick={(e) => e.stopPropagation()}
         >
-          <div className="relative">
-            <Search className="absolute left-2.5 top-2.5 text-cool-gray-500" size={13} />
+          {/* Header Bar */}
+          <div className="flex items-center justify-between pb-2 border-b border-cool-gray-750 shrink-0">
+            <div className="flex items-center gap-2">
+              <div className="p-1 rounded-lg bg-cyan-950/80 border border-cyan-500/40 text-cyan-400">
+                <Filter size={14} />
+              </div>
+              <div>
+                <h3 className="text-xs font-bold text-white leading-tight">Filter by {columnTitle}</h3>
+                <span className="text-[10px] text-cool-gray-400 font-mono">
+                  {filteredOptions.length} of {allOptions.length} options available
+                </span>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); setOpenFilter(null); }}
+              className="p-1.5 rounded-lg text-cool-gray-400 hover:text-white hover:bg-cool-gray-700 transition cursor-pointer"
+              title="Close filter"
+            >
+              <X size={15} />
+            </button>
+          </div>
+
+          {/* Search Input */}
+          <div className="relative shrink-0">
+            <Search className="absolute left-3 top-2.5 text-cool-gray-400" size={14} />
             <input
               type="text"
-              placeholder="Search options..."
-              className="w-full bg-cool-gray-900 border border-cool-gray-700 rounded-lg pl-8 pr-7 py-1.5 text-xs text-white placeholder-cool-gray-500 focus:outline-none focus:ring-1 focus:ring-cyan-500"
+              placeholder={`Search ${columnTitle.toLowerCase()}...`}
+              className="w-full bg-cool-gray-900 border border-cool-gray-700 rounded-xl pl-9 pr-8 py-2 text-xs text-white placeholder-cool-gray-500 focus:outline-none focus:ring-1 focus:ring-cyan-500/60"
               value={searchVal}
               onChange={(e) => setSearchVal(e.target.value)}
               onClick={(e) => e.stopPropagation()}
@@ -618,51 +661,63 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({ 
               <button
                 type="button"
                 onClick={(e) => { e.stopPropagation(); setSearchVal(''); }}
-                className="absolute right-2 top-2.5 text-cool-gray-500 hover:text-white"
+                className="absolute right-2.5 top-2.5 text-cool-gray-400 hover:text-white cursor-pointer"
               >
-                <X size={12} />
+                <X size={14} />
               </button>
             )}
           </div>
 
-          <div className="flex justify-between items-center text-[10px] text-cool-gray-400 font-bold px-1 border-b border-cool-gray-750 pb-1.5">
-            <button
-              type="button"
-              className="hover:text-cyan-400 transition-colors cursor-pointer"
-              onClick={(e) => {
-                e.stopPropagation();
-                const updated = new Set(selectedSet);
-                filteredOptions.forEach(o => updated.add(o));
-                setSelectedSet(updated);
-              }}
-            >
-              Select All
-            </button>
-            <button
-              type="button"
-              className="hover:text-rose-400 transition-colors cursor-pointer"
-              onClick={(e) => {
-                e.stopPropagation();
-                setSelectedSet(new Set());
-              }}
-            >
-              Clear Filter
-            </button>
+          {/* Quick Bulk Actions */}
+          <div className="flex justify-between items-center text-xs text-cool-gray-400 font-bold px-1 border-b border-cool-gray-750 pb-2 shrink-0">
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                className="hover:text-cyan-400 transition-colors cursor-pointer text-[11px]"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const updated = new Set(selectedSet);
+                  filteredOptions.forEach(o => updated.add(o));
+                  setSelectedSet(updated);
+                }}
+              >
+                Select All ({filteredOptions.length})
+              </button>
+              <span className="text-cool-gray-600">•</span>
+              <button
+                type="button"
+                className="hover:text-rose-400 transition-colors cursor-pointer text-[11px]"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setSelectedSet(new Set());
+                }}
+              >
+                Clear Filter
+              </button>
+            </div>
+            {selectedSet.size > 0 && (
+              <span className="text-[10px] text-cyan-400 font-bold bg-cyan-950/60 border border-cyan-500/30 px-2 py-0.5 rounded-full font-mono">
+                {selectedSet.size} active
+              </span>
+            )}
           </div>
 
-          <div className="overflow-y-auto max-h-40 space-y-1 pr-1 divide-y divide-cool-gray-750/30">
+          {/* Expanded Scrollable Options Container */}
+          <div className="overflow-y-auto max-h-72 sm:max-h-96 space-y-1 pr-1.5 divide-y divide-cool-gray-750/30 overscroll-contain">
             {filteredOptions.map(opt => {
               const isChecked = selectedSet.has(opt);
 
               return (
                 <label
                   key={opt}
-                  className="flex items-center gap-2 px-1.5 py-1.5 hover:bg-cool-gray-750 rounded-lg cursor-pointer text-xs select-none text-white transition-colors"
+                  className={`flex items-center gap-2.5 px-2.5 py-2 hover:bg-cool-gray-750/80 rounded-lg cursor-pointer text-xs select-none text-white transition-colors ${
+                    isChecked ? 'bg-cool-gray-750/40 font-semibold text-cyan-300' : ''
+                  }`}
                   onClick={(e) => e.stopPropagation()}
                 >
                   <input
                     type="checkbox"
-                    className="rounded bg-cool-gray-950 border-cool-gray-700 text-cyan-500 focus:ring-cyan-500/50 cursor-pointer w-3.5 h-3.5"
+                    className="rounded bg-cool-gray-950 border-cool-gray-700 text-cyan-500 focus:ring-cyan-500/50 cursor-pointer w-4 h-4 shrink-0"
                     checked={isChecked}
                     onChange={() => {
                       const next = new Set(selectedSet);
@@ -676,32 +731,37 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({ 
               );
             })}
             {filteredOptions.length === 0 && (
-              <div className="text-center text-[11px] text-cool-gray-500 italic py-4">
-                No results found
+              <div className="text-center text-xs text-cool-gray-400 italic py-8">
+                No matching options found
               </div>
             )}
           </div>
 
-          <div className="pt-1.5 border-t border-cool-gray-750 flex justify-between gap-2 items-center">
-            {selectedSet.size > 0 ? (
-              <span className="text-[10px] text-cyan-400 font-bold bg-cyan-950/40 border border-cyan-500/20 px-1.5 py-0.5 rounded">
-                {selectedSet.size} active
-              </span>
-            ) : <span />}
+          {/* Footer with Summary and Close Button */}
+          <div className="pt-2.5 border-t border-cool-gray-750 flex justify-between gap-2 items-center shrink-0">
+            <div className="text-[11px] text-cool-gray-400">
+              {selectedSet.size === 0 ? (
+                <span className="text-cool-gray-500">Showing all</span>
+              ) : (
+                <span className="text-cyan-400 font-medium">{selectedSet.size} selected</span>
+              )}
+            </div>
             <button
               type="button"
-              className="bg-cool-gray-700 hover:bg-cool-gray-650 text-white font-bold text-[10px] px-2.5 py-1 rounded transition-colors cursor-pointer"
+              className="bg-cyan-600 hover:bg-cyan-500 text-cool-gray-950 font-bold text-xs px-4 py-2 rounded-xl transition-colors cursor-pointer shadow-md active:scale-95"
               onClick={(e) => {
                 e.stopPropagation();
                 setOpenFilter(null);
               }}
             >
-              Done
+              Apply & Close
             </button>
           </div>
         </div>
       </>
     );
+
+    return typeof document !== 'undefined' ? createPortal(modalContent, document.body) : modalContent;
   };
 
   // Sort flat list helper

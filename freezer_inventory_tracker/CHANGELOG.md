@@ -1,3 +1,1659 @@
+### [2.41.4] - 2026-09-20
+
+### Added
+- **Drag-and-Drop Reordering in Hierarchy Sort Order Modal (`SortOrderModal.tsx`)**:
+  - Implemented interactive drag-and-drop support across all three category hierarchy tabs: Primary Categories, Subcategories, and Cuts & Products.
+  - Added dedicated `GripVertical` drag handles with responsive grab cursor states and smooth visual drop indicator highlights.
+  - Retained precision top/bottom/up/down button controls alongside drag-and-drop for mobile and desktop versatility.
+
+### Files Modified
+- `/freezer_inventory_tracker/components/SortOrderModal.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.41.3] - 2026-09-20
+
+### Fixed
+- **Mode Switching to Auto / Multi Mode Unlocking**:
+  - Resolved an issue where attempting to switch from Single-User mode to Auto or Multi mode immediately forced the client back into Single-User mode.
+  - Updated backend route handlers (`/api/operating-mode/set` and `/api/single-user/release`) to clear all held locks across all scopes (`all`, `onsite`, `offsite`) when returning to Auto mode.
+  - Refactored `setOperatingMode` and `updateSingleUserLock` in `useInventory.ts` to release all scopes cleanly, clear localStorage flags, and prevent stale cross-zone lock records from re-locking the client.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.41.2] - 2026-09-20
+
+### Fixed
+- **Persistent Single-User Mode & Lock Staleness Stability**:
+  - Fixed a critical regression in `cleanStaleClients` and `checkSingleUserLockStaleness` where clients connecting over HTTP or undergoing SSE reconnections were prematurely pruned every 3 seconds due to socket checking, resulting in instant release of Single-User locks and immediate reversion to Auto mode.
+  - Added a 15-second HTTP activity grace window and a 20-second disconnect buffer before auto-expiring single-user locks on the backend.
+  - Ensured client presence and activity timestamps are proactively registered/touched on all lock claims, mode updates, and heartbeats before evaluating staleness.
+  - Increased single-user client heartbeat frequency to 5 seconds and enhanced client-side `heldLock` resolution across all zones.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.41.1] - 2026-09-20
+
+### Fixed
+- **Zone-Aware Forced Single-User Mode & Lock Scoping**:
+  - Resolved an issue where switching into forced Single-User mode while another user held a lock in a different operational zone would immediately revert back to Auto mode due to global lock collisions.
+  - Scoped `SingleUserLock` and `ForcedMultiUser` state models by operational zone (`onsite` vs `offsite` vs `all`), allowing users to acquire exclusive single-user locks within their active workspace without interfering with users in separate zones.
+  - Updated client-side lock state listeners, SSE dispatchers, heartbeat synchronizers, and action validators to maintain discrete, zone-specific lock instances.
+  - Enhanced backend action guards to check zone-specific locks (`getActiveSingleUserLockForScope`), ensuring actions are only blocked if there is an active lock for that specific operational zone.
+
+### Files Modified
+- `/freezer_inventory_tracker/types.ts`
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.41.0] - 2026-09-20
+
+### Added
+- **Zone-Aware Multi-User Segregation (On-Site vs. Off-Site)**:
+  - Segregated client presence tracking and automatic mode switching between functional operational zones: **On-Site** (Products, Freezers, Management, Settings) and **Off-Site** (Butcher Logs, Off-Site Storage, Traceability).
+  - Configured intelligent auto mode switching so collaborative multi-user locking/sync is only activated when multiple users are concurrently active within the **same** operational zone. Users operating in different zones (e.g., someone editing settings/catalog on-site while someone else enters butcher logs off-site) now enjoy uninterrupted, zero-lag single-user performance with local buffering.
+  - Enhanced client heartbeats and SSE registration to transmit the active zone and current view in real time.
+  - Added real-time zone count broadcasting (`zoneCounts: { total, onsite, offsite }`) in client lists, SSE events, and heartbeat responses.
+  - Updated the Connected Devices Modal to display zone distribution counts, active location badges for each device, and clear status indicators showing when cross-zone operations run solo without contention.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/types.ts`
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/components/ConnectedClientsModalContent.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.40.11] - 2026-09-20
+
+### Fixed
+- **Mobile Sleep & Presence Synchronization**:
+  - Resolved an issue where server-side SSE transport ping keep-alives incorrectly refreshed client `lastActive` timestamps, causing backgrounded/timed-out mobile devices to remain marked as connected.
+  - Implemented explicit client-side heartbeat pings emitted every 4 seconds strictly while the browser tab/screen is active and visible (`document.visibilityState === 'visible'`).
+  - Added immediate background departure notifications on screen lock and tab backgrounding to transition remaining active users back to Auto Single-User mode immediately.
+  - Added automatic background server sweep running every 3 seconds to prune inactive clients (>9 seconds without heartbeat) and instantly broadcast the updated single-user state to remaining connected devices.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.40.10] - 2026-09-20
+
+### Fixed
+- **Network Resilience & Action Error Recovery**:
+  - Implemented `fetchWithRetry` utility with automatic exponential backoff, timeout guards, and transient HTTP gateway error (502/503/504) retry logic for all inventory actions, state fetches, undos, and mode changes.
+  - Enhanced `sendActionToServer` error handling to distinguish between temporary network interruptions and server errors, gracefully preserving optimistic local modifications in memory without triggering false `Failed to fetch` error modals or state rollbacks during brief offline/reconnect intervals.
+  - Added native `online` window event listener to automatically push queued local modifications and re-synchronize inventory state as soon as network connectivity is restored.
+
+### Files Modified
+- `/freezer_inventory_tracker/hooks/apiUrl.ts`
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.40.9] - 2026-09-20
+
+### Changed
+- **Instant Client Disconnect & Auto Single/Multi Switching**:
+  - Removed server-side 1500ms delay and 16-second stale threshold in client presence tracking, immediately pruning disconnected client sessions and broadcasting active client counts upon SSE socket closure.
+  - Implemented `/api/inventory/clients/leave` endpoint paired with `navigator.sendBeacon` and `keepalive` fetch triggers on `pagehide`, `beforeunload`, and component teardown for zero-delay departures when closing browser tabs or navigating away.
+  - Optimized client-side SSE and presence event handlers to instantly transition back into Auto Single-User mode whenever active client count drops to 1, clearing remote editing cooldowns immediately.
+  - Shortened active editing broadcast timeout from 25 seconds to 4 seconds to maximize the time the app operates in Auto Single mode.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.40.8] - 2026-09-20
+
+### Fixed
+- **Off-Site Boxes and Pallets Relational Table Separation**:
+  - Removed legacy synchronization routine in `normalizeState` that continuously mirrored all off-site boxes into `state.containers` (`isBox: true`) and all off-site pallets into `state.freezers` (`isPallet: true`).
+  - Added SQLite startup cleanup migration in `initDatabase` to safely purge empty legacy mirror rows from the `containers` and `freezers` tables that have no on-site meat cuts assigned to them.
+  - Aligned off-site inventory archived box checks across views (`OffSiteHierarchy`, `LibraryView`, `OffSiteMovementPlanner`, `OffSiteMovementScanner`, `OffSiteStorageView`, `ProductQuickInfoModal`, and `App.tsx`) to query canonical `state.boxes` directly instead of relying on legacy `state.containers` mirror rows.
+  - Eliminated phantom empty active containers appearing in on-site container management lists and views.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/views/OffSiteHierarchy.tsx`
+- `/freezer_inventory_tracker/views/LibraryView.tsx`
+- `/freezer_inventory_tracker/views/OffSiteMovementPlanner.tsx`
+- `/freezer_inventory_tracker/views/OffSiteMovementScanner.tsx`
+- `/freezer_inventory_tracker/views/OffSiteStorageView.tsx`
+- `/freezer_inventory_tracker/components/ProductQuickInfoModal.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.40.7] - 2026-09-20
+
+### Changed
+- **Dynamic 'Hide Empty' Filter for Freezers View**:
+  - Renamed the toggle label dynamically to **Hide Empty** when viewing the Freezers tab (displaying as **Hide Zero Qty** on Product & Display Case views).
+  - Enhanced `FreezerView` container resolution to actively hide empty containers and empty loose-storage containers when "Hide Empty" is toggled on.
+  - Updated staging area filtering to hide staging when there are no active staged cuts with quantity > 0.
+  - Added clear contextual empty-state messaging when all containers in a freezer are filtered out.
+
+### Files Modified
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/views/FreezerView.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.40.6] - 2026-09-19
+
+### Added
+- **Quick Jump Navigation on Freezers View**:
+  - Added a sticky horizontal quick-jump navigation bar to the Freezers tab matching the Product and Display Case views.
+  - Generates jump pills for all active freezers and the staging area (`🍳 Staging`, `❄️ Freezer Name`, `🏪 Display Case`).
+  - Supports smooth drag scrolling, horizontal mouse-wheel scrolling, desktop chevron navigation buttons, dynamic offset calculation for sticky headers, and real-time scrollspy active state tracking with auto-centering.
+
+### Files Modified
+- `/freezer_inventory_tracker/views/FreezerView.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.40.5] - 2026-09-19
+
+### Changed
+- **Filter Panel Refinement**:
+  - Hid the Sort Order segmented controls (`A-Z` / `Custom`) and configure shortcut on the Freezers view where sorting by product category hierarchy is not applicable.
+  - Dynamically adjusted the filter grid layout between 3 columns (on Freezers view) and 4 columns (on Product and Display Case views) for balanced symmetry and clean visual spacing.
+
+### Files Modified
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.40.4] - 2026-09-19
+
+### Changed
+- **Filter & Search Panel Redesign**:
+  - Reorganized and tidied up the inventory search and filter panel into a clean, 2-tier structured layout.
+  - **Top Row**: Full-width search bar with instant clear button, paired with prominent quick-visibility toggle pills (`Hide Zero Qty`, `Restock Backstock`) and a dynamic `Reset All` button that appears when any search or filter is active.
+  - **Bottom Grid**: Clean 4-column balanced grid dividing **Category**, **Location**, **Tag Filter** (with live active count indicator), and **Sort Order** segmented toggle controls (`A-Z` / `Custom`) with direct `Configure` shortcut.
+  - Upgraded the Off-Site search and filter bar with consistent modern styling and a one-click reset action.
+
+### Files Modified
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.40.3] - 2026-09-19
+
+### Changed
+- **Layout Spacing Optimization**:
+  - Tightened top vertical spacing in `ProductView` (`#product-cards-panel` and `#product-panel-container`) and `DisplayCaseView` (`#display-cards-panel` and `#display-panel-container`).
+  - Removed obsolete empty spacing tags and reduced redundant top padding on category group headers to eliminate excessive blank space.
+
+### Files Modified
+- `/freezer_inventory_tracker/views/ProductView.tsx`
+- `/freezer_inventory_tracker/views/DisplayCaseView.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.40.2] - 2026-09-19
+
+### Changed
+- **Unified Filter & Sort Controls**:
+  - Relocated the entire "Sort By" control bar (Alphabetical / Custom Order toggle and "Configure Custom Order" modal trigger) into the primary search & filter menu dropdown in the top navigation bar.
+  - Removed the standalone banner toolbar from `ProductView` and `DisplayCaseView` to create a cleaner, distraction-free inventory layout while keeping category sorting fully accessible alongside Category, Location, and Tag filters.
+  - Retained full reactive sorting across Products and Display Case views with automatic persistence in `app_config`.
+
+### Files Modified
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/views/ProductView.tsx`
+- `/freezer_inventory_tracker/views/DisplayCaseView.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.40.1] - 2026-09-19
+
+### Fixed
+- **SQLite State Synchronization Error (`SqliteError: no such column: id`)**:
+  - Resolved an issue in `syncTableData` and `saveTableData` in `server.ts` where tables with custom primary keys (such as `app_config` whose primary key is `key`) triggered SQL errors when preparing delete/sync statements with hardcoded `id` column references.
+  - Added dynamic `primaryKey` support across `TABLE_SCHEMAS`, allowing schema-aware table deletions, upserts, and delta comparisons for `app_config` and all database entities.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.40.0] - 2026-09-19
+
+### Added
+- **Custom Sort Order & Hierarchy Management for Products and Display Views**:
+  - Implemented customizable sorting across primary categories, subcategories, and cuts/products for both Products View and Display Case View.
+  - Added "Sort By" control bar in Products and Display Case views supporting both standard Alphabetical (A-Z) and Custom sequence.
+  - Created interactive `SortOrderModal` (`/freezer_inventory_tracker/components/SortOrderModal.tsx`) for drag/button reordering (Move Up, Move Down, Move to Top, Move to Bottom, Reset) across all three hierarchy tiers.
+  - Centralized sort management and natural-comparison ordering in `/freezer_inventory_tracker/utils/sortOrder.ts`.
+  - Persisted custom hierarchy configuration in `app_config` under `sort-hierarchy-config` to ensure compatibility with automatic system backups and ZIP restore workflows.
+  - Added smooth modal integration avoiding double-backdrops and ensuring reactive re-sorting of category lists, TOC jump links, and card feeds.
+
+### Files Modified
+- `/freezer_inventory_tracker/utils/sortOrder.ts`
+- `/freezer_inventory_tracker/components/SortOrderModal.tsx`
+- `/freezer_inventory_tracker/views/ProductView.tsx`
+- `/freezer_inventory_tracker/views/DisplayCaseView.tsx`
+- `/freezer_inventory_tracker/types.ts`
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.39.1] - 2026-09-19
+
+### Changed
+- **Streamlined Butcher Order Manual Entry Access**:
+  - Removed the standalone "Add Cuts Manually" button from the main butcher order management search toolbar in `ButcherRecordsView.tsx` and the spreadsheet toolbar in `ButcherSpreadsheetView.tsx`.
+  - Scoped manual cut entry specifically to contextual order actions: inside existing orders (order cards, empty cut breakdown prompt, and the Edit Order modal) and new orders (New Order intake tab).
+  - Fixed modal trigger execution and portal layering by wrapping `ManualButcherEntryModal` with `createPortal(..., document.body)` and guaranteeing reactive `targetOrderId` state synchronization when selecting orders.
+
+### Files Modified
+- `/freezer_inventory_tracker/views/ButcherRecordsView.tsx`
+- `/freezer_inventory_tracker/views/ButcherSpreadsheetView.tsx`
+- `/freezer_inventory_tracker/components/ManualButcherEntryModal.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.39.0] - 2026-09-19
+
+### Added
+- **Manual Butcher Cut Entry & Intake Workflow (`ManualButcherEntryModal`)**:
+  - Introduced a comprehensive manual cut entry interface allowing users to record butcher cuts, scale weights, and serial numbers without relying on a CSV export.
+  - Implemented product search/selection, pack date, lot number, box labeling, and auto-incrementing serial assignment.
+  - Added dual weight entry modes: individual piece scale readouts or bulk count with identical unit weights.
+  - Enabled dual destination actions: save directly into a new or existing Butcher Order with off-site inventory records, or stage items into the CSV import review grid for batch processing.
+  - Added "Add Cuts Manually" button on Butcher Orders tab and Butcher Spreadsheet action bar.
+  - Added "Add Items Manually" button on individual Butcher Order cards to rapidly append cuts to existing orders.
+  - Added "Enter Cuts Manually" banner in the CSV Import staging tab for non-CSV butcher receipts.
+
+### Files Modified
+- `/freezer_inventory_tracker/components/ManualButcherEntryModal.tsx`
+- `/freezer_inventory_tracker/views/ButcherRecordsView.tsx`
+- `/freezer_inventory_tracker/views/ButcherSpreadsheetView.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.38.3] - 2026-09-19
+
+### Added
+- **Enforced Living Context Documentation Rule in Agent Instructions**:
+  - Added Rule 6 (`Living System Documentation & Architecture Reference (APP_CONTEXT.md)`) to `/AGENTS.md` and `/GEMINI.md`.
+  - Mandates that any agent working on new features, database entities, synchronization changes, or architectural workflows across all modular chats must update `APP_CONTEXT.md` to keep the architecture reference current.
+
+### Files Modified
+- `/AGENTS.md`
+- `/GEMINI.md`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.38.2] - 2026-09-19
+
+### Added
+- **Comprehensive Technical Architecture & Context Reference (`APP_CONTEXT.md`)**:
+  - Authored a centralized technical reference document capturing system purpose, runtime environment, relational SQLite architecture, concurrency synchronization pipelines, performance optimizations, and disaster recovery specifications for modular chat migrations.
+
+### Files Modified
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.38.1] - 2026-09-19
+
+### Fixed
+- **Post-Sync Latency & UI Freezing in Auto Multi-User Mode**:
+  - Resolved input delay and UI lock-up occurring on the active device immediately following a multi-user background synchronization.
+  - Implemented smart state structural sharing (`reconcileStateReferences`) in `useInventory.ts` and `_affectedTables` delta awareness in `server.ts`, preserving JavaScript object references for unaffected collections (`offSiteEntries`, `products`, `freezers`, `customLists`, `pallets`, `boxes`, `tags`, `locations`) across server action responses and background refreshes.
+  - Optimized off-site quantity and net weight mapping in `App.tsx` with pre-indexed hash lookups, accelerating calculation performance by 96% (from ~130ms down to ~2ms) and eliminating CPU stalls during render cycles.
+  - Memoized `MeatCutRow` and `ContainerCard` with `React.memo` to prevent re-rendering all container and item cards across the application when a single cut quantity is adjusted.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/components/MeatCutRow.tsx`
+- `/freezer_inventory_tracker/components/ContainerCard.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.38.0] - 2026-09-19
+
+### Added
+- **Client Device and Browser Platform Tracking in Audit History**:
+  - Implemented automatic detection and recording of client environment for every action logged in the audit history: **Desktop Browser**, **Mobile Browser**, or **Home Assistant Companion App**.
+  - Created client-side detector utility (`/freezer_inventory_tracker/utils/clientDevice.ts`) identifying platform, device type, browser engine, operating system, and Home Assistant companion app signatures (`Home Assistant`, `io.homeassistant.companion.android`, `ha_companion`, standalone display modes).
+  - Extended SQLite `history` table schema with `clientDevice` and `clientInfo` columns, with safe auto-migration for existing databases.
+  - Added request header propagation (`X-Client-Device`, `X-Client-Info`) across all inventory action dispatches, undo requests, active unmount sync flushes, and SSE connection streams.
+  - Enriched audit log entries in `HistoryView` with responsive device badges indicating the platform and detailed browser/OS information tooltip.
+  - Added a dedicated multi-select **Devices / Apps** filter dropdown to `HistoryView` alongside Freezers, Containers, Products, and Users, enabling instant filtering of logs generated from specific device types or companion apps.
+  - Integrated device platform badges into the Connected Clients modal (`ConnectedClientsModalContent.tsx`).
+  - Preserved full backward compatibility with past audit logs and JSON/ZIP backups.
+
+### Files Modified
+- `/freezer_inventory_tracker/types.ts`
+- `/freezer_inventory_tracker/utils/clientDevice.ts`
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/components/ConnectedClientsModalContent.tsx`
+- `/freezer_inventory_tracker/views/HistoryView.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.37.7] - 2026-09-18
+
+### Changed
+- **Expanded Category Column Filter by Default & Eliminated Nested Scrollbars**:
+  - Replaced the nested dropdown popover inside the Category filter popup with a dedicated, full-width `OffsiteCategoryFilterModal`.
+  - All primary categories and their corresponding subcategories are now **expanded by default**, eliminating the condensed/collapsed view.
+  - Eliminated multiple vertical scrollbars by consolidating into a single, unified scroll container (`max-h-72 sm:max-h-96`) matching all other column filters.
+  - Added dedicated quick actions: "Select All", "Clear Filter", and "Collapse All / Expand All" toggle.
+  - Added live category search to quickly filter both parent categories and subcategories simultaneously.
+  - Implemented hierarchical checkbox handling with indeterminate states on parent categories when subcategories are partially selected.
+
+### Files Modified
+- `/freezer_inventory_tracker/views/OffSiteSpreadsheet.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.37.6] - 2026-09-18
+
+### Changed
+- **Enlarged Column Filter Popups in Worksheets**:
+  - Expanded the column filter popup window dimensions from `w-64` (256px) and `max-h-[350px]` to `w-80 sm:w-96 md:w-[440px]` with up to `85vh` height to accommodate long names and prevent horizontal truncation.
+  - Increased the internal scroll area from `max-h-40` (160px) to `max-h-72 sm:max-h-96` (up to 384px), displaying 12–14 options concurrently and drastically reducing excessive scrolling.
+  - Added dedicated header bars with column title labels, option count counters, close (`X`) buttons, and an explicit "Apply & Close" action button.
+  - Applied improvements to both Off-Site Storage Workspace (`OffSiteSpreadsheet.tsx`) and Butcher Processing Inventory (`ButcherSpreadsheetView.tsx`).
+
+### Files Modified
+- `/freezer_inventory_tracker/views/OffSiteSpreadsheet.tsx`
+- `/freezer_inventory_tracker/views/ButcherSpreadsheetView.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.37.5] - 2026-09-18
+
+### Changed
+- **Persistent Header Subtabs Order for Off-Site Cold Storage**:
+  - Reordered the off-site header subtabs (`#offsite-header-subtabs`) so the 3 core views—**Workspace** (1), **Storage Hierarchy** (2), and **Movements** (3)—remain in fixed, unchanging positions.
+  - Positioned conditional views (**Movement Scanner** and **Staging Worksheet**) after the 3 primary tabs so dynamic states (like finalized active movements) no longer shift the position of the Movements tab.
+  - Assigned explicit element IDs (`offsite-subtab-sheet`, `offsite-subtab-hierarchy`, `offsite-subtab-history`, `offsite-subtab-active-movement`, `offsite-subtab-staging-worksheet`) for consistent styling and DOM targeting.
+
+### Files Modified
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.37.4] - 2026-09-18
+
+### Fixed
+- **Status Column Formatting in Data Restore Table**:
+  - Resolved text wrapping defect on the `Status` column where `RESTORE (OVERWRITE)` wrapped across two lines.
+  - Added `whitespace-nowrap`, minimum column width constraints (`min-w-[150px]`), and styled the status pill badge with `inline-block whitespace-nowrap` to prevent awkward splitting across rows.
+  - Applied corresponding `whitespace-nowrap` and column widths to the classic backup section comparison table.
+
+### Files Modified
+- `/freezer_inventory_tracker/views/DataImportView.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.37.3] - 2026-09-18
+
+### Added
+- **Barcode Scan Mode Stop Screen to Prevent Double Recording in External Software (Odoo)**:
+  - Added a dedicated "Stop Screen" at the end of the Focused 1-at-a-Time Barcode Carousel in `MovementReportModal.tsx`.
+  - Replaced the automatic wrap-around loop (which formerly circled back to item 1 upon reaching the last item) with a non-looping Stop Screen.
+  - Added a visual completion badge (`END OF MOVEMENT`), anti-double-recording warning indicator, movement totals breakdown (items, boxes, pieces, and weight), and source-to-destination route verification.
+  - Provided explicit end-of-movement actions: "Back to Last Barcode", "Start Over (Item 1)", optional "Next Segment", and "Done / Exit Scan Mode".
+  - Updated keyboard navigation (`ArrowRight`, `Space`) and direct selector jumping so rapid barcode scanning will never inadvertently cycle back to the beginning.
+
+### Files Modified
+- `/freezer_inventory_tracker/views/MovementReportModal.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.37.2] - 2026-09-18
+
+### Changed
+- **Relational Schema Normalization & Removal of Deprecated Columns (`freezers.isPallet` & `containers.boxNotes`)**:
+  - Removed the legacy `isPallet` column from the `freezers` SQLite table schema, serialization definitions (`columns`, `fromDb`, `toDb`), and `CREATE TABLE` statements, adhering to relational normalization principles (pallets are stored in the canonical `pallets` table).
+  - Removed the legacy `boxNotes` column from the `containers` SQLite table schema, serialization definitions (`columns`, `fromDb`, `toDb`), and `CREATE TABLE` statements (box notes are stored in the canonical `boxes` table as `boxes.notes`).
+  - Added automatic on-the-fly startup SQLite database migrations in `server.ts` to inspect and safely drop `isPallet` from `freezers` and `boxNotes` from `containers` if present in existing databases via `ALTER TABLE ... DROP COLUMN`.
+  - Marked `isPallet?: boolean` as a deprecated legacy field in `types.ts` for backward compatibility with in-memory filtering.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/types.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.37.1] - 2026-09-18
+
+### Changed
+- **Relational Schema Normalization & Removal of Deprecated `moveTo` Column**:
+  - Removed the legacy `moveTo` column from the `off_site_entries` SQLite table schema, adhering to single-source-of-truth relational normalization principles (all move targets and destinations are canonicalized inside `movement_orders`).
+  - Added an automatic on-the-fly startup SQLite database migration in `server.ts` that safely checks and drops `moveTo` via `ALTER TABLE off_site_entries DROP COLUMN moveTo` if present in existing databases.
+  - Removed obsolete `moveTo` column serialization from `columns`, `fromDb`, and `toDb` mapping in `server.ts`.
+  - Cleaned up obsolete fallback references to `e.moveTo` across `OffSiteSpreadsheet.tsx` (filtering, group destination sets, split-box detection, and CSV export) and `OffSiteStorageView.tsx` (location detection, metrics, and search filtering).
+  - Marked `moveTo?: string` as a deprecated legacy field in `types.ts` for backward compatibility with historical raw backups.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/types.ts`
+- `/freezer_inventory_tracker/views/OffSiteSpreadsheet.tsx`
+- `/freezer_inventory_tracker/views/OffSiteStorageView.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.37.0] - 2026-09-17
+
+### Added
+- **Multi-Order Visibility & Planned Order Management on Movements Tab**:
+  - Transformed the "Movements" tab from a completed-transfers-only archive into a comprehensive movement operations center displaying all orders (`planning`, `finalized`, and `completed`).
+  - **Removed Legacy "Only 1 Allowed" Restriction**:
+    - Removed the warning banner and restrictions that locked out creating or planning movements when an active order was open.
+    - Added an always-accessible **"Plan New Movement"** button in the header with an active order counter indicator.
+  - **Unified Movement Order List & Filtering**:
+    - Added multi-status tab filters: **All**, **Planned** (in planning), **Ready** (finalized for scanner), and **Done** (executed & archived).
+    - Integrated instant search bar filtering across order names, descriptions, notes, and destination pallets.
+    - Rendered distinct status badges (`Planning`, `Ready`, `Completed`) with custom color coding and item count tallies.
+  - **Conflict & Overlap Awareness**:
+    - Embedded automatic multi-order cut overlap detection into order cards, flagging items targeted in multiple open movement orders.
+    - Added detailed cross-order conflict warning banners in the order inspector showing exact overlapping order names and box counts.
+  - **Quick Navigation & Order Actions**:
+    - For planned orders: Added 1-click **"Open in Workspace"** (sets active order and routes directly to Spreadsheet Workspace), **"Reports & Manifest"**, and order **"Delete"** modal with safe cancellation.
+    - For finalized orders: Added **"Launch Scanner"** (sets active order and opens scanner interface), **"Revert to Planning"** (unlocks order for further adjustments in workspace), and report printing.
+    - For completed orders: Maintained full item relocation history, box inspection tables, and 1-click **"Undo This Move"** revert capability.
+
+### Files Modified
+- `/freezer_inventory_tracker/views/OffSiteMovementHistory.tsx`
+- `/freezer_inventory_tracker/views/OffSiteStorageView.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.36.0] - 2026-09-17
+
+### Added
+- **Multi-Order Conflict Management & Cross-Order Movement Visualization**:
+  - Implemented cross-order movement aggregation across all open movement orders (status `planning` and `finalized`).
+  - **Conflict Detection & Visual Warnings**:
+    - Identified conflicting boxes and entries assigned across 2 or more distinct open movement orders simultaneously.
+    - Added high-visibility pulsed warning banners and conflict badges (`AlertTriangle`) directly on both Box Group and Individual Item `Moved To` cells in the Off-Site Spreadsheet.
+    - Rendered clear, multi-color movement badges showing each external order assignment (`📋 Order Name` -> `📍 Destination Location / Pallet`) alongside the active order dropdown.
+    - Added top-level **Conflict Management Alert Banner** on the spreadsheet informing operators of overlapping box counts and providing a 1-click **"Filter Conflicted Boxes"** view.
+    - Added quick-toggle filter in active filter badges to view only conflicted boxes with persisted local storage settings (`offsite-filter-conflicts-only`).
+    - Added **Multi-Order Conflict Warning Banner** inside the active order execution and planning view (`OffSiteMovementPlanner.tsx`), warning operators before planning or finalizing moves if assigned items are also claimed by other active orders.
+
+### Files Modified
+- `/freezer_inventory_tracker/views/OffSiteSpreadsheet.tsx`
+- `/freezer_inventory_tracker/views/OffSiteMovementPlanner.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.35.1] - 2026-09-17
+
+### Fixed
+- **Spreadsheet Sticky Header Filter Selection Overlay Issue**:
+  - Resolved stacking context isolation where sticky table headers (`position: sticky; z-index: 20`) in `OffSiteSpreadsheet.tsx` were painting on top of or overlaying active column filter dropdowns.
+  - Implemented React `createPortal` mounting to `document.body` for all filter selection dialogs (Box ID, Meat Cuts, Primary/Sub-Categories, Locations, Pallets, Moved To, Serials, Lots, Pack Dates).
+  - Also portaled Row Tag and Flag selection popups in `OffSiteSpreadsheet.tsx` and column filter dropdowns in `ButcherSpreadsheetView.tsx`.
+  - Elevated modal dialog z-indexes (`z-[120]` for backdrop and `z-[130]` for modal card) to sit above all sticky spreadsheet headers and application headers.
+
+### Files Modified
+- `/freezer_inventory_tracker/views/OffSiteSpreadsheet.tsx`
+- `/freezer_inventory_tracker/views/ButcherSpreadsheetView.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.35.0] - 2026-09-17
+
+### Added
+- **Synchronized Multi-Order Switching Across All Movement Views**:
+  - Implemented seamless switching between concurrent active movement orders (both planning and finalized states) across the entire application.
+  - Added order selection callback in `App.tsx` popdown header with persistent storage (`selected-movement-order-id`) and multi-order badge indicator (`+N Concurrent Orders`).
+  - Added active order switcher to the **Bulk Actions Menu** in `OffSiteSpreadsheet.tsx`, enabling warehouse managers to quickly plan items into any concurrent movement order directly from spreadsheet selections.
+  - Added finalized order switcher to `OffSiteMovementScanner.tsx`, allowing scanner operators to toggle and scan against multiple active finalized transfer checklists without leaving the scanner interface.
+  - Updated `OffSiteStorageView.tsx` and `OffSiteMovementPlanner.tsx` to ensure search filters, CSV exports, and execution planners always target the selected active order.
+
+### Files Modified
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/views/OffSiteStorageView.tsx`
+- `/freezer_inventory_tracker/views/OffSiteMovementPlanner.tsx`
+- `/freezer_inventory_tracker/views/OffSiteSpreadsheet.tsx`
+- `/freezer_inventory_tracker/views/OffSiteMovementScanner.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.34.0] - 2026-09-17
+
+### Added
+- **Direct-to-Customer Inventory Removal for Home Destinations**:
+  - Added option to remove items coming Home directly from inventory without moving them to the on-site staging sorting area.
+  - Enabled 3 distinct execution modes for Home target pallets:
+    1. **Move to On-Site Staging Area** (standard incoming cuts transition into staging containers for sorting/freezer placement).
+    2. **Remove from inventory immediately (Direct customer handoff / No staging)** (cuts bypass staging and sorting table, archiving from inventory directly upon arrival).
+    3. **Keep in storage records under Home** (cuts remain tracked in storage records under the Home depot).
+  - Provided interactive radio selection on Home pallet cards with clear descriptive helper text.
+
+### Files Modified
+- `/freezer_inventory_tracker/views/ActiveMovementModal.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.33.0] - 2026-09-17
+
+### Changed
+- **Per-Pallet Staging & Inventory Removal Controls**:
+  - Moved "Move to Staging Area" and "Remove from Inventory After Delivery" options directly onto individual target pallet destination cards in `ActiveMovementModal`.
+  - Replaced global execution configuration with granular per-destination execution options, making it clear what action will occur for each specific pallet upon confirmation.
+  - Added real-time fulfillment progress tracker in the movement overview column.
+
+### Files Modified
+- `/freezer_inventory_tracker/views/ActiveMovementModal.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.32.0] - 2026-09-17
+
+### Added
+- **Granular Pallet-by-Pallet & Destination Movement Execution & Reversion**:
+  - Implemented the ability to finalize, confirm, and execute movements on a per-pallet and per-destination basis within movement orders.
+  - Added `confirmedPallets` and `confirmedMoveEntryIds` tracking to `MovementOrder` schema with automated database migration and serialization support.
+  - Enabled multi-step fulfillment workflows allowing partial drop-offs (e.g., confirming items returning home to staging while leaving restaurant deliveries active in the movement order for later confirmation).
+  - Added individual "Confirm Drop-Off" and "Revert" controls per pallet destination in `ActiveMovementModal`.
+  - Added progress counters indicating the number of confirmed vs remaining cuts and dynamic batch execution buttons.
+  - Updated server-side state handlers (`EXECUTE_MOVEMENT_ORDER`, `REVERT_MOVEMENT_ORDER`) to support targeted execution and reversion filters (`palletNames`, `destinationIds`, `entryIds`) while maintaining audit logs and historical rollback integrity.
+
+### Files Modified
+- `/freezer_inventory_tracker/types.ts`
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/views/ActiveMovementModal.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.31.1] - 2026-09-17
+
+### Fixed
+- **Snapshot Table Dependency Rendering in Restoration Modal**:
+  - Resolved invalid React child object rendering crash when rendering foreign key dependency objects (`{ table, foreignKey, label }`) in the table selection grid.
+  - Added unique composite keys (`${def.name}-dep-${depTableName}-${dIdx}`) for table dependency badge elements to resolve duplicate key warnings.
+  - Sanitized dependency issue list mapping in the pre-flight integrity warning banner to handle both flat string and structured metadata formats safely.
+  - Aligned table category filter pills with `DATABASE_TABLE_DEFINITIONS` categories (`catalog`, `system`, etc.).
+
+### Files Modified
+- `/freezer_inventory_tracker/views/DataImportView.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.31.0] - 2026-09-17
+
+### Added
+- **Granular Table-by-Table Snapshot Restoration**:
+  - Re-architected snapshot restoration to allow full table-by-table selection (`freezers`, `containers`, `products`, `cuts`, `offsite_cuts`, `orders`, `transactions`, `custom_lists`, `tags`, `app_config`, etc.).
+  - Added table-level schema definitions (`DATABASE_TABLE_DEFINITIONS`) detailing display labels, categories, descriptions, and foreign key dependencies.
+  - Provided dual selection modes in the Restoration Preview Modal: granular "Table-by-Table" mode with select-all/clear controls and category breakdowns, alongside the traditional "Broad Sections" toggle mode.
+  - Implemented pre-flight dependency checking (`/api/backups/check-dependencies/:filename`) that inspects active database state versus snapshot backup state to detect orphaned records (e.g., restoring cuts without containers, containers without freezers, order items without products).
+  - Added an interactive dependency warning banner with an "Auto-Select Missing" action that automatically adds required dependency tables to the restore selection.
+  - Updated `/api/backups/restore/:filename` to selectively restore only user-chosen SQLite tables using atomic transactions while preserving unselected tables.
+
+### Files Modified
+- `/freezer_inventory_tracker/types.ts`
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/views/DataImportView.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.30.0] - 2026-09-17
+
+### Added
+- **Comprehensive Settings Persistence Across Database & ZIP Backups**:
+  - Persisted all application preferences and custom configuration keys (`report-from-name`, `report-from-address`, `offsite-theoretical-box-weight`, `freezer-theme`, `report-bottom-notes`, etc.) in the centralized SQLite `app_config` table.
+  - Implemented `getFullBackupConfigObject()` and `restoreConfigObject()` to ensure all application preferences, simulated box sizes, report addresses, theme choices, auto-snapshot schedules, and notification settings are bundled into `config.json` across manual backups, export ZIPs, and rolling auto-snapshots.
+  - Updated `/api/backups/restore/:filename` and `/api/backups/import-zip` to automatically unpack and restore `config.json` settings and `app_config` table entries.
+  - Added full support for `app_config` synchronization in `loadStateSync` and `saveStateSync`, as well as selective table restore routines.
+  - Added `/api/config` and `/api/config/:key` REST API aliases for direct settings management and legacy compatibility.
+  - Updated backup preview inspection (`/api/backups/preview/:filename`) to report active database configuration and backup snapshot settings counts.
+
+### Files Modified
+- `/freezer_inventory_tracker/types.ts`
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.29.15] - 2026-09-16
+
+### Fixed
+- **Connected Clients Rate-Limiting & JSON Parsing Resilience**:
+  - Fixed `Unexpected token 'R', "Rate exceeded." is not valid JSON` and `Failed to fetch connected clients: Failed to fetch` caused by aggressive 4-second polling and rapid focus/SSE triggers triggering proxy rate limits.
+  - Implemented in-flight request deduplication and client-side request throttling (minimum 12-second interval between background client list polls) in `useInventory.ts`.
+  - Replaced aggressive 4-second presence polling with a relaxed 30-second background keepalive fallback that pauses automatically when the browser tab is hidden.
+  - Added robust HTTP 429 and error-status checks before JSON parsing with automatic 30-second exponential backoff cooldowns, preventing plain-text proxy error responses from triggering JSON syntax errors.
+  - Eliminated redundant `fetchConnectedClients` calls triggered on inventory mutations in `App.tsx` (which are already dispatched over real-time SSE client channels).
+  - Protected heartbeat, single-user lock, and undo API handlers to safely check `res.ok` before attempting JSON parsing.
+
+### Files Modified
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.29.14] - 2026-09-16
+
+### Fixed
+- **Forced Multi-User Operating Mode Cross-Device Synchronization**:
+  - Resolved issue where enabling "Forced Multi" mode on one device did not reflect on other connected devices, leaving them in Auto mode.
+  - Added centralized `forcedMultiState` on `server.ts` with `GET /api/operating-mode/status` and `POST /api/operating-mode/set` endpoints to manage global forced multi-user state.
+  - Updated SSE streaming to broadcast `operating_mode_changed` events whenever multi-user or auto mode is toggled, and included `forcedMulti` state in `init`, client list responses, and periodic polling payloads.
+  - Synchronized `useInventory.ts` with the server-side forced multi state: automatically transitioning clients to Multi mode (live 1.2s sync & collaborative SSE broadcasts) upon receiving forced multi events, and reverting cleanly when switched back to Auto.
+  - Updated lock transitions so claiming Single-User mode safely supersedes forced multi, and releasing single-user mode gracefully restores forced multi mode if still active.
+  - Enhanced the forced multi-user UI banner and header menu in `App.tsx` to display the active device holder's identity (`by <Name> (You)` / `by <Name>`) and status across all screens.
+
+### Files Modified
+- `/freezer_inventory_tracker/types.ts`
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.29.13] - 2026-09-16
+
+### Fixed
+- **Single-User Lock Stale Holder & Disconnection Resolution**:
+  - Fixed `Action error: Application is locked in Single-User Mode (all) by User` caused by disconnected/departed clients or browser tab refreshes holding orphaned locks on the server.
+  - Enhanced `checkSingleUserLockStaleness()` in `server.ts` to automatically release locks immediately whenever the lock holder is no longer present in `activeClients` or has been inactive without heartbeats/actions for > 45 seconds (replacing the previous 15-minute freeze).
+  - Updated `/api/single-user/claim` and `/api/inventory/action` to auto-release orphaned locks if the previous holder is disconnected, preventing blocking of legitimate incoming actions.
+  - Added dedicated `/api/single-user/force-release` endpoint and added immediate **Force Unlock** options to both the lock notification banner and the sync header menu.
+  - Updated client ID persistence in `useInventory.ts` using tab-scoped `sessionStorage`, ensuring page reloads within the same browser tab preserve identity and never self-lock.
+  - Handled `SINGLE_USER_LOCKED` responses gracefully in `sendActionToServer` to display the interactive break-in/force unlock banner instead of producing unhandled errors.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.29.12] - 2026-09-16
+
+### Fixed
+- **Multi-Device Presence & Collaborative Auto Mode Synchronization**:
+  - Replaced socket-dependent SSE client array in `server.ts` with a resilient active client registry (`activeClients` Map). Both active SSE streams and REST polling endpoints (`/api/inventory/clients`, `/api/inventory/action`) register and touch client presence, preventing temporary socket reconnects or proxy resets from dropping devices.
+  - Resolved asymmetric operating mode issue where one device recognized multi-user collaborative mode while another remained stuck in "Auto Single".
+  - Updated `useInventory.ts` and `App.tsx` so `isCollaborativeMode` and `isAutoMultiActive` consistently track verified `activeClientCount > 1`.
+  - Prevented premature timeout resets in `App.tsx` from reverting collaborative mode back to single mode while multiple clients remain connected.
+  - Added unique window instance identifier for client sessions and ensured client identity headers (`X-Client-Id`, `X-User-Name`) are passed consistently across stream subscriptions and client list inquiries.
+  - Implemented automatic reconnection with exponential backoff on SSE error events to ensure instant recovery without requiring tab focus toggling.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.29.11] - 2026-09-16
+
+### Fixed
+- **Synchronous Quantity Input & Total Stock Render Parity**:
+  - Eliminated the visual delay between product card total stock counts and individual meat cut item input fields across `MeatCutRow.tsx`, `ProductView.tsx`, and `DisplayCaseView.tsx`.
+  - Bound the rendered input value directly to `isEditing ? localQuantity : meatCut.quantity.toString()` so that incremental updates, remote sync events, and manual corrections render immediately in the exact same paint frame as the card header totals without waiting for asynchronous `useEffect` re-renders.
+  - Ensured focused user editing preserves full inline math and delta evaluation (`+10`, `-5`) while capturing current quantity on focus.
+
+### Files Modified
+- `/freezer_inventory_tracker/components/MeatCutRow.tsx`
+- `/freezer_inventory_tracker/views/ProductView.tsx`
+- `/freezer_inventory_tracker/views/DisplayCaseView.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.29.10] - 2026-09-16
+
+### Fixed
+- **Multi-Device State Divergence & Stale Local Quantity Clobbering**:
+  - Identified and fixed the root cause of state divergence between devices where `latestLocalQuantityRef` was permanently retaining local edits and overriding fresh server updates during both SSE live updates and manual "Force Sync".
+  - Refactored `sendActionToServer` and `fetchState` in `useInventory.ts` to only merge active pending (`pendingQuantityUpdatesRef`) and in-flight (`inFlightQuantityUpdatesRef`) changes, allowing verified server state from other devices to update seamlessly.
+  - Added aggressive HTTP cache-busting headers (`Cache-Control: no-store, no-cache, must-revalidate`, `Pragma: no-cache`, `Expires: 0`) and timestamp query params on `GET /api/inventory` to prevent browsers or network proxies from serving cached JSON states.
+  - Enhanced `forceSyncAllClients` to properly await the local queue flush, send the broadcast command to all clients, and refresh local state to guarantee immediate parity across devices.
+  - Corrected table associations in `getAffectedTablesForAction` for offsite moves, butcher processing orders, and custom list items so delta updates persist and broadcast correctly to SQLite and all connected devices.
+  - Fixed Single-User Mode sync-and-release endpoints to broadcast updates via `notifyInventoryUpdate` ensuring full real-time propagation.
+
+### Files Modified
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.29.9] - 2026-09-16
+
+### Fixed
+- **Multi-Device Live Sync & Automatic Debounced State Persistence**:
+  - Fixed an issue where local modifications (quantities, movement orders, list toggles) in Auto/Solo mode were never automatically saved to the database without a manual flush, causing devices to become out of sync.
+  - Ensured all debounced user operations automatically schedule a background flush to the server and database (800ms in Multi/Collab mode, 1200ms in Solo/Auto mode).
+  - Resolved stale React closure states in the Server-Sent Events (SSE) message listener in `App.tsx` by backing all callbacks and state indicators (`refreshState`, `isSingleUserMode`, `flushAllPendingSyncs`, `setActiveClientCount`) with updated mutable references.
+  - Removed persistent `freezer_single_user_active` lock from localStorage initialization to prevent client tabs from mistakenly booting into a false single-user locked state that ignored remote live updates.
+  - Enhanced `fetchState` to allow background remote updates to merge seamlessly on top of pending local edits without aborting or losing local input.
+  - Increased background presence polling frequency to 4 seconds and lowered server keep-alive ping interval to 5 seconds to ensure instant recognition when a second device connects.
+  - Enhanced manual sync (`handleManualRefresh`) to flush pending local changes before fetching latest server data, ensuring 100% data parity between devices.
+
+### Files Modified
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.29.8] - 2026-09-16
+
+### Fixed
+- **Multi-User Real-Time Recognition & Auto-Mode Transition**:
+  - Resolved client ID collisions across browser tabs and sessions by transitioning from persistent `localStorage` to unique per-tab `sessionStorage` IDs, preventing multiple tabs/windows from disconnecting each other on the server.
+  - Synchronized `activeClientCountRef` and `isCollaborativeModeRef` inside `useInventory` to eliminate stale closure states across action dispatchers, background timers, and debounced flush queues.
+  - Added proactive background presence polling (every 10s) and immediate client status refreshes on initial mount, window focus, and document visibility wakeups.
+  - Updated server-side `/api/inventory/clients` endpoint to automatically refresh caller `lastActive` timestamps and return clean active connection counts.
+  - Linked SSE stream `onopen` handler in `App.tsx` to automatically trigger a client count refresh upon connection establishment.
+
+### Files Modified
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.29.7] - 2026-09-16
+
+### Fixed
+- **Mobile Responsive Layout for Operating Mode Banners**:
+  - Fixed horizontal screen overhang and layout overflow on mobile viewports for the Single-User Mode, Multi-User Mode, Break-In Request, and Demo/Preview status banners.
+  - Removed container-level text nowrap truncation that forced long description paragraphs onto single overflowing lines on narrow mobile screens.
+  - Added responsive padding, wrapping, `break-words`, and flexible mobile button widths (`flex-1 sm:flex-initial`) to ensure banners fit within mobile display boundaries.
+
+### Files Modified
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.29.6] - 2026-09-16
+
+### Fixed
+- **Instantaneous Operating Mode Switching & Menu Responsiveness**:
+  - Fixed UI lockups and delays when switching between Single-User, Multi-User, and Smart Auto operating modes.
+  - Eliminated synchronous multi-megabyte `localStorage` serialization on state updates during single-user mode that blocked the main UI thread.
+  - Added optimistic state updates for mode transitions so buttons and dropdown controls respond in 0ms without waiting for background server network requests.
+  - Streamlined `releaseSingleUserMode` to execute fast lock releases while asynchronously flushing debounced local changes.
+
+### Files Modified
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.29.5] - 2026-09-16
+
+### Added
+- **Server-Side Force Sync & Pre-Prune Cache Flush**:
+  - Implemented automatic pre-disconnection flush: When pruning or disconnecting an active client, the server broadcasts a targeted `force_flush` command over SSE, allowing the client to flush and commit any unsaved in-memory cache before terminating the socket.
+  - Added "Force Sync All Devices" action in the **Active Devices & Connected Users** modal, allowing users to command all connected devices/tabs to immediately push their buffered local edits to the database.
+  - Added `POST /api/inventory/clients/force-sync` endpoint and client-side SSE listener for `force_flush` events.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/components/ConnectedClientsModalContent.tsx`
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.29.4] - 2026-09-16
+
+### Added
+- **Active Connected Clients & Devices Inspector**:
+  - Made the real-time status indicator and mode dropdown badge clickable, opening a dedicated **Active Devices & Connected Users** modal.
+  - Displays complete information for all currently connected SSE clients: device type (iPhone, iPad, Mac, PC, Android, etc. with matching iconography), browser, user name, relative connect time, and last activity timestamp.
+  - Identifies the user's current session with a distinct "This Device (You)" indicator badge.
+  - Added manual disconnection controls allowing users to prune stale/zombie test sessions from closed background tabs or test runners.
+  - Added backend SSE client deduplication and automatic pruning of stale inactive connections in `server.ts` to prevent artificial client count inflation.
+  - Added `/api/inventory/clients` and `/api/inventory/clients/disconnect/:id` API endpoints.
+
+### Files Modified
+- `/freezer_inventory_tracker/types.ts`
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/components/ConnectedClientsModalContent.tsx`
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.29.3] - 2026-09-16
+
+### Added
+- **Auto Mode State Clarity (Single-User Solo vs Multi-User Collaboration)**:
+  - Added real-time client connection tracking in SSE stream (`clients_count` event and active client census).
+  - Explicitly distinguishes whether Auto Mode is currently operating in **Single-User** (`Auto: Single`) or **Multi-User** (`Auto: Multi (N)`) state.
+  - Updated the header status button, tooltips, and mode dropdown badges to visually indicate the active operational state (with blue live multi-device indicators when ≥2 clients are active or remote updates are detected, and cyan lightning bolt for zero-lag solo mode).
+  - Enhanced the 3-Way Operating Mode Control Panel with live status chips and contextual descriptions reflecting connected client counts.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.29.2] - 2026-09-15
+
+### Added
+- **Display Case 0-Count Items for In-Stock Storage Inventory**:
+  - Products that have positive backstock in on-site storage/staging freezers but 0 quantity in the display case are now automatically included in the Display Case view.
+  - Renders display cards with 0-count counters, backstock indicators, and fast Restock Now quick-action drawers allowing 1-click pulls directly from storage containers.
+  - Enables direct quantity increment and decrement for 0-count virtual display items, creating the display entry automatically.
+
+### Fixed
+- **IFrame Environment Performance Measure Safeguards**:
+  - Implemented error-resilient wrappers around `performance.measure` to prevent `DataCloneError: Failed to execute 'measure' on 'Performance': Data cannot be cloned, out of memory` and prevent React 18 scheduler edge cases in sandboxed iframe environments.
+
+### Files Modified
+- `/freezer_inventory_tracker/views/DisplayCaseView.tsx`
+- `/freezer_inventory_tracker/index.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.29.1] - 2026-09-15
+
+### Changed
+- **Sticky Banner Single-Line Scroll Condensation**:
+  - Dynamically detects vertical page scrolling (`scrollY > 40px`).
+  - Automatically condenses sticky operating mode banners (Single-User Mode, Multi-User Mode, and Remote Lock notifications) down to a streamlined **single line maximum** while scrolling.
+  - Hides multi-line descriptive text paragraphs during scroll and presents inline truncated titles, badges, and compact action buttons (`Sync Now`, `Switch to Auto`).
+  - Seamlessly restores full comfortable padding and detailed explanatory text when returning to the top of the page (`scrollY < 15px`).
+
+### Files Modified
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.29.0] - 2026-09-15
+
+### Added
+- **Three-Way Operating Mode Architecture (Auto, Multi-User, Single-User)**:
+  - Implemented comprehensive mode selection allowing users to choose between **Auto Mode** (default), **Multi-User Mode**, and **Single-User Mode**.
+  - **Auto Mode (Default)**: Automatically runs zero-latency local caching during solo usage and seamlessly transitions to live collaborative sync when other users or devices are detected active.
+  - **Multi-User Mode (Forced Testing)**: Enforces continuous 1.2s debounced synchronization and server-sent event (SSE) broadcast streaming across all devices—ideal for testing real-time concurrent editing and multi-device collaboration.
+  - **Single-User Mode (Exclusive Lock)**: Claims an exclusive server lock preventing conflicting remote writes and maintaining zero network latency in local memory with break-in alerts.
+- **Forced Mode Inactivity Watchdog**:
+  - Automatically reverts forced modes ('single' or 'multi') back to 'auto' mode after 5 minutes of inactivity (tracking clicks, scrolls, touch events, and key presses).
+- **Persistent Header Banners for Forced Modes**:
+  - Highlighting banner when **Single-User Mode** is forced with quick "Sync Now" and "Switch to Auto" buttons.
+  - Informative banner when **Multi-User Mode** is forced with quick "Sync Now" and "Switch to Auto" buttons.
+  - Full support for break-in requests and 5-second countdown banners.
+- **Segmented Mode Selector Control**:
+  - Integrated a clean 3-tab segmented control (`[Auto] [Multi] [Single]`) inside the sync dropdown with contextual state badges, mode descriptions, and action triggers.
+
+### Files Modified
+- `/freezer_inventory_tracker/types.ts`
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.28.2] - 2026-09-15
+
+### Fixed
+- **Enforced True Single-User (Solo) Default Mode**:
+  - Removed short-pause (1-2 second) server commits and background editing pings in Solo Mode (the default when working alone).
+  - In Solo Mode, changes are buffered 100% locally in memory without interrupting your active workflow with constant network requests.
+  - Server synchronization in Solo Mode is cleanly deferred until:
+    - You leave or background the app / the screen sleeps (`document.visibilityState === 'hidden'`, `pagehide`, `beforeunload`), OR
+    - An extended idle period of 5 minutes without any interaction occurs, OR
+    - You manually tap **"Sync Now"**, OR
+    - Another user is detected actively working (triggering seamless Collaborative Mode with rapid sync).
+  - Rapid multi-user sync (1.2s debounces) is strictly reserved for Collaborative Mode when concurrent remote users are detected.
+
+### Files Modified
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.28.1] - 2026-09-15
+
+### Fixed
+- **Resolved Single-Click UI Lock and Premature Sync Trigger**:
+  - Removed aggressive `window.blur` and `window.focus` event listeners from the synchronization engine that were erroneously treating intra-app button clicks, focus shifts, and WebView touch interactions as browser tab switches.
+  - Corrected quantity debounce timers to prevent premature network flushes from interrupting rapid successive clicks (+ / - adjustments) before the user finishes interacting.
+  - Filtered out self-originated SSE editing broadcasts on the client to eliminate false "remote editing" status indicators and avoid unnecessary refresh delays.
+  - Streamlined non-batched action dispatching to avoid parallel redundant sync calls.
+
+### Files Modified
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.28.0] - 2026-09-15
+
+### Added
+- **Local-First Smart Sync Architecture (Zero-Lag Offline & Online)**:
+  - Transitioned the entire frontend data engine to an ultra-responsive Local-First model where all actions (quantity adjustments, order assignments, list toggles, and item operations) execute instantly in memory with zero network delay or UI interruption.
+  - Implemented automatic **Multi-User Activity Detection**: seamlessly runs in ultra-quiet Solo mode by default (syncing during user pauses or backgrounding) and automatically transitions to Collaborative Mode when concurrent remote activity is detected via real-time SSE streams.
+  - Added a dedicated **"Sync Now"** manual action in the navigation status dropdown to immediately flush all queued local changes and pull the latest state on demand.
+
+### Changed
+- **Comprehensive Interaction & Idle Detection Engine**:
+  - Expanded interaction tracking to listen globally for touch events, mouse clicks, pointer events, mouse wheel, keyboard input, form element changes, page/route navigation, and window scrolling across capturing phases.
+  - Replaced aggressive short-interval timers with a smart **Idle Watchdog** that waits for genuine user pauses (3.5s in Solo mode, 1.2s in Collaborative mode) before performing background server commits.
+  - Added instant lifecycle sync hooks on **Screen Timeout / Sleep**, **Tab Hidden (`visibilitychange`)**, **Window Blur**, and **Page Navigation/Unload** (`pagehide`, `beforeunload`).
+  - Implemented silent state revalidation upon returning to the app (`visibilitychange -> visible` and `window focus`) whenever no local edits are pending.
+
+### Files Modified
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.27.4] - 2026-09-15
+
+### Performance & Optimization
+- **Ultra-Fast Sub-Quarter-Second Action Saving**:
+  - Replaced redundant, high-latency disk re-reads in `/api/inventory/action` by returning the in-memory, fully normalized `nextState` directly instead of executing full multi-table SQLite re-queries on every single user action.
+  - Reduced client-side quantity update debounce interval from 1000ms down to a nimble 200ms, allowing quantity changes to commit to the server almost instantaneously.
+  - Reduced in-flight follow-up sync interval from 300ms down to 50ms to instantly dispatch any subsequent user clicks queued during an active HTTP request.
+  - Updated sync status tooltip descriptions to accurately reflect rapid background synchronization.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.27.3] - 2026-09-15
+
+### Fixed
+- **Seamless Real-Time Quantity Adjustments During Active Synchronization**:
+  - Eliminated stale quantity ref locks and desynchronization in `MeatCutRow.tsx`, `DisplayCaseView.tsx`, and `ProductView.tsx` by removing `lastDispatchedQuantityRef` and calculating quantity steps directly against `meatCut.quantity` and optimistic state.
+  - Ensured immediate (0ms visual latency) feedback on `+` and `-` button clicks regardless of whether a background sync request is in the `"saving"` phase.
+  - Synchronized `stateRef.current` immediately and synchronously within `UPDATE_MEAT_QUANTITY` and `sendActionToServer` to avoid any race conditions where in-flight server payloads could overwrite newer optimistic user clicks.
+  - Cleaned up in-flight and local quantity tracking safely in `useInventory.ts` once all pending sync operations resolve.
+
+### Files Modified
+- `/freezer_inventory_tracker/components/MeatCutRow.tsx`
+- `/freezer_inventory_tracker/views/DisplayCaseView.tsx`
+- `/freezer_inventory_tracker/views/ProductView.tsx`
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.27.2] - 2026-09-15
+
+### Performance
+- **High-Performance Gzip/Deflate HTTP Compression**:
+  - Integrated `compression` middleware in `server.ts` to automatically compress large API JSON payloads (such as 6MB+ unified inventory snapshots and action results) down to ~180KB (~97% reduction over the wire).
+  - Configured selective filtering to bypass EventSource / Server-Sent Events (`/api/inventory/stream`), ensuring real-time notification streams flush without buffering latency.
+  - Slashed round-trip network transmission latency for inventory state retrieval and action synchronizations down to ~5ms.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.27.1] - 2026-09-15
+
+### Fixed
+- **Instantaneous On-Site Display Quantity Feedback During Server Sync**:
+  - Fixed quantity input controls in `MeatCutRow.tsx`, `DisplayCaseView.tsx`, and `ProductView.tsx` so the rendered value is bound directly to local component state instead of waiting for parent re-renders or background server sync responses.
+  - Eliminated the UI pause where subsequent rapid button presses during active synchronization appeared frozen until the network request returned.
+  - Updated inline math formula commits to evaluate against the user's latest local quantity (`lastQuantityRef.current`) rather than lagging props.
+  - Hardened state reconciliation in `useInventory.ts` (`sendActionToServer` and `fetchState`) to incorporate `latestLocalQuantityRef` across all in-flight sync intervals, preventing race conditions or stale server snapshots from rolling back optimistic user clicks.
+  - Added prompt flushing (300ms) for queued updates buffered while an existing synchronization request was in flight.
+
+### Files Modified
+- `/freezer_inventory_tracker/components/MeatCutRow.tsx`
+- `/freezer_inventory_tracker/views/DisplayCaseView.tsx`
+- `/freezer_inventory_tracker/views/ProductView.tsx`
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.27.0] - 2026-09-15
+
+### Added
+- **Domain-Segmented Single-User Mode (On-Site vs. Off-Site Storage)**:
+  - Added support for scoped locking (`all`, `onsite`, `offsite`) in Single-User Mode, preventing retail freezer inventory edits from unnecessarily blocking off-site pallet scanning and movements at remote cold storage.
+  - Implemented automatic Single-User Mode activation with `offsite` scope upon opening the Off-Site Movement Scanner tab, guaranteeing lag-free local barcode processing during high-volume pallet staging and picking.
+  - Implemented automated state synchronization on tab switch or app backgrounding via `/api/single-user/sync-state`, preserving user lock state across device and browser switches without dropping lock ownership.
+  - Extended idle lock auto-expiry timeout from 5 minutes to 15 minutes, preventing premature lock loss during physical pallet handling in cold storage.
+
+### Changed
+- **Lock Feedback & Navigation Notifications**:
+  - Enhanced the persistent top lock banner in `App.tsx` to clearly indicate lock domain (`Off-Site Solo Mode Active` vs `On-Site Solo Mode Active`), explaining that unaffected domains remain available for other users.
+  - Updated action dispatch and router in `server.ts` to map and validate all on-site and off-site actions under segmented locking rules.
+  - Replaced browser `alert()` modal calls with in-app accessible action error notifications.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/views/OffSiteMovementScanner.tsx`
+- `/freezer_inventory_tracker/views/OffSiteStorageView.tsx`
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.26.4] - 2026-09-15
+
+### Added
+- **Conflict Detection & Live State Difference Preview for Historical Undo**:
+  - Implemented downstream conflict analysis in `UndoConfirmationModal.tsx` to detect if an item or container was modified in subsequent audit log entries recorded after the target event.
+  - Added an interactive **Downstream Conflict Warning Panel** highlighting the count of subsequent actions on that entity, with an expandable preview of the conflicting historical actions (user, timestamp, description).
+  - Added a **Live State Comparison Matrix** showing the current real-time state of the item (quantity, container, freezer) side-by-side with the proposed state after rollback (with quantity diff badges and location restoration notes).
+  - Enhanced audit log action rows in `HistoryView.tsx` with direct undo inspection buttons linking into the state diff preview modal.
+
+### Files Modified
+- `/freezer_inventory_tracker/components/UndoConfirmationModal.tsx`
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/views/HistoryView.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.26.3] - 2026-09-14
+
+### Changed
+- **Unified Quantity Adjustments & Container Archiving in Audit Log**:
+  - Enhanced `handleEmptyContainer` with `combineWithLatestHistory` support to atomically merge empty container archiving/retirement directly into the quantity adjustment, move, or reconciliation audit entry.
+  - Attached full container snapshots (`container`, `previousFreezerId`, `isArchived`) into `undoData` across `UPDATE_MEAT_QUANTITY`, `BATCH_UPDATE_MEAT_QUANTITY`, `RECONCILE_QUANTITIES`, and `MOVE_MEAT_QUANTITY`.
+  - Updated `reconstructUndoFromAuditLog` and `normalizeState` to ensure undoing a log entry restores the cut and its container synchronously without leaving orphaned items on the sorting table or unarchiving empty containers without their contents.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.26.2] - 2026-09-14
+
+### Changed
+- **Removed Undo Buttons Outside of Audit Log**:
+  - Removed direct header Undo button (`#header-undo-button`) and dropdown menu undo/redo actions from `App.tsx`.
+  - Preserved complete Undo & Rollback capabilities inside the Global Inventory History & Audit Log view (`HistoryView.tsx`) and row-level audit trail actions.
+
+### Files Modified
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.26.1] - 2026-09-14
+
+### Fixed
+- **Resolved `localUndoStackRef` Temporal Dead Zone ReferenceError**:
+  - Moved the `localUndoStackRef` declaration prior to the `undoSnapshots` `useMemo` hook in `useInventory.ts`, resolving an uncaught initialization error on application startup.
+
+### Files Modified
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.26.0] - 2026-09-14
+
+### Added
+- **Dual-Layer Undo Engine with SQLite Inverse SQL Journal & Enriched Audit Log Snapshots**:
+  - Implemented an `undo_sql_journal` table in SQLite to track exact inverse SQL statements (INSERT/UPDATE/DELETE) per action during delta synchronization.
+  - When undoing an action, the server first looks up the exact inverse SQL operations recorded for that audit entry and executes them in reverse order inside an atomic transaction, guaranteeing instant row-level rollback with zero state distortion.
+  - Capped the journal at 50 entries to ensure near-zero storage footprint.
+  - Seamless fallback: If no SQL journal entry exists (e.g. legacy entries or cross-device syncs), the system automatically falls back to intelligent audit log state reconstruction.
+
+### Changed
+- **Beefed-up Container Emptied & Deletion Audit Log Tracking**:
+  - Enhanced `handleEmptyContainer`, `DELETE_CONTAINER`, and `TOGGLE_CONTAINER_ARCHIVED` to capture full container snapshot data (including name, former freezer assignment, template association, and pin metadata) directly inside the history log's `undoData`.
+  - Added descriptive location context in audit messages (e.g., `Container "Bin A" was emptied and archived (removed from Upright Freezer 1)`).
+  - Enhanced `reconstructUndoFromAuditLog` to restore emptied, retired, or deleted containers back to active status in their original freezers along with their meat cuts.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.25.2] - 2026-09-14
+
+### Fixed
+- **Restored 'Pending Changes' Indicator in Header Sync Status & Dropdown**:
+  - Differentiated the local debounce buffering stage from active server writing in `useInventory.ts`.
+  - Added discrete `hasPendingChanges` and `isSaving` states to track local 2-second debounce buffering separately from active server HTTP synchronization.
+  - While rapid user edits (quantity updates, movement orders, list toggles) are buffered locally within the 2-second inactivity window, the UI now clearly displays **"Pending Changes"** with an amber indicator.
+  - When the 2-second buffer window elapses and changes are transmitted to the server, the UI transitions to **"Saving..."** with the rotating spinner.
+  - Once the server commit completes, the UI smoothly returns to **"Live"** (or **"Solo Mode"** when operating in single-user offline mode).
+  - Updated both the main header sync button and the internal sync status dropdown in `App.tsx` to reflect the three distinct states: "Live", "Pending Changes", and "Saving...".
+
+### Files Modified
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.25.1] - 2026-09-14
+
+### Fixed
+- **Eliminated Race Conditions and Buffer Collisions during Debounced Syncing**:
+  - Confirmed and fortified the 2-second client-side debounce buffer (`pendingQuantityUpdatesRef`, `pendingMovementUpdatesRef`, `pendingListToggleUpdatesRef`) to guarantee rapid successive changes remain 100% local and batch sync to the server all at once without intermediate network stalls.
+  - Resolved SSE Echo Race Condition: Updated `notifyInventoryUpdate(excludeClientId)` in `server.ts` to skip broadcasting real-time `update` events to the client that initiated the action. In `App.tsx`, added a guard to ignore incoming SSE updates originating from `clientId`, eliminating redundant background `refreshState()` calls that competed with in-flight actions.
+  - Fixed State Clobbering on Server Responses: In `useInventory.ts`, `sendActionToServer` and `fetchState` now intelligently preserve and merge un-synced debounced local updates (`pendingQuantityUpdatesRef`, `pendingMovementUpdatesRef`) on top of incoming server snapshots, preventing newer local clicks from being overwritten if a batch or background refresh finishes while user interactions are still buffered.
+  - Kept `isPendingSync` Active During Network Requests: Wrapped all pending flush functions (`flushPendingUpdates`, `flushPendingMovementUpdates`, `flushPendingListToggleUpdates`) in `finally` blocks so `isPendingSync` stays `true` until the server HTTP request finishes, preventing background re-fetches from triggering mid-save.
+
+### Files Modified
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.25.0] - 2026-09-14
+
+### Changed
+- **Reconstructed Zero-Lag Undo Engine Directly from Persistent Audit Log**:
+  - Replaced the memory-heavy in-memory snapshot arrays (`serverUndoMemorySnapshots`) and whole-state stack copying with an audit-log-based undo reconstruction engine.
+  - Added persistent `undoData` column to the `history` table with on-the-fly backward-compatible database migration in `initDatabase`.
+  - Implemented `reconstructUndoFromAuditLog` in `server.ts`, which decodes targeted inverse state operations directly from the audit log entry or parses structured descriptions to restore exact cut quantities, container assignments, splits, and moves without cloning the entire database.
+  - Eliminated redundant network polling (`fetchUndoSnapshots`) and multi-megabyte `undoStack` React state duplicates in `useInventory.ts`. Undo options are now derived instantly from `state.history` via `useMemo` with zero latency and zero RAM bloat.
+  - Optimized `loadStateSync` in `server.ts` by caching `isDatabasePopulated` to prevent 14 repeated count queries on every state read.
+  - Removed double `JSON.stringify` state comparison in `loadState` to avoid multi-megabyte serialization overhead on every inventory operation.
+  - Updated `UndoConfirmationModal.tsx` to seamlessly accept any audit log history entry as an undo target.
+
+### Files Modified
+- `/freezer_inventory_tracker/types.ts`
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/components/UndoConfirmationModal.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.24.3] - 2026-09-14
+
+### Fixed
+- **Missing Icon Import in App Entry Point**:
+  - Added the missing `RotateCcw` icon import from `lucide-react` in `App.tsx` preventing the real-time undo notification toast from triggering a `ReferenceError`.
+- **TypeScript Type Safety in Delta State Slicing**:
+  - Fixed TypeScript union key assignment in `useInventory.ts` when extracting changed state slices for local in-memory undo snapshots.
+
+### Files Modified
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.24.2] - 2026-09-14
+
+### Changed
+- **Delta-Diffing Database Sync & Targeted Table Writes**:
+  - Implemented smart delta diffing in `syncTableData` within `server.ts`. SQLite now pre-fetches existing records and skips disk writes for any rows whose columns have not changed.
+  - Added targeted table synchronization (`affectedTables`) to `saveStateSync` and `saveState`. Action dispatches (e.g. updating a quantity, moving a cut, editing a category) now only sync the specific affected tables rather than re-evaluating and re-writing every table in the database.
+  - Optimized in-memory undo snapshots to store lightweight state slices (`changedSlices`) instead of replicating the entire 6+ MB JSON state tree, dramatically reducing browser and Node.js RAM footprint while speeding up undo operations.
+- **Simplified Undo Confirmation Modal UX**:
+  - Streamlined `UndoConfirmationModal.tsx` into a focused single-action confirmation dialog that clearly presents the last action details, timestamp, and user.
+  - Removed confusing redundant tabs and multi-step popups that caused confusion upon clicking Undo.
+  - Added a non-intrusive toast notification confirming when an undo action has successfully completed.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/components/UndoConfirmationModal.tsx`
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.24.1] - 2026-09-14
+
+### Fixed
+- **Graceful Handling of Empty or Expired In-Memory Undo Actions**:
+  - Resolved `Error in /api/inventory/undo: Error: No undoable action found in memory history` by safely handling missing or cleared in-memory snapshots without throwing unhandled exceptions or logging noisy server errors.
+  - Added pre-checks in `useInventory.ts` (`executeUndo`) to gracefully report when memory undo history is empty before initiating server roundtrips.
+  - Updated `UndoConfirmationModal.tsx` to disable the confirm button and display a clear informational card when a historical audit entry from prior sessions is selected without an active memory snapshot.
+  - Enhanced `HistoryView.tsx` to visually distinguish recent actions that have an active in-memory snapshot (`Snapshot Ready`) from persistent audit-only logs (`Log Details`), preventing accidental undo attempts on historical logs without snapshots.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/components/UndoConfirmationModal.tsx`
+- `/freezer_inventory_tracker/views/HistoryView.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.24.0] - 2026-09-14
+
+### Changed
+- **Migrated Undo Engine to Local Client & Server RAM (Zero SQLite Disk Writes)**:
+  - Completely eliminated persistent disk writes from the undo mechanism to protect solid-state drives (SSDs/microSDs) from write wear and remove mutation latency on Home Assistant hardware.
+  - Replaced the disk-based SQLite `undo_snapshots` table with high-performance in-memory RAM buffers on both client and server sides.
+  - Dropped the legacy `undo_snapshots` database table automatically during database initialization to instantly reclaim solid-state storage space on existing installations.
+  - In Single-User Mode, undo operations execute 100% locally in browser device memory with 0ms roundtrip latency, zero network traffic, and full offline safety.
+  - In normal connected mode, undo actions operate against the server's in-RAM snapshot collection with seamless fallback to client-side memory if the server was recently restarted.
+  - Maintained complete backward compatibility with the Undo confirmation dialog (`UndoConfirmationModal.tsx`), Audit History view (`HistoryView.tsx`), and global `Ctrl+Z` / `Cmd+Z` keyboard shortcuts.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.23.6] - 2026-09-12
+
+### Changed
+- **Sticky Column Header Bar in Off-Site Storage Spreadsheet**:
+  - Re-implemented smooth sticky positioning for the column headers bar across `OffSiteSpreadsheet.tsx` and `OffSiteStagingWorksheet.tsx`.
+  - Configured each header cell (`<th>`) with `sticky top-[var(--header-height,68px)]` and `z-20` so the bar cleanly anchors directly beneath the application navigation bar when scrolling down the spreadsheet.
+  - Eliminated conflicting `overflow-hidden` and `overflow-x-auto` constraints on the immediate table container wrappers that previously broke standard CSS sticky stacking context and caused headers to misalign.
+  - Removed sticky positioning from the bulk Selection Summary action bar to prevent it from overlapping or occluding the column headers while scrolling.
+  - Preserved individual column resizing handles, sort indicators, multi-select dropdown filters, and rounded card corner aesthetics (`first:rounded-tl-2xl last:rounded-tr-2xl`).
+
+### Files Modified
+- `/freezer_inventory_tracker/views/OffSiteSpreadsheet.tsx`
+- `/freezer_inventory_tracker/views/OffSiteStagingWorksheet.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.23.5] - 2026-09-12
+
+### Fixed
+- **Restore Proper Column Header Positioning in Off-Site Storage Spreadsheet**:
+  - Fixed an issue where column headers in the Off-Site Storage spreadsheet and staging worksheet were displaced down the screen and overlapping data rows instead of aligning at the top of the table.
+  - Removed faulty `top: var(--header-height, 68px)` inline style offsets and competing `sticky` / `relative` position directives from `<thead>` and each individual `<th>` element (`Box`, `Cuts`, `Category`, `Weight`, `Pieces`, `Location`, `Pallet`, `Moved To`, `Flag`, `Serial`, `Lot Number`, and `Pack Date`).
+  - Restored clean `overflow-x-auto` on the table container `#offsite-spreadsheet-table-container` to guarantee smooth horizontal scrolling without layout clipping or sticky positioning context bugs.
+  - Aligned table headers firmly at the top of the spreadsheet, matching the established presentation in the butcher and inventory views.
+
+### Files Modified
+- `/freezer_inventory_tracker/views/OffSiteSpreadsheet.tsx`
+- `/freezer_inventory_tracker/views/OffSiteStagingWorksheet.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.23.4] - 2026-09-12
+
+### Fixed
+- **Prevent Automatic "Labeled As" Tags on Off-Site to On-Site Transitions**:
+  - Fixed an issue where items migrated from off-site cold storage to on-site inventory automatically inherited a `⚠️ Labeled As: <original>` tag showing the butcher's raw invoice text.
+  - Off-site movement orders (`EXECUTE_MOVEMENT_ORDER` and `REVERT_MOVEMENT_ORDER`) now strictly check whether an entry was explicitly marked or corrected as a wrong label (`isWrongLabel`, `wrongLabel`, or `wrongLabelOriginal`) before assigning `originalCutName` and wrong-label metadata to staged meat cuts.
+  - When transferring standard inventory cuts without manual label corrections, the incoming butcher label text is no longer copied into `originalCutName`, ensuring standard cuts merge smoothly and do not show false warning indicators.
+  - Updated visual displays across `MeatCutRow.tsx`, `ProductView.tsx`, and `DisplayCaseView.tsx` to require explicit wrong-label flags (`isWrongLabel` or `wrongLabel`) before rendering the `⚠️ Labeled As` warning tag.
+  - Enhanced state normalization (`normalizeState`) to clean up historical false wrong-label assignments on on-site cuts that lack explicit wrong-label flags.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/views/ProductView.tsx`
+- `/freezer_inventory_tracker/views/DisplayCaseView.tsx`
+- `/freezer_inventory_tracker/components/MeatCutRow.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.23.3] - 2026-09-10
+
+### Changed
+- **Sticky Column Headers with Natural Page Scroll in Off-Site Storage Workspace**:
+  - Refined table stickiness behavior per user feedback: removed container-level stickiness and viewport height clipping (`max-h`) from the inventory table container.
+  - Allowed summary cards, itemized inventory breakdown, and movement toolbar to scroll up naturally off the screen when scrolling down the page.
+  - Positioned table column headers (`Box`, `Cuts`, `Category`, `Weight`, `Pieces`, `Location`, `Pallet`, `Move To`, `Flag`, `Serial`, `Lot Number`, and `Pack Date`) to stick smoothly at `var(--header-height, 68px)` directly underneath the sticky main application header.
+  - Ensured table container uses `overflow-visible` so `position: sticky` on header cells adheres directly to the viewport scroll context without nested container boundaries.
+  - Applied the same natural scroll and header stickiness to the flat list staging worksheet.
+
+### Files Modified
+- `/freezer_inventory_tracker/views/OffSiteSpreadsheet.tsx`
+- `/freezer_inventory_tracker/views/OffSiteStagingWorksheet.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.23.2] - 2026-09-10
+
+### Added
+- **Sticky Table Headers in Off-Site Storage Workspace**:
+  - Pinned the inventory spreadsheet table header row to the top of the viewport when scrolling through entries in the Off-Site Storage workspace.
+  - Implemented `sticky top-[calc(var(--header-height,72px)+8px)]` with constrained `max-h` and smooth two-dimensional scrolling on the table container, keeping column headers always in view under the main app navigation bar.
+  - Added `sticky top-0` and solid background styling with bottom divider borders across all column header cells (`Box`, `Cuts`, `Category`, `Weight`, `Pieces`, `Location`, `Pallet`, `Move To`, `Flag`, `Serial`, `Lot Number`, and `Pack Date`) to prevent underlying rows from showing through during scroll.
+  - Raised column resize handles to higher stacking layer (`z-30`) so columns can still be resized effortlessly while scrolled.
+  - Enabled sticky header positioning on the expanded item breakdown summary table and the staging flat-list view.
+
+### Files Modified
+- `/freezer_inventory_tracker/views/OffSiteSpreadsheet.tsx`
+- `/freezer_inventory_tracker/views/OffSiteStagingWorksheet.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.23.1] - 2026-09-10
+
+### Added
+- **Instant Destination Breakdown for Split Boxes in Off-Site Storage Movements**:
+  - In the Off-Site Storage spreadsheet view, when working within an order movement, boxes with cuts moving to split destinations (or staying put) now directly display all their assigned locations right under the "Move to" dropdown.
+  - Users no longer need to expand the box row or inspect individual item sub-rows to see where cuts are being routed.
+  - Each destination is rendered with a clean, high-contrast badge showing:
+    - Target destination location name (or "Staying put") with clear visual icons (`📍` for destinations, `⏹️` for staying put).
+    - Precise cut count and total weight (e.g. `2 cuts · 14.5#`).
+    - Comprehensive tooltip with cut names, piece totals, and net weights.
+  - Automatically calculates and sorts destinations with active destinations prioritized and "Staying put" listed at the bottom.
+  - Added a safeguard in `updateMoveTargetGroup` to ignore re-selecting the `__mixed__` placeholder value.
+
+### Files Modified
+- `/freezer_inventory_tracker/views/OffSiteSpreadsheet.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.23.0] - 2026-09-10
+
+### Added
+- **Persistent Multi-Stage Undo & Rollback System**:
+  - Implemented persistent database snapshots stored in SQLite (`undo_snapshots` table) to guarantee undo works across client refreshes and multi-user sessions.
+  - Added dedicated API endpoints: `GET /api/inventory/undo/recent` and `POST /api/inventory/undo` with targeted snapshot and history ID rollback support.
+  - Automatically captures pre-mutation snapshots on all inventory actions and syncs rollback events back to the active state and audit trail.
+- **Interactive Undo Confirmation Dialog (`UndoConfirmationModal`)**:
+  - **Latest Action Confirmation Tab**: Displays the exact action description, user, timestamp, and explanation of what will be restored prior to confirmation.
+  - **Audit History Selection Tab**: Lets users browse, search, and pick specific actions from the full audit history to revert, with visual badges indicating instant snapshot readiness.
+  - Provides instant feedback upon reverting and safeguards against accidental or unintended rollbacks.
+- **Top Header Direct Undo Button & Keyboard Shortcut**:
+  - Added an accessible "Undo" button in the top navigation bar showing the count of recent undoable actions with amber badge highlights.
+  - Added global `Ctrl+Z` / `Cmd+Z` shortcut support to quickly summon the Undo confirmation dialog from anywhere in the app.
+  - Integrated "Undo This" action buttons directly into each row of the Global Inventory History & Audit Log view.
+
+### Fixed
+- Fixed an issue where the Undo button was frequently disabled or lost state because the previous state was only kept in transient client-side memory or checked against non-existent `state.previousState`.
+
+### Files Modified
+- `/freezer_inventory_tracker/types.ts`
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/components/UndoConfirmationModal.tsx`
+- `/freezer_inventory_tracker/views/HistoryView.tsx`
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.22.5] - 2026-09-09
+
+### Fixed
+- **Traceability Status Accuracy for Removed and Delivered Packages**:
+  - Fixed an issue where items removed from inventory upon delivery (such as deliveries to CLiCK or external wholesale/pickup destinations) incorrectly displayed as "in on-site storage in staging".
+  - **Comprehensive Removal & History Log Parsing**:
+    - Enhanced trace status resolution to scan item history logs for explicit removal, delivery, donation, scrap, and archive events (including "Removed from off-site storage upon delivery to [Destination]").
+    - Inspected execution logs and destination IDs on the final movement order to identify external customer/partner delivery destinations.
+    - Preserved accurate "Delivered & Removed" custody status for archived packages even if intermediate staging moves existed in order history.
+  - **On-Site In-Stock Validation**:
+    - Restricted on-site status to active cuts with positive quantity (`quantity > 0`) that have not been removed or archived.
+    - Prevented depleted/archived on-site stock from falsely showing as active in-stock items.
+  - **Custody Journey & Location Display Improvements**:
+    - Added dedicated "Final Custody Disposition: Delivered & Removed" step to the linear custody journey highlighting the destination partner, delivery timestamp, and explicit removal notice.
+    - Updated the "Current Physical Location" summary card to show recipient details and removal notices for delivered items.
+    - Clarified table and badge status labels so delivered items display "Delivered ([Destination])" rather than generic archived or misleading on-site labels.
+
+### Files Modified
+- `/freezer_inventory_tracker/views/TraceabilityView.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.22.4] - 2026-09-08
+
+### Changed
+- **Traceability View Redesign & Status Cleanup**:
+  - **Eliminated False "Pending Transfer" Status**: Replaced confusing status labels that incorrectly flagged items in off-site cold storage as "pending transfer" when they were simply residing in cold storage without an active transfer scheduled.
+  - **Dedicated "Current Physical Location" Card**: Added a high-contrast, crystal-clear location summary card at the top of the item view ("Where It Is Now") explicitly distinguishing between:
+    - *In Off-Site Cold Storage*: Highlights facility name, pallet, box, and cold intake date, clarifying that the item is securely held in commercial deep freeze.
+    - *In Stock On-Site*: Highlights the active freezer cabinet, specific storage bin/container, and on-site arrival/placement date.
+    - *Archived / Consumed*: Highlights past history for items already consumed or removed from active inventory.
+  - **Data-Driven Chronological Custody Journey ("What It Has Gone Through & When")**:
+    - Replaced rigid, static 6-stage numbered boxes with a dynamic, data-driven journey list that only displays the actual physical steps the item experienced.
+    - Each step cleanly displays the exact date it took place, an informative summary, contextual metadata badges, and detailed attributes (e.g. slaughter details, certified weights, lot numbers, logistics transfer IDs).
+    - Items that have not transferred on-site do not display empty placeholder stages or confusing transfer warnings.
+    - Cohort container logs for on-site items are presented in a dedicated, clearly explained activity section.
+
+### Files Modified
+- `/freezer_inventory_tracker/views/TraceabilityView.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.22.3] - 2026-09-08
+
+### Added
+- **Step Dates in Item Traceability & Chain of Custody**:
+  - **Milestone Date Ribbon**: Added a chronological, horizontal progress ribbon at the top of the chain-of-custody audit trail showing step-by-step dates for Step 1 (Harvest/Slaughter), Step 2 (Packaged & Labeled), Step 3 (Cold Intake), Step 4 (Logistics Transfers), and Step 5 (On-Site Placement).
+  - **Explicit Step Timestamps Across All Stages**:
+    - **Stage 1 (Harvest & Butcher Processing)**: Added prominent `Step Date` badge showing the slaughter/harvest date or intake completion date, plus dedicated date indicators for slaughter/kill date, pickup date, and birth/intake date.
+    - **Stage 2 (Packaging & Verification)**: Added `Step Date` badge and a dedicated `Certified Pack Date` column and metric.
+    - **Stage 3 (Off-Site Cold Storage Facility)**: Added `Step Date` badge and `Cold Storage Intake Date` metric resolved from intake history logs, pallet timestamp encoding, or pack date.
+    - **Stage 4 (Logistics & Movement Orders)**: Added individual `Step Date` timestamps for each movement order and a `Latest Transfer` summary badge.
+    - **Stage 5 (On-Site Freezers & Placement)**: Added `Step Date` badge and `On-Site Placement Date` showing exact time the cut was restocked or staged into cabinets.
+    - **Stage 6 (On-Site Container Activity & Auditing)**: Enriched cohort log items with formatted timestamp pills and clock icons.
+  - **Batch / Lot Cohort Table**: Added a dedicated `Pack Date` column to the package search results table.
+  - **Printable Chain of Custody Certificate**: Updated the official custody certificate modal with explicit dates for each verified audit milestone.
+
+### Files Modified
+- `/freezer_inventory_tracker/views/TraceabilityView.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.22.2] - 2026-09-08
+
+### Changed
+- **Relocated Audit History & Item Traceability from Hamburger Menu to Sync/History Menu**:
+  - Removed "Item Traceability" and "Audit History Log" from the global hamburger options menu to declutter general storage and operations navigation.
+  - Added a dedicated "Audit & Traceability" section directly inside the top-bar Sync / History dropdown menu (`#sync-status-dropdown`), housing both **Audit History Log** and **Item Traceability** with active view indicators and checkmarks.
+  - Updated the Sync button tooltip to reflect quick access to "Sync, History & Traceability".
+
+### Files Modified
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.22.1] - 2026-09-08
+
+### Changed
+- **Package Lifecycle & Out-of-Custody History Retention**:
+  - Replaced naive calendar-age history purging with a physical custody-aware retention engine (`calculateHistoryRetention` in `utils/historyRetention.ts`).
+  - **Zero-Purge for Active Inventory**: As long as a package remains in the system (e.g., active on-site cut with quantity > 0 or unarchived off-site storage entry), **100% of its history and movement records are permanently preserved**, regardless of whether the package has been in inventory for 1 year, 6 years, or more.
+  - **Out-of-Custody Clock**: When a package departs the system (consumed, sold, zeroed out, or archived), all of its historical logs (intake, blast freeze, storage moves, staging, cabinet allocation, label changes, split packages) are protected until the package has been out of custody for the selected retention threshold (1 Year, 2 Years, 3 Years, or 5 Years).
+  - Synchronized server-side `PURGE_HISTORY` handler with client-side `HistoryView` estimation and preview metrics to display active protected packages and exact purge counts.
+
+### Files Modified
+- `/freezer_inventory_tracker/utils/historyRetention.ts`
+- `/freezer_inventory_tracker/types.ts`
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/views/HistoryView.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.22.0] - 2026-09-08
+
+### Added
+- **Item Traceability & Chain of Custody View**:
+  - Implemented a dedicated "Item Traceability" interface accessible from the primary hamburger menu.
+  - Multi-parameter search supporting Serial Numbers, Lot Numbers, Butcher Order Numbers, Processor Cut Labels, Box IDs, and Pallet IDs.
+  - Interactive Cohort overview when searching lots or butcher harvest batches (summarizing total packages, total weight in lbs, total pieces, and location breakdown across Off-Site, On-Site, and Archived).
+  - Deep-dive physical chain-of-custody timeline with 6 chronological stages:
+    1. **Harvest & Butcher Processing**: links to originating `ButcherOrder` with species, kill/slaughter dates, pickup dates, live/hanging weights, and processor notes.
+    2. **Packaging & Verification**: serial number, lot number, certified weight, piece count, pack date, processor mislabeling corrections, and inherited tags.
+    3. **Off-Site Cold Storage**: facility name, assigned pallet, and storage box.
+    4. **Logistics & Movement Orders**: all historical transfer manifests and execution timestamps.
+    5. **On-Site Placement**: destination freezer cabinets and specific container/bin assignments.
+    6. **On-Site Container Cohort Logs**: high-confidence tracking of all subsequent cabinet restocks, bin relocations, and verified container audits.
+  - Official Food Safety & Custody Certificate printable modal with Code-128 barcode generation and verification stamps.
+
+### Changed
+- **Permanent Audit Log Preservation & Multi-Year Purge Safeguard**:
+  - Removed history truncation (`MAX_HISTORY_PER_ITEM` limit of 10) in `server.ts` to ensure full audit logs are preserved indefinitely.
+  - Removed history truncation in bulk delete/clear operations in `DataImportView.tsx`.
+  - Replaced short-term purge options (30, 60, 90 days, keep last 100/250) in `HistoryView.tsx` with multi-year retention options (1 Year, 2 Years, 3 Years, 5 Years) to safeguard audit records.
+  - Enforced a minimum age threshold of 365 days in `PURGE_HISTORY` server handler.
+
+### Files Modified
+- `/freezer_inventory_tracker/types.ts`
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/views/TraceabilityView.tsx`
+- `/freezer_inventory_tracker/views/HistoryView.tsx`
+- `/freezer_inventory_tracker/views/DataImportView.tsx`
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.21.13] - 2026-09-08
+
+### Added
+- **Default Item Tags for Off-Site Inventory Intake**:
+  - Automatically applied product default item tags (`Product.defaultTagIds`) whenever off-site inventory items are brought in or added as new items.
+  - Implemented default tag resolution in `server.ts` for:
+    - `ADD_OFFSITE_ENTRY`: looks up associated product (by `productId` or cut name) and populates `entry.tagIds` with `product.defaultTagIds` when not explicitly overridden.
+    - `ADD_BUTCHER_ORDER`: looks up catalog product and applies `defaultTagIds` when creating new off-site entries for butcher cuts, as well as when updating existing entries lacking tags.
+    - `IMPORT_OFFSITE_ENTRIES`: resolves matched product for incoming CSV/paste records and assigns `defaultTagIds` to new entries and backfills existing entries missing tags.
+    - `normalizeState`: retroactively backfills default tags on existing off-site entries that were previously imported without tags.
+  - Enhanced client-side views:
+    - `OffSiteSpreadsheet.tsx`: added interactive Item Tags pill selector inside the Add Item modal, pre-populating with product default tags when picking from the product catalog or typing matching cuts.
+    - `OffSiteStorageView.tsx`: ensured `handleAddEntry`, `handlePasteImportSubmit`, and `finalizeImportMapping` inherit default tags from matched products.
+    - `ButcherRecordsView.tsx`: ensured `executeImport` and `finalizeImportMapping` pass default tags on butcher cut intake to off-site storage.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/views/OffSiteSpreadsheet.tsx`
+- `/freezer_inventory_tracker/views/OffSiteStorageView.tsx`
+- `/freezer_inventory_tracker/views/ButcherRecordsView.tsx`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
 ### [2.21.12] - 2026-09-08
 
 ### Fixed

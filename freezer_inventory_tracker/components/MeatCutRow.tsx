@@ -32,8 +32,6 @@ const MeatCutRow: React.FC<MeatCutRowProps> = ({
   const [openUpwards, setOpenUpwards] = useState(false);
 
   const menuRef = useRef<HTMLDivElement>(null);
-  const lastQuantityRef = useRef<number>(meatCut.quantity);
-  const lastDispatchedQuantityRef = useRef<number | null>(null);
 
   // Parse and evaluate math deltas like +20 or -6
   const evaluateMathExpression = (input: string, baseValue: number): number | null => {
@@ -69,16 +67,8 @@ const MeatCutRow: React.FC<MeatCutRowProps> = ({
   };
 
   useEffect(() => {
-    // Sync with global state if it changes
-    // Only update if we are not actively editing, AND if either:
-    // 1. lastDispatchedQuantityRef is null (not in a click sequence)
-    // 2. The incoming meatCut.quantity has caught up to our last dispatched quantity
-    if (lastDispatchedQuantityRef.current === null || meatCut.quantity === lastDispatchedQuantityRef.current) {
-      lastQuantityRef.current = meatCut.quantity;
-      if (!isEditing) {
-        setLocalQuantity(meatCut.quantity.toString());
-      }
-      lastDispatchedQuantityRef.current = null; // Clear out since we've caught up
+    if (!isEditing) {
+      setLocalQuantity(meatCut.quantity.toString());
     }
   }, [meatCut.quantity, isEditing]);
 
@@ -115,9 +105,8 @@ const MeatCutRow: React.FC<MeatCutRowProps> = ({
   }, [isMenuExpanded]);
 
   const handleQuantityChange = (amount: number) => {
-    const newQuantity = Math.max(0, lastQuantityRef.current + amount);
-    lastQuantityRef.current = newQuantity;
-    lastDispatchedQuantityRef.current = newQuantity;
+    const currentQty = isEditing ? (parseInt(localQuantity, 10) || 0) : meatCut.quantity;
+    const newQuantity = Math.max(0, currentQty + amount);
     setLocalQuantity(newQuantity.toString());
     dispatch({ type: 'UPDATE_MEAT_QUANTITY', payload: { meatCutId: meatCut.id, newQuantity } });
   };
@@ -127,10 +116,10 @@ const MeatCutRow: React.FC<MeatCutRowProps> = ({
   };
 
   const handleCommitQuantity = () => {
-    const evaluated = evaluateMathExpression(localQuantity, meatCut.quantity);
-    if (evaluated !== null && evaluated >= 0 && evaluated !== meatCut.quantity) {
-      lastQuantityRef.current = evaluated;
-      lastDispatchedQuantityRef.current = evaluated;
+    const baseVal = meatCut.quantity;
+    const evaluated = evaluateMathExpression(localQuantity, baseVal);
+    if (evaluated !== null && evaluated >= 0 && evaluated !== baseVal) {
+      setLocalQuantity(evaluated.toString());
       dispatch({ type: 'UPDATE_MEAT_QUANTITY', payload: { meatCutId: meatCut.id, newQuantity: evaluated } });
     } else {
       // Revert if formula is invalid or evaluated same
@@ -255,11 +244,19 @@ const MeatCutRow: React.FC<MeatCutRowProps> = ({
               })}
             </p>
             <p className="text-[10px] sm:text-[11px] text-cyan-400 font-bold mt-0.5 sm:mt-0.5 truncate max-w-[150px] sm:max-w-none">{product.primaryCategory} &gt; {product.subCategory}</p>
-            {meatCut.originalCutName && meatCut.originalCutName.trim().toLowerCase() !== product.name.trim().toLowerCase() && (
-              <p className="text-[10px] sm:text-[11px] text-red-400 font-semibold mt-0.5 break-words whitespace-normal" title={meatCut.originalCutName}>
-                ⚠️ Labeled As: <span className="underline">{meatCut.originalCutName}</span>
-              </p>
-            )}
+            {(() => {
+              const displayedOriginalName = meatCut.originalCutName || (meatCut.wrongLabel ? state?.products?.find(p => p.id === meatCut.wrongLabel)?.name : undefined);
+              const isLabeledDifferently = Boolean(
+                (meatCut.isWrongLabel || meatCut.wrongLabel) &&
+                displayedOriginalName &&
+                displayedOriginalName.trim().toLowerCase() !== product.name.trim().toLowerCase()
+              );
+              return isLabeledDifferently ? (
+                <p className="text-[10px] sm:text-[11px] text-red-400 font-semibold mt-0.5 break-words whitespace-normal" title={displayedOriginalName}>
+                  ⚠️ Labeled As: <span className="underline">{displayedOriginalName}</span>
+                </p>
+              ) : null;
+            })()}
             {meatCut.notes && <p className="text-[10px] sm:text-[11px] text-amber-500/80 mt-0.5 break-words whitespace-normal" title={meatCut.notes}>Notes: {meatCut.notes}</p>}
         </div>
       </div>
@@ -457,4 +454,4 @@ const MeatCutRow: React.FC<MeatCutRowProps> = ({
   );
 };
 
-export default MeatCutRow;
+export default React.memo(MeatCutRow);

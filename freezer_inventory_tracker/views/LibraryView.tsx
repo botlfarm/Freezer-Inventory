@@ -494,8 +494,11 @@ const LibraryView: React.FC<{
     const map: Record<string, number> = {};
     const rawEntries = (state.offSiteEntries || []).filter((e: any) => {
       if (e.archived) return false;
-      if (e.box && state.containers?.some((c: any) => c.isBox && c.isArchived && c.name.toLowerCase().trim() === e.box.toLowerCase().trim())) {
-        return false;
+      if (e.box) {
+        const boxLower = e.box.toLowerCase().trim();
+        const isArchived = (state.boxes || []).some((b: any) => b.isArchived && ((b.name && b.name.toLowerCase().trim() === boxLower) || (b.id && b.id.toLowerCase().trim() === boxLower))) ||
+                           (state.containers || []).some((c: any) => c.isBox && c.isArchived && c.name && c.name.toLowerCase().trim() === boxLower);
+        if (isArchived) return false;
       }
       return true;
     });
@@ -545,14 +548,17 @@ const LibraryView: React.FC<{
       }
     });
     return map;
-  }, [state.offSiteEntries, state.products, state.containers]);
+  }, [state.offSiteEntries, state.products, state.containers, state.boxes]);
 
   const offSiteWeightMap = useMemo(() => {
     const map: Record<string, number> = {};
     const rawEntries = (state.offSiteEntries || []).filter((e: any) => {
       if (e.archived) return false;
-      if (e.box && state.containers?.some((c: any) => c.isBox && c.isArchived && c.name.toLowerCase().trim() === e.box.toLowerCase().trim())) {
-        return false;
+      if (e.box) {
+        const boxLower = e.box.toLowerCase().trim();
+        const isArchived = (state.boxes || []).some((b: any) => b.isArchived && ((b.name && b.name.toLowerCase().trim() === boxLower) || (b.id && b.id.toLowerCase().trim() === boxLower))) ||
+                           (state.containers || []).some((c: any) => c.isBox && c.isArchived && c.name && c.name.toLowerCase().trim() === boxLower);
+        if (isArchived) return false;
       }
       return true;
     });
@@ -602,7 +608,7 @@ const LibraryView: React.FC<{
       }
     });
     return map;
-  }, [state.offSiteEntries, state.products, state.containers]);
+  }, [state.offSiteEntries, state.products, state.containers, state.boxes]);
 
   const handleProductAdded = () => {
     setShowAddForm(false);

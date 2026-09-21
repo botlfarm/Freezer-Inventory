@@ -378,7 +378,7 @@ const ContainerCard: React.FC<ContainerCardProps> = ({ container, meatCuts, disp
   );
 };
 
-export default ContainerCard;
+export default React.memo(ContainerCard);
 interface ContainerCardProps {
   container: Container;
   meatCuts: MeatCut[];

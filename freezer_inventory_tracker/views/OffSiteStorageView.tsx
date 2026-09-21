@@ -67,8 +67,10 @@ interface OffSiteStorageViewProps {
   setVisibleColumns: (cols: Set<string>) => void;
   registerActions: (actions: { handleNewMovement: () => void; handleDownloadCSV: () => void } | null) => void;
   isSingleUserMode?: boolean;
-  claimSingleUserMode?: () => Promise<{ success: boolean; message?: string }>;
+  claimSingleUserMode?: (scope?: 'all' | 'onsite' | 'offsite') => Promise<{ success: boolean; message?: string }>;
   releaseSingleUserMode?: (fullStateToSync?: any) => Promise<boolean>;
+  selectedMovementOrderId?: string | null;
+  onSelectActiveOrder?: (orderId: string) => void;
 }
 
 export interface HierarchicalBox {
@@ -216,12 +218,30 @@ export const OffSiteStorageView: React.FC<OffSiteStorageViewProps> = ({
   registerActions,
   isSingleUserMode,
   claimSingleUserMode,
-  releaseSingleUserMode
+  releaseSingleUserMode,
+  selectedMovementOrderId,
+  onSelectActiveOrder
 }) => {
+  const activeOrders = useMemo(() => {
+    return (state.movementOrders || []).filter((o: any) => o.status === 'planning' || o.status === 'finalized');
+  }, [state.movementOrders]);
+
+  const activeOrder = useMemo(() => {
+    if (activeOrders.length === 0) return null;
+    const targetId = selectedMovementOrderId || localStorage.getItem('selected-movement-order-id');
+    if (targetId) {
+      const match = activeOrders.find((o: any) => o.id === targetId);
+      if (match) return match;
+    }
+    return activeOrders[0];
+  }, [activeOrders, selectedMovementOrderId]);
   const entries = (state.offSiteEntries || []).filter(e => {
     if (e.archived === true || e.archived === 1 || String(e.archived) === 'true') return false;
-    if (e.box && state.containers?.some(c => c.isBox && c.isArchived && c.name.toLowerCase().trim() === e.box.toLowerCase().trim())) {
-      return false;
+    if (e.box) {
+      const boxLower = e.box.toLowerCase().trim();
+      const isArchived = (state.boxes || []).some((b: any) => b.isArchived && ((b.name && b.name.toLowerCase().trim() === boxLower) || (b.id && b.id.toLowerCase().trim() === boxLower))) ||
+                         (state.containers || []).some((c: any) => c.isBox && c.isArchived && c.name && c.name.toLowerCase().trim() === boxLower);
+      if (isArchived) return false;
     }
     return true;
   });
@@ -276,6 +296,11 @@ export const OffSiteStorageView: React.FC<OffSiteStorageViewProps> = ({
       moves: []
     };
     await dispatch({ type: 'ADD_MOVEMENT_ORDER', payload: { order: newOrder } });
+    if (onSelectActiveOrder) {
+      onSelectActiveOrder(newOrder.id);
+    } else {
+      localStorage.setItem('selected-movement-order-id', newOrder.id);
+    }
     setIsCreatingMovementOrder(false);
     setNewOrderName('');
     setNewOrderDesc('');
@@ -393,13 +418,6 @@ export const OffSiteStorageView: React.FC<OffSiteStorageViewProps> = ({
           locs.add(trimmed);
         }
       }
-      if (e.moveTo) {
-        const trimmed = e.moveTo.trim();
-        const clean = trimmed.toLowerCase();
-        if (trimmed && !clean.includes('home') && clean !== 'none' && clean !== 'unassigned') {
-          locs.add(trimmed);
-        }
-      }
     });
 
     const baseLocs = Array.from(locs).sort();
@@ -440,10 +458,6 @@ export const OffSiteStorageView: React.FC<OffSiteStorageViewProps> = ({
         const trimmed = e.currentLocation.trim();
         if (trimmed) locs.add(trimmed);
       }
-      if (e.moveTo) {
-        const trimmed = e.moveTo.trim();
-        if (trimmed) locs.add(trimmed);
-      }
     });
     return Array.from(locs).filter(Boolean).sort();
   }, [entries, state.locations]);
@@ -466,10 +480,6 @@ export const OffSiteStorageView: React.FC<OffSiteStorageViewProps> = ({
       const isAllCurrentSame = cuts.every(c => c.currentLocation === currentLoc);
       if (!isAllCurrentSame) currentLoc = 'Mixed';
 
-      let moveToLoc = cuts[0]?.moveTo || '';
-      const isAllMoveSame = cuts.every(c => c.moveTo === moveToLoc);
-      if (!isAllMoveSame) moveToLoc = 'Mixed';
-
       let sourceLoc = cuts[0]?.sourceLocation || '';
       const isAllSourceSame = cuts.every(c => c.sourceLocation === sourceLoc);
       if (!isAllSourceSame) sourceLoc = 'Mixed';
@@ -477,7 +487,6 @@ export const OffSiteStorageView: React.FC<OffSiteStorageViewProps> = ({
       return {
         boxId,
         currentLocation: currentLoc,
-        moveTo: moveToLoc,
         sourceLocation: sourceLoc,
         cuts,
         totalWeight,
@@ -525,33 +534,6 @@ export const OffSiteStorageView: React.FC<OffSiteStorageViewProps> = ({
         storageLocationId: locationId === 'unassigned' ? '' : locationId
       }
     });
-  };
-
-  const handleExecuteDeliveryRoute = async () => {
-    const plannedCount = entries.filter(e => e.moveTo).length;
-    if (plannedCount === 0) {
-      alert('You have no active "Move To" plans scheduled. Please assign routes/destinations to your boxes or cuts first.');
-      return;
-    }
-    if (confirm(`Are you ready to finalize this transit route?\n\nThis will physically relocate ${plannedCount} cuts with a scheduled plan (Move To) so that their "Current Location" becomes that destination, and clear their Move-To draft. This represents picked-up/restocked cuts landing in their final freezer.`)) {
-      const updatedEntries = entries.map(e => {
-        if (e.moveTo) {
-          return { ...e, currentLocation: e.moveTo, moveTo: '' };
-        }
-        return e;
-      });
-
-      await dispatch({
-        type: 'IMPORT_OFFSITE_ENTRIES',
-        payload: { entries: updatedEntries, replaceAll: true }
-      });
-      
-      setImportMessage({
-        type: 'success',
-        text: `Transit route complete! Successfully delivered ${plannedCount} cuts to their active locations (Home or Pallets).`
-      });
-      setActiveSubTab('sheet');
-    }
   };
 
   // --- OFFSITE SPECIALTY WORKSPACE EVENT HANDLERS ---
@@ -648,11 +630,9 @@ export const OffSiteStorageView: React.FC<OffSiteStorageViewProps> = ({
 
       if (isSelected || isUnassigned) {
         const draftLoc = rearrangeCurrentLocDraft[e.id] !== undefined ? rearrangeCurrentLocDraft[e.id] : e.currentLocation;
-        const draftMove = rearrangeMoveToDraft[e.id] !== undefined ? rearrangeMoveToDraft[e.id] : e.moveTo;
         return {
           ...e,
-          currentLocation: draftLoc,
-          moveTo: draftMove
+          currentLocation: draftLoc
         };
       }
       return e;
@@ -670,12 +650,8 @@ export const OffSiteStorageView: React.FC<OffSiteStorageViewProps> = ({
   };
 
   // Use Case 3: Apply a quick change to drafts
-  const handleDraftChange = (entryId: string, field: 'currentLocation' | 'moveTo', value: string) => {
-    if (field === 'currentLocation') {
-      setRearrangeCurrentLocDraft(prev => ({ ...prev, [entryId]: value }));
-    } else {
-      setRearrangeMoveToDraft(prev => ({ ...prev, [entryId]: value }));
-    }
+  const handleDraftChange = (entryId: string, field: 'currentLocation', value: string) => {
+    setRearrangeCurrentLocDraft(prev => ({ ...prev, [entryId]: value }));
   };
 
   // Populate Seed Data if empty
@@ -731,14 +707,13 @@ export const OffSiteStorageView: React.FC<OffSiteStorageViewProps> = ({
     // Filter by Active Logistics Move Scope if toggled
     if (limitToSelectedLocations) {
       list = list.filter(e => {
-        return isLocInScope(e.currentLocation) || isLocInScope(e.moveTo);
+        return isLocInScope(e.currentLocation);
       });
     }
 
     // Main search
     if (searchTerm.trim() !== '') {
       const term = searchTerm.toLowerCase();
-      const activeOrder = (state.movementOrders || []).find((o: any) => o.status === 'planning' || o.status === 'finalized');
       
       const getMoveToName = (idOrName: string) => {
         if (activeOrder && activeOrder.targetDestinations) {
@@ -759,7 +734,7 @@ export const OffSiteStorageView: React.FC<OffSiteStorageViewProps> = ({
         const matchesPallet = (e.currentLocation || '').toLowerCase().includes(term);
         const matchesLocation = (e.location || '').toLowerCase().includes(term);
 
-        let mt = e.moveTo || '';
+        let mt = '';
         if (activeOrder) {
           const m = activeOrder.moves.find((mv: any) => mv.entryId === e.id);
           if (m && m.targetLocation) mt = m.targetLocation;
@@ -883,19 +858,11 @@ export const OffSiteStorageView: React.FC<OffSiteStorageViewProps> = ({
       const isAllCurrentSame = box.entries.every(e => e.currentLocation === currentLoc);
       if (!isAllCurrentSame) currentLoc = 'Mixed';
 
-      // Determine moveTo of Box based on its cuts
-      let moveToLoc = box.entries[0]?.moveTo || '';
-      const isAllMoveSame = box.entries.every(e => e.moveTo === moveToLoc);
-      if (!isAllMoveSame) {
-        moveToLoc = 'Mixed';
-      }
-
       return {
         ...box,
         totalWeight,
         totalPieces,
         currentLocation: currentLoc,
-        moveTo: moveToLoc,
         cutsGroups: Object.values(box.cutsGroups)
       };
     }).sort((a, b) => compareBoxLabels(a.boxId, b.boxId));
@@ -991,21 +958,29 @@ export const OffSiteStorageView: React.FC<OffSiteStorageViewProps> = ({
       }
     }
 
+    let matchedProd = newEntry.productId ? state.products?.find(p => p.id === newEntry.productId) : undefined;
+    if (!matchedProd && newEntry.cuts) {
+      matchedProd = (state.products || []).find(p => p.name.trim().toLowerCase() === newEntry.cuts?.trim().toLowerCase());
+    }
+    const defaultTagIds = matchedProd?.defaultTagIds || [];
+    const finalTagIds = (newEntry.tagIds && newEntry.tagIds.length > 0) ? newEntry.tagIds : [...defaultTagIds];
+
     const payloadEntry: OffSiteEntry = {
       id: generatedId,
       serial: newEntry.serial || '',
       cuts: newEntry.cuts,
+      productId: matchedProd?.id,
       packDate: newEntry.packDate || '',
       lot: newEntry.lot || '',
       pieces: Number(newEntry.pieces) || 1,
       netWeight: Number(newEntry.netWeight) || 0,
-            box: newEntry.box || '',
-      moveTo: newEntry.moveTo || '',
+      box: newEntry.box || '',
       currentLocation: newEntry.currentLocation || '',
       pallet: newEntry.currentLocation || '',
       location: locationName,
       storageLocationId,
-      notes: newEntry.notes || ''
+      notes: newEntry.notes || '',
+      tagIds: finalTagIds
     };
 
     const success = await dispatch({
@@ -1130,6 +1105,7 @@ export const OffSiteStorageView: React.FC<OffSiteStorageViewProps> = ({
           }
         }
 
+        const defaultTags = foundProduct?.defaultTagIds || [];
         return {
           ...entry,
           originalCutName: entry.cuts,
@@ -1137,7 +1113,8 @@ export const OffSiteStorageView: React.FC<OffSiteStorageViewProps> = ({
           productId: foundProduct ? foundProduct.id : undefined,
           location: finalLocName,
           storageLocationId: finalLocId,
-          currentLocation: rawPallet
+          currentLocation: rawPallet,
+          tagIds: (entry.tagIds && entry.tagIds.length > 0) ? entry.tagIds : [...defaultTags]
         };
       });
 
@@ -1170,7 +1147,12 @@ export const OffSiteStorageView: React.FC<OffSiteStorageViewProps> = ({
             const newNumbers = [...(existingProduct.productNumbers || []), uncut.itemNumber];
             await dispatch({ type: 'EDIT_PRODUCT', payload: { productId: existingProduct.id, updates: { productNumbers: newNumbers } } });
           }
-          finalEntries = finalEntries.map(e => (state.products?.find((p: any) => p.id === e.productId)?.name || e.originalCutName) === uncut.rawCut ? { ...e, cuts: existingProduct.name, productId: existingProduct.id } : e);
+          finalEntries = finalEntries.map(e => (state.products?.find((p: any) => p.id === e.productId)?.name || e.originalCutName) === uncut.rawCut ? { 
+            ...e, 
+            cuts: existingProduct.name, 
+            productId: existingProduct.id,
+            tagIds: (e.tagIds && e.tagIds.length > 0) ? e.tagIds : [...(existingProduct.defaultTagIds || [])]
+          } : e);
         }
       }
     }
@@ -1269,10 +1251,8 @@ export const OffSiteStorageView: React.FC<OffSiteStorageViewProps> = ({
       return str;
     };
 
-    const activeOrder = (state.movementOrders || []).find((o: any) => o.status === 'planning' || o.status === 'finalized');
-
     const rows = exportSource.map(e => {
-      let mt = e.moveTo || '';
+      let mt = '';
       if (activeOrder) {
         const m = activeOrder.moves.find((mv: any) => mv.entryId === e.id);
         if (m && m.targetLocation) mt = m.targetLocation;
@@ -1399,7 +1379,7 @@ export const OffSiteStorageView: React.FC<OffSiteStorageViewProps> = ({
       
       if (isSelected || isUnassigned) {
         const draftLoc = rearrangeCurrentLocDraft[e.id] !== undefined ? rearrangeCurrentLocDraft[e.id] : pLoc;
-        const draftMove = rearrangeMoveToDraft[e.id] !== undefined ? rearrangeMoveToDraft[e.id] : (e.moveTo || '');
+        const draftMove = rearrangeMoveToDraft[e.id] !== undefined ? rearrangeMoveToDraft[e.id] : '';
         const bId = (e.box || '').trim() || 'Unassigned-Box';
         
         if (!draftLoc || draftLoc.toLowerCase() === 'unassigned') {
@@ -1463,7 +1443,7 @@ export const OffSiteStorageView: React.FC<OffSiteStorageViewProps> = ({
           changed = true;
         }
         if (moveDraft[e.id] === undefined) {
-          moveDraft[e.id] = e.moveTo || '';
+          moveDraft[e.id] = '';
           changed = true;
         }
       }
@@ -1682,7 +1662,7 @@ export const OffSiteStorageView: React.FC<OffSiteStorageViewProps> = ({
       return selectedMoveLocations.some(sel => sel.trim().toLowerCase() === clean);
     };
 
-    const matches = entries.filter(e => isLocInScopeCurrent(e.currentLocation) || isLocInScopeCurrent(e.moveTo));
+    const matches = entries.filter(e => isLocInScopeCurrent(e.currentLocation));
     const weight = matches.reduce((sum, e) => sum + (e.netWeight || 0), 0);
     const records = matches.length;
     const pieces = matches.reduce((sum, e) => sum + (e.pieces || 1), 0);
@@ -1709,12 +1689,8 @@ export const OffSiteStorageView: React.FC<OffSiteStorageViewProps> = ({
 
   // Compute Outbound Metrics
   const outboundSectionMetrics = useMemo(() => {
-    const matched = entries.filter(e => (e.moveTo || '').trim().toLowerCase() === 'home');
-    const weight = matched.reduce((sum, e) => sum + (e.netWeight || 0), 0);
-    const boxSet = new Set<string>();
-    matched.forEach(e => { if (e.box) boxSet.add(e.box); });
-    return { weight, boxes: boxSet.size, pieces: matched.reduce((sum, e) => sum + (e.pieces || 1), 0) };
-  }, [entries]);
+    return { weight: 0, boxes: 0, pieces: 0 };
+  }, []);
 
   // Compute Custom Location Card Metrics
   const customLocationsSummaries = useMemo(() => {
@@ -1737,7 +1713,7 @@ export const OffSiteStorageView: React.FC<OffSiteStorageViewProps> = ({
 
   return (
     <div className="space-y-6" id="offsite-inventory-workspace">
-      <OffSiteMovementPlanner state={state} dispatch={dispatch} />
+      <OffSiteMovementPlanner state={state} dispatch={dispatch} activeOrderId={activeOrder?.id} onSelectOrder={onSelectActiveOrder} />
 
       <div className="bg-cool-gray-850 rounded-2xl border border-cool-gray-750 shadow-xs overflow-visible" id="offsite-workspace-body">
         {entries.length === 0 ? (
@@ -1787,6 +1763,8 @@ export const OffSiteStorageView: React.FC<OffSiteStorageViewProps> = ({
                   setViewUngrouped={setViewUngrouped}
                   visibleColumns={visibleColumns}
                   setVisibleColumns={setVisibleColumns}
+                  activeOrderId={activeOrder?.id}
+                  onSelectActiveOrder={onSelectActiveOrder}
                 />
               </div>
             )}
@@ -2147,6 +2125,15 @@ export const OffSiteStorageView: React.FC<OffSiteStorageViewProps> = ({
             state={state} 
             dispatch={dispatch} 
             onPlanNewMovement={handleNewMovement} 
+            onSelectActiveOrder={(orderId) => {
+              if (onSelectActiveOrder) {
+                onSelectActiveOrder(orderId);
+              } else {
+                localStorage.setItem('selected-movement-order-id', orderId);
+              }
+            }}
+            onNavigateToWorkspace={() => setActiveSubTab('sheet')}
+            onNavigateToScanner={() => setActiveSubTab('active-movement')}
           />
         </div>
       )}

@@ -3,6 +3,7 @@ export interface Freezer {
   name: string;
   isSpecial?: boolean;
   isLooseOnly?: boolean;
+  /** @deprecated Legacy in-memory / backward compatibility flag; pallets are stored in dedicated pallets table */
   isPallet?: boolean;
 }
 
@@ -73,6 +74,7 @@ export interface OffSiteEntry {
   pieces: number;
   netWeight: number;
     box?: string;
+  /** @deprecated Legacy field - movement destinations are stored in movementOrders */
   moveTo?: string;
   currentLocation?: string; // Pallet e.g. "P3-03262026", "Home", etc.
   pallet?: string; // Explicit Pallet name
@@ -106,6 +108,7 @@ export interface MeatCut {
   isWrongLabel?: boolean;
   wrongLabelOriginal?: string;
   serial?: string;
+  lot?: string;
   packDate?: string;
   weight?: number;
 }
@@ -116,6 +119,9 @@ export interface HistoryEntry {
   description: string;
   targetId: string; // ID of MeatCut or Container
   user?: string;
+  clientDevice?: string; // e.g. "Desktop Browser", "Mobile Browser", "HA Companion App"
+  clientInfo?: string;   // detailed client/OS/browser string e.g. "Desktop Browser (Chrome / macOS)"
+  undoData?: any;
 }
 
 export interface Category {
@@ -234,6 +240,8 @@ export interface MovementOrder {
   pickedItemIds?: string[];
   deliveredItemIds?: string[];
   flags?: Record<string, string>;
+  confirmedPallets?: string[];
+  confirmedMoveEntryIds?: string[];
 }
 
 export interface ButcherOrderDocument {
@@ -264,6 +272,12 @@ export interface ButcherOrder {
 }
 
 
+export interface AppConfigItem {
+  key: string;
+  value: string;
+  updatedAt?: string;
+}
+
 export type InventoryState = {
   freezers: Freezer[];
   containers: Container[];
@@ -287,9 +301,10 @@ export type InventoryState = {
   previewBackupFilename?: string;
   notificationSettings?: NotificationSettings[];
   notificationLogs?: NotificationLog[];
+  appConfig?: AppConfigItem[];
 };
 
-export type View = 'freezer' | 'product' | 'library' | 'history' | 'reconcile' | 'import' | 'display_case' | 'restock' | 'offsite' | 'butcher_records';
+export type View = 'freezer' | 'product' | 'library' | 'history' | 'reconcile' | 'import' | 'display_case' | 'restock' | 'offsite' | 'butcher_records' | 'traceability';
 
 export type Action =
   | { type: 'ADD_FREEZER'; payload: { name: string; isSpecial?: boolean; isLooseOnly?: boolean; isPallet?: boolean } }
@@ -346,9 +361,9 @@ export type Action =
   | { type: 'APPEND_MOVEMENT_ORDER_IDS'; payload: { id: string; pickedBoxIds?: string[]; pickedItemIds?: string[]; deliveredBoxIds?: string[]; deliveredItemIds?: string[] } }
   | { type: 'REMOVE_MOVEMENT_ORDER_IDS'; payload: { id: string; pickedBoxIds?: string[]; pickedItemIds?: string[]; deliveredBoxIds?: string[]; deliveredItemIds?: string[] } }
   | { type: 'DELETE_MOVEMENT_ORDER'; payload: { id: string } }
-  | { type: 'EXECUTE_MOVEMENT_ORDER'; payload: { id: string } }
-  | { type: 'REVERT_MOVEMENT_ORDER'; payload: { id: string } }
-  | { type: 'UNDO' }
+  | { type: 'EXECUTE_MOVEMENT_ORDER'; payload: { id: string; moveToStaging?: boolean; removeFromInventoryDestIds?: string[]; palletNames?: string[]; destinationIds?: string[]; entryIds?: string[]; } }
+  | { type: 'REVERT_MOVEMENT_ORDER'; payload: { id: string; palletNames?: string[]; destinationIds?: string[]; entryIds?: string[]; } }
+  | { type: 'UNDO'; payload?: { snapshotId?: string; historyId?: string } }
   | { type: 'REDO' }
   | { type: 'ADD_CUSTOM_LIST'; payload: { name: string; description: string; allowNotes: boolean; isInventoryControlled: boolean; controlType?: 'auto' | 'prompt'; controlCondition?: 'min' | 'max'; } }
   | { type: 'EDIT_CUSTOM_LIST'; payload: { listId: string; updates: Partial<Omit<CustomList, 'id' | 'items'>> } }
@@ -393,4 +408,116 @@ export type ModalType =
   | { type: 'SPLIT_ITEM'; meatCutId: string }
   | { type: 'CHANGE_CONTAINER_FLOW'; containerId: string }
   | { type: 'LIST_THRESHOLD_ALERT'; listId: string; productId: string; actionType: 'add' | 'remove'; currentValue: number; thresholdValue: number; controlCondition: 'min' | 'max' }
+  | { type: 'SORT_ORDER'; initialView?: 'product' | 'display_case' }
+  | { type: 'CONNECTED_CLIENTS' }
   | null;
+
+export type OperationalZone = 'onsite' | 'offsite';
+
+export function getOperationalZone(view?: View | string | null): OperationalZone {
+  if (view === 'offsite' || view === 'butcher_records' || view === 'traceability') {
+    return 'offsite';
+  }
+  return 'onsite';
+}
+
+export interface ZoneClientCounts {
+  total: number;
+  onsite: number;
+  offsite: number;
+}
+
+export interface ConnectedClientInfo {
+  id: string;
+  userName: string;
+  device: string;
+  browser: string;
+  clientDevice?: string; // "Desktop Browser" | "Mobile Browser" | "HA Companion App"
+  clientInfo?: string;   // detailed client info e.g. "Desktop Browser (Chrome / macOS)"
+  ip?: string;
+  connectedAt: number;
+  lastActive: number;
+  zone?: OperationalZone;
+  currentView?: string;
+  isCurrentClient?: boolean;
+}
+
+export interface UndoSnapshotItem {
+  id: string;
+  historyId: string;
+  actionType: string;
+  description: string;
+  timestamp: string;
+  user?: string;
+  targetId?: string;
+  createdAt: number;
+}
+
+export type OperatingMode = 'auto' | 'multi' | 'single';
+
+export interface ForcedMultiUser {
+  enabled?: boolean;
+  setByClientId: string;
+  setByName: string;
+  activatedAt: number;
+  lastActiveAt?: number;
+  scope?: 'all' | 'onsite' | 'offsite';
+}
+
+export interface SingleUserLock {
+  clientId: string;
+  holderName: string;
+  acquiredAt: number;
+  lastActiveAt: number;
+  scope?: 'all' | 'onsite' | 'offsite';
+  breakInRequest?: {
+    requestedByClientId: string;
+    requestedByName: string;
+    requestedAt: number;
+  } | null;
+}
+
+export interface SingleUserLocksState {
+  onsite: SingleUserLock | null;
+  offsite: SingleUserLock | null;
+  all: SingleUserLock | null;
+}
+
+export interface ForcedMultiLocksState {
+  onsite: ForcedMultiUser | null;
+  offsite: ForcedMultiUser | null;
+  all: ForcedMultiUser | null;
+}
+
+export interface DatabaseTableDefinition {
+  name: string;
+  label: string;
+  category: 'layout' | 'inventory' | 'offsite' | 'catalog' | 'lists' | 'system' | 'media';
+  categoryLabel: string;
+  iconName: string;
+  description: string;
+  dependsOn?: {
+    table: string;
+    foreignKey: string;
+    label: string;
+  }[];
+  dependents?: string[];
+}
+
+export interface DependencyIssue {
+  sourceTable: string;
+  sourceLabel: string;
+  targetTable: string;
+  targetLabel: string;
+  missingCount: number;
+  sampleIds: string[];
+  sampleItemNames?: string[];
+  message: string;
+  recommendation: string;
+}
+
+export interface DependencyValidationResult {
+  hasMissingDependencies: boolean;
+  issues: DependencyIssue[];
+  suggestedTablesToAdd: string[];
+}

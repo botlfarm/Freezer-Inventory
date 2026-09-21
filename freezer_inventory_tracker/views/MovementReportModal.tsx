@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Printer, X, CheckSquare, Square, Info, Layers, Download, ArrowRight, Barcode, Copy, Check, ArrowRightLeft, Scan, ChevronLeft, ChevronRight, Maximize2, List, Focus } from 'lucide-react';
+import { Printer, X, CheckSquare, Square, Info, Layers, Download, ArrowRight, Barcode, Copy, Check, ArrowRightLeft, Scan, ChevronLeft, ChevronRight, Maximize2, List, Focus, CheckCircle2, RotateCcw, ShieldCheck } from 'lucide-react';
 import JsBarcode from 'jsbarcode';
 import { InventoryState, MovementOrder, MovementItem, Product } from '../types';
 import { compareBoxLabels } from '../utils/boxSort';
@@ -1642,24 +1642,25 @@ export const MovementReportModal: React.FC<MovementReportModalProps> = ({
     return flatScannableCuts.filter(c => c.palletName === scanPalletFilter);
   }, [flatScannableCuts, scanPalletFilter]);
 
-  // Keep scanItemIndex within valid bounds
+  // Keep scanItemIndex within valid bounds (allow up to filteredScanCuts.length for the End / Stop Screen)
   useEffect(() => {
-    if (scanItemIndex >= filteredScanCuts.length && filteredScanCuts.length > 0) {
-      setScanItemIndex(filteredScanCuts.length - 1);
+    if (scanItemIndex > filteredScanCuts.length && filteredScanCuts.length > 0) {
+      setScanItemIndex(filteredScanCuts.length);
     }
   }, [filteredScanCuts.length, scanItemIndex]);
 
-  // Keyboard navigation for Focused Scan Mode (ArrowLeft, ArrowRight, Escape)
+  // Keyboard navigation for Focused Scan Mode (ArrowLeft, ArrowRight, Space, Escape)
   useEffect(() => {
     if (!isScanModeOpen || scanDisplayMode !== 'focused' || filteredScanCuts.length === 0) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'ArrowLeft') {
         e.preventDefault();
-        setScanItemIndex(prev => (prev > 0 ? prev - 1 : filteredScanCuts.length - 1));
+        setScanItemIndex(prev => Math.max(0, prev - 1));
       } else if (e.key === 'ArrowRight' || e.key === ' ') {
         e.preventDefault();
-        setScanItemIndex(prev => (prev < filteredScanCuts.length - 1 ? prev + 1 : 0));
+        // Advance up to filteredScanCuts.length (the End / Stop Screen), but DO NOT loop back to 0
+        setScanItemIndex(prev => (prev < filteredScanCuts.length ? prev + 1 : prev));
       } else if (e.key === 'Escape') {
         setIsScanModeOpen(false);
       }
@@ -3547,139 +3548,296 @@ export const MovementReportModal: React.FC<MovementReportModalProps> = ({
             ) : scanDisplayMode === 'focused' ? (
               /* MODE 1: FOCUSED 1-AT-A-TIME CAROUSEL */
               (() => {
-                const currentCut = filteredScanCuts[scanItemIndex] || filteredScanCuts[0];
+                const isAtEnd = scanItemIndex >= filteredScanCuts.length;
+                const currentPairIndex = stockTransferPairs.findIndex(p => p.key === selectedPairKey);
+                const nextPair = currentPairIndex >= 0 && currentPairIndex < stockTransferPairs.length - 1 ? stockTransferPairs[currentPairIndex + 1] : null;
+
+                const currentCut = filteredScanCuts[scanItemIndex] || filteredScanCuts[filteredScanCuts.length - 1] || filteredScanCuts[0];
                 const isCopied = copiedBarcode === currentCut.weightEmbeddedBarcode;
+
+                const totalMovementWeight = filteredScanCuts.reduce((sum, c) => sum + c.weight, 0);
+                const totalMovementBoxes = filteredScanCuts.reduce((sum, c) => sum + c.boxCount, 0);
+                const totalMovementPieces = filteredScanCuts.reduce((sum, c) => sum + c.pieces, 0);
 
                 return (
                   <div className="w-full max-w-2xl my-auto space-y-4 flex flex-col items-center">
                     {/* Item Counter & Direct Jump Selector */}
                     <div className="w-full flex items-center justify-between text-xs px-2">
                       <div className="flex items-center gap-2">
-                        <span className="font-black text-emerald-400 font-mono text-sm">
-                          ITEM {scanItemIndex + 1} OF {filteredScanCuts.length}
-                        </span>
-                        <span className="text-cool-gray-500 text-xs hidden sm:inline">
-                          (Use ← → arrow keys)
-                        </span>
+                        {isAtEnd ? (
+                          <span className="font-black text-emerald-300 font-mono text-xs md:text-sm bg-emerald-950/90 border border-emerald-500/50 px-3 py-1 rounded-xl flex items-center gap-2 shadow-lg">
+                            <CheckCircle2 size={16} className="text-emerald-400" />
+                            <span>END OF MOVEMENT ({filteredScanCuts.length}/{filteredScanCuts.length})</span>
+                          </span>
+                        ) : (
+                          <>
+                            <span className="font-black text-emerald-400 font-mono text-sm">
+                              ITEM {scanItemIndex + 1} OF {filteredScanCuts.length}
+                            </span>
+                            <span className="text-cool-gray-500 text-xs hidden sm:inline">
+                              (Use ← → arrow keys)
+                            </span>
+                          </>
+                        )}
                       </div>
                       <select
                         value={scanItemIndex}
                         onChange={(e) => setScanItemIndex(Number(e.target.value))}
-                        className="bg-cool-gray-900 border border-cool-gray-750 text-emerald-300 text-xs rounded-xl px-2.5 py-1.5 font-bold focus:outline-none cursor-pointer"
+                        className="bg-cool-gray-900 border border-cool-gray-750 text-emerald-300 text-xs rounded-xl px-2.5 py-1.5 font-bold focus:outline-none cursor-pointer max-w-[180px] sm:max-w-[260px] truncate"
                       >
                         {filteredScanCuts.map((cut, idx) => (
                           <option key={idx} value={idx}>
                             {idx + 1}. {cut.cutName} ({cut.weight.toFixed(1)} lbs)
                           </option>
                         ))}
+                        <option value={filteredScanCuts.length} className="font-black text-emerald-400 bg-cool-gray-950">
+                          🏁 Stop Screen (Finished)
+                        </option>
                       </select>
                     </div>
 
-                    {/* Huge Focus Card */}
-                    <div className="w-full bg-cool-gray-900 border-2 border-cool-gray-700/90 rounded-3xl p-6 md:p-8 shadow-2xl space-y-6 text-center relative overflow-hidden">
-                      {/* Pallet Tag Badge */}
-                      <div className="flex items-center justify-between border-b border-cool-gray-800 pb-3">
-                        <div className="flex items-center gap-2 bg-emerald-950/80 border border-emerald-500/40 text-emerald-300 px-3 py-1 rounded-full text-xs font-black font-mono">
-                          <Layers size={13} />
-                          <span>PALLET: {currentCut.palletName}</span>
-                        </div>
-                        {currentCut.productNumber && (
-                          <span className="font-mono text-xs font-bold text-cool-gray-400">
-                            ITEM #{currentCut.productNumber}
-                          </span>
-                        )}
-                      </div>
-
-                      {/* Product Name */}
-                      <div>
-                        <h2 className="text-2xl md:text-3xl font-black text-white tracking-tight leading-tight">
-                          {currentCut.cutName}
-                        </h2>
-                        <div className="flex items-center justify-center gap-3 text-xs md:text-sm font-bold text-cool-gray-300 mt-2 flex-wrap">
-                          <span className="bg-cool-gray-800 px-2.5 py-1 rounded-lg border border-cool-gray-700">
-                            {currentCut.boxCount} Box{currentCut.boxCount !== 1 ? 'es' : ''}
-                          </span>
-                          <span className="bg-cool-gray-800 px-2.5 py-1 rounded-lg border border-cool-gray-700">
-                            {currentCut.pieces} Pieces
-                          </span>
-                          <span className="bg-emerald-950/60 border border-emerald-600/40 text-emerald-300 px-3 py-1 rounded-lg font-mono font-black">
-                            {currentCut.weight.toFixed(2)} LBS
+                    {isAtEnd ? (
+                      /* DEDICATED STOP / END SCREEN (PREVENTS DOUBLE RECORDING) */
+                      <div className="w-full bg-cool-gray-900 border-2 border-emerald-500/60 rounded-3xl p-6 md:p-8 shadow-2xl space-y-6 text-center relative overflow-hidden">
+                        {/* Header Status Bar */}
+                        <div className="flex items-center justify-between border-b border-cool-gray-800 pb-3">
+                          <div className="flex items-center gap-2 bg-emerald-950/80 border border-emerald-500/40 text-emerald-300 px-3 py-1 rounded-full text-xs font-black font-mono">
+                            <ShieldCheck size={14} className="text-emerald-400" />
+                            <span>MOVEMENT SCANNING COMPLETE</span>
+                          </div>
+                          <span className="bg-rose-950/80 border border-rose-500/40 text-rose-300 px-3 py-1 rounded-full text-xs font-black font-mono">
+                            STOPPED • NO AUTO-LOOP
                           </span>
                         </div>
-                      </div>
 
-                      {/* GIANT SCANNABLE BARCODE BOX */}
-                      <div className="bg-white p-6 rounded-2xl border-4 border-gray-300 shadow-xl flex flex-col items-center justify-center space-y-3 my-2">
-                        {currentCut.hasValidBarcode ? (
-                          <>
-                            <div className="p-2 bg-white rounded flex justify-center w-full overflow-hidden">
-                              <ScannableBarcode
-                                value={currentCut.weightEmbeddedBarcode}
-                                width={2.5}
-                                height={100}
-                                className="max-w-full"
-                              />
-                            </div>
-                            <div className="flex items-center justify-center gap-3 pt-2 border-t border-gray-200 w-full">
-                              <span className="font-mono font-black text-gray-950 text-2xl md:text-3xl tracking-widest select-all">
-                                {formatUpcDisplay(currentCut.weightEmbeddedBarcode)}
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() => handleCopyBarcode(currentCut.weightEmbeddedBarcode)}
-                                className={`p-2 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 text-xs font-bold ${
-                                  isCopied
-                                    ? 'bg-emerald-600 text-white'
-                                    : 'bg-gray-100 hover:bg-emerald-100 text-gray-700 hover:text-emerald-900 border border-gray-300'
-                                }`}
-                                title="Copy barcode number"
-                              >
-                                {isCopied ? <Check size={16} /> : <Copy size={16} />}
-                                <span className="hidden sm:inline">{isCopied ? 'Copied!' : 'Copy'}</span>
-                              </button>
-                            </div>
-                          </>
-                        ) : (
-                          <div className="p-6 bg-amber-50 border-2 border-amber-400 rounded-xl text-amber-900 text-center space-y-1">
-                            <div className="font-black text-sm flex items-center justify-center gap-1.5 text-amber-800">
-                              <Info size={16} />
-                              Missing Base 12-Digit Barcode
-                            </div>
-                            <p className="text-xs text-amber-700 font-medium">
-                              Assign a general barcode for <strong>{currentCut.cutName}</strong> in Product Management to generate scannable transfer barcodes.
+                        {/* Visual Stop Presentation */}
+                        <div className="flex flex-col items-center justify-center space-y-3 pt-2">
+                          <div className="w-20 h-20 rounded-full bg-emerald-500/15 border-2 border-emerald-500/40 flex items-center justify-center text-emerald-400 shadow-xl shadow-emerald-950/40">
+                            <CheckCircle2 size={44} className="stroke-[2.5]" />
+                          </div>
+                          <div className="space-y-1">
+                            <h2 className="text-2xl md:text-3xl font-black text-white tracking-tight leading-tight">
+                              All Barcodes Presented
+                            </h2>
+                            <p className="text-xs md:text-sm font-semibold text-emerald-300">
+                              You have reached the end of this transfer segment ({filteredScanCuts.length} of {filteredScanCuts.length} barcode{filteredScanCuts.length !== 1 ? 's' : ''}).
                             </p>
+                          </div>
+
+                          {/* Anti-Double-Record Warning Notice */}
+                          <div className="bg-amber-950/40 border border-amber-500/40 rounded-2xl p-4 text-left text-xs text-amber-200/95 space-y-1.5 shadow-inner mt-2 max-w-lg w-full">
+                            <div className="flex items-center gap-2 font-black text-amber-300 text-xs uppercase tracking-wider">
+                              <Info size={15} className="text-amber-400 shrink-0" />
+                              <span>Scanning Paused to Prevent Double Recording</span>
+                            </div>
+                            <p className="leading-relaxed text-amber-200/90 text-[11px] sm:text-xs">
+                              Scanning has deliberately stopped here so rapid barcode scanning will not wrap back to the first item and accidentally double record inventory movements in Odoo or external software.
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* Movement Metrics Summary */}
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1">
+                          <div className="bg-cool-gray-950/80 border border-cool-gray-800 rounded-xl p-3 text-center">
+                            <span className="text-[10px] font-bold text-cool-gray-400 uppercase tracking-wider block">Items</span>
+                            <span className="font-mono font-black text-lg text-white">{filteredScanCuts.length}</span>
+                          </div>
+                          <div className="bg-cool-gray-950/80 border border-cool-gray-800 rounded-xl p-3 text-center">
+                            <span className="text-[10px] font-bold text-cool-gray-400 uppercase tracking-wider block">Boxes</span>
+                            <span className="font-mono font-black text-lg text-white">{totalMovementBoxes}</span>
+                          </div>
+                          <div className="bg-cool-gray-950/80 border border-cool-gray-800 rounded-xl p-3 text-center">
+                            <span className="text-[10px] font-bold text-cool-gray-400 uppercase tracking-wider block">Pieces</span>
+                            <span className="font-mono font-black text-lg text-white">{totalMovementPieces}</span>
+                          </div>
+                          <div className="bg-cool-gray-950/80 border border-cool-gray-800 rounded-xl p-3 text-center">
+                            <span className="text-[10px] font-bold text-cool-gray-400 uppercase tracking-wider block">Total Weight</span>
+                            <span className="font-mono font-black text-lg text-emerald-400">{totalMovementWeight.toFixed(2)} lbs</span>
+                          </div>
+                        </div>
+
+                        {/* Transfer Route Details */}
+                        <div className="bg-cool-gray-950/60 border border-cool-gray-800 rounded-xl px-4 py-2.5 flex items-center justify-between text-xs text-cool-gray-300">
+                          <div className="flex items-center gap-2 truncate">
+                            <span className="text-cool-gray-400 shrink-0">Route:</span>
+                            <span className="font-bold text-emerald-300 truncate">{activeTransferPair?.sourceLocationName || 'Source'}</span>
+                            <ArrowRight size={12} className="text-cool-gray-500 shrink-0" />
+                            <span className="font-bold text-cyan-300 truncate">{activeTransferPair?.destinationLocationName || 'Destination'}</span>
+                          </div>
+                          <div className="text-cool-gray-400 font-mono text-[11px] shrink-0 ml-2">
+                            {scanPalletFilter === 'all' ? 'All Pallets' : `Pallet: ${scanPalletFilter}`}
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      /* HUGE FOCUS BARCODE CARD */
+                      <div className="w-full bg-cool-gray-900 border-2 border-cool-gray-700/90 rounded-3xl p-6 md:p-8 shadow-2xl space-y-6 text-center relative overflow-hidden">
+                        {/* Pallet Tag Badge */}
+                        <div className="flex items-center justify-between border-b border-cool-gray-800 pb-3">
+                          <div className="flex items-center gap-2 bg-emerald-950/80 border border-emerald-500/40 text-emerald-300 px-3 py-1 rounded-full text-xs font-black font-mono">
+                            <Layers size={13} />
+                            <span>PALLET: {currentCut.palletName}</span>
+                          </div>
+                          {currentCut.productNumber && (
+                            <span className="font-mono text-xs font-bold text-cool-gray-400">
+                              ITEM #{currentCut.productNumber}
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Product Name */}
+                        <div>
+                          <h2 className="text-2xl md:text-3xl font-black text-white tracking-tight leading-tight">
+                            {currentCut.cutName}
+                          </h2>
+                          <div className="flex items-center justify-center gap-3 text-xs md:text-sm font-bold text-cool-gray-300 mt-2 flex-wrap">
+                            <span className="bg-cool-gray-800 px-2.5 py-1 rounded-lg border border-cool-gray-700">
+                              {currentCut.boxCount} Box{currentCut.boxCount !== 1 ? 'es' : ''}
+                            </span>
+                            <span className="bg-cool-gray-800 px-2.5 py-1 rounded-lg border border-cool-gray-700">
+                              {currentCut.pieces} Pieces
+                            </span>
+                            <span className="bg-emerald-950/60 border border-emerald-600/40 text-emerald-300 px-3 py-1 rounded-lg font-mono font-black">
+                              {currentCut.weight.toFixed(2)} LBS
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* GIANT SCANNABLE BARCODE BOX */}
+                        <div className="bg-white p-6 rounded-2xl border-4 border-gray-300 shadow-xl flex flex-col items-center justify-center space-y-3 my-2">
+                          {currentCut.hasValidBarcode ? (
+                            <>
+                              <div className="p-2 bg-white rounded flex justify-center w-full overflow-hidden">
+                                <ScannableBarcode
+                                  value={currentCut.weightEmbeddedBarcode}
+                                  width={2.5}
+                                  height={100}
+                                  className="max-w-full"
+                                />
+                              </div>
+                              <div className="flex items-center justify-center gap-3 pt-2 border-t border-gray-200 w-full">
+                                <span className="font-mono font-black text-gray-950 text-2xl md:text-3xl tracking-widest select-all">
+                                  {formatUpcDisplay(currentCut.weightEmbeddedBarcode)}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleCopyBarcode(currentCut.weightEmbeddedBarcode)}
+                                  className={`p-2 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 text-xs font-bold ${
+                                    isCopied
+                                      ? 'bg-emerald-600 text-white'
+                                      : 'bg-gray-100 hover:bg-emerald-100 text-gray-700 hover:text-emerald-900 border border-gray-300'
+                                  }`}
+                                  title="Copy barcode number"
+                                >
+                                  {isCopied ? <Check size={16} /> : <Copy size={16} />}
+                                  <span className="hidden sm:inline">{isCopied ? 'Copied!' : 'Copy'}</span>
+                                </button>
+                              </div>
+                            </>
+                          ) : (
+                            <div className="p-6 bg-amber-50 border-2 border-amber-400 rounded-xl text-amber-900 text-center space-y-1">
+                              <div className="font-black text-sm flex items-center justify-center gap-1.5 text-amber-800">
+                                <Info size={16} />
+                                Missing Base 12-Digit Barcode
+                              </div>
+                              <p className="text-xs text-amber-700 font-medium">
+                                Assign a general barcode for <strong>{currentCut.cutName}</strong> in Product Management to generate scannable transfer barcodes.
+                              </p>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Serials preview */}
+                        {currentCut.serials.length > 0 && (
+                          <div className="text-xs text-cool-gray-400 font-mono text-center truncate">
+                            Box Serials: {currentCut.serials.join(', ')}
                           </div>
                         )}
                       </div>
+                    )}
 
-                      {/* Serials preview */}
-                      {currentCut.serials.length > 0 && (
-                        <div className="text-xs text-cool-gray-400 font-mono text-center truncate">
-                          Box Serials: {currentCut.serials.join(', ')}
-                        </div>
-                      )}
-                    </div>
+                    {/* Navigation Controls */}
+                    {isAtEnd ? (
+                      <div className="w-full flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-2">
+                        <button
+                          type="button"
+                          onClick={() => setScanItemIndex(filteredScanCuts.length - 1)}
+                          className="flex-1 bg-cool-gray-800 hover:bg-cool-gray-750 text-white font-black py-4 px-4 rounded-2xl border border-cool-gray-700 flex items-center justify-center gap-2 shadow-xl text-sm transition-all cursor-pointer active:scale-95"
+                        >
+                          <ChevronLeft size={18} />
+                          <span>Back to Last Barcode</span>
+                        </button>
 
-                    {/* Navigation Arrows */}
-                    <div className="w-full flex items-center justify-between gap-4 pt-2">
-                      <button
-                        type="button"
-                        onClick={() => setScanItemIndex(prev => (prev > 0 ? prev - 1 : filteredScanCuts.length - 1))}
-                        className="flex-1 bg-cool-gray-800 hover:bg-cool-gray-750 text-white font-black py-4 px-5 rounded-2xl border border-cool-gray-700 flex items-center justify-center gap-2 shadow-xl text-sm md:text-base transition-all cursor-pointer active:scale-95"
-                      >
-                        <ChevronLeft size={22} />
-                        <span>Previous</span>
-                      </button>
+                        <button
+                          type="button"
+                          onClick={() => setScanItemIndex(0)}
+                          className="flex-1 bg-cool-gray-800 hover:bg-cool-gray-750 text-amber-300 hover:text-amber-200 font-black py-4 px-4 rounded-2xl border border-cool-gray-700 flex items-center justify-center gap-2 shadow-xl text-sm transition-all cursor-pointer active:scale-95"
+                        >
+                          <RotateCcw size={16} />
+                          <span>Start Over (Item 1)</span>
+                        </button>
 
-                      <button
-                        type="button"
-                        onClick={() => setScanItemIndex(prev => (prev < filteredScanCuts.length - 1 ? prev + 1 : 0))}
-                        className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white font-black py-4 px-5 rounded-2xl shadow-xl flex items-center justify-center gap-2 text-sm md:text-base transition-all cursor-pointer active:scale-95 border border-emerald-400/30"
-                      >
-                        <span>Next Barcode</span>
-                        <ChevronRight size={22} />
-                      </button>
-                    </div>
+                        {nextPair && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedPairKey(nextPair.key);
+                              setScanItemIndex(0);
+                              setScanPalletFilter('all');
+                            }}
+                            className="flex-1 bg-cyan-600 hover:bg-cyan-500 text-white font-black py-4 px-4 rounded-2xl shadow-xl flex items-center justify-center gap-2 text-sm transition-all cursor-pointer active:scale-95 border border-cyan-400/30"
+                          >
+                            <span>Next Segment: {nextPair.destinationLocationName}</span>
+                            <ChevronRight size={18} />
+                          </button>
+                        )}
+
+                        <button
+                          type="button"
+                          onClick={() => setIsScanModeOpen(false)}
+                          className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white font-black py-4 px-4 rounded-2xl shadow-xl flex items-center justify-center gap-2 text-sm transition-all cursor-pointer active:scale-95 border border-emerald-400/30"
+                        >
+                          <Check size={18} />
+                          <span>Done / Exit Scan Mode</span>
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="w-full flex items-center justify-between gap-4 pt-2">
+                        <button
+                          type="button"
+                          disabled={scanItemIndex === 0}
+                          onClick={() => setScanItemIndex(prev => Math.max(0, prev - 1))}
+                          className={`flex-1 font-black py-4 px-5 rounded-2xl border flex items-center justify-center gap-2 shadow-xl text-sm md:text-base transition-all ${
+                            scanItemIndex === 0
+                              ? 'bg-cool-gray-900 border-cool-gray-800 text-cool-gray-600 cursor-not-allowed opacity-50'
+                              : 'bg-cool-gray-800 hover:bg-cool-gray-750 border-cool-gray-700 text-white cursor-pointer active:scale-95'
+                          }`}
+                        >
+                          <ChevronLeft size={22} />
+                          <span>Previous</span>
+                        </button>
+
+                        {scanItemIndex === filteredScanCuts.length - 1 ? (
+                          <button
+                            type="button"
+                            onClick={() => setScanItemIndex(filteredScanCuts.length)}
+                            className="flex-1 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-black py-4 px-5 rounded-2xl shadow-xl flex items-center justify-center gap-2 text-sm md:text-base transition-all cursor-pointer active:scale-95 border border-emerald-400/30"
+                          >
+                            <span>Finish Movement (Stop Screen)</span>
+                            <CheckCircle2 size={22} />
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setScanItemIndex(prev => prev + 1)}
+                            className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white font-black py-4 px-5 rounded-2xl shadow-xl flex items-center justify-center gap-2 text-sm md:text-base transition-all cursor-pointer active:scale-95 border border-emerald-400/30"
+                          >
+                            <span>Next Barcode</span>
+                            <ChevronRight size={22} />
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
                 );
               })()

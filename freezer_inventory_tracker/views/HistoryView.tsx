@@ -1,14 +1,17 @@
 import React, { useState, useMemo } from 'react';
-import { InventoryState, Action } from '../types';
+import { InventoryState, Action, UndoSnapshotItem } from '../types';
 import { SearchIcon } from '../components/icons';
+import { calculateHistoryRetention } from '../utils/historyRetention';
 
 interface HistoryViewProps {
   state: InventoryState;
   dispatch: React.Dispatch<Action>;
+  onOpenUndo?: (historyId?: string) => void;
+  undoSnapshots?: UndoSnapshotItem[];
 }
 
 type DateRangeOption = 'all' | 'today' | '7days' | '30days' | '90days' | 'custom';
-type PurgeMode = '30days' | '60days' | '90days' | 'keep100' | 'keep250' | 'clearAll';
+type PurgeMode = '1year' | '2years' | '3years' | '5years';
 
 interface OptionItem {
   id: string;
@@ -184,7 +187,7 @@ const SearchableCheckboxDropdown: React.FC<SearchableCheckboxDropdownProps> = ({
   );
 };
 
-const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch }) => {
+const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch, onOpenUndo, undoSnapshots }) => {
     // Filter States
     const [searchTerm, setSearchTerm] = useState('');
     const [dateRangeOption, setDateRangeOption] = useState<DateRangeOption>('all');
@@ -196,11 +199,12 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch }) => {
     const [selectedContainerIds, setSelectedContainerIds] = useState<Set<string>>(new Set());
     const [selectedProductIds, setSelectedProductIds] = useState<Set<string>>(new Set());
     const [selectedUsers, setSelectedUsers] = useState<Set<string>>(new Set());
+    const [selectedDeviceIds, setSelectedDeviceIds] = useState<Set<string>>(new Set());
 
     // Modals
     const [showUndoConfirm, setShowUndoConfirm] = useState(false);
     const [showPurgeModal, setShowPurgeModal] = useState(false);
-    const [purgeMode, setPurgeMode] = useState<PurgeMode>('30days');
+    const [purgeMode, setPurgeMode] = useState<PurgeMode>('1year');
     const [showPurgeConfirm, setShowPurgeConfirm] = useState(false);
 
     // Options for Searchable Checkbox Dropdowns
@@ -250,6 +254,26 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch }) => {
             name: formatUserDisplay(usr),
             subtext: 'User'
         }));
+    }, [state.history]);
+
+    const deviceOptions = useMemo<OptionItem[]>(() => {
+        const devices = new Set<string>();
+        (state.history || []).forEach(h => {
+            if (h.clientDevice && h.clientDevice.trim()) {
+                devices.add(h.clientDevice.trim());
+            }
+        });
+        // Ensure standard options are available for intuitive filtering
+        ['Desktop Browser', 'Mobile Browser', 'HA Companion App'].forEach(d => devices.add(d));
+        return Array.from(devices).sort().map(dev => {
+            let icon = '💻';
+            if (dev.includes('Companion') || dev.includes('Mobile')) icon = '📱';
+            return {
+                id: dev,
+                name: `${icon} ${dev}`,
+                subtext: 'Client Platform'
+            };
+        });
     }, [state.history]);
 
     const getLocationInfo = (targetId: string) => {
@@ -406,14 +430,24 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch }) => {
                 if (!matchesProductId && !matchesProductName) return false;
             }
 
-            // 6. Text Search Filter
+            // 6. Device Checkbox Filter
+            if (selectedDeviceIds.size > 0) {
+                const deviceVal = entry.clientDevice || '';
+                if (!selectedDeviceIds.has(deviceVal)) {
+                    return false;
+                }
+            }
+
+            // 7. Text Search Filter
             if (searchTerm.trim()) {
                 const term = searchTerm.toLowerCase();
                 const desc = (entry.description || '').toLowerCase();
                 const usr = (entry.user || '').toLowerCase();
                 const locLabel = (entry.locInfo?.label || '').toLowerCase();
                 const locDetail = (entry.locInfo?.detail || '').toLowerCase();
-                if (!desc.includes(term) && !usr.includes(term) && !locLabel.includes(term) && !locDetail.includes(term)) {
+                const dev = (entry.clientDevice || '').toLowerCase();
+                const info = (entry.clientInfo || '').toLowerCase();
+                if (!desc.includes(term) && !usr.includes(term) && !locLabel.includes(term) && !locDetail.includes(term) && !dev.includes(term) && !info.includes(term)) {
                     return false;
                 }
             }
@@ -429,6 +463,7 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch }) => {
         selectedFreezerIds,
         selectedContainerIds,
         selectedProductIds,
+        selectedDeviceIds,
         searchTerm,
         state.freezers,
         state.containers,
@@ -441,7 +476,8 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch }) => {
         selectedFreezerIds.size > 0 ||
         selectedContainerIds.size > 0 ||
         selectedProductIds.size > 0 ||
-        selectedUsers.size > 0;
+        selectedUsers.size > 0 ||
+        selectedDeviceIds.size > 0;
 
     const handleClearFilters = () => {
         setSearchTerm('');
@@ -452,56 +488,51 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch }) => {
         setSelectedContainerIds(new Set());
         setSelectedProductIds(new Set());
         setSelectedUsers(new Set());
+        setSelectedDeviceIds(new Set());
     };
 
-    // Calculate purge estimations
+    // Calculate purge estimations based on package custody lifecycle
     const purgeEstimation = useMemo(() => {
         const total = (state.history || []).length;
-        if (total === 0) return { purgeCount: 0, remainCount: 0 };
+        if (total === 0) return { purgeCount: 0, remainCount: 0, protectedActiveCount: 0, activePackagesCount: 0 };
 
-        if (purgeMode === 'clearAll') {
-            return { purgeCount: total, remainCount: 1 };
-        } else if (purgeMode === 'keep100') {
-            const purgeCount = Math.max(0, total - 100);
-            return { purgeCount, remainCount: Math.min(total, 100) + 1 };
-        } else if (purgeMode === 'keep250') {
-            const purgeCount = Math.max(0, total - 250);
-            return { purgeCount, remainCount: Math.min(total, 250) + 1 };
-        } else {
-            const daysMap: Record<string, number> = { '30days': 30, '60days': 60, '90days': 90 };
-            const days = daysMap[purgeMode] || 30;
-            const cutoff = Date.now() - (days * 86400 * 1000);
-            let purgeCount = 0;
-            (state.history || []).forEach(h => {
-                const t = new Date(h.timestamp).getTime();
-                if (!isNaN(t) && t < cutoff) {
-                    purgeCount++;
-                }
-            });
-            return { purgeCount, remainCount: (total - purgeCount) + 1 };
-        }
-    }, [state.history, purgeMode]);
+        const daysMap: Record<PurgeMode, number> = {
+            '1year': 365,
+            '2years': 730,
+            '3years': 1095,
+            '5years': 1825
+        };
+        const days = daysMap[purgeMode] || 365;
+        const res = calculateHistoryRetention(state.history || [], state, days);
+        return {
+            purgeCount: res.purgedCount,
+            remainCount: res.keptCount + 1, // +1 for the audit maintenance entry that will be logged
+            protectedActiveCount: res.protectedActiveCount,
+            activePackagesCount: res.activePackagesCount
+        };
+    }, [state.history, state.meatCuts, state.offSiteEntries, state.containers, state.movementOrders, purgeMode]);
 
     const handleExecutePurge = () => {
-        if (purgeMode === 'clearAll') {
-            dispatch({ type: 'PURGE_HISTORY', payload: { clearAll: true } });
-        } else if (purgeMode === 'keep100') {
-            dispatch({ type: 'PURGE_HISTORY', payload: { keepMax: 100 } });
-        } else if (purgeMode === 'keep250') {
-            dispatch({ type: 'PURGE_HISTORY', payload: { keepMax: 250 } });
-        } else {
-            const daysMap: Record<string, number> = { '30days': 30, '60days': 60, '90days': 90 };
-            dispatch({ type: 'PURGE_HISTORY', payload: { olderThanDays: daysMap[purgeMode] || 30 } });
-        }
+        const daysMap: Record<PurgeMode, number> = {
+            '1year': 365,
+            '2years': 730,
+            '3years': 1095,
+            '5years': 1825
+        };
+        dispatch({ type: 'PURGE_HISTORY', payload: { olderThanDays: daysMap[purgeMode] || 365 } });
         setShowPurgeConfirm(false);
         setShowPurgeModal(false);
     };
 
     const handleUndo = () => {
-        setShowUndoConfirm(true);
+        if (onOpenUndo) {
+            onOpenUndo();
+        } else {
+            setShowUndoConfirm(true);
+        }
     };
 
-    const canUndo = state.previousState !== undefined;
+    const canUndo = (undoSnapshots && undoSnapshots.length > 0) || Boolean(state.history && state.history.length > 0 && onOpenUndo);
 
     return (
         <div className="bg-cool-gray-800/50 p-4 sm:p-6 rounded-lg border border-cool-gray-700 shadow-lg">
@@ -523,12 +554,19 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch }) => {
                         <span>Purge / Maintenance</span>
                     </button>
                     <button 
+                        id="history-view-undo-button"
                         onClick={handleUndo} 
                         disabled={!canUndo}
-                        className="px-4 py-2 bg-yellow-600 text-white text-xs sm:text-sm font-semibold rounded-lg shadow-md hover:bg-yellow-700 transition disabled:bg-cool-gray-600 disabled:cursor-not-allowed disabled:opacity-50"
-                        title={canUndo ? "Undo the last recorded action" : "No action to undo"}
+                        className="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-cool-gray-950 text-xs sm:text-sm font-bold rounded-lg shadow-md transition flex items-center gap-1.5 disabled:bg-cool-gray-600 disabled:text-cool-gray-400 disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+                        title="Undo an inventory action or select a change to revert"
                     >
-                        Undo Last Action
+                        <span>↩️</span>
+                        <span>Undo / Rollback...</span>
+                        {undoSnapshots && undoSnapshots.length > 0 && (
+                            <span className="px-1.5 py-0.2 rounded-full bg-amber-950 text-amber-300 font-mono text-xs font-extrabold">
+                                {undoSnapshots.length}
+                            </span>
+                        )}
                     </button>
                 </div>
             </div>
@@ -581,18 +619,25 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch }) => {
 
                         {!showPurgeConfirm ? (
                             <>
-                                <p className="text-xs text-cool-gray-300 leading-relaxed mb-4">
-                                    Keeping historical audit logs clean helps optimize application load times and backup archive sizes. Choose a retention policy below:
-                                </p>
+                                <div className="p-3.5 bg-cyan-950/40 border border-cyan-800/60 rounded-lg text-xs text-cyan-200 mb-4 space-y-1.5">
+                                    <div className="flex items-center gap-2 font-semibold text-cyan-300">
+                                        <span>🛡️</span>
+                                        <span>Lifecycle & Out-of-Custody Retention Safeguard</span>
+                                    </div>
+                                    <p className="text-[11px] text-cyan-100/90 leading-relaxed">
+                                        Audit log entries are <strong>never deleted merely by calendar age</strong> while a package remains in the system. Even if a package has been in inventory for 6+ years across dozens of moves, its entire chain of custody is 100% protected.
+                                    </p>
+                                    <p className="text-[11px] text-cyan-200/80 leading-relaxed">
+                                        Entries are only eligible for purge once a package has been <strong>completely out of your hands</strong> (consumed, zeroed out, or archived) for longer than the selected retention threshold.
+                                    </p>
+                                </div>
 
-                                <div className="space-y-2.5 mb-6">
+                                <div className="space-y-2.5 mb-5">
                                     {[
-                                        { id: '30days', label: 'Purge entries older than 30 days', desc: 'Keep recent month of audit history' },
-                                        { id: '60days', label: 'Purge entries older than 60 days', desc: 'Keep recent 2 months of audit history' },
-                                        { id: '90days', label: 'Purge entries older than 90 days', desc: 'Keep recent quarter of audit history' },
-                                        { id: 'keep100', label: 'Retain only top 100 most recent entries', desc: 'Fastest size optimization' },
-                                        { id: 'keep250', label: 'Retain only top 250 most recent entries', desc: 'Balanced long-term retention' },
-                                        { id: 'clearAll', label: 'Clear ALL audit history logs', desc: 'Wipe all historical entries entirely' }
+                                        { id: '1year', label: 'Purge packages out of system for > 1 year (365 days)', desc: 'Protects active packages + retains 1 full year of records after physical exit' },
+                                        { id: '2years', label: 'Purge packages out of system for > 2 years (730 days)', desc: 'Protects active packages + retains 2 full years of records after physical exit' },
+                                        { id: '3years', label: 'Purge packages out of system for > 3 years (1,095 days)', desc: 'Standard compliance: protects active packages + retains 3 years post-exit records' },
+                                        { id: '5years', label: 'Purge packages out of system for > 5 years (1,825 days)', desc: 'Long-term enterprise custody: protects active packages + retains 5 years post-exit records' }
                                     ].map((opt) => (
                                         <label 
                                             key={opt.id} 
@@ -618,28 +663,34 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch }) => {
                                 </div>
 
                                 {/* Preview Stats Box */}
-                                <div className="p-3 bg-cool-gray-900/80 rounded-lg border border-cool-gray-750 text-xs flex justify-between items-center mb-6">
-                                    <div>
-                                        <span className="text-cool-gray-400">Entries to be purged:</span>
-                                        <span className="ml-1.5 font-bold text-red-400">{purgeEstimation.purgeCount}</span>
+                                <div className="p-3.5 bg-cool-gray-900/90 rounded-lg border border-cool-gray-750 text-xs space-y-2 mb-6">
+                                    <div className="flex justify-between items-center">
+                                        <span className="text-cool-gray-400">Eligible to purge (out of custody &gt; threshold):</span>
+                                        <span className="ml-1.5 font-bold text-red-400">{purgeEstimation.purgeCount} entries</span>
                                     </div>
-                                    <div>
-                                        <span className="text-cool-gray-400">Remaining entries:</span>
-                                        <span className="ml-1.5 font-bold text-emerald-400">{purgeEstimation.remainCount}</span>
+                                    <div className="flex justify-between items-center">
+                                        <span className="text-cool-gray-400">Protected & retained entries:</span>
+                                        <span className="ml-1.5 font-bold text-emerald-400">{purgeEstimation.remainCount} entries</span>
+                                    </div>
+                                    <div className="pt-2 border-t border-cool-gray-800 flex justify-between items-center text-[11px]">
+                                        <span className="text-cyan-400 font-medium">Active packages in system:</span>
+                                        <span className="text-cyan-300 font-bold bg-cyan-950/60 px-2 py-0.5 rounded border border-cyan-800/60">
+                                            {purgeEstimation.activePackagesCount} packages (100% history protected)
+                                        </span>
                                     </div>
                                 </div>
 
                                 <div className="flex justify-end gap-2.5">
                                     <button 
                                         onClick={() => setShowPurgeModal(false)}
-                                        className="px-4 py-2 bg-cool-gray-700 hover:bg-cool-gray-600 text-cool-gray-200 text-xs font-semibold rounded-lg transition"
+                                        className="px-4 py-2 bg-cool-gray-700 hover:bg-cool-gray-600 text-cool-gray-200 text-xs font-semibold rounded-lg transition cursor-pointer"
                                     >
                                         Cancel
                                     </button>
                                     <button 
                                         onClick={() => setShowPurgeConfirm(true)}
-                                        disabled={purgeEstimation.purgeCount === 0 && purgeMode !== 'clearAll'}
-                                        className="px-4 py-2 bg-red-600 hover:bg-red-500 disabled:bg-cool-gray-700 disabled:opacity-50 text-white text-xs font-semibold rounded-lg shadow-sm transition"
+                                        disabled={purgeEstimation.purgeCount === 0}
+                                        className="px-4 py-2 bg-red-600 hover:bg-red-500 disabled:bg-cool-gray-700 disabled:opacity-50 text-white text-xs font-semibold rounded-lg shadow-sm transition cursor-pointer"
                                     >
                                         Review & Purge
                                     </button>
@@ -649,8 +700,11 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch }) => {
                             <div className="space-y-4">
                                 <div className="p-4 bg-red-950/40 border border-red-800/60 rounded-lg text-xs text-red-200">
                                     <p className="font-bold text-red-300 mb-1">⚠️ Confirm History Purge</p>
-                                    <p>
-                                        You are about to permanently purge <strong className="text-white">{purgeEstimation.purgeCount}</strong> audit entries. This operation cannot be undone.
+                                    <p className="leading-relaxed">
+                                        You are about to permanently purge <strong className="text-white">{purgeEstimation.purgeCount}</strong> audit entries associated with packages/records that have been departed/out of the system for more than {purgeMode === '1year' ? '1 year' : purgeMode === '2years' ? '2 years' : purgeMode === '3years' ? '3 years' : '5 years'}.
+                                    </p>
+                                    <p className="text-[11px] text-red-300/80 mt-2">
+                                        All active packages in inventory remain 100% protected with their full historical move logs preserved.
                                     </p>
                                 </div>
 
@@ -733,8 +787,8 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch }) => {
                     </div>
                 )}
 
-                {/* Entity Searchable Checkbox Dropdowns: Freezer, Container, Product, User */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 pt-1">
+                {/* Entity Searchable Checkbox Dropdowns: Freezer, Container, Product, User, Device */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5 pt-1">
                     {/* Freezer Searchable Checkbox Filter */}
                     <SearchableCheckboxDropdown
                         label="Freezers"
@@ -778,6 +832,17 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch }) => {
                         onChange={setSelectedUsers}
                         placeholder="Search users..."
                     />
+
+                    {/* Device / Client Searchable Checkbox Filter */}
+                    <SearchableCheckboxDropdown
+                        label="Devices / Apps"
+                        singularLabel="Device"
+                        icon="💻"
+                        options={deviceOptions}
+                        selectedIds={selectedDeviceIds}
+                        onChange={setSelectedDeviceIds}
+                        placeholder="Search devices..."
+                    />
                 </div>
 
                 {/* Filter Summary & Clear Action */}
@@ -792,7 +857,8 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch }) => {
                                     selectedFreezerIds.size > 0 && `${selectedFreezerIds.size} Freezer(s)`,
                                     selectedContainerIds.size > 0 && `${selectedContainerIds.size} Container(s)`,
                                     selectedProductIds.size > 0 && `${selectedProductIds.size} Product(s)`,
-                                    selectedUsers.size > 0 && `${selectedUsers.size} User(s)`
+                                    selectedUsers.size > 0 && `${selectedUsers.size} User(s)`,
+                                    selectedDeviceIds.size > 0 && `${selectedDeviceIds.size} Device(s)`
                                 ].filter(Boolean).join(', ')})
                             </span>
                         )}
@@ -838,13 +904,55 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch }) => {
                                     )}
                                 </div>
                                 <div className="flex justify-between items-center mt-2.5 pt-2 border-t border-cool-gray-750 text-xs">
-                                    <p className="text-cool-gray-400 font-mono text-[11px] flex items-center gap-1">
-                                        <span>👤</span>
-                                        <span>{formatUserDisplay(entry.user)}</span>
-                                    </p>
-                                    <p className="text-cool-gray-400 font-mono text-[11px]">
-                                        {new Date(entry.timestamp).toLocaleString()}
-                                    </p>
+                                    <div className="flex items-center gap-3 flex-wrap">
+                                        <p className="text-cool-gray-400 font-mono text-[11px] flex items-center gap-1">
+                                            <span>👤</span>
+                                            <span>{formatUserDisplay(entry.user)}</span>
+                                        </p>
+                                        {entry.clientDevice && (
+                                            <span
+                                                className={`inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded border ${
+                                                    entry.clientDevice.includes('Companion')
+                                                        ? 'bg-blue-950/80 border-blue-800/80 text-blue-300'
+                                                        : entry.clientDevice.includes('Mobile')
+                                                        ? 'bg-purple-950/80 border-purple-800/80 text-purple-300'
+                                                        : 'bg-emerald-950/80 border-emerald-800/80 text-emerald-300'
+                                                }`}
+                                                title={entry.clientInfo || entry.clientDevice}
+                                            >
+                                                <span>{entry.clientDevice.includes('Companion') || entry.clientDevice.includes('Mobile') ? '📱' : '💻'}</span>
+                                                <span>{entry.clientDevice}</span>
+                                            </span>
+                                        )}
+                                        <p className="text-cool-gray-400 font-mono text-[11px]">
+                                            {new Date(entry.timestamp).toLocaleString()}
+                                        </p>
+                                    </div>
+                                    {(() => {
+                                        const hasSnapshot = Boolean(undoSnapshots?.some(s => s.historyId === entry.id || s.targetId === entry.id));
+                                        const hasUndoData = Boolean(entry.undoData);
+                                        return (
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    if (onOpenUndo) {
+                                                        onOpenUndo(entry.id);
+                                                    } else if (hasSnapshot || hasUndoData) {
+                                                        dispatch({ type: 'UNDO', payload: { historyId: entry.id } });
+                                                    }
+                                                }}
+                                                className={`px-2.5 py-1 rounded-lg font-semibold text-[11px] transition flex items-center gap-1 cursor-pointer ${
+                                                    hasSnapshot || hasUndoData || onOpenUndo
+                                                        ? 'bg-amber-500 hover:bg-amber-400 text-cool-gray-950 shadow-xs'
+                                                        : 'bg-cool-gray-700 hover:bg-cool-gray-600 text-cool-gray-300'
+                                                }`}
+                                                title={`Review and revert this action: "${entry.description}"`}
+                                            >
+                                                <span>↩️</span>
+                                                <span>Undo This</span>
+                                            </button>
+                                        );
+                                    })()}
                                 </div>
                             </li>
                         ))}

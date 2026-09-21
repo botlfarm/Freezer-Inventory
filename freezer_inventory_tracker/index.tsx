@@ -7,6 +7,23 @@ import { scrollBehaviourDragImageTranslateOverride } from "mobile-drag-drop/scro
 import App from './App';
 import './index.css';
 
+// Gracefully guard performance.measure against DataCloneError in iframe/DevTools environments
+if (typeof window !== 'undefined' && window.performance && typeof window.performance.measure === 'function') {
+    const originalMeasure = window.performance.measure.bind(window.performance);
+    window.performance.measure = function (measureName: string, startOrMeasureOptions?: any, endMark?: string) {
+        try {
+            return originalMeasure(measureName, startOrMeasureOptions, endMark);
+        } catch (_) {
+            try {
+                if (typeof startOrMeasureOptions === 'string') {
+                    return originalMeasure(measureName, startOrMeasureOptions, endMark);
+                }
+            } catch (_) {}
+            return undefined as any;
+        }
+    };
+}
+
 polyfill({
     dragImageTranslateOverride: scrollBehaviourDragImageTranslateOverride,
     holdToDrag: 300
