@@ -17,6 +17,8 @@ jobs:
   build:
     name: Build and Push Add-on Image
     runs-on: ubuntu-latest
+    env:
+      ACTIONS_ALLOW_USE_UNSECURE_NODE20: "true"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

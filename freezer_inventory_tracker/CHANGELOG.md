@@ -1,3 +1,18 @@
+### [2.41.5] - 2026-09-20
+
+### Changed
+- **GitHub Actions Runner Node.js 20 Deprecation Compatibility (`build-addon.yml`)**:
+  - Configured `ACTIONS_ALLOW_USE_UNSECURE_NODE20: "true"` in the GitHub Actions add-on build workflow environment.
+  - Ensures seamless compatibility and prevents workflow failures on GitHub runners transitioning from Node.js 20 to Node.js 24 while running standard runner actions (`actions/checkout@v4`, `docker/login-action@v3`, `docker/setup-qemu-action@v3`).
+
+### Files Modified
+- `/.github/workflows/build-addon.yml`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
 ### [2.41.4] - 2026-09-20
 
 ### Added
