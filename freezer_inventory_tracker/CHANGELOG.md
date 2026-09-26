@@ -1,3 +1,17 @@
+### [2.43.21] - 2026-09-26
+
+### Fixed
+- **esbuild Resolution during Docker/HA Builder Build**:
+  - Replaced the hardcoded `--external:better-sqlite3` list with the dynamic, highly robust `--packages=external` argument inside the server bundle compilation script in `package.json`.
+  - This instructs `esbuild` to skip bundling and resolving any packages located in standard `node_modules` (including `compression`, `express`, `nodemailer`, and `better-sqlite3`), resolving compiler error `Could not resolve "compression"` during Docker container assembly.
+
+### Files Modified
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
 ### [2.43.20] - 2026-09-26
 
 ### Added
