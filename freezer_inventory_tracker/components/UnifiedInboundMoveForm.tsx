@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Table } from 'lucide-react';
+import { Table, Star } from 'lucide-react';
 import { Action, InventoryState, Container, Product, MeatCut, Freezer } from '../types';
 import { getContainerIcon } from './ContainerIconsMap';
 import { SearchableProductSelect } from './SearchableProductSelect';
@@ -980,8 +980,11 @@ export const UnifiedInboundMoveForm: React.FC<UnifiedInboundMoveFormProps> = ({
                   🛒 Staging
                 </span>
               ) : selectedContainerId.endsWith('_loose') ? (
-                <span className="text-[10px] bg-cyan-950 text-cyan-200 border border-cyan-800 px-2.5 py-0.5 rounded-full font-extrabold">
-                  ❄️ Loose in {targetFreezer?.name || 'Freezer'}
+                <span className="text-[10px] bg-cyan-950 text-cyan-200 border border-cyan-800 px-2.5 py-0.5 rounded-full font-extrabold flex items-center gap-1">
+                  <span>❄️ Loose in {targetFreezer?.name || 'Freezer'}</span>
+                  {targetFreezer?.isSpecial && (
+                    <Star className="w-2.5 h-2.5 text-amber-400 fill-amber-400 inline shrink-0" title="Display Case" />
+                  )}
                 </span>
               ) : null}
             </div>
@@ -1021,7 +1024,11 @@ export const UnifiedInboundMoveForm: React.FC<UnifiedInboundMoveFormProps> = ({
               <div className="p-3 rounded-xl border bg-cyan-950/40 border-cyan-500 ring-2 ring-cyan-400/30 shadow-md flex items-center justify-between gap-3 text-left animate-slide-in">
                 <div className="min-w-0">
                   <h4 className="text-xs font-black text-cyan-200 flex items-center gap-1.5">
-                    <span>❄️</span> Loose in {targetFreezer.name}
+                    <span>❄️</span>
+                    <span>Loose in {targetFreezer.name}</span>
+                    {targetFreezer.isSpecial && (
+                      <Star className="w-3.5 h-3.5 text-amber-400 fill-amber-400 inline shrink-0" title="Display Case" />
+                    )}
                   </h4>
                   <p className="text-xs text-cool-gray-300 mt-0.5 leading-normal font-medium">
                     Defaulting to loose storage inside {targetFreezer.name}. Or search/pick a box below:
@@ -1130,8 +1137,11 @@ export const UnifiedInboundMoveForm: React.FC<UnifiedInboundMoveFormProps> = ({
                             <p className="font-bold text-xs text-white truncate flex items-center gap-1.5 flex-wrap">
                               <span className="truncate">{container.name}</span>
                               {freezer ? (
-                                <span className="text-[10px] text-cyan-200 bg-cyan-950 border border-cyan-700 px-1.5 py-0.5 rounded font-extrabold truncate">
-                                  ❄️ {freezer.name}
+                                <span className="text-[10px] text-cyan-200 bg-cyan-950 border border-cyan-700 px-1.5 py-0.5 rounded font-extrabold truncate flex items-center gap-1">
+                                  <span>❄️ {freezer.name}</span>
+                                  {freezer.isSpecial && (
+                                    <Star className="w-2.5 h-2.5 text-amber-400 fill-amber-400 inline shrink-0" title="Display Case" />
+                                  )}
                                 </span>
                               ) : (
                                 <span className="text-[10px] text-amber-200 bg-amber-950 border border-amber-700 px-1.5 py-0.5 rounded font-extrabold truncate">
@@ -1261,11 +1271,17 @@ export const UnifiedInboundMoveForm: React.FC<UnifiedInboundMoveFormProps> = ({
                 <span className="p-1 rounded bg-blue-950 text-blue-300 border border-blue-800">❄️</span>
                 Section 2B: Assign Freezer Location
               </h4>
-              {selectedFreezerId ? (
-                <span className="text-[10px] bg-cyan-950 text-cyan-200 border border-cyan-800 px-2.5 py-0.5 rounded-full font-extrabold">
-                  {state.freezers.find(f => f.id === selectedFreezerId)?.name || 'Freezer Unit'}
-                </span>
-              ) : (
+              {selectedFreezerId ? (() => {
+                const f = state.freezers.find(fr => fr.id === selectedFreezerId);
+                return (
+                  <span className="text-[10px] bg-cyan-950 text-cyan-200 border border-cyan-800 px-2.5 py-0.5 rounded-full font-extrabold flex items-center gap-1">
+                    <span>{f?.name || 'Freezer Unit'}</span>
+                    {f?.isSpecial && (
+                      <Star className="w-2.5 h-2.5 text-amber-400 fill-amber-400 inline shrink-0" title="Display Case" />
+                    )}
+                  </span>
+                );
+              })() : (
                 <span className="text-[10px] bg-amber-950 text-amber-200 border border-amber-800 px-2.5 py-0.5 rounded-full font-extrabold">
                   🛒 Staging
                 </span>
@@ -1289,7 +1305,7 @@ export const UnifiedInboundMoveForm: React.FC<UnifiedInboundMoveFormProps> = ({
                   .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }))
                   .map(f => (
                     <option key={f.id} value={f.id}>
-                      ❄️ {f.name} {f.isSpecial ? " (Display Case)" : ""}
+                      ❄️ {f.name}{f.isSpecial ? " ★" : ""}
                     </option>
                   ))}
               </select>
@@ -1328,9 +1344,12 @@ export const UnifiedInboundMoveForm: React.FC<UnifiedInboundMoveFormProps> = ({
                             : 'intake-section-2b-subcard text-cool-gray-200 hover:border-cyan-500/50 hover:text-white'
                         }`}
                       >
-                        <div className="flex items-center gap-2 min-w-0">
+                        <div className="flex items-center gap-1.5 min-w-0">
                           <span className="text-xs">❄️</span>
                           <span className="text-xs font-black truncate">{f.name}</span>
+                          {f.isSpecial && (
+                            <Star className="w-3.5 h-3.5 text-amber-400 fill-amber-400 inline shrink-0 ml-0.5" title="Display Case" />
+                          )}
                         </div>
                         {isSelected && <span className="text-[10px] font-black text-cyan-300">Selected ✓</span>}
                       </button>

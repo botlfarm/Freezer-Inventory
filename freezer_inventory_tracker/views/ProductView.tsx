@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { InventoryState, Action, ModalType, Product, MeatCut, Container, Freezer } from '../types';
 import { MeatIcon, PlusIcon, MinusIcon, PackageIcon } from '../components/icons';
 import { getContainerIcon } from '../components/ContainerIconsMap';
-import { MoreVertical, Move, History, Search, Tag, Edit, Package, MapPin, PlusCircle, AlertTriangle, GitFork, Archive } from 'lucide-react';
+import { MoreVertical, Move, History, Search, Tag, Edit, Package, MapPin, PlusCircle, AlertTriangle, GitFork, Archive, Star } from 'lucide-react';
 import ContainerCard from '../components/ContainerCard';
 import { evaluateMathExpression } from '../components/QuickCalculatorPanel';
 import { 
@@ -198,6 +198,9 @@ const ProductLocationRow: React.FC<ProductLocationRowProps> = ({
                         title={`Go to Container "${container.name}" in ${freezer.name}`}
                     >
                         <span className="text-emerald-400 font-bold text-[11px] sm:text-xs">{freezer.name}</span>
+                        {freezer.isSpecial && (
+                            <Star className="w-3.5 h-3.5 text-amber-400 fill-amber-400 shrink-0 inline ml-0.5" title="Display Case" />
+                        )}
                         <span className="text-cool-gray-650 mx-0.5 sm:mx-1">-</span>
                         <span className="text-cyan-400 font-bold text-xs sm:text-sm">{container.name}</span>
                         {hasSameNameInFreezer && (
@@ -615,8 +618,13 @@ const StorageLocationRow: React.FC<StorageLocationRowProps> = ({ state, loc, dis
         <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-2.5 p-2 bg-cool-gray-850/65 rounded border border-cool-gray-750/35 hover:border-cool-gray-700/60 transition">
             <div className="flex flex-col min-w-0 flex-1">
                 <div className="flex items-center gap-1.5 flex-wrap">
-                    <span className="font-bold text-cool-gray-250 whitespace-normal break-words text-xs leading-normal">
-                        {loc.freezer.name} &gt; {loc.container.name}
+                    <span className="font-bold text-cool-gray-250 whitespace-normal break-words text-xs leading-normal flex items-center gap-1 flex-wrap">
+                        <span>{loc.freezer.name}</span>
+                        {loc.freezer.isSpecial && (
+                            <Star className="w-3 h-3 text-amber-400 fill-amber-400 shrink-0 inline" title="Display Case" />
+                        )}
+                        <span className="text-cool-gray-500">&gt;</span>
+                        <span>{loc.container.name}</span>
                     </span>
                     
                     {isEditing ? (

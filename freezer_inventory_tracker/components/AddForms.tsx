@@ -194,7 +194,7 @@ const ContainerForm: React.FC<ContainerFormProps> = ({ dispatch, onClose, freeze
           className="w-full px-3 py-2 bg-cool-gray-700 border border-cool-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-cyan-500 text-sm text-white"
         >
           <option value="">(No Freezer - Unassigned)</option>
-          {state.freezers.filter(f => !f.isPallet && !f.id.startsWith('pallet-') && !f.isArchived).map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+          {state.freezers.filter(f => !f.isPallet && !f.id.startsWith('pallet-') && !f.isArchived).map(f => <option key={f.id} value={f.id}>{f.name}{f.isSpecial ? " ★" : ""}</option>)}
         </select>
       </div>
 
@@ -545,7 +545,7 @@ const BulkMeatForm: React.FC<BulkMeatFormProps> = ({ dispatch, onClose, state })
                     <label htmlFor="freezer-select" className="block text-sm font-medium text-cool-gray-300 mb-1">Place in Freezer</label>
                     <select id="freezer-select" value={targetFreezerId} onChange={e => setTargetFreezerId(e.target.value)} className="w-full px-3 py-2 bg-cool-gray-700 border border-cool-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-cyan-500" required>
                         <option value="" disabled>Select destination freezer...</option>
-                        {state.freezers.filter(f => !f.isPallet && !f.id.startsWith('pallet-') && !f.isArchived).map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+                        {state.freezers.filter(f => !f.isPallet && !f.id.startsWith('pallet-') && !f.isArchived).map(f => <option key={f.id} value={f.id}>{f.name}{f.isSpecial ? " ★" : ""}</option>)}
                     </select>
                     {hasUnassignedDuplicateInTarget && (
                         <p className="text-yellow-405 text-xs mt-1.5 leading-normal">

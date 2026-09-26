@@ -1,3 +1,612 @@
+### [2.43.20] - 2026-09-26
+
+### Added
+- **Database Freshness and Last Sync Status Indicators**:
+  - Automatically reads and exposes the persistent IndexedDB cache timestamp (`savedAt`) inside the `useInventory` sync state.
+  - Formats and displays a live-refreshing relative "Synced [time] ago" label directly next to the `Offline` top-bar badge when the client device is operating offline.
+  - Implemented an elegant "Database Freshness" section inside the Sync Status dropdown menu, providing both relative and exact timestamps of the last successful server sync. This resolves user concerns about picking up tablets with stale/outdated offline databases.
+
+### Files Modified
+- `/freezer_inventory_tracker/utils/offlineStorage.ts`
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/components/OfflineSyncBadge.tsx`
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.43.19] - 2026-09-26
+
+### Fixed
+- **Workspaces Robust Build & Deployment Alignment**:
+  - Combined root and workspace-level dependencies inside root `package.json` to ensure they are available in environments that bypass workspaces.
+  - Enhanced root `"build"` script to execute an explicit `npm install --prefix freezer_inventory_tracker` prior to compiling. This guarantees all essential build-time modules (`vite`, `esbuild`, `react`, etc.) are fully populated in non-interactive build pipelines, preventing "Build artifacts are empty" deployment failures.
+
+### Files Modified
+- `/package.json`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.43.18] - 2026-09-26
+
+### Fixed
+- **PWA Development / Sandbox Cache Lock Fix**:
+  - Automatically bypasses and unregisters Service Workers and purges Cache Storage whenever the app is accessed on development hosts (`localhost`, `127.0.0.1`) or the AI Studio Dev/Shared App preview sandbox (`*.run.app`). This cures the "PWA Cache trap" where previous built asset hashes would lead to persistent 404/loading screen freezes during development iterations.
+
+### Files Modified
+- `/freezer_inventory_tracker/index.html`
+- `/freezer_inventory_tracker/index.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.43.17] - 2026-09-26
+
+### Fixed
+- **GCP Artifact Upload Fix**:
+  - Aligned root start command inside `package.json` with system environment constraints by pointing `"start"` directly to `"node server.ts"` instead of `"node server.js"`. This ensures the platform's full-stack pipeline correctly builds and uploads all compiled artifacts without throwing empty-artifact errors during deployment.
+
+### Files Modified
+- `/package.json`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.43.16] - 2026-09-26
+
+### Fixed
+- **Express PWA & Manifest Router Cleanup**:
+  - Replaced regular expression routing for `/sw.js` and `/manifest.json` with a precise, non-blocking `.endsWith()` Express middleware check. This guarantees 100% router path compatibility and prevents any unexpected regex collisions or greedy matching that could cause other critical assets (like Javascript code bundles) to serve the wrong content and trigger app load freezes.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.43.15] - 2026-09-26
+
+### Fixed
+- **Express Wildcard Routing `PathError`**:
+  - Replaced legacy/unsupported asterisk string-wildcard patterns (`'*/manifest.json'`, `'*/sw.js'`) inside Express `app.get()` arrays with explicit, standard JavaScript Regular Expression patterns. This prevents `path-to-regexp` parsing from throwing a startup crash `PathError` (`Missing parameter name at index ...`) on modern environment runtime layers like GCP Cloud Run.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.43.14] - 2026-09-26
+
+### Added
+- **Settings Page Native PWA Installer Integration**:
+  - Rendered `<PWAInstallButton />` prominently inside the PWA / Browser Offline card in the Library tab's settings panel.
+- **Header Clean Up**:
+  - Removed `<PWAInstallButton />` from the sticky navigation header to streamline top bar UI, keeping installation controls centralized and contextual within Settings.
+
+### Files Modified
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/views/LibraryView.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.43.13] - 2026-09-26
+
+### Fixed
+- **Root Startup Script Resolution**:
+  - Replaced `"start": "node server.ts"` with `"start": "node server.js"` in workspace root `package.json` to prevent runtime `TypeError [ERR_UNKNOWN_FILE_EXTENSION]` when attempting to boot a raw TypeScript file in production.
+
+### Files Modified
+- `/package.json`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.43.12] - 2026-09-26
+
+### Fixed
+- **Web App Manifest HTML Specification (`index.html`)**:
+  - Removed duplicate `<link rel="manifest">` element to adhere strictly to the Web App Manifest standard (requiring exactly one manifest link tag in HTML `<head>`), resolving false negative scanner results from third-party PWA auditors.
+- **PWA Testing URL Guidance**:
+  - Identified that third-party PWA validators (e.g. Progressier) fail when provided the AI Studio parent iframe URL (`https://aistudio.google.com/apps/...`) instead of the direct application web endpoint.
+
+### Files Modified
+- `/freezer_inventory_tracker/index.html`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.43.11] - 2026-09-26
+
+### Fixed
+- **Cloud Run CJS Bundle Startup Resolution (`server.ts`, `server.js`)**:
+  - Replaced legacy URL module `fileURLToPath(import.meta.url)` imports with pure `__dirname` / `process.cwd()` resolution to eliminate CJS bundle `TypeError [ERR_INVALID_ARG_TYPE]` crashes.
+  - Hardened top-level `/server.js` wrapper with safe `import.meta?.url` conditional check and fallback to `process.cwd()`.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/server.js`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.43.10] - 2026-09-26
+
+### Fixed
+- **Cloud Run CJS Deployment Startup Crash (`server.ts`)**:
+  - Resolved `TypeError [ERR_INVALID_ARG_TYPE]: The "path" argument must be of type string or an instance of URL. Received undefined` caused by direct `fileURLToPath(import.meta.url)` execution in CJS bundled environments.
+  - Implemented safe fallback logic for `appDirname` that seamlessly checks `__dirname`, `import.meta.url`, and `process.cwd()` to guarantee zero-crash execution across both ESM and CommonJS production containers.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.43.9] - 2026-09-26
+
+### Fixed
+- **Manifest Content-Type Header (`server.ts`)**:
+  - Replaced Express `res.json()` with `res.type('application/manifest+json; charset=utf-8').send()` on manifest endpoints to strictly preserve `application/manifest+json` MIME-type requirement for external PWA checkers and Android Chromium PWA installs.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.43.8] - 2026-09-26
+
+### Fixed
+- **Top-Level PWA Manifest Handler & Multi-Spec Headers (`server.ts`, `index.html`)**:
+  - Moved PWA manifest and service worker routes to top of Express middleware pipeline to ensure immediate execution with `Access-Control-Allow-Origin: *`, `application/manifest+json; charset=utf-8`, and no-cache validation headers.
+  - Linked both `/manifest.json` and `/manifest.webmanifest` in `<head>` for 100% compatibility across online PWA checkers (PWABuilder, Lighthouse, manifest-validator) and Chromium mobile browser engines.
+  - Expanded manifest spec with full metadata (`display_override`, `categories`, `shortcuts`, and all multi-size icon definitions).
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/index.html`
+- `/freezer_inventory_tracker/public/manifest.json`
+- `/freezer_inventory_tracker/public/manifest.webmanifest`
+- `/public/manifest.json`
+- `/public/manifest.webmanifest`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.43.7] - 2026-09-26
+
+### Fixed
+- **Root Manifest & Service Worker Registration (`index.html`, `server.ts`, `index.tsx`)**:
+  - Enforced standard root absolute paths (`/manifest.webmanifest`, `/sw.js`, `/pwa-192x192.png`, `/pwa-512x512.png`) across `manifest.webmanifest`, `manifest.json`, and `index.html`.
+  - Added dedicated `/sw.js` endpoint with `Service-Worker-Allowed: /` header to ensure full Chrome Android PWA criteria are satisfied.
+
+### Files Modified
+- `/freezer_inventory_tracker/public/manifest.webmanifest`
+- `/freezer_inventory_tracker/public/manifest.json`
+- `/public/manifest.webmanifest`
+- `/public/manifest.json`
+- `/freezer_inventory_tracker/index.html`
+- `/freezer_inventory_tracker/index.tsx`
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.43.6] - 2026-09-26
+
+### Added
+- **Stand-alone Service Worker & Chrome Android PWA Support (`sw.js`, `index.tsx`, `PWAInstallButton.tsx`)**:
+  - Implemented standalone `sw.js` with offline fetch handler to satisfy Chrome on Android's strict PWA installability requirements.
+  - Enhanced `PWAInstallButton` with direct window launcher and contextual sandbox detection explaining that Android Chrome requires top-level tabs for native home-screen installation.
+
+### Files Modified
+- `/freezer_inventory_tracker/public/sw.js`
+- `/public/sw.js`
+- `/freezer_inventory_tracker/index.tsx`
+- `/freezer_inventory_tracker/components/PWAInstallButton.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.43.5] - 2026-09-26
+
+### Added
+- **Static & Dynamic Web App Manifests (`manifest.webmanifest`, `manifest.json`)**:
+  - Added physical `manifest.webmanifest` and `manifest.json` files in `public/` directories with complete PWA specifications (`id`, `name`, `short_name`, `theme_color`, `background_color`, `display: standalone`, and high-res icon paths).
+  - Added dedicated server route `/manifest.webmanifest` and `/manifest.json` returning `Content-Type: application/manifest+json` for immediate PWA browser and mobile home screen installation.
+- **Home Assistant Repository JSON (`repository.json`)**:
+  - Added root `repository.json` alongside `repository.yaml` for full compatibility when adding the custom add-on repository into Home Assistant.
+
+### Files Modified
+- `/freezer_inventory_tracker/public/manifest.webmanifest`
+- `/freezer_inventory_tracker/public/manifest.json`
+- `/public/manifest.webmanifest`
+- `/public/manifest.json`
+- `/repository.json`
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.43.4] - 2026-09-26
+
+### Fixed
+- **Vite Config Path Resolution & WebSocket Suppression (`server.ts`)**:
+  - Explicitly resolved `configFile` in `createViteServer` to point to `vite.config.ts` and added explicit `ws: false` to ensure Vite development middleware does not initialize background WebSocket listeners.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.43.3] - 2026-09-26
+
+### Fixed
+- **Explicit HMR WebSocket Server Deactivation (`vite.config.ts`, `server.ts`)**:
+  - Explicitly set `server.hmr = false` in both `vite.config.ts` and Vite's middleware instantiation in `server.ts` to suppress unnecessary background WebSocket binding on port `24678` in accordance with sandbox runtime specifications.
+
+### Files Modified
+- `/freezer_inventory_tracker/vite.config.ts`
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.43.2] - 2026-09-26
+
+### Fixed
+- **Camera Permission & Sandbox White Screen Resolution (`index.html`, `index.tsx`, `vite.config.ts`, `OffSiteMovementScanner.tsx`, `MediaSelector.tsx`)**:
+  - Disabled `devOptions.enabled` in `vite.config.ts` and ensured active Service Workers are cleanly unregistered in development mode and sandboxed preview iframes (`window.self !== window.top`), eliminating stale module caching and unexpected syntax errors that caused intermittent white screens on page load.
+  - Eliminated all blocking `window.alert()` calls in `OffSiteMovementScanner.tsx`, replacing them with an inline, non-blocking camera error/alert banner with options to switch to Bluetooth/USB mode, retry, or open the app in a standalone tab.
+  - Added strict browser feature detection guards for `navigator.mediaDevices` and `navigator.mediaDevices.getUserMedia` across both `OffSiteMovementScanner.tsx` and `MediaSelector.tsx` to gracefully handle restricted iframe sandboxes without throwing unhandled exceptions.
+  - Added global `unhandledrejection` and `window.error` event interceptors in `index.tsx` to prevent async media/stream errors from unmounting React.
+  - Added a resilient fallback loading and recovery screen inside `<div id="root">` in `index.html` to eliminate white screens if script evaluation is ever delayed or interrupted.
+
+### Files Modified
+- `/freezer_inventory_tracker/index.html`
+- `/freezer_inventory_tracker/index.tsx`
+- `/freezer_inventory_tracker/vite.config.ts`
+- `/freezer_inventory_tracker/views/OffSiteMovementScanner.tsx`
+- `/freezer_inventory_tracker/components/MediaSelector.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.43.1] - 2026-09-25
+
+### Fixed
+- **Cloud Run ES Module Deployment Error & Path Resolution (`server.js`, `server.ts`, `freezer_inventory_tracker/server.ts`)**:
+  - Replaced legacy CommonJS syntax (`require('path')`) in root `/server.js` with native ES module imports (`import path from 'node:path'`), fixing the `ReferenceError: require is not defined in ES module scope` runtime error under Node 22 (`"type": "module"`).
+  - Added fallback transpilation and `tsx` execution in root `server.js` and `server.ts` to seamlessly launch unbuilt source files in development without falling through to extensionless ESM resolution errors.
+  - Corrected Vite root detection (`finalRoot`) and production static path (`distPath`) in `freezer_inventory_tracker/server.ts` by checking for `index.html` presence to avoid nested path concatenation (`/app/applet/freezer_inventory_tracker/freezer_inventory_tracker`).
+
+### Files Modified
+- `/server.js`
+- `/server.ts`
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.43.0] - 2026-09-25
+
+### Fixed
+- **PWA Service Worker Registration & Chrome/Safari Installability (`index.tsx`, `vite.config.ts`, `usePWAInstall.ts`, `PWAInstallButton.tsx`)**:
+  - Removed service worker unregistration logic on `run.app` / `localhost` domain checks in `index.tsx` that previously blocked Chrome/Edge PWA installability.
+  - Updated `vite.config.ts` PWA plugin configuration to enable development service worker support (`devOptions: { enabled: true, type: 'module' }`) and set standard root manifest identity paths (`id: '/'`, `start_url: '/'`, `scope: '/'`).
+  - Added iframe detection and direct window fallback capabilities to `usePWAInstall` hook and `PWAInstallButton` component so users in embedded preview / Home Assistant ingress windows can launch in a top-level tab to trigger native browser installation prompts (`beforeinstallprompt`).
+
+### Files Modified
+- `/freezer_inventory_tracker/vite.config.ts`
+- `/freezer_inventory_tracker/index.tsx`
+- `/freezer_inventory_tracker/hooks/usePWAInstall.ts`
+- `/freezer_inventory_tracker/components/PWAInstallButton.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.42.9] - 2026-09-25
+
+### Fixed
+- **Node 22 `createRequire` Compatibility & Vite Server Boot (`server.ts`, `freezer_inventory_tracker/server.ts`, `freezer_inventory_tracker/vite.config.ts`)**:
+  - Added a `module.createRequire` compatibility patch in `/server.ts` and `/freezer_inventory_tracker/server.ts` resolving relative paths (`'.'`) to `process.cwd()`.
+  - Resolved `[vite]` initialization error (`TypeError [ERR_INVALID_ARG_VALUE]: The argument 'filename' must be a file URL object, file URL string, or absolute path string. Received '.'`) caused by `vite-plugin-pwa` passing `'.'` to `createRequire` under Node 22's strict module loader.
+  - Set explicit `root: __dirname` and development base path `base: '/'` in `freezer_inventory_tracker/vite.config.ts` for clean Vite dev server integration.
+
+### Files Modified
+- `/server.ts`
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/vite.config.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.42.8] - 2026-09-25
+
+### Fixed
+- **AI Studio Deployment Pipeline & Full-Stack Entrypoint (`package.json`, `server.ts`, `.gitignore`)**:
+  - Configured `"start": "node server.ts"` and `"type": "module"` in root `package.json` to satisfy the AI Studio platform fullstack deployment contract (`node server.ts`).
+  - Added root `/server.ts` entrypoint leveraging native Node 22 TypeScript execution with seamless fallback resolution for compiled bundles (`dist/server.cjs`), nested submodule paths (`freezer_inventory_tracker/`), and development scripts.
+  - Removed `dist` from root `/.gitignore` so artifact upload tools that respect `.gitignore` rules preserve production build output.
+  - Updated root build script to populate both `./dist` and `./build` with production bundle assets (`index.html`, `assets/`, `server.cjs`, `manifest.webmanifest`, `sw.js`, and PWA icons).
+
+### Files Modified
+- `/server.ts`
+- `/.gitignore`
+- `/package.json`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.42.7] - 2026-09-25
+
+### Fixed
+- **Root Build Artifacts & Deployment Configuration (`package.json`, `server.js`, `freezer_inventory_tracker/package.json`)**:
+  - Configured root build workflow in `/package.json` and `/freezer_inventory_tracker/package.json` to ensure the production build outputs (`dist/` containing `index.html`, `assets/`, `server.cjs`, `manifest.webmanifest`, `sw.js`, and all PWA icons) are populated in both the root `/dist` directory and the submodule `dist/`.
+  - Added root `/server.js` production entrypoint resolving the bundled server artifact across container roots and nested add-on directories.
+  - Resolved AI Studio deployment upload error (`Build artifacts are empty`).
+
+### Files Modified
+- `/server.js`
+- `/package.json`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.42.6] - 2026-09-25
+
+### Fixed
+- **White Screen Recovery & React Error Boundary (`index.tsx`)**:
+  - Implemented `AppErrorBoundary` with recovery UI offering instant "Reload App" and "Clear Cache & Restart" (clearing localStorage, sessionStorage, IndexedDB, and unregistering broken service workers) to eliminate blank white screens.
+  - Automatically unregisters stale Service Workers in development preview / Cloud Run iframe environments (`hostname.includes('run.app') || isIframe`), preventing cached production assets from conflicting with the Vite dev server.
+- **Home Assistant Ingress Path Scope Guard (`index.html`)**:
+  - Restricted the trailing slash redirect to `/api/hassio_ingress/` paths only (`p.includes('/api/hassio_ingress/')`), preventing erroneous redirects on standalone URLs or direct paths like `/index.html` which previously mangled relative asset URLs.
+- **Production Asset Static Routing & Safe SW Fallback (`server.ts`)**:
+  - Added static asset middleware for `/assets` pointing directly to `dist/assets` so pre-cached production bundles resolve with correct JavaScript MIME types rather than returning HTML.
+  - Added a dedicated `/sw.js` route returning a self-unregistering script fallback when no production build exists, preventing browser `SyntaxError: Unexpected token '<'` when older service workers poll for updates.
+- **Defensive State Normalization & Collection Guards (`useInventory.ts`, `App.tsx`)**:
+  - Added `normalizeClientState` helper applied during IndexedDB hydration, action updates, and `fetchState` to guarantee all entity collections (`products`, `meatCuts`, `freezers`, `containers`, etc.) are always valid arrays.
+  - Guarded all `map`, `filter`, and `reduce` operations in `App.tsx` (`groupedCategories`, `primaryCategories`, `subCategoriesOfPrimary`, `filterFreezers`, `hasStagedItems`, `currentQuantityMap`, modal lookups) with default empty arrays.
+
+### Files Modified
+- `/freezer_inventory_tracker/index.html`
+- `/freezer_inventory_tracker/index.tsx`
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.42.5] - 2026-09-25
+
+### Fixed
+- **Iframe & Dev Service Worker Guard (`index.tsx`, `vite.config.ts`)**:
+  - Guarded PWA service worker registration against sandboxed iframe environments to prevent browser `SecurityError` and Vite WebSocket noise.
+  - Disabled Vite development mode SW emulation (`devOptions.enabled = false`) while retaining full production precaching and offline caching.
+
+### Files Modified
+- `/freezer_inventory_tracker/index.tsx`
+- `/freezer_inventory_tracker/vite.config.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.42.4] - 2026-09-25
+
+### Fixed
+- **Express 5 Path-To-Regexp Compatibility Fix (`server.ts`)**:
+  - Replaced wildcard `app.get('*/manifest.webmanifest', ...)` and `app.get('*all', ...)` with path-inspecting middleware (`req.path.endsWith('/manifest.webmanifest')`) and standard catch-all fallback middleware `app.use((req, res) => res.sendFile(...))`.
+  - Resolved `PathError: Missing parameter name at index 1` preventing Cloud Run deployment crash on container boot.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.42.3] - 2026-09-25
+
+### Added
+- **Generated Real 192x192 & 512x512 PNG PWA Icons & Server Manifest Route (`server.ts`, `public/`, `dist/`)**:
+  - Generated and bundled valid RGBA PNG icons (`pwa-192x192.png`, `pwa-512x512.png`, `pwa-maskable-512x512.png`, `apple-touch-icon.png`, `favicon.ico`) resolving Chrome's missing PNG icon requirement.
+  - Added dedicated server-side `/manifest.webmanifest` and `manifest.json` endpoint in `server.ts` with explicit `application/manifest+json` MIME type and public caching headers to ensure 100% reliable resolution across direct URLs, LAN access, and Home Assistant Ingress tokens.
+  - Added static public asset middleware serving all PWA icons directly from the persistent data and public folders.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/public/pwa-192x192.png`
+- `/freezer_inventory_tracker/public/pwa-512x512.png`
+- `/freezer_inventory_tracker/public/pwa-maskable-512x512.png`
+- `/freezer_inventory_tracker/public/apple-touch-icon.png`
+- `/freezer_inventory_tracker/public/favicon.ico`
+- `/freezer_inventory_tracker/public/icon.svg`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.42.2] - 2026-09-25
+
+### Added
+- **PWA Service Worker Registration & Relative Ingress Manifest Resolution (`index.tsx`, `index.html`, `vite.config.ts`, `LibraryView.tsx`)**:
+  - Registered the VitePWA Service Worker (`virtual:pwa-register`) on startup so modern browsers (Google Chrome, Edge, Safari) satisfy all PWA installability requirements instead of degrading to desktop shortcut mode.
+  - Converted manifest, favicon, and icon links to relative paths (`./manifest.webmanifest`, `./icon.svg`, `./apple-touch-icon.png`) to ensure reliable resolution within Home Assistant Ingress tokens.
+  - Restored and polished the "Offline App Installation & Browser Launch" card in the Settings tab (Catalog ➔ Settings) with direct URL copying, external browser launch, Android Chrome Intent triggering, and step-by-step PWA guides.
+
+### Files Modified
+- `/freezer_inventory_tracker/index.tsx`
+- `/freezer_inventory_tracker/index.html`
+- `/freezer_inventory_tracker/vite.config.ts`
+- `/freezer_inventory_tracker/views/LibraryView.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.42.0] - 2026-09-25
+
+### Added
+- **Full Progressive Web App (PWA) & Offline Resiliency Architecture**:
+  - **Service Worker & Manifest Integration (`vite.config.ts`, `index.html`)**: Integrated `vite-plugin-pwa` with auto-updating Service Worker, caching application bundle assets for instant 0-network boot in walk-in freezers, off-site warehouses, or disconnected environments.
+  - **Persistent Local IndexedDB Storage (`offlineStorage.ts`)**: Implemented browser-side IndexedDB caching (`freezer_inventory_offline_db`) for zero-latency app boots and background database updates with localStorage fallbacks.
+  - **Offline Mutation Queue & Background Auto-Sync (`useInventory.ts`, `offlineStorage.ts`)**: Built a robust FIFO action queue in IndexedDB. When disconnected from Home Assistant, mutations (quantity updates, box movements, barcode scans, staging changes, butcher records) are applied optimistically and queued locally. When network resumes, changes automatically drain and sync sequentially to the SQLite backend.
+  - **Offline Sync Badge & Install Prompt (`OfflineSyncBadge.tsx`, `PWAInstallButton.tsx`, `usePWAInstall.ts`, `useOnlineStatus.ts`)**: Added real-time connectivity status badges showing pending unsynced counts with manual sync triggers, alongside seamless PWA installation workflows for Android/desktop and iOS Safari home-screen guidance.
+  - **Home Assistant Ingress Compatibility**: Preserved 100% full compatibility with Home Assistant Ingress, web dashboard, and companion apps while enabling standalone PWA launch from home screens.
+
+### Files Modified
+- `/freezer_inventory_tracker/utils/offlineStorage.ts`
+- `/freezer_inventory_tracker/hooks/useOnlineStatus.ts`
+- `/freezer_inventory_tracker/hooks/usePWAInstall.ts`
+- `/freezer_inventory_tracker/components/OfflineSyncBadge.tsx`
+- `/freezer_inventory_tracker/components/PWAInstallButton.tsx`
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/vite.config.ts`
+- `/freezer_inventory_tracker/index.html`
+- `/freezer_inventory_tracker/tsconfig.json`
+- `/freezer_inventory_tracker/public/icon.svg`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.41.11] - 2026-09-23
+
+### Changed
+- **Added Star Icon to Inbound Receiving & Intake Forms (`UnifiedInboundMoveForm.tsx`, `AddForms.tsx`)**:
+  - Integrated the amber star icon (`Star` from `lucide-react`) next to display freezer names in the main Inbound Receiving / Intake workflow:
+    - Section 2A suggested consolidations and loose target badges.
+    - Section 2B target freezer selection buttons, selected header badges, and dropdown selector.
+  - Added star indicators to inline Container creation and Bulk Meat intake forms in `AddForms.tsx`.
+
+### Files Modified
+- `/freezer_inventory_tracker/components/UnifiedInboundMoveForm.tsx`
+- `/freezer_inventory_tracker/components/AddForms.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.41.10] - 2026-09-23
+
+### Changed
+- **Streamlined Display Case Indicator to Star Icon (`ProductView.tsx`, `DisplayCaseView.tsx`, `ProductQuickInfoModal.tsx`, `SearchableContainerSelect.tsx`, `MoveModalContent.tsx`)**:
+  - Replaced the text badge with a clean, compact amber star vector icon (`Star` from `lucide-react`) next to display freezer names (`freezer.isSpecial === true`).
+  - Applied across On-Site Products views, Storage Location rows, Display Case views, Product Quick Info modal breakdowns, Container search dropdowns, and Move modals.
+
+### Files Modified
+- `/freezer_inventory_tracker/views/ProductView.tsx`
+- `/freezer_inventory_tracker/views/DisplayCaseView.tsx`
+- `/freezer_inventory_tracker/components/ProductQuickInfoModal.tsx`
+- `/freezer_inventory_tracker/components/SearchableContainerSelect.tsx`
+- `/freezer_inventory_tracker/components/MoveModalContent.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.41.9] - 2026-09-23
+
+### Added
+- **Display Case Indication in On-Site Products View (`ProductView.tsx`, `DisplayCaseView.tsx`, `ProductQuickInfoModal.tsx`, `SearchableContainerSelect.tsx`, `MoveModalContent.tsx`)**:
+  - Added a distinct visual indicator badge (`🏪 Display`) next to freezer names for any freezer marked as a display case (`freezer.isSpecial === true`) in the On-Site Products section (`ProductLocationRow` and `StorageLocationRow`).
+  - Added matching display case indicator badges across Product Quick Info Modal location breakdowns, Move Modals, and Container selection dropdowns for unified visual clarity across the application.
+
+### Files Modified
+- `/freezer_inventory_tracker/views/ProductView.tsx`
+- `/freezer_inventory_tracker/views/DisplayCaseView.tsx`
+- `/freezer_inventory_tracker/components/ProductQuickInfoModal.tsx`
+- `/freezer_inventory_tracker/components/SearchableContainerSelect.tsx`
+- `/freezer_inventory_tracker/components/MoveModalContent.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.41.8] - 2026-09-21
+
+### Fixed
+- **Home Assistant Ingress User Identity Extraction for Connected Devices (`server.ts`, `App.tsx`, `useInventory.ts`)**:
+  - Enhanced server-side identity resolution in `extractUserFromReq` to prioritize authenticated Home Assistant Ingress headers (`x-remote-user-name`, `x-hass-user-name`, `x-ingress-user-name`, `x-remote-user`, `x-ingress-user`, `x-hass-user`, `x-forwarded-user`, `x-authentik-username`) over generic fallback values (`User`).
+  - Integrated `extractUserFromReq` across all real-time SSE stream connections (`/api/inventory/stream`), heartbeat pings (`/api/inventory/clients/heartbeat`), connected client listings (`/api/inventory/clients`), and lock management routes.
+  - Added `authenticatedUser` propagation in SSE `init` event and client polling responses, automatically synchronizing user credentials with client-side `localStorage` and audit history logs.
+  - Enhanced client registration in `registerOrTouchClient` and `getConnectedClientsSummary` to display true authenticated user names rather than generic "User" placeholders in the Connected Devices modal.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
 ### [2.41.7] - 2026-09-20
 
 ### Fixed

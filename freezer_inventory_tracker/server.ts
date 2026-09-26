@@ -2,6 +2,21 @@ import express from 'express';
 import compression from 'compression';
 import path from 'path';
 import fs from 'fs';
+import module from 'module';
+
+// Safely resolve app directory across ESM and CJS runtime bundles
+const appDirname = typeof __dirname !== 'undefined' ? __dirname : process.cwd();
+
+// Polyfill/patch createRequire for Node 22 compatibility where relative path '.' causes ERR_INVALID_ARG_VALUE in vite-plugin-pwa
+if (module.createRequire) {
+  const originalCreateRequire = module.createRequire;
+  module.createRequire = function (filename: string | URL) {
+    if (typeof filename === 'string' && !path.isAbsolute(filename) && !filename.startsWith('file://')) {
+      filename = path.resolve(process.cwd(), filename);
+    }
+    return originalCreateRequire.call(this, filename);
+  };
+}
 import crypto from 'crypto';
 import AdmZip from 'adm-zip';
 import Database from 'better-sqlite3';
@@ -36,6 +51,103 @@ app.use((req, res, next) => {
       if (!req.url.startsWith('/')) {
         req.url = '/' + req.url;
       }
+    }
+  }
+  next();
+});
+
+// Top-level PWA Manifest endpoint with full CORS and compliance standards
+const pwaManifestData = {
+  id: "/",
+  name: "Freezer Inventory Tracker",
+  short_name: "FreezerApp",
+  description: "Comprehensive freezer, butcher processing, and off-site cold storage inventory tracker with QR scanning.",
+  start_url: "/",
+  scope: "/",
+  display: "standalone",
+  display_override: ["standalone", "minimal-ui", "window-controls-overlay"],
+  orientation: "any",
+  theme_color: "#0f172a",
+  background_color: "#0f172a",
+  categories: ["utilities", "productivity", "food"],
+  icons: [
+    {
+      src: "/pwa-192x192.png",
+      sizes: "192x192",
+      type: "image/png",
+      purpose: "any"
+    },
+    {
+      src: "/pwa-512x512.png",
+      sizes: "512x512",
+      type: "image/png",
+      purpose: "any"
+    },
+    {
+      src: "/pwa-maskable-512x512.png",
+      sizes: "512x512",
+      type: "image/png",
+      purpose: "maskable"
+    },
+    {
+      src: "/apple-touch-icon.png",
+      sizes: "192x192",
+      type: "image/png",
+      purpose: "any"
+    },
+    {
+      src: "/favicon.ico",
+      sizes: "192x192",
+      type: "image/png",
+      purpose: "any"
+    },
+    {
+      src: "/icon.svg",
+      sizes: "any",
+      type: "image/svg+xml",
+      purpose: "any"
+    }
+  ],
+  shortcuts: [
+    {
+      name: "Search Inventory",
+      short_name: "Search",
+      description: "Search cuts and containers",
+      url: "/?view=inventory",
+      icons: [{ src: "/pwa-192x192.png", sizes: "192x192" }]
+    },
+    {
+      name: "Scan QR Code",
+      short_name: "Scan",
+      description: "Scan QR code",
+      url: "/?view=scan",
+      icons: [{ src: "/pwa-192x192.png", sizes: "192x192" }]
+    }
+  ]
+};
+
+// Explicit Service Worker and PWA Manifest handler supporting both direct root and nested ingress paths
+app.use((req, res, next) => {
+  const p = req.path;
+  if (p.endsWith('/manifest.json') || p.endsWith('/manifest.webmanifest') || p.endsWith('/site.webmanifest')) {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Cache-Control', 'public, max-age=0, must-revalidate');
+    return res.type('application/manifest+json; charset=utf-8').send(JSON.stringify(pwaManifestData, null, 2));
+  }
+  if (p.endsWith('/sw.js')) {
+    const swPaths = [
+      path.join(process.cwd(), 'public', 'sw.js'),
+      path.join(appDirname, 'public', 'sw.js'),
+      path.join(process.cwd(), 'freezer_inventory_tracker', 'public', 'sw.js')
+    ];
+    let swFile = swPaths.find(p => fs.existsSync(p));
+    if (swFile) {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+      res.setHeader('Service-Worker-Allowed', '/');
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      return res.sendFile(swFile);
     }
   }
   next();
@@ -94,6 +206,75 @@ if (!fs.existsSync(UPLOADS_DIR)) {
 app.use('/uploads', express.static(UPLOADS_DIR));
 app.use('/images', express.static(UPLOADS_DIR));
 app.use('/photos', express.static(UPLOADS_DIR));
+
+// Public PWA assets & icons static serving
+const APP_PUBLIC_DIR = path.join(process.cwd(), 'public');
+const LOCAL_PUBLIC_DIR = path.join(process.cwd(), 'freezer_inventory_tracker', 'public');
+if (fs.existsSync(APP_PUBLIC_DIR)) app.use(express.static(APP_PUBLIC_DIR));
+if (fs.existsSync(LOCAL_PUBLIC_DIR)) app.use(express.static(LOCAL_PUBLIC_DIR));
+
+// Production dist assets serving (ensures pre-cached production bundles resolve even in dev server mode)
+const APP_DIST_ASSETS = path.join(process.cwd(), 'dist', 'assets');
+const LOCAL_DIST_ASSETS = path.join(process.cwd(), 'freezer_inventory_tracker', 'dist', 'assets');
+if (fs.existsSync(APP_DIST_ASSETS)) app.use('/assets', express.static(APP_DIST_ASSETS));
+if (fs.existsSync(LOCAL_DIST_ASSETS)) app.use('/assets', express.static(LOCAL_DIST_ASSETS));
+
+// Dedicated Service Worker endpoint ensuring JavaScript MIME type
+app.get('/sw.js', (req, res) => {
+  const swPaths = [
+    path.join(process.cwd(), 'dist', 'sw.js'),
+    path.join(process.cwd(), 'freezer_inventory_tracker', 'dist', 'sw.js')
+  ];
+  for (const swPath of swPaths) {
+    if (fs.existsSync(swPath)) {
+      res.setHeader('Content-Type', 'application/javascript');
+      return res.sendFile(swPath);
+    }
+  }
+  res.setHeader('Content-Type', 'application/javascript');
+  return res.send(`self.addEventListener('install', () => self.skipWaiting()); self.addEventListener('activate', () => self.registration.unregister());`);
+});
+
+// Direct PWA Web Manifest endpoint ensuring correct MIME type and valid icons across all routes
+app.use((req, res, next) => {
+  if (req.path.endsWith('/manifest.webmanifest') || req.path.endsWith('/manifest.json')) {
+    res.setHeader('Content-Type', 'application/manifest+json');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    return res.json({
+      id: 'freezer-inventory-tracker-pwa',
+      name: 'Freezer Inventory Tracker',
+      short_name: 'FreezerApp',
+      description: 'Comprehensive freezer, butcher processing, and off-site cold storage inventory tracker with QR scanning.',
+      theme_color: '#0f172a',
+      background_color: '#0f172a',
+      display: 'standalone',
+      orientation: 'any',
+      start_url: './',
+      scope: './',
+      icons: [
+        {
+          src: 'pwa-192x192.png',
+          sizes: '192x192',
+          type: 'image/png',
+          purpose: 'any'
+        },
+        {
+          src: 'pwa-512x512.png',
+          sizes: '512x512',
+          type: 'image/png',
+          purpose: 'any'
+        },
+        {
+          src: 'pwa-maskable-512x512.png',
+          sizes: '512x512',
+          type: 'image/png',
+          purpose: 'maskable'
+        }
+      ]
+    });
+  }
+  next();
+});
 
 // Read-Only Live Preview Guard Middleware
 app.use('/api', (req, res, next) => {
@@ -6169,7 +6350,7 @@ function registerOrTouchClient(
   if (!client) {
     client = {
       id: clientId,
-      userName: options?.userName || 'User',
+      userName: options?.userName || 'Home Assistant',
       device,
       browser,
       clientDevice,
@@ -6184,7 +6365,7 @@ function registerOrTouchClient(
     activeClients.set(clientId, client);
   } else {
     client.lastActive = now;
-    if (options?.userName && options.userName !== 'User') {
+    if (options?.userName && (client.userName === 'User' || client.userName === 'Home Assistant' || (options.userName !== 'User' && options.userName !== 'Home Assistant'))) {
       client.userName = options.userName;
     }
     if (zone) {
@@ -6233,7 +6414,7 @@ function getConnectedClientsSummary() {
   cleanStaleClients();
   return Array.from(activeClients.values()).map(c => ({
     id: c.id,
-    userName: c.userName || 'User',
+    userName: c.userName || 'Home Assistant',
     device: c.device || 'Desktop',
     browser: c.browser || 'Browser',
     clientDevice: c.clientDevice || (c.device?.includes('Home Assistant') ? 'HA Companion App' : (c.device?.includes('iPhone') || c.device?.includes('Android') || c.device?.includes('iPad') ? 'Mobile Browser' : 'Desktop Browser')),
@@ -6494,7 +6675,7 @@ app.get('/api/operating-mode/status', (req, res) => {
 
 app.post('/api/operating-mode/set', (req, res) => {
   const clientId = (req.headers['x-client-id'] as string) || req.body.clientId;
-  const userName = (req.headers['x-user-name'] as string) || req.body.userName || 'User';
+  const userName = extractUserFromReq(req);
   const zone = ((req.headers['x-client-zone'] as string) || req.body.zone || req.body.scope || 'onsite') as 'onsite' | 'offsite' | 'all';
   const { mode } = req.body || {};
 
@@ -6586,7 +6767,7 @@ app.post('/api/operating-mode/set', (req, res) => {
 
 app.post('/api/single-user/claim', (req, res) => {
   const clientId = (req.headers['x-client-id'] as string) || req.body.clientId;
-  const userName = (req.headers['x-user-name'] as string) || req.body.userName || 'User';
+  const userName = extractUserFromReq(req);
   const clientZone = ((req.headers['x-client-zone'] as string) || 'onsite') as 'onsite' | 'offsite';
   const scope: 'all' | 'onsite' | 'offsite' = req.body.scope || (clientZone === 'offsite' ? 'offsite' : 'onsite');
 
@@ -6774,7 +6955,7 @@ app.post('/api/single-user/force-release', (req, res) => {
 app.post('/api/single-user/request-break-in', (req, res) => {
   checkSingleUserLockStaleness();
   const clientId = (req.headers['x-client-id'] as string) || req.body.clientId;
-  const userName = (req.headers['x-user-name'] as string) || req.body.userName || 'Another User';
+  const userName = extractUserFromReq(req);
   const clientZone = ((req.headers['x-client-zone'] as string) || req.body.zone || req.body.scope || 'onsite') as 'onsite' | 'offsite';
 
   const targetLock = getActiveSingleUserLockForScope(clientZone);
@@ -6919,7 +7100,7 @@ app.get('/api/inventory/stream', (req: any, res: any) => {
   }
 
   const clientId = (req.query.clientId as string) || (req.headers['x-client-id'] as string) || String(Date.now() + Math.random());
-  const userName = (req.query.userName as string) || (req.headers['x-user-name'] as string) || 'User';
+  const userName = extractUserFromReq(req);
   const userAgent = (req.headers['user-agent'] as string) || '';
   const clientDevice = (req.query.clientDevice as string) || (req.headers['x-client-device'] as string) || '';
   const clientInfo = (req.query.clientInfo as string) || (req.headers['x-client-info'] as string) || '';
@@ -6939,10 +7120,11 @@ app.get('/api/inventory/stream', (req: any, res: any) => {
   const targetLock = getActiveSingleUserLockForScope(clientZone);
   const targetForcedMulti = getActiveForcedMultiForScope(clientZone);
 
-  // Send initial load details including current single user lock status, active client count, zone counts, and clients list
+  // Send initial load details including current single user lock status, active client count, zone counts, clients list, and resolved user identity
   res.write(`data: ${JSON.stringify({ 
     type: 'init', 
     version: currentVersion, 
+    authenticatedUser: userName,
     lock: targetLock,
     locks: { ...singleUserLocks },
     forcedMulti: targetForcedMulti,
@@ -7007,7 +7189,7 @@ app.get('/api/inventory/stream', (req: any, res: any) => {
 // Endpoint for active client heartbeat ping (sent every 4s while client is visible)
 app.post('/api/inventory/clients/heartbeat', (req, res) => {
   const reqClientId = (req.headers['x-client-id'] as string) || req.body?.clientId || (req.query?.clientId as string);
-  const userName = (req.headers['x-user-name'] as string) || req.body?.userName || (req.query?.userName as string);
+  const userName = extractUserFromReq(req);
   const userAgent = (req.headers['user-agent'] as string) || '';
   const clientDevice = (req.headers['x-client-device'] as string) || req.body?.clientDevice || (req.query?.clientDevice as string) || '';
   const clientInfo = (req.headers['x-client-info'] as string) || req.body?.clientInfo || (req.query?.clientInfo as string) || '';
@@ -7029,7 +7211,7 @@ app.post('/api/inventory/clients/heartbeat', (req, res) => {
 
   checkSingleUserLockStaleness();
   checkForcedMultiStaleness();
-  res.json({ success: true, count: getActiveClientCount(), zoneCounts: getZoneClientCounts() });
+  res.json({ success: true, count: getActiveClientCount(), zoneCounts: getZoneClientCounts(), authenticatedUser: userName });
 });
 
 // Periodic background cleanup: prunes inactive clients every 3 seconds and broadcasts updates
@@ -7072,7 +7254,7 @@ app.post('/api/inventory/clients/leave', (req, res) => {
 // Endpoint to fetch active connected clients
 app.get('/api/inventory/clients', (req, res) => {
   const reqClientId = (req.headers['x-client-id'] as string) || (req.query.clientId as string);
-  const userName = (req.headers['x-user-name'] as string) || (req.query.userName as string);
+  const userName = extractUserFromReq(req);
   const userAgent = (req.headers['user-agent'] as string) || '';
   const clientDevice = (req.headers['x-client-device'] as string) || (req.query.clientDevice as string) || '';
   const clientInfo = (req.headers['x-client-info'] as string) || (req.query.clientInfo as string) || '';
@@ -7103,6 +7285,7 @@ app.get('/api/inventory/clients', (req, res) => {
     clients: summary, 
     count, 
     zoneCounts, 
+    authenticatedUser: userName,
     lock: getActiveSingleUserLockForScope(clientZone),
     locks: { ...singleUserLocks },
     forcedMulti: getActiveForcedMultiForScope(clientZone),
@@ -7230,36 +7413,57 @@ app.post('/api/notifications/clear-logs', async (req, res) => {
 });
 
 function extractUserFromReq(req: any): string {
-  const possibleUser = 
-    req.body?.action?.user ||
-    req.body?.user ||
-    req.headers['x-user-name'] ||
-    req.headers['x-app-user'] ||
-    req.headers['x-remote-user-name'] ||
-    req.headers['x-hass-user-name'] ||
-    req.headers['x-ingress-user-name'] ||
-    req.headers['x-remote-user'] ||
-    req.headers['x-ingress-user'] ||
-    req.headers['x-hass-user'] ||
-    req.headers['x-forwarded-user'] ||
-    req.headers['x-authentik-username'] ||
-    'Home Assistant';
+  // 1. Prioritize authenticated Ingress / reverse proxy headers provided by Home Assistant core or authentication proxies
+  const ingressUser =
+    req?.headers?.['x-remote-user-name'] ||
+    req?.headers?.['x-hass-user-name'] ||
+    req?.headers?.['x-ingress-user-name'] ||
+    req?.headers?.['x-remote-user'] ||
+    req?.headers?.['x-ingress-user'] ||
+    req?.headers?.['x-hass-user'] ||
+    req?.headers?.['x-forwarded-user'] ||
+    req?.headers?.['x-authentik-username'] ||
+    req?.headers?.['x-authentik-name'] ||
+    req?.headers?.['x-app-user'];
 
-  let userStr = String(possibleUser || '').trim();
-  if (userStr.startsWith('@')) {
-    userStr = userStr.substring(1).trim();
+  if (ingressUser && String(ingressUser).trim() && String(ingressUser).trim() !== 'User') {
+    let clean = String(ingressUser).trim();
+    if (clean.startsWith('@')) clean = clean.substring(1).trim();
+    if (clean) return clean;
   }
-  return userStr || 'Home Assistant';
+
+  // 2. Client-provided explicit user name from custom headers or payload (ignore generic fallback 'User')
+  const clientUser =
+    req?.headers?.['x-user-name'] ||
+    req?.body?.action?.user ||
+    req?.body?.userName ||
+    req?.body?.user ||
+    req?.query?.userName;
+
+  if (clientUser && String(clientUser).trim() && String(clientUser).trim() !== 'User') {
+    let clean = String(clientUser).trim();
+    if (clean.startsWith('@')) clean = clean.substring(1).trim();
+    if (clean) return clean;
+  }
+
+  // 3. If ingress had 'User' or generic fallback, check ingress again
+  if (ingressUser && String(ingressUser).trim()) {
+    let clean = String(ingressUser).trim();
+    if (clean.startsWith('@')) clean = clean.substring(1).trim();
+    if (clean) return clean;
+  }
+
+  return 'Home Assistant';
 }
 
 function extractClientInfoFromReq(req: any): { clientDevice: string; clientInfo: string } {
-  const userAgent = (req.headers['user-agent'] as string) || '';
-  const headerDevice = (req.headers['x-client-device'] as string) ||
-                       req.body?.clientDevice ||
-                       req.body?.action?.clientDevice;
-  const headerInfo = (req.headers['x-client-info'] as string) ||
-                     req.body?.clientInfo ||
-                     req.body?.action?.clientInfo;
+  const userAgent = (req?.headers?.['user-agent'] as string) || '';
+  const headerDevice = (req?.headers?.['x-client-device'] as string) ||
+                       req?.body?.clientDevice ||
+                       req?.body?.action?.clientDevice;
+  const headerInfo = (req?.headers?.['x-client-info'] as string) ||
+                     req?.body?.clientInfo ||
+                     req?.body?.action?.clientInfo;
 
   const parsed = parseUserAgentInfo(userAgent, headerDevice, headerInfo);
   return {
@@ -11853,21 +12057,35 @@ async function startServer() {
   // Vite development integration when not running in production
   if (process.env.NODE_ENV !== "production") {
     const { createServer: createViteServer } = await import('vite');
-    const appDir = path.join(process.cwd(), 'freezer_inventory_tracker');
-    const finalRoot = fs.existsSync(appDir) ? appDir : process.cwd();
+    let finalRoot = process.cwd();
+    if (fs.existsSync(path.join(appDirname, 'index.html'))) {
+      finalRoot = appDirname;
+    } else if (fs.existsSync(path.join(process.cwd(), 'freezer_inventory_tracker', 'index.html'))) {
+      finalRoot = path.join(process.cwd(), 'freezer_inventory_tracker');
+    }
+    const configFilePath = path.join(finalRoot, 'vite.config.ts');
     const vite = await createViteServer({
       root: finalRoot,
-      server: { middlewareMode: true },
+      configFile: fs.existsSync(configFilePath) ? configFilePath : false,
+      server: { 
+        middlewareMode: true,
+        hmr: false,
+        ws: false as any
+      },
       appType: "spa",
     });
     app.use(vite.middlewares);
   } else {
     let distPath = path.join(process.cwd(), 'dist');
-    if (!fs.existsSync(distPath)) {
-      distPath = path.join(process.cwd(), 'freezer_inventory_tracker', 'dist');
+    if (!fs.existsSync(distPath) || !fs.existsSync(path.join(distPath, 'index.html'))) {
+      if (fs.existsSync(path.join(appDirname, 'dist', 'index.html'))) {
+        distPath = path.join(appDirname, 'dist');
+      } else if (fs.existsSync(path.join(process.cwd(), 'freezer_inventory_tracker', 'dist', 'index.html'))) {
+        distPath = path.join(process.cwd(), 'freezer_inventory_tracker', 'dist');
+      }
     }
     app.use(express.static(distPath));
-    app.get('*all', (req, res) => {
+    app.use((req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }

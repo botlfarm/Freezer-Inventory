@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, FileText } from 'lucide-react';
+import { X, FileText, Star } from 'lucide-react';
 import { InventoryState, Action } from '../types';
 
 interface ProductQuickInfoModalProps {
@@ -84,6 +84,7 @@ export const ProductQuickInfoModal: React.FC<ProductQuickInfoModalProps> = ({
     const freezer = container ? state.freezers?.find((f: any) => f.id === container.freezerId) : null;
     return {
       freezerName: freezer ? freezer.name : 'Unplaced',
+      isDisplay: Boolean(freezer?.isSpecial),
       containerName: container ? container.name : 'Unknown Container',
       containerId: container?.id || '',
       quantity: mc.quantity || 0,
@@ -368,14 +369,28 @@ export const ProductQuickInfoModal: React.FC<ProductQuickInfoModalProps> = ({
                               (window as any).__navigateToLocation('on-site', item.containerId);
                             }
                           }}
-                          className="font-semibold text-cyan-400 hover:text-cyan-300 hover:underline cursor-pointer text-left truncate mr-2 flex items-center gap-1 group"
+                          className="font-semibold text-cyan-400 hover:text-cyan-300 hover:underline cursor-pointer text-left truncate mr-2 flex items-center gap-1 group flex-wrap"
                           title={`Click to jump to ${item.containerName} on-site`}
                         >
-                          ❄️ {item.freezerName} › <span className="font-bold text-cool-gray-200 group-hover:text-cyan-300">{item.containerName}</span>
+                          <span className="flex items-center gap-1">
+                            <span>❄️ {item.freezerName}</span>
+                            {item.isDisplay && (
+                              <Star className="w-3 h-3 text-amber-400 fill-amber-400 shrink-0 inline" title="Display Case" />
+                            )}
+                          </span>
+                          <span className="text-cool-gray-500">›</span>
+                          <span className="font-bold text-cool-gray-200 group-hover:text-cyan-300">{item.containerName}</span>
                         </button>
                       ) : (
-                        <span className="font-semibold text-cool-gray-300 truncate mr-2" title={`${item.freezerName} › ${item.containerName}`}>
-                          ❄️ {item.freezerName} › <span className="text-cool-gray-200">{item.containerName}</span>
+                        <span className="font-semibold text-cool-gray-300 truncate mr-2 flex items-center gap-1 flex-wrap" title={`${item.freezerName} › ${item.containerName}`}>
+                          <span className="flex items-center gap-1">
+                            <span>❄️ {item.freezerName}</span>
+                            {item.isDisplay && (
+                              <Star className="w-3 h-3 text-amber-400 fill-amber-400 shrink-0 inline" title="Display Case" />
+                            )}
+                          </span>
+                          <span className="text-cool-gray-500">›</span>
+                          <span className="text-cool-gray-200">{item.containerName}</span>
                         </span>
                       )}
                       <span className="font-mono font-bold text-cool-gray-100 shrink-0 bg-cool-gray-800 px-1.5 py-0.5 rounded">

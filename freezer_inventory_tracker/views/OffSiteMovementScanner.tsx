@@ -19,7 +19,8 @@ import {
   CheckCircle2, 
   AlertTriangle, 
   Loader2,
-  Barcode
+  Barcode,
+  ExternalLink
 } from 'lucide-react';
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
 import { MovementOrder, MovementItem } from '../types';
@@ -256,6 +257,7 @@ export const OffSiteMovementScanner = ({
   const [scannerMode, setScannerMode] = useState<'bluetooth' | 'camera'>('bluetooth');
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [cameraLoading, setCameraLoading] = useState(false);
+  const [cameraErrorMessage, setCameraErrorMessage] = useState<string | null>(null);
   const html5QrcodeRef = useRef<Html5Qrcode | null>(null);
 
   // Focus ref for Bluetooth input capture
@@ -812,11 +814,21 @@ export const OffSiteMovementScanner = ({
     globalScanBufferRef.current = '';
   };
 
-  // HTML5-QRCode Video Camera Scanning Setup
+  // HTML5-QRCode Video Camera Scanning Setup (Resilient, Alert-Free for Iframe Sandboxes)
   const startCameraScanner = async () => {
+    setCameraErrorMessage(null);
+
     // Prevent starting if already active or already loading
     if (cameraLoading || isCameraActive) {
       console.warn('Camera scanner is already loading or active.');
+      return;
+    }
+
+    // Check if mediaDevices API is supported in this browser context
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setCameraErrorMessage(
+        'Camera API (navigator.mediaDevices.getUserMedia) is not supported or is blocked in this browser/sandbox context. Use Bluetooth/USB Scanner mode or open the app in a standalone tab.'
+      );
       return;
     }
 
@@ -840,21 +852,31 @@ export const OffSiteMovementScanner = ({
 
       const viewfinder = document.getElementById('camera-scanner-viewfinder');
       if (!viewfinder) {
-        throw new Error('Viewfinder element #camera-scanner-viewfinder not found in DOM.');
+        throw new Error('Viewfinder container element not found in DOM.');
       }
 
       // Clear the viewfinder element to ensure no duplicated nodes are left over
       viewfinder.innerHTML = '';
 
-      const cameras = await Html5Qrcode.getCameras();
+      let cameras: any[] = [];
+      try {
+        cameras = await Html5Qrcode.getCameras();
+      } catch (enumErr: any) {
+        throw new Error(
+          enumErr?.message?.includes('Permission') || enumErr?.name === 'NotAllowedError'
+            ? 'Camera access permission was denied or restricted by this iframe sandbox. Please allow camera permissions or use Bluetooth scanner mode.'
+            : `Unable to access camera devices: ${enumErr?.message || enumErr}`
+        );
+      }
+
       if (!cameras || cameras.length === 0) {
-        alert('No video camera devices found on this hardware.');
+        setCameraErrorMessage('No video camera devices found on this hardware.');
         setCameraLoading(false);
         return;
       }
 
       // Prefer back camera if available
-      const backCamera = cameras.find(c => 
+      const backCamera = cameras.find((c: any) => 
         c.label.toLowerCase().includes('back') || 
         c.label.toLowerCase().includes('environment')
       );
@@ -891,18 +913,25 @@ export const OffSiteMovementScanner = ({
         (decodedText) => {
           processBarcodeString(decodedText);
         },
-        (errorMessage) => {
+        () => {
           // Silently ignore frame-level failure logs
         }
       );
 
       setIsCameraActive(true);
+      setCameraErrorMessage(null);
     } catch (cameraErr: any) {
-      console.error('Error starting video stream:', cameraErr);
-      // Clean up ref if start failed
-      html5QrcodeRef.current = null;
+      console.warn('Error starting video stream:', cameraErr);
+      if (html5QrcodeRef.current) {
+        try {
+          await html5QrcodeRef.current.stop();
+        } catch (_) {}
+        html5QrcodeRef.current = null;
+      }
       setIsCameraActive(false);
-      alert(`Camera Access Failed: ${cameraErr.message || cameraErr}`);
+      setCameraErrorMessage(
+        cameraErr?.message || 'Camera access failed or was blocked by sandbox permissions. You can use Bluetooth/USB scanner input mode instead.'
+      );
     } finally {
       setCameraLoading(false);
     }
@@ -913,7 +942,7 @@ export const OffSiteMovementScanner = ({
       try {
         await html5QrcodeRef.current.stop();
       } catch (err) {
-        console.error('Error stopping QR scanner:', err);
+        console.warn('Error stopping QR scanner:', err);
       } finally {
         html5QrcodeRef.current = null;
       }
@@ -930,7 +959,8 @@ export const OffSiteMovementScanner = ({
   useEffect(() => {
     return () => {
       if (html5QrcodeRef.current) {
-        html5QrcodeRef.current.stop().catch(err => console.error('Cleanup stop failed', err));
+        html5QrcodeRef.current.stop().catch(err => console.warn('Cleanup stop failed:', err));
+        html5QrcodeRef.current = null;
       }
     };
   }, []);
@@ -1491,6 +1521,50 @@ export const OffSiteMovementScanner = ({
                     <div className="text-xs text-cool-gray-400">
                       Use your tablet or device camera to parse standard barcode labels on containers.
                     </div>
+
+                    {cameraErrorMessage && (
+                      <div className="p-3.5 bg-amber-950/40 border border-amber-800/60 rounded-xl space-y-2 text-left animate-fade-in">
+                        <div className="flex items-start gap-2.5 text-amber-300 text-xs font-semibold">
+                          <AlertTriangle className="w-4 h-4 shrink-0 text-amber-400 mt-0.5" />
+                          <div className="flex-1 space-y-1">
+                            <p>{cameraErrorMessage}</p>
+                            <p className="text-[11px] text-amber-400/80 font-normal">
+                              In sandboxed iframes or restricted browsers, camera streams may be blocked. You can use standard Bluetooth/USB barcode scanner input or open the app in a standalone tab.
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2 pt-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setCameraErrorMessage(null);
+                              setScannerMode('bluetooth');
+                            }}
+                            className="px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-1.5"
+                          >
+                            <Barcode size={13} />
+                            <span>Switch to Bluetooth / USB Mode</span>
+                          </button>
+                          {typeof window !== 'undefined' && window.self !== window.top && (
+                            <button
+                              type="button"
+                              onClick={() => window.open(window.location.href, '_blank', 'noopener,noreferrer')}
+                              className="px-3 py-1.5 bg-cool-gray-850 hover:bg-cool-gray-750 text-cyan-400 border border-cyan-700/40 rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-1.5"
+                            >
+                              <ExternalLink size={13} />
+                              <span>Open in New Tab</span>
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={startCameraScanner}
+                            className="px-3 py-1.5 bg-cool-gray-800 hover:bg-cool-gray-700 text-cool-gray-300 rounded-lg text-xs font-medium transition cursor-pointer"
+                          >
+                            Retry Camera
+                          </button>
+                        </div>
+                      </div>
+                    )}
 
                     <div className="relative bg-cool-gray-900 rounded-xl overflow-hidden border border-cool-gray-700 max-w-lg mx-auto shadow-inner">
                       <div id="camera-scanner-viewfinder" className="w-full h-64 bg-black" />

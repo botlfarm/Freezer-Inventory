@@ -2,6 +2,16 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { InventoryState, Action, UndoSnapshotItem, OperatingMode, ConnectedClientInfo, ForcedMultiUser, OperationalZone, ZoneClientCounts, View, getOperationalZone } from '../types';
 import { getApiUrl, fetchWithRetry } from './apiUrl';
 import { getClientAuditHeaders } from '../utils/clientDevice';
+import {
+  saveCachedState,
+  getCachedState,
+  enqueueOfflineAction,
+  getOfflineQueue,
+  removeOfflineAction,
+  getOfflineQueueCount,
+  getCachedStateTimestamp
+} from '../utils/offlineStorage';
+import { useOnlineStatus } from './useOnlineStatus';
 
 export type { OperatingMode, ForcedMultiUser, OperationalZone, ZoneClientCounts };
 
@@ -141,6 +151,33 @@ function reconcileStateReferences(
   return result;
 }
 
+export const normalizeClientState = (s: any): InventoryState => {
+  if (!s || typeof s !== 'object') return defaultInitialState;
+  return {
+    ...defaultInitialState,
+    ...s,
+    freezers: Array.isArray(s.freezers) ? s.freezers : [],
+    containers: Array.isArray(s.containers) && s.containers.length > 0 ? s.containers : defaultInitialState.containers,
+    containerTemplates: Array.isArray(s.containerTemplates) ? s.containerTemplates : [],
+    products: Array.isArray(s.products) ? s.products : [],
+    categories: Array.isArray(s.categories) ? s.categories : [],
+    meatCuts: Array.isArray(s.meatCuts) ? s.meatCuts : [],
+    history: Array.isArray(s.history) ? s.history : [],
+    offSiteEntries: Array.isArray(s.offSiteEntries) ? s.offSiteEntries : [],
+    pallets: Array.isArray(s.pallets) ? s.pallets : [],
+    boxes: Array.isArray(s.boxes) ? s.boxes : [],
+    butcherOrders: Array.isArray(s.butcherOrders) ? s.butcherOrders : [],
+    butcherRecords: Array.isArray(s.butcherRecords) ? s.butcherRecords : [],
+    customLists: Array.isArray(s.customLists) ? s.customLists : [],
+    tags: Array.isArray(s.tags) ? s.tags : [],
+    locations: Array.isArray(s.locations) ? s.locations : [],
+    movementOrders: Array.isArray(s.movementOrders) ? s.movementOrders : [],
+    notificationSettings: Array.isArray(s.notificationSettings) && s.notificationSettings.length > 0 ? s.notificationSettings : defaultInitialState.notificationSettings,
+    notificationLogs: Array.isArray(s.notificationLogs) ? s.notificationLogs : [],
+    appConfig: Array.isArray(s.appConfig) ? s.appConfig : []
+  };
+};
+
 export const useInventory = (activeView: View = 'product') => {
   const activeZone = useMemo<OperationalZone>(() => getOperationalZone(activeView), [activeView]);
   const activeViewRef = useRef<View>(activeView);
@@ -189,6 +226,39 @@ export const useInventory = (activeView: View = 'product') => {
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [isPendingSync, setIsPendingSync] = useState<boolean>(false);
   const [isUndoing, setIsUndoing] = useState<boolean>(false);
+
+  // Offline and PWA Resiliency States
+  const isOnline = useOnlineStatus();
+  const [offlineQueueCount, setOfflineQueueCount] = useState<number>(0);
+  const [isSyncingOfflineQueue, setIsSyncingOfflineQueue] = useState<boolean>(false);
+  const isSyncingOfflineQueueRef = useRef<boolean>(false);
+  const [lastSyncTime, setLastSyncTime] = useState<number | null>(null);
+
+  // 0ms Instant App Boot: Hydrate from persistent IndexedDB immediately on mount
+  useEffect(() => {
+    let isMounted = true;
+    (async () => {
+      try {
+        const cached = await getCachedState();
+        if (cached && isMounted && !hasLoadedInitial) {
+          const normalized = normalizeClientState(cached);
+          stateRef.current = normalized;
+          setState(normalized);
+          setIsLoading(false);
+          setHasLoadedInitial(true);
+        }
+        const timestamp = await getCachedStateTimestamp();
+        if (isMounted && timestamp) {
+          setLastSyncTime(timestamp);
+        }
+        const count = await getOfflineQueueCount();
+        if (isMounted) {
+          setOfflineQueueCount(count);
+        }
+      } catch (e) {}
+    })();
+    return () => { isMounted = false; };
+  }, [hasLoadedInitial]);
 
   const [isCollaborativeMode, setIsCollaborativeModeState] = useState<boolean>(false);
   const isCollaborativeModeRef = useRef<boolean>(false);
@@ -475,7 +545,8 @@ export const useInventory = (activeView: View = 'product') => {
 
           // Merge any pending or in-flight local quantity updates on top of updatedState to prevent race overwrites
           const affectedTables = (updatedState as any)?._affectedTables;
-          let finalState = reconcileStateReferences(stateRef.current, updatedState, affectedTables);
+          const normalizedUpdatedState = normalizeClientState(updatedState);
+          let finalState = reconcileStateReferences(stateRef.current, normalizedUpdatedState, affectedTables);
           const pendingQtyKeys = Object.keys(pendingQuantityUpdatesRef.current);
           const inFlightQtyKeys = Object.keys(inFlightQuantityUpdatesRef.current);
           const activeLocalKeys = new Set([...pendingQtyKeys, ...inFlightQtyKeys]);
@@ -527,6 +598,7 @@ export const useInventory = (activeView: View = 'product') => {
 
           stateRef.current = finalState;
           setState(finalState);
+          saveCachedState(finalState).catch(() => {});
           rollbackStateRef.current = null;
         }
         resolve(true);
@@ -564,11 +636,17 @@ export const useInventory = (activeView: View = 'product') => {
               err.message?.includes('NetworkError');
 
             if (isNetworkFailure) {
-              // Graceful offline queueing: keep optimistic changes in memory and flag unsaved state
-              console.warn('Network unavailable during sync; local updates preserved.');
+              // Graceful offline queueing: keep optimistic changes in memory and persist in IndexedDB queue
+              console.warn('Network unavailable during sync; local updates preserved in offline queue.');
+              enqueueOfflineAction(action, clientIdRef.current).then(() => {
+                getOfflineQueueCount().then(c => setOfflineQueueCount(c));
+              }).catch(() => {});
+              saveCachedState(stateRef.current).catch(() => {});
               setHasPendingChanges(true);
               setIsPendingSync(true);
               rollbackStateRef.current = null;
+              resolve(true);
+              return;
             } else {
               const rollbackState = rollbackStateRef.current;
               if (rollbackState) {
@@ -588,6 +666,29 @@ export const useInventory = (activeView: View = 'product') => {
         resolve(false);
       });
     });
+  }, []);
+
+  // Helper to send an action directly to server without optimistic local mutations (used when draining offline queue)
+  const sendActionDirectlyToServer = useCallback(async (action: Action): Promise<boolean> => {
+    const token = getToken();
+    const storedUserName = localStorage.getItem('freezerUserName') || localStorage.getItem('freezer_user') || '';
+    const auditHeaders = getClientAuditHeaders();
+    try {
+      const res = await fetchWithRetry(getApiUrl('api/inventory/action'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+          'X-Client-Id': clientIdRef.current,
+          ...auditHeaders,
+          ...(storedUserName ? { 'X-User-Name': storedUserName } : {})
+        },
+        body: JSON.stringify({ action })
+      }, 2, 300, 8000);
+      return res.ok;
+    } catch (e) {
+      return false;
+    }
   }, []);
 
   // Flush all pending debounced updates (quantities, movement orders, list toggles)
@@ -828,7 +929,8 @@ export const useInventory = (activeView: View = 'product') => {
       
       // Preserve any pending local debounced changes or in-flight updates
       const affectedTables = (data as any)?._affectedTables;
-      let finalData = reconcileStateReferences(stateRef.current, data, affectedTables);
+      const normalizedData = normalizeClientState(data);
+      let finalData = reconcileStateReferences(stateRef.current, normalizedData, affectedTables);
       const pendingQtyKeys = Object.keys(pendingQuantityUpdatesRef.current);
       const inFlightQtyKeys = Object.keys(inFlightQuantityUpdatesRef.current);
       const activeLocalKeys = new Set([...pendingQtyKeys, ...inFlightQtyKeys]);
@@ -874,6 +976,8 @@ export const useInventory = (activeView: View = 'product') => {
 
       stateRef.current = finalData;
       setState(finalData);
+      saveCachedState(finalData).catch(() => {});
+      setLastSyncTime(Date.now());
       setError(null);
       fetchUndoSnapshots().catch(() => {});
     } catch (err: any) {
@@ -883,6 +987,48 @@ export const useInventory = (activeView: View = 'product') => {
       setHasLoadedInitial(true);
     }
   }, [fetchUndoSnapshots]);
+
+  // Sync / Drain the offline action queue back to the server in FIFO order
+  const syncOfflineQueue = useCallback(async (): Promise<boolean> => {
+    if (isSyncingOfflineQueueRef.current) return false;
+    const queue = await getOfflineQueue();
+    if (queue.length === 0) {
+      setOfflineQueueCount(0);
+      return true;
+    }
+    isSyncingOfflineQueueRef.current = true;
+    setIsSyncingOfflineQueue(true);
+    try {
+      for (const item of queue) {
+        try {
+          const success = await sendActionDirectlyToServer(item.action);
+          if (success) {
+            await removeOfflineAction(item.id);
+          } else {
+            break;
+          }
+        } catch (err) {
+          break;
+        }
+      }
+      const remaining = await getOfflineQueueCount();
+      setOfflineQueueCount(remaining);
+      if (remaining === 0) {
+        await fetchState(false);
+      }
+      return remaining === 0;
+    } finally {
+      isSyncingOfflineQueueRef.current = false;
+      setIsSyncingOfflineQueue(false);
+    }
+  }, [sendActionDirectlyToServer, fetchState]);
+
+  // Auto-sync offline action queue whenever connection is detected as online
+  useEffect(() => {
+    if (isOnline && offlineQueueCount > 0 && !isSyncingOfflineQueueRef.current) {
+      syncOfflineQueue().catch(() => {});
+    }
+  }, [isOnline, offlineQueueCount, syncOfflineQueue]);
 
   // Dispatch an action with instant client updates and debounced server sync for quantities and movement orders
   const dispatch = useCallback(async (action: Action): Promise<boolean> => {
@@ -2465,6 +2611,12 @@ export const useInventory = (activeView: View = 'product') => {
           return connectedClientsRef.current;
         }
 
+        if (data && data.authenticatedUser && data.authenticatedUser !== 'User') {
+          try {
+            localStorage.setItem('freezerUserName', data.authenticatedUser);
+          } catch (e) {}
+        }
+
         if (data && data.clients && Array.isArray(data.clients)) {
           setConnectedClients(data.clients);
           const count = data.count ?? data.clients.length;
@@ -2606,6 +2758,11 @@ export const useInventory = (activeView: View = 'product') => {
     disconnectClient,
     forceSyncAllClients,
     flushAllPendingSyncs,
+    isOnline,
+    offlineQueueCount,
+    isSyncingOfflineQueue,
+    syncOfflineQueue,
+    lastSyncTime,
     zoneClientCounts,
     setZoneClientCounts,
     activeZone,

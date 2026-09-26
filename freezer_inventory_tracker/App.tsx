@@ -35,6 +35,7 @@ import { UndoConfirmationModal } from './components/UndoConfirmationModal';
 import { SortOrderModal } from './components/SortOrderModal';
 import { loadSortOrderConfig, saveSortOrderConfig, sortPrimaryCategories, sortSubCategories, SortMode } from './utils/sortOrder';
 import { useHomeAssistantTheme } from './hooks/useHomeAssistantTheme';
+import { OfflineSyncBadge } from './components/OfflineSyncBadge';
 
 export default function App() {
   useHomeAssistantTheme();
@@ -184,6 +185,11 @@ export default function App() {
     disconnectClient,
     forceSyncAllClients,
     flushAllPendingSyncs,
+    isOnline,
+    offlineQueueCount,
+    isSyncingOfflineQueue,
+    syncOfflineQueue,
+    lastSyncTime,
     zoneClientCounts,
     setZoneClientCounts,
     activeZone,
@@ -570,12 +576,13 @@ export default function App() {
     const sortConfig = loadSortOrderConfig(state.appConfig);
     const activeSortMode = currentView === 'display_case' ? sortConfig.displaySortMode : sortConfig.productSortMode;
     const list: Array<{ primary: string; subs: string[] }> = [];
-    const catSet = new Set(state.products.map(p => p.primaryCategory).filter(Boolean) as string[]);
+    const products = state.products || [];
+    const catSet = new Set(products.map(p => p.primaryCategory).filter(Boolean) as string[]);
     const sortedCats = sortPrimaryCategories(Array.from(catSet), activeSortMode, sortConfig.customOrder);
     for (const cat of sortedCats) {
       const subs = Array.from(
         new Set(
-          state.products
+          products
             .filter(p => p.primaryCategory === cat)
             .map(p => p.subCategory)
             .filter(Boolean) as string[]
@@ -628,14 +635,16 @@ export default function App() {
   };
 
   const primaryCategories = useMemo(() => {
-    const categories = new Set(state.products.map(p => p.primaryCategory).filter(Boolean) as string[]);
+    const products = state.products || [];
+    const categories = new Set(products.map(p => p.primaryCategory).filter(Boolean) as string[]);
     return Array.from(categories).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
   }, [state.products]);
 
   const subCategoriesOfPrimary = useMemo(() => {
     if (!selectedPrimary) return [];
+    const products = state.products || [];
     const subs = new Set(
-      state.products
+      products
         .filter(p => p.primaryCategory === selectedPrimary)
         .map(p => p.subCategory)
         .filter(Boolean) as string[]
@@ -644,10 +653,11 @@ export default function App() {
   }, [state.products, selectedPrimary]);
 
   const filterFreezers = useMemo(() => {
+    const freezers = state.freezers || [];
     if (currentView === 'display_case') {
-      return state.freezers.filter(f => f.isSpecial).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+      return freezers.filter(f => f.isSpecial).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
     }
-    return state.freezers.filter(f => !f.isPallet && !f.id.startsWith('pallet-') && !f.isArchived).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+    return freezers.filter(f => !f.isPallet && !f.id.startsWith('pallet-') && !f.isArchived).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
   }, [state.freezers, currentView]);
 
   const isDisplay = currentView === 'display_case';
@@ -680,12 +690,14 @@ export default function App() {
   }, [currentView, highlightContainerId]);
 
   const hasStagedItems = useMemo(() => {
-    const stagedContainers = state.containers.filter(c => 
+    const containers = state.containers || [];
+    const meatCuts = state.meatCuts || [];
+    const stagedContainers = containers.filter(c => 
       !c.freezerId && 
       c.id !== 'staging_loose' && 
-      state.meatCuts.some(mc => mc.containerId === c.id && mc.quantity > 0)
+      meatCuts.some(mc => mc.containerId === c.id && mc.quantity > 0)
     );
-    const looseStagingCuts = state.meatCuts.filter(mc => mc.containerId === 'staging_loose' && mc.quantity > 0);
+    const looseStagingCuts = meatCuts.filter(mc => mc.containerId === 'staging_loose' && mc.quantity > 0);
     return stagedContainers.length > 0 || looseStagingCuts.length > 0;
   }, [state.containers, state.meatCuts]);
 
@@ -794,6 +806,11 @@ export default function App() {
       try {
         const data = JSON.parse(event.data);
         if (data.type === 'init') {
+          if (data.authenticatedUser && data.authenticatedUser !== 'User') {
+            try {
+              localStorage.setItem('freezerUserName', data.authenticatedUser);
+            } catch (e) {}
+          }
           if (data.lock !== undefined || data.locks !== undefined) {
             updateSingleUserLockRef.current(data.lock, data.locks);
           }
@@ -986,7 +1003,7 @@ export default function App() {
 
   // 1. Compute current product quantities list
   const currentQuantityMap = React.useMemo(() => {
-    return state.meatCuts.reduce((acc, mc) => {
+    return (state.meatCuts || []).reduce((acc, mc) => {
       acc[mc.productId] = (acc[mc.productId] || 0) + mc.quantity;
       return acc;
     }, {} as Record<string, number>);
@@ -1382,11 +1399,11 @@ export default function App() {
       case 'BULK_ADD_MEAT':
         return <UnifiedInboundMoveForm dispatch={dispatch} state={state} initialProductId={activeModal.productId} onClose={handleCloseModal} />;
       case 'EDIT_CONTAINER': {
-        const container = state.containers.find(c => c.id === activeModal.containerId);
+        const container = (state.containers || []).find(c => c.id === activeModal.containerId);
         return container ? <ManagementForms.EditContainerForm dispatch={dispatch} onClose={handleCloseModal} container={container} state={state} /> : null;
       }
       case 'HISTORY':
-        const historyItems = state.history
+        const historyItems = (state.history || [])
             .filter(h => h.targetId === activeModal.targetId)
             .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
         return <HistoryModalContent history={historyItems} />;
@@ -1397,8 +1414,8 @@ export default function App() {
       case 'CHANGE_CONTAINER_FLOW':
         return <MoveModalContent.ChangeContainerFlow dispatch={dispatch} containerId={activeModal.containerId} state={state} onClose={handleCloseModal} />;
       case 'EDIT_PRODUCT': {
-          const product = state.products.find(p => p.id === activeModal.productId);
-          return product ? <ManagementForms.ProductForm dispatch={dispatch} onClose={handleCloseModal} existingProduct={product} products={state.products} state={state} /> : null;
+          const product = (state.products || []).find(p => p.id === activeModal.productId);
+          return product ? <ManagementForms.ProductForm dispatch={dispatch} onClose={handleCloseModal} existingProduct={product} products={state.products || []} state={state} /> : null;
       }
       case 'EDIT_NOTE':
         return <EditNoteModalContent dispatch={dispatch} meatCutId={activeModal.meatCutId} initialNotes={activeModal.initialNotes} initialOriginalCutName={activeModal.initialOriginalCutName} onClose={handleCloseModal} />;
@@ -2148,6 +2165,15 @@ export default function App() {
 
 
 
+                {/* Offline & Queued Sync Status Badge */}
+                <OfflineSyncBadge
+                  isOnline={isOnline}
+                  offlineQueueCount={offlineQueueCount}
+                  isSyncingQueue={isSyncingOfflineQueue}
+                  lastSyncTime={lastSyncTime}
+                  onManualSync={syncOfflineQueue}
+                />
+
                 {/* Combined Sync, Operating Mode, and History Dropdown Menu */}
                 <div className="relative">
                   <button
@@ -2445,6 +2471,37 @@ export default function App() {
                               </div>
                             </div>
                           )}
+
+                          {/* Database Freshness & Last Sync Status */}
+                          <div className="border-t border-cool-gray-800/80 mt-2.5 pt-2.5 px-1 text-[10px] text-cool-gray-400 flex flex-col gap-1 select-none">
+                            <div className="flex justify-between items-center">
+                              <span className="font-semibold text-cool-gray-400">Database Freshness:</span>
+                              <span className={`font-mono tabular-nums font-bold ${
+                                !lastSyncTime 
+                                  ? 'text-rose-400 animate-pulse' 
+                                  : Date.now() - lastSyncTime < 300000 
+                                  ? 'text-cyan-400' 
+                                  : Date.now() - lastSyncTime < 3600000 
+                                  ? 'text-blue-300' 
+                                  : 'text-amber-400 animate-pulse'
+                              }`}>
+                                {!lastSyncTime ? 'Never synced' : (() => {
+                                  const diff = Date.now() - lastSyncTime;
+                                  const mins = Math.floor(diff / 60000);
+                                  if (mins < 1) return 'Just now';
+                                  if (mins < 60) return `${mins}m ago`;
+                                  const hrs = Math.floor(mins / 60);
+                                  if (hrs < 24) return `${hrs}h ago`;
+                                  return new Date(lastSyncTime).toLocaleDateString([], { month: 'short', day: 'numeric' });
+                                })()}
+                              </span>
+                            </div>
+                            {lastSyncTime && (
+                              <div className="text-[9px] text-cool-gray-500 text-right font-medium">
+                                Last Synced: {new Date(lastSyncTime).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
+                              </div>
+                            )}
+                          </div>
                         </div>
 
                         <button

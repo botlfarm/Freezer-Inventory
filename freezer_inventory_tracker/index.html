@@ -1,12 +1,36 @@
-
 <!DOCTYPE html>
 <html lang="en">
   <head>
     <script>
-      // Home Assistant Ingress relative path fix
-      if (!window.location.pathname.endsWith('/')) {
-        window.location.replace(window.location.pathname + '/' + window.location.search);
-      }
+      // Prevent Service Worker caching issues in development and preview sandboxes
+      try {
+        var host = window.location.hostname;
+        if (host === 'localhost' || host === '127.0.0.1' || host.endsWith('.run.app')) {
+          if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.getRegistrations().then(function(registrations) {
+              for (var i = 0; i < registrations.length; i++) {
+                registrations[i].unregister();
+              }
+            });
+          }
+          if ('caches' in window) {
+            caches.keys().then(function(keys) {
+              for (var i = 0; i < keys.length; i++) {
+                caches.delete(keys[i]);
+              }
+            });
+          }
+        }
+      } catch (e) {}
+    </script>
+    <script>
+      // Home Assistant Ingress relative path fix (only for Ingress token paths, not root or file paths)
+      try {
+        var p = window.location.pathname;
+        if (p && p.includes('/api/hassio_ingress/') && !p.endsWith('/')) {
+          window.location.replace(p + '/' + window.location.search);
+        }
+      } catch (e) {}
     </script>
     <script>
       // Force light mode
@@ -16,8 +40,17 @@
       } catch (e) {}
     </script>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta name="theme-color" content="#0f172a" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="FreezerApp" />
+    <meta name="description" content="Comprehensive freezer, butcher processing, and off-site cold storage inventory tracker with QR scanning." />
+    
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+
     <title>Freezer Inventory Tracker</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
@@ -46,9 +79,29 @@
         }
       }
     </script>
-</head>
-  <body class="bg-cool-gray-900 text-cool-gray-100">
-    <div id="root"></div>
+  </head>
+  <body class="bg-cool-gray-900 text-cool-gray-100 antialiased selection:bg-sky-500 selection:text-white">
+    <div id="root">
+      <div id="app-initial-loader" style="min-height: 100vh; background-color: #0f172a; color: #f8fafc; display: flex; flex-direction: column; align-items: center; justify-content: center; font-family: system-ui, -apple-system, sans-serif; text-align: center; padding: 20px;">
+        <div style="max-width: 400px; padding: 24px; border-radius: 16px; background-color: #1e293b; border: 1px solid #334155; box-shadow: 0 10px 25px rgba(0,0,0,0.5);">
+          <div style="width: 32px; height: 32px; border: 3px solid #38bdf8; border-top-color: transparent; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 16px;"></div>
+          <h2 style="font-size: 16px; font-weight: 600; margin-bottom: 8px;">Loading Freezer Tracker...</h2>
+          <p style="font-size: 12px; color: #94a3b8; margin-bottom: 16px;">Preparing inventory database and offline storage</p>
+          <button id="loader-reset-btn" onclick="(function(){ try { localStorage.clear(); sessionStorage.clear(); if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(function(r){r.forEach(function(s){s.unregister();});});} } catch(e){} window.location.reload(); })()" style="display: none; padding: 8px 16px; background-color: #0284c7; color: white; border: none; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer;">
+            Reset Cache & Reload
+          </button>
+        </div>
+      </div>
+      <style>
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+      </style>
+      <script>
+        setTimeout(function() {
+          var btn = document.getElementById('loader-reset-btn');
+          if (btn) btn.style.display = 'inline-block';
+        }, 4000);
+      </script>
+    </div>
     <script type="module" src="/index.tsx"></script>
   </body>
 </html>

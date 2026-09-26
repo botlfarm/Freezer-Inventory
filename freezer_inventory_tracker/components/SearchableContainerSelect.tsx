@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Container, Freezer } from '../types';
 import { SearchIcon } from './icons';
 import { getContainerIcon } from './ContainerIconsMap';
+import { Star } from 'lucide-react';
 
 interface SearchableContainerSelectProps {
   containers: Container[];
@@ -192,8 +193,11 @@ export const SearchableContainerSelect: React.FC<SearchableContainerSelectProps>
                         {freezers && (() => {
                           const freezer = freezers.find(f => f.id === c.freezerId);
                           return freezer ? (
-                            <span className="text-[9px] text-cool-gray-400 bg-cool-gray-950 px-1 py-0.2 rounded font-medium ml-1.5 truncate">
-                              {freezer.name}
+                            <span className="text-[9px] text-cool-gray-400 bg-cool-gray-950 px-1 py-0.2 rounded font-medium ml-1.5 truncate flex items-center gap-1">
+                              <span>❄️ {freezer.name}</span>
+                              {freezer.isSpecial && (
+                                <Star className="w-2.5 h-2.5 text-amber-400 fill-amber-400 inline shrink-0" title="Display Case" />
+                              )}
                             </span>
                           ) : null;
                         })()}

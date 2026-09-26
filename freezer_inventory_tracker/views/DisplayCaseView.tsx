@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { InventoryState, Action, ModalType, Product, MeatCut, Container, Freezer } from '../types';
 import { MeatIcon, PlusIcon, MinusIcon, PackageIcon } from '../components/icons';
 import { getContainerIcon } from '../components/ContainerIconsMap';
-import { MoreVertical, Move, History, Tag, Edit, Package, Search, PlusCircle, AlertTriangle } from 'lucide-react';
+import { MoreVertical, Move, History, Tag, Edit, Package, Search, PlusCircle, AlertTriangle, Star } from 'lucide-react';
 import { evaluateMathExpression } from '../components/QuickCalculatorPanel';
 import { 
     loadSortOrderConfig, 
@@ -223,6 +223,9 @@ const ProductLocationRow: React.FC<ProductLocationRowProps> = ({
                                         {!hideFreezerName ? (
                                             <>
                                                 <span className="text-emerald-400 font-bold text-[11px] sm:text-xs">{freezer.name}</span>
+                                                {freezer.isSpecial && (
+                                                    <Star className="w-3.5 h-3.5 text-amber-400 fill-amber-400 shrink-0 inline ml-0.5" title="Display Case" />
+                                                )}
                                                 <span className="text-cool-gray-650 mx-0.5 sm:mx-1">-</span>
                                                 <span className="text-cyan-400 font-bold text-xs sm:text-sm">{container.name}</span>
                                                 {hasSameNameInFreezer && (

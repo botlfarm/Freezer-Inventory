@@ -4,6 +4,7 @@ import AddForms from './AddForms';
 import { PackageIcon, PlusIcon, MinusIcon } from './icons';
 import { getContainerIcon } from './ContainerIconsMap';
 import { generateUUID } from './uuidHelper';
+import { Star } from 'lucide-react';
 
 interface CommonMoveProps {
   dispatch: React.Dispatch<Action>;
@@ -238,7 +239,14 @@ const MoveMeat: React.FC<CommonMoveProps & { meatCutId: string }> = ({ dispatch,
           )}
           <div className="flex-1 min-w-0">
             <p className="font-semibold truncate">{container.name}</p>
-            {freezer && <p className="text-xs text-cool-gray-300">{freezer.name}</p>}
+            {freezer && (
+              <p className="text-xs text-cool-gray-300 flex items-center gap-1">
+                <span>❄️ {freezer.name}</span>
+                {freezer.isSpecial && (
+                  <Star className="w-2.5 h-2.5 text-amber-400 fill-amber-400 inline shrink-0" title="Display Case" />
+                )}
+              </p>
+            )}
           </div>
         </button>
       )
@@ -745,7 +753,14 @@ const ChangeContainerFlow: React.FC<CommonMoveProps & { containerId: string }> =
           )}
           <div className="flex-1 min-w-0">
             <p className="font-semibold text-xs truncate">{container.name}</p>
-            {freezer && <p className="text-[10px] text-cool-gray-300">{freezer.name}</p>}
+            {freezer && (
+              <p className="text-[10px] text-cool-gray-300 flex items-center gap-1">
+                <span>❄️ {freezer.name}</span>
+                {freezer.isSpecial && (
+                  <Star className="w-2.5 h-2.5 text-amber-400 fill-amber-400 inline shrink-0" title="Display Case" />
+                )}
+              </p>
+            )}
           </div>
         </button>
       );

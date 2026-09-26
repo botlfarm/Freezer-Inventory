@@ -39,6 +39,14 @@ export const MediaSelector: React.FC<MediaSelectorProps> = ({ imageUrl = '', onC
       setStream(null);
     }
 
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setShowWebcamModal(false);
+      if (cameraInputRef.current) {
+        cameraInputRef.current.click();
+      }
+      return;
+    }
+
     try {
       const mediaStream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: { ideal: facing }, width: { ideal: 1280 }, height: { ideal: 720 } },
