@@ -1,3 +1,57 @@
+### [2.43.26] - 2026-09-26
+
+### Fixed
+- **In-Memory Active Clients & SSE Socket Retention Pruning**:
+  - Solved "ghost background client" multi-user locking issue where backgrounded mobile devices or locked phones still held their native sockets open, forcing all other active devices into Multi-User Mode indefinitely.
+  - Upgraded the server-side presence watchdog `cleanStaleClients` in `server.ts` to actively prune sessions and terminate sockets if no client-provided HTTP heartbeats have been received in over 20 seconds, even if the socket remains technically alive.
+  - Automatically restores normal Auto/Solo operating modes on active devices within seconds of other devices locking or backgrounding.
+- **Fail-Safe sendBeacon Client Departure**:
+  - Modified the unload/pagehide `navigator.sendBeacon` departure calls inside `useInventory.ts` to append the `clientId` as an explicit query string parameter.
+  - This avoids reliance on JSON body-parsing which often fails on page exit due to browser-stripped HTTP headers on background beacon frames.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.43.25] - 2026-09-26
+
+### Added
+- **Monthly Auto-Expiring PWA Dismissals**:
+  - Implemented automatic 30-day (1 month) expiration for the PWA switch alert banner dismissal state.
+  - Replaced the simple `true` boolean dismissal flag in `localStorage` with a high-resolution UTC timestamp (`Date.now()`).
+  - Upon app loading, the system compares the dismissal timestamp against the current time. If more than 30 days have elapsed, the dismissal is auto-expired, cleanly restoring the top quick-launch reminder.
+  - Automatically migrated and preserved existing active states using a new storage reference version key `pwa-banner-dismissed-explicit-v2`.
+
+### Files Modified
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.43.24] - 2026-09-26
+
+### Changed
+- **PWA Quick Switch Banner Retention inside Companion App**:
+  - Modified the PWA switch alert banner so that tapping "Launch App" no longer dismisses the banner permanently.
+  - This ensures that if the user returns to the Home Assistant Companion App webview later, the top quick-launch button remains available for easy switching to the standalone app.
+  - The banner is now only hidden permanently if the user explicitly clicks the "Dismiss" button.
+  - Automatically migrated/cleared any older automatic dismissals by updating the local storage reference key to `pwa-banner-dismissed-explicit`.
+
+### Files Modified
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
 ### [2.43.23] - 2026-09-26
 
 ### Added

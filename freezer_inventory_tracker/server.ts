@@ -6314,9 +6314,9 @@ function cleanStaleClients(): boolean {
       client.res = undefined;
     }
     
-    // Prune if client has had no heartbeat/activity for 15 seconds and does not have an active socket
+    // Prune if client has had no heartbeat/activity for 20 seconds, or 15 seconds without socket
     const timeSinceActive = now - client.lastActive;
-    if (timeSinceActive > 15000 && !isSocketAlive) {
+    if (timeSinceActive > 20000 || (timeSinceActive > 15000 && !isSocketAlive)) {
       if (client.res) {
         try {
           client.res.end();

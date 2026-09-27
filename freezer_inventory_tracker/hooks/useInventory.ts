@@ -2467,7 +2467,7 @@ export const useInventory = (activeView: View = 'product') => {
         } else {
           // In Auto/Multi mode, send a quick departure notification so other users immediately return to Single mode
           try {
-            const leaveUrl = getApiUrl('api/inventory/clients/leave');
+            const leaveUrl = getApiUrl(`api/inventory/clients/leave?clientId=${encodeURIComponent(clientIdRef.current)}`);
             const payload = JSON.stringify({ clientId: clientIdRef.current });
             if (typeof navigator !== 'undefined' && navigator.sendBeacon) {
               const blob = new Blob([payload], { type: 'application/json' });
@@ -2511,7 +2511,7 @@ export const useInventory = (activeView: View = 'product') => {
     const handlePageHide = () => {
       flushAllPendingSyncs();
       try {
-        const leaveUrl = getApiUrl('api/inventory/clients/leave');
+        const leaveUrl = getApiUrl(`api/inventory/clients/leave?clientId=${encodeURIComponent(clientIdRef.current)}`);
         const payload = JSON.stringify({ clientId: clientIdRef.current });
         if (typeof navigator !== 'undefined' && navigator.sendBeacon) {
           const blob = new Blob([payload], { type: 'application/json' });

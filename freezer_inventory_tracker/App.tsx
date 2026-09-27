@@ -43,7 +43,18 @@ export default function App() {
   const [expandedImage, setExpandedImage] = useState<{ src: string; title: string } | null>(null);
   const [pwaBannerDismissed, setPwaBannerDismissed] = useState(() => {
     try {
-      return localStorage.getItem('pwa-banner-dismissed') === 'true';
+      const stored = localStorage.getItem('pwa-banner-dismissed-explicit-v2');
+      if (!stored) return false;
+      const dismissTime = parseInt(stored, 10);
+      if (isNaN(dismissTime)) return false;
+      
+      // 30 days in milliseconds: 30 * 24 * 60 * 60 * 1000 = 2592000000
+      const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
+      if (Date.now() - dismissTime > thirtyDaysMs) {
+        localStorage.removeItem('pwa-banner-dismissed-explicit-v2');
+        return false;
+      }
+      return true;
     } catch {
       return false;
     }
@@ -1972,7 +1983,7 @@ export default function App() {
                 onClick={() => {
                   setPwaBannerDismissed(true);
                   try {
-                    localStorage.setItem('pwa-banner-dismissed', 'true');
+                    localStorage.setItem('pwa-banner-dismissed-explicit-v2', Date.now().toString());
                   } catch (e) {}
                 }}
                 className="px-3.5 py-1.5 rounded-lg bg-cool-gray-800 hover:bg-cool-gray-750 border border-cool-gray-700 text-cool-gray-350 hover:text-white text-xs font-bold transition cursor-pointer"
@@ -1983,12 +1994,6 @@ export default function App() {
                 href={customPwaUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                onClick={() => {
-                  setPwaBannerDismissed(true);
-                  try {
-                    localStorage.setItem('pwa-banner-dismissed', 'true');
-                  } catch (e) {}
-                }}
                 className="bg-cyan-500 hover:bg-cyan-400 text-cool-gray-950 font-extrabold px-4.5 py-1.5 rounded-lg text-xs transition duration-150 shadow-md flex items-center justify-center gap-1.5 cursor-pointer shrink-0"
               >
                 <span>Launch App</span>
