@@ -1,3 +1,40 @@
+### [2.43.23] - 2026-09-26
+
+### Added
+- **Smart Mobile PWA App Switch Alert Banner**:
+  - Implemented automatic, non-intrusive checking to detect if the user is running on a mobile or tablet device outside of standalone PWA mode (e.g., inside normal Chrome or the Home Assistant Companion App webview).
+  - Displays a highly polished, dismissible top banner ("Run Standalone App") prompting the user to launch their custom configured PWA app instead.
+  - Tapping "Launch App" opens the custom configured permanent PWA domain, prompting the host operating system (Android or iOS) to instantly switch over and open the native standalone Freezer App.
+  - Remembers dismissed states persistently using `localStorage` to avoid repeatedly bothering users after they choose to dismiss the prompt.
+
+### Files Modified
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.43.22] - 2026-09-26
+
+### Added
+- **Customizable Standalone PWA Link inside Settings**:
+  - Replaced the hardcoded dynamic `/api/hassio_ingress/...` address card in Settings with an elegant, customizable "Direct PWA App URL" configuration interface.
+  - Added an input text field letting users configure their own permanent, secure public subdomain or local IP URL (e.g. `https://freezer.nickweinstock.com`).
+  - Added a "Reset to Default Link" action to seamlessly revert back to standard relative addresses.
+  - Implemented automatic validation checking to ensure user links start with a valid HTTP/HTTPS scheme protocol.
+- **SSE Real-Time Config Synchronizations**:
+  - Connected the `/api/app-config` POST endpoint with the SSE broadcaster inside `server.ts` so saving custom links instantly synchronizes all connected device interfaces with the latest configured URL without needing a manual refresh.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/views/LibraryView.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
 ### [2.43.21] - 2026-09-26
 
 ### Fixed

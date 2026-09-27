@@ -293,6 +293,20 @@ const LibraryView: React.FC<{
     return val ? parseFloat(val) : 40;
   });
   const [copiedUrl, setCopiedUrl] = useState(false);
+  const [customPwaUrl, setCustomPwaUrl] = useState("");
+  const [isEditingPwaUrl, setIsEditingPwaUrl] = useState(false);
+  const [isSavingPwaUrl, setIsSavingPwaUrl] = useState(false);
+  const [pwaUrlError, setPwaUrlError] = useState("");
+
+  // Synchronize local customPwaUrl with state.appConfig updates (e.g. from Server SSE)
+  React.useEffect(() => {
+    const customUrlConfig = (state.appConfig || []).find(item => item.key === 'pwa_custom_url');
+    if (customUrlConfig) {
+      setCustomPwaUrl(customUrlConfig.value);
+    } else {
+      setCustomPwaUrl("");
+    }
+  }, [state.appConfig]);
 
   // Helper to persist preferences directly to database app_config table
   const saveAppConfigKey = (key: string, value: string) => {
@@ -2841,128 +2855,204 @@ const LibraryView: React.FC<{
                 </span>
               </div>
 
-              {/* Direct Launch Actions */}
-              <div className="space-y-3">
-                <label className="text-[10px] font-extrabold text-cool-gray-400 uppercase tracking-wider block">
-                  Direct App URL & Quick Launch
-                </label>
-
-                {/* URL Display & Copy Box */}
-                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 bg-cool-gray-950 p-2.5 rounded-xl border border-cool-gray-800">
-                  <div className="flex items-center gap-2 flex-1 min-w-0 px-2 py-1 bg-cool-gray-900 rounded-lg border border-cool-gray-800/80">
-                    <Globe className="w-4 h-4 text-cyan-400 shrink-0" />
-                    <span className="text-xs font-mono text-cool-gray-300 truncate select-all">
-                      {typeof window !== 'undefined' ? window.location.href : 'http://homeassistant.local:8123/...'}
-                    </span>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (typeof window !== 'undefined') {
-                        navigator.clipboard.writeText(window.location.href);
-                        setCopiedUrl(true);
-                        setTimeout(() => setCopiedUrl(false), 2500);
-                      }
-                    }}
-                    className={`px-3.5 py-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 shrink-0 cursor-pointer select-none ${
-                      copiedUrl
-                        ? 'bg-emerald-600 text-white shadow-md'
-                        : 'bg-cool-gray-800 hover:bg-cool-gray-700 text-cool-gray-200 border border-cool-gray-700 hover:text-white'
-                    }`}
-                    title="Copy full URL to clipboard"
-                  >
-                    {copiedUrl ? (
-                      <>
-                        <Check className="w-3.5 h-3.5 text-white" />
-                        <span>Copied Link!</span>
-                      </>
-                    ) : (
-                      <>
-                        <Copy className="w-3.5 h-3.5 text-cyan-400" />
-                        <span>Copy URL</span>
-                      </>
-                    )}
-                  </button>
+              {/* Direct Link Display */}
+              <div className="space-y-3.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-[10px] font-extrabold text-cool-gray-400 uppercase tracking-wider">
+                    Direct PWA App URL
+                  </label>
+                  {!isEditingPwaUrl && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const customUrlConfig = (state.appConfig || []).find(item => item.key === 'pwa_custom_url');
+                        setCustomPwaUrl(customUrlConfig?.value || "");
+                        setIsEditingPwaUrl(true);
+                        setPwaUrlError("");
+                      }}
+                      className="text-[11px] font-bold text-cyan-400 hover:text-cyan-300 hover:underline flex items-center gap-1 cursor-pointer bg-transparent border-0 outline-none"
+                    >
+                      <span>⚙️ Configure Custom Link</span>
+                    </button>
+                  )}
                 </div>
 
-                {/* Direct Native Installation Trigger */}
-                <div className="pt-1">
-                  <PWAInstallButton className="w-full justify-center py-2.5 text-sm font-extrabold shadow-md border border-sky-500/20" />
-                </div>
-
-                {/* Quick Launch Buttons Grid */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
-                  {/* Open in New Browser Tab / Window */}
-                  <a
-                    href={typeof window !== 'undefined' ? window.location.href : '#'}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="p-3 bg-cyan-600/20 hover:bg-cyan-600/30 border border-cyan-500/40 hover:border-cyan-400 rounded-xl text-cyan-300 hover:text-white text-xs font-bold transition flex items-center justify-center gap-2 cursor-pointer shadow-sm group"
-                  >
-                    <ExternalLink className="w-4 h-4 text-cyan-400 group-hover:scale-110 transition-transform" />
-                    <span>Open in External Browser</span>
-                  </a>
-
-                  {/* Android Force-Chrome Intent */}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (typeof window !== 'undefined') {
-                        const scheme = window.location.protocol.replace(':', '') || 'http';
-                        const chromeIntent = `intent://${window.location.host}${window.location.pathname}${window.location.search}#Intent;scheme=${scheme};package=com.android.chrome;end`;
-                        // Attempt Android intent launch
-                        window.location.href = chromeIntent;
-                        // Fallback after 600ms if not on Android
-                        setTimeout(() => {
-                          window.open(window.location.href, '_blank');
-                        }, 600);
-                      }
-                    }}
-                    className="p-3 bg-cool-gray-800/90 hover:bg-cool-gray-750 border border-cool-gray-700 hover:border-cool-gray-600 rounded-xl text-cool-gray-200 hover:text-white text-xs font-bold transition flex items-center justify-center gap-2 cursor-pointer shadow-sm group"
-                    title="Triggers Android intent to launch official Google Chrome app directly from Home Assistant"
-                  >
-                    <span className="text-base">🌐</span>
-                    <span>Launch in Google Chrome (Android)</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* Step-by-Step Installation Instructions */}
-              <div className="bg-cool-gray-900/70 rounded-xl p-4 border border-cool-gray-800 space-y-3.5 text-xs text-cool-gray-300">
-                <span className="font-extrabold uppercase tracking-wider text-[10px] text-cool-gray-400 block border-b border-cool-gray-800 pb-2">
-                  📲 How to Install as an Offline App
-                </span>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {/* Android Instructions */}
-                  <div className="space-y-2 bg-cool-gray-950/60 p-3 rounded-lg border border-cool-gray-800/60">
-                    <div className="flex items-center gap-2 text-cool-gray-150 font-bold">
-                      <span className="text-base">🤖</span>
-                      <span>Android / Google Chrome</span>
+                {!isEditingPwaUrl ? (
+                  /* Standard Link View */
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 bg-cool-gray-950 p-2.5 rounded-xl border border-cool-gray-800">
+                    <div className="flex items-center gap-2 flex-1 min-w-0 px-2 py-1 bg-cool-gray-900 rounded-lg border border-cool-gray-800/80">
+                      <Globe className="w-4 h-4 text-cyan-400 shrink-0" />
+                      <span className="text-xs font-mono text-cool-gray-300 truncate select-all">
+                        {(() => {
+                          const customUrlConfig = (state.appConfig || []).find(item => item.key === 'pwa_custom_url');
+                          if (customUrlConfig && customUrlConfig.value.trim()) {
+                            return customUrlConfig.value.trim();
+                          }
+                          return typeof window !== 'undefined' ? window.location.href : 'http://homeassistant.local:3000';
+                        })()}
+                      </span>
                     </div>
-                    <ol className="space-y-1.5 text-[11px] text-cool-gray-400 list-decimal pl-4 leading-relaxed font-medium">
-                      <li>Tap <strong className="text-cool-gray-200">"Launch in Google Chrome"</strong> or copy the URL above into Chrome.</li>
-                      <li>In Chrome, tap the menu button (<strong className="text-cool-gray-200">⋮</strong> in top right).</li>
-                      <li>Select <strong className="text-cyan-300">"Install app"</strong> or <strong className="text-cyan-300">"Add to Home screen"</strong>.</li>
-                      <li>Open the new app icon from your home screen — it will launch standalone and run without Wi-Fi!</li>
-                    </ol>
-                  </div>
 
-                  {/* iOS Safari Instructions */}
-                  <div className="space-y-2 bg-cool-gray-950/60 p-3 rounded-lg border border-cool-gray-800/60">
-                    <div className="flex items-center gap-2 text-cool-gray-150 font-bold">
-                      <span className="text-base">🍎</span>
-                      <span>iPhone & iPad / Safari</span>
-                    </div>
-                    <ol className="space-y-1.5 text-[11px] text-cool-gray-400 list-decimal pl-4 leading-relaxed font-medium">
-                      <li>Copy the URL above and paste it into <strong className="text-cool-gray-200">Apple Safari</strong>.</li>
-                      <li>Tap the <strong className="text-cool-gray-200">Share</strong> button (square with arrow pointing up).</li>
-                      <li>Scroll down and tap <strong className="text-cyan-300">"Add to Home Screen"</strong>.</li>
-                      <li>Tap <strong className="text-cool-gray-200">Add</strong> in top right to install the standalone web app.</li>
-                    </ol>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (typeof window !== 'undefined') {
+                          const customUrlConfig = (state.appConfig || []).find(item => item.key === 'pwa_custom_url');
+                          const activeUrl = (customUrlConfig && customUrlConfig.value.trim()) 
+                            ? customUrlConfig.value.trim() 
+                            : window.location.href;
+                          navigator.clipboard.writeText(activeUrl);
+                          setCopiedUrl(true);
+                          setTimeout(() => setCopiedUrl(false), 2500);
+                        }
+                      }}
+                      className={`px-3.5 py-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 shrink-0 cursor-pointer select-none ${
+                        copiedUrl
+                          ? 'bg-emerald-600 text-white shadow-md'
+                          : 'bg-cool-gray-800 hover:bg-cool-gray-700 text-cool-gray-200 border border-cool-gray-700 hover:text-white'
+                      }`}
+                      title="Copy full URL to clipboard"
+                    >
+                      {copiedUrl ? (
+                        <>
+                          <Check className="w-3.5 h-3.5 text-white" />
+                          <span>Copied Link!</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5 text-cyan-400" />
+                          <span>Copy URL</span>
+                        </>
+                      )}
+                    </button>
                   </div>
-                </div>
+                ) : (
+                  /* Custom URL Edit Form */
+                  <div className="space-y-3 p-4 bg-cool-gray-900/60 rounded-xl border border-cool-gray-800/80 animate-fade-in">
+                    <div>
+                      <span className="text-[10px] font-bold text-cyan-300 block mb-1 uppercase tracking-wider">Set Custom Domain or IP Link</span>
+                      <p className="text-[11px] text-cool-gray-400 leading-relaxed font-medium">
+                        Enter your permanent public address (e.g. your Cloudflare Tunnel domain like <span className="text-cool-gray-300 font-semibold">https://freezer.nickweinstock.com</span>) or direct local IP address to allow your phone or tablet's Chrome browser to download, install, and run this application cleanly as an offline standalone PWA.
+                      </p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <div className="flex gap-2">
+                        <div className="relative flex-grow">
+                          <input
+                            type="text"
+                            placeholder="e.g. https://freezer.nickweinstock.com"
+                            value={customPwaUrl}
+                            onChange={(e) => {
+                              setCustomPwaUrl(e.target.value);
+                              setPwaUrlError("");
+                            }}
+                            className="w-full bg-cool-gray-950 text-xs font-mono font-medium rounded-lg border border-cool-gray-750 px-3 py-2 text-cool-gray-200 outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all placeholder:text-cool-gray-600"
+                          />
+                        </div>
+                      </div>
+
+                      {pwaUrlError && (
+                        <p className="text-[11px] text-red-400 font-bold flex items-center gap-1 animate-pulse">
+                          ⚠️ {pwaUrlError}
+                        </p>
+                      )}
+
+                      <div className="flex flex-wrap items-center gap-2 pt-1 justify-end">
+                        {/* Reset to Default Button */}
+                        {((state.appConfig || []).some(item => item.key === 'pwa_custom_url' && item.value.trim())) && (
+                          <button
+                            type="button"
+                            disabled={isSavingPwaUrl}
+                            onClick={async () => {
+                              setIsSavingPwaUrl(true);
+                              try {
+                                const res = await fetch(getApiUrl('api/app-config'), {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ key: 'pwa_custom_url', value: "" })
+                                });
+                                if (res.ok) {
+                                  setCustomPwaUrl("");
+                                  setIsEditingPwaUrl(false);
+                                } else {
+                                  setPwaUrlError("Failed to clear custom URL.");
+                                }
+                              } catch (err) {
+                                setPwaUrlError("Network error clearing custom URL.");
+                              } finally {
+                                setIsSavingPwaUrl(false);
+                              }
+                            }}
+                            className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-red-950/40 text-red-400 border border-red-900/30 hover:bg-red-900/35 hover:text-white transition cursor-pointer disabled:opacity-50"
+                          >
+                            Reset to Default Link
+                          </button>
+                        )}
+
+                        <div className="flex gap-2 ml-auto">
+                          <button
+                            type="button"
+                            disabled={isSavingPwaUrl}
+                            onClick={() => {
+                              setIsEditingPwaUrl(false);
+                              setPwaUrlError("");
+                            }}
+                            className="px-3 py-1.5 rounded-lg text-xs font-bold bg-cool-gray-800 hover:bg-cool-gray-750 text-cool-gray-300 transition cursor-pointer disabled:opacity-50"
+                          >
+                            Cancel
+                          </button>
+
+                          <button
+                            type="button"
+                            disabled={isSavingPwaUrl}
+                            onClick={async () => {
+                              const trimmed = customPwaUrl.trim();
+                              if (trimmed) {
+                                // Simple URL validation helper: check if it starts with http:// or https://
+                                if (!/^https?:\/\//i.test(trimmed)) {
+                                  setPwaUrlError("URL must start with http:// or https://");
+                                  return;
+                                }
+                              }
+
+                              setIsSavingPwaUrl(true);
+                              try {
+                                const res = await fetch(getApiUrl('api/app-config'), {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ key: 'pwa_custom_url', value: trimmed })
+                                });
+                                if (res.ok) {
+                                  setIsEditingPwaUrl(false);
+                                } else {
+                                  setPwaUrlError("Failed to save custom URL.");
+                                }
+                              } catch (err) {
+                                setPwaUrlError("Network error saving custom URL.");
+                              } finally {
+                                setIsSavingPwaUrl(false);
+                              }
+                            }}
+                            className="px-4.5 py-1.5 rounded-lg text-xs font-extrabold bg-cyan-600 hover:bg-cyan-500 text-white shadow-sm flex items-center gap-1.5 transition cursor-pointer disabled:opacity-50"
+                          >
+                            {isSavingPwaUrl ? (
+                              <>
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin text-white" />
+                                <span>Saving...</span>
+                              </>
+                            ) : (
+                              <>
+                                <Save className="w-3.5 h-3.5 text-white" />
+                                <span>Save Link</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 

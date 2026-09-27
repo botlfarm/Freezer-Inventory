@@ -41,6 +41,14 @@ export default function App() {
   useHomeAssistantTheme();
   const [isScrolled, setIsScrolled] = useState(false);
   const [expandedImage, setExpandedImage] = useState<{ src: string; title: string } | null>(null);
+  const [pwaBannerDismissed, setPwaBannerDismissed] = useState(() => {
+    try {
+      return localStorage.getItem('pwa-banner-dismissed') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
   const headerRef = React.useRef<HTMLElement>(null);
 
   React.useEffect(() => {
@@ -196,6 +204,23 @@ export default function App() {
     activeZoneClientCount,
     recalculateCollaborativeMode
   } = useInventory(currentView);
+
+  const isCurrentlyStandalone = useMemo(() => {
+    if (typeof window === 'undefined') return false;
+    return window.matchMedia('(display-mode: standalone)').matches || (window.navigator as any).standalone === true;
+  }, []);
+
+  const isMobileDevice = useMemo(() => {
+    if (typeof window === 'undefined') return false;
+    return /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+  }, []);
+
+  const customPwaUrl = useMemo(() => {
+    const customUrlConfig = (state.appConfig || []).find(item => item.key === 'pwa_custom_url');
+    return customUrlConfig?.value?.trim() || '';
+  }, [state.appConfig]);
+
+  const showPwaBanner = !isCurrentlyStandalone && isMobileDevice && customPwaUrl && !pwaBannerDismissed;
 
   const [undoModalConfig, setUndoModalConfig] = useState<{
     isOpen: boolean;
@@ -1924,6 +1949,51 @@ export default function App() {
               >
                 <span>⚡ <span className={isScrolled ? 'hidden sm:inline' : ''}>Switch to </span>Auto</span>
               </button>
+            </div>
+          </div>
+        )}
+
+        {/* Customizable PWA Switch Alert Banner */}
+        {showPwaBanner && (
+          <div className="bg-gradient-to-r from-cyan-950/95 to-cool-gray-900 border border-cyan-500/40 text-cyan-200 p-3.5 sm:px-4 sm:py-3.5 rounded-xl mb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-sm animate-scale-up shadow-xl backdrop-blur w-full max-w-full box-border">
+            <div className="flex items-start sm:items-center gap-2.5 min-w-0 flex-1">
+              <div className="w-8 h-8 rounded-lg bg-cyan-500/20 border border-cyan-400 flex items-center justify-center shrink-0 mt-0.5 sm:mt-0 animate-pulse">
+                <span className="text-lg">📱</span>
+              </div>
+              <div className="min-w-0 flex-1">
+                <strong className="text-white text-xs sm:text-sm">Run Standalone App</strong>
+                <p className="text-xs text-cool-gray-300 mt-0.5 leading-snug whitespace-normal break-words">
+                  Open this inventory in your installed standalone web app for a clean fullscreen layout, fast loading, and reliable offline capabilities in walk-in freezers.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2.5 shrink-0 w-full sm:w-auto justify-end">
+              <button
+                onClick={() => {
+                  setPwaBannerDismissed(true);
+                  try {
+                    localStorage.setItem('pwa-banner-dismissed', 'true');
+                  } catch (e) {}
+                }}
+                className="px-3.5 py-1.5 rounded-lg bg-cool-gray-800 hover:bg-cool-gray-750 border border-cool-gray-700 text-cool-gray-350 hover:text-white text-xs font-bold transition cursor-pointer"
+              >
+                Dismiss
+              </button>
+              <a
+                href={customPwaUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={() => {
+                  setPwaBannerDismissed(true);
+                  try {
+                    localStorage.setItem('pwa-banner-dismissed', 'true');
+                  } catch (e) {}
+                }}
+                className="bg-cyan-500 hover:bg-cyan-400 text-cool-gray-950 font-extrabold px-4.5 py-1.5 rounded-lg text-xs transition duration-150 shadow-md flex items-center justify-center gap-1.5 cursor-pointer shrink-0"
+              >
+                <span>Launch App</span>
+                <span>➜</span>
+              </a>
             </div>
           </div>
         )}

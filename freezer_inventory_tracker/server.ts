@@ -3609,7 +3609,7 @@ app.get('/api/app-config/:key', (req, res) => {
   }
 });
 
-app.post('/api/app-config', (req, res) => {
+app.post('/api/app-config', async (req, res) => {
   try {
     if (!db) initDatabase();
     const { key, value, configs } = req.body;
@@ -3643,6 +3643,14 @@ app.post('/api/app-config', (req, res) => {
     });
 
     tx();
+
+    // Broadcast updated state with the new config to all connected clients
+    try {
+      const updatedState = await loadState();
+      broadcastSSE({ type: 'sync', state: updatedState });
+    } catch (sseErr) {
+      console.error('Failed to broadcast state update on config change:', sseErr);
+    }
 
     // Return the latest complete configs
     const rows = db.prepare('SELECT key, value, updatedAt FROM app_config').all() as any[];
