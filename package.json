@@ -1,21 +1,17 @@
 {
-  "name": "ai-studio-workspace",
+  "name": "freezer-inventory-tracker",
   "private": true,
+  "version": "2.48.2",
   "type": "module",
-  "workspaces": [
-    "freezer_inventory_tracker"
-  ],
   "scripts": {
-    "dev": "npm --prefix freezer_inventory_tracker run dev",
-    "build": "npm install --prefix freezer_inventory_tracker && npm --prefix freezer_inventory_tracker run build && node -e \"const fs=require('fs'); fs.cpSync('freezer_inventory_tracker/dist', 'dist', {recursive: true}); fs.cpSync('freezer_inventory_tracker/dist', 'build', {recursive: true});\"",
-    "start": "node server.ts",
-    "lint": "npm --prefix freezer_inventory_tracker run lint"
+    "dev": "tsx server.ts",
+    "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --define:process.env.NODE_ENV=\"'production'\" --outfile=dist/server.cjs",
+    "start": "node dist/server.cjs",
+    "preview": "vite preview",
+    "lint": "tsc --noEmit"
   },
   "dependencies": {
-    "@tailwindcss/vite": "^4.3.3",
-    "@types/compression": "^1.8.1",
     "adm-zip": "^0.5.17",
-    "autoprefixer": "^10.4.20",
     "better-sqlite3": "^12.11.1",
     "compression": "^1.8.2",
     "express": "^5.2.1",
@@ -26,16 +22,14 @@
     "mobile-drag-drop": "^3.0.0-rc.0",
     "nodemailer": "^9.0.3",
     "papaparse": "^5.5.4",
-    "postcss": "^8.4.49",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "tailwindcss": "^3.4.17",
-    "tesseract.js": "^7.0.0",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@types/adm-zip": "^0.5.8",
     "@types/better-sqlite3": "^7.6.13",
+    "@types/compression": "^1.8.1",
     "@types/express": "^5.0.6",
     "@types/jsbarcode": "^3.11.4",
     "@types/jszip": "^3.4.0",
@@ -43,7 +37,10 @@
     "@types/nodemailer": "^8.0.1",
     "@types/papaparse": "^5.5.2",
     "@vitejs/plugin-react": "^5.0.0",
+    "autoprefixer": "^10.4.20",
     "esbuild": "^0.28.0",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
     "tsx": "^4.22.4",
     "typescript": "~5.8.2",
     "vite": "^6.2.0",

@@ -25,38 +25,7 @@ export default defineConfig(({ mode }) => {
           'pwa-512x512.png',
           'pwa-maskable-512x512.png'
         ],
-        manifest: {
-          id: '/',
-          name: 'Freezer Inventory Tracker',
-          short_name: 'FreezerApp',
-          description: 'Comprehensive freezer, butcher processing, and off-site cold storage inventory tracker with QR scanning.',
-          theme_color: '#0f172a',
-          background_color: '#0f172a',
-          display: 'standalone',
-          orientation: 'any',
-          start_url: '/',
-          scope: '/',
-          icons: [
-            {
-              src: '/pwa-192x192.png',
-              sizes: '192x192',
-              type: 'image/png',
-              purpose: 'any'
-            },
-            {
-              src: '/pwa-512x512.png',
-              sizes: '512x512',
-              type: 'image/png',
-              purpose: 'any'
-            },
-            {
-              src: '/pwa-maskable-512x512.png',
-              sizes: '512x512',
-              type: 'image/png',
-              purpose: 'maskable'
-            }
-          ]
-        },
+        manifest: false,
         workbox: {
           maximumFileSizeToCacheInBytes: 10 * 1024 * 1024, // 10 MiB to cache full rich client bundle
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],

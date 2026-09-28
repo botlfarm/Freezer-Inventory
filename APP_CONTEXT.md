@@ -1,6 +1,6 @@
 # Technical Architecture & Context Reference Document
 **Project:** Freezer Inventory Tracker  
-**Current Version:** `2.46.4`  
+**Current Version:** `2.48.2`  
 **Target Environment:** Standalone Web Application & Live Home Assistant Add-On (Ingress Compatible)
 
 ---
@@ -15,7 +15,7 @@ The **Freezer Inventory Tracker** is a full-stack, real-time inventory and cold-
 - **Off-Site Cold Storage & Movement Planning**: Multi-facility tracking, pallet and box hierarchies, drag-and-drop staging worksheets, barcoded QR scanning, pick/delivery order execution, and movement history.
 - **Butcher Processing & Traceability**: Harvest lot tracking, animal counts, live/hot/cold weights, yield calculations, butcher document attachments, and full parent-cut lineage.
 - **Automated Custom Lists & Notifications**: Inventory-controlled lists (min/max thresholds based on on-site counts, off-site counts, or off-site weights) with Home Assistant notifications, SMTP emails, or webhook alerts.
-- **Real-Time Collaboration & Presence Lifecycle**: Three operating modes (Auto Multi-User, Forced Multi-User, and Exclusive Single-User Lock) with Server-Sent Events (SSE), instant `sendBeacon` leave notifications on tab close/unload, immediate multi-to-single auto switching, atomic action queuing, and sub-second delta synchronization.
+- **Real-Time Collaboration & Presence Lifecycle**: Two operating modes (Smart Auto Mode and Exclusive Single-User Lock) with Server-Sent Events (SSE), instant `sendBeacon` leave notifications on tab close/unload, immediate collaborative sync when multiple users work in the same zone, atomic action queuing, and sub-second delta synchronization.
 - **Enterprise Audit Trail & Undo**: Full mutation history tracking client devices, companion app signatures, and instant reversible undo snapshots.
 
 ---
@@ -115,14 +115,14 @@ The application features a hybrid synchronization architecture designed for zero
    - Default operating mode.
    - Segregates client presence into two functional operational zones: **On-Site** (Products, Freezers, Management, Settings, Display Cases) and **Off-Site** (Butcher Logs, Off-Site Storage, Freight Orders, Traceability).
    - When only 1 client is active in a zone: runs with zero-lag local debounced batching and memory buffering.
-   - When multiple clients operate concurrently in the **same zone**: seamlessly transitions to collaborative 1.2s synchronization to keep active records aligned.
+   - When multiple clients operate concurrently in the **same zone**: seamlessly transitions to collaborative 1.2s synchronization to keep active records aligned without requiring manual mode toggles.
    - When users work in **different zones** (e.g., one on-site cataloging items, one off-site managing butcher logs): both users enjoy solo zero-lag performance without triggering unnecessary multi-user locks or friction.
-2. **Zone-Aware Forced Multi-User Mode (`'multi'`)**:
-   - Enforces real-time live sync across devices within the active operational zone or globally.
-3. **Zone-Aware Exclusive Single-User Lock Mode (`'single'`)**:
+2. **Zone-Aware Exclusive Single-User Lock Mode (`'single'`)**:
    - Acquires an exclusive server-side mutex lock scoped to the active operational zone (`onsite`, `offsite`, or global `all`) for uninterrupted high-volume operations (such as major physical inventory counts or bulk imports).
    - Prevents global cross-zone collisions so locking on-site does not disrupt or revert off-site operators and vice-versa.
    - Other clients within the locked zone receive read-only status and can submit interactive break-in requests.
+   - Automatically releases after 5 minutes of total user inactivity.
+   *(Note: The legacy Forced Multi-User mode was removed in v2.47.0 as redundant, since Smart Auto mode dynamically activates collaborative multi-user synchronization whenever multiple users work in the same zone).*
 
 ### Client-Side State Reconciliation (`useInventory.ts`)
 - **Action Queueing (`queuePromiseRef`)**: All dispatched actions chain through a sequential promise queue to prevent HTTP race conditions.
@@ -160,12 +160,16 @@ The application features a hybrid synchronization architecture designed for zero
 Every modification to the codebase must strictly follow the repository's versioning rules:
 
 1. **Simultaneous Version Bumps**:
-   - `/freezer_inventory_tracker/package.json` (`"version"`)
-   - `/freezer_inventory_tracker/config.yaml` (`version`)
-   - `/freezer_inventory_tracker/CHANGELOG.md` (Top-level release block)
-2. **Bumping Criteria**:
+   - `/package.json` (`"version"`)
+   - `/config.yaml` (`version`)
+   - `/version.ts` (`APP_VERSION`)
+   - `/CHANGELOG.md` (Top-level release block)
+2. **Repository & Directory Structure**:
+   - The entire application lives at the root of the repository (`/`), containing `config.yaml`, `Dockerfile`, `build.yaml`, `server.ts`, `App.tsx`, `index.html`, etc.
+   - The GitHub Actions workflow (`.github/workflows/build-addon.yml`) uses `home-assistant/builder` targeting the root directory (`--target .`), publishing multi-arch images (`amd64`, `aarch64`) directly to GHCR.
+3. **Bumping Criteria**:
    - **Patch (`0.0.1`)**: Bug fixes, performance optimizations, cosmetic refinements, documentation additions.
    - **Minor (`0.1.0`)**: New features, views, workflows, or components.
    - **Major (`1.0.0`)**: Breaking schema changes or major architectural redesigns.
-3. **Changelog Formatting**:
+4. **Changelog Formatting**:
    - Must include release version, date, categorized bullet points (`### Added`, `### Changed`, `### Fixed`), and an explicit `### Files Modified` section.

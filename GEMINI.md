@@ -6,9 +6,10 @@ These guidelines must be strictly followed by any AI agent or assistant when wor
 Every single change made to the codebase—no matter how trivial, small, or cosmetic—**MUST** bump the application's version in all relevant files.
 
 ### Action Checklist
-- Bump `"version"` in `/freezer_inventory_tracker/package.json`
-- Bump `version` in `/freezer_inventory_tracker/config.yaml`
-- Create a corresponding release header in `/freezer_inventory_tracker/CHANGELOG.md`
+- Bump `"version"` in `/package.json`
+- Bump `version` in `/config.yaml`
+- Bump `APP_VERSION` in `/version.ts`
+- Create a corresponding release header in `/CHANGELOG.md`
 
 ### Versioning Rules
 - **Patch Bumps (0.0.1)**: For small changes, bug fixes, cosmetic updates, or streamlining existing screens (e.g., from `1.39.9` to `1.39.10`).
@@ -18,7 +19,7 @@ Every single change made to the codebase—no matter how trivial, small, or cosm
 ---
 
 ## 2. Enforced Changelog Updating
-You **MUST** write an entry at the top of `/freezer_inventory_tracker/CHANGELOG.md` before finalizing any turn or change.
+You **MUST** write an entry at the top of `/CHANGELOG.md` before finalizing any turn or change.
 - Detail the version, date, and categorizations (e.g., `### Added`, `### Changed`, `### Fixed`).
 - List the precise list of modified files under a `### Files Modified` header in each release block.
 
@@ -28,7 +29,7 @@ You **MUST** write an entry at the top of `/freezer_inventory_tracker/CHANGELOG.
 This application is used **live** inside Home Assistant as an add-on. Therefore:
 - **No Destructive Database Changes**: Database structures, existing types, and key names (`AppInventoryState` schema) must always be backwards compatible.
 - **Graceful Fallbacks**: Older data parsed from user states or local JSON backups that do not contain newly introduced properties/fields must fall back gracefully to sensible default values (e.g., using optional chaining, `|| []`, or `??` default assignments) to prevent crashes on startup.
-- **Auto-Migrations**: If schema changes are strictly necessary, implement automatic on-the-fly migration paths in `/freezer_inventory_tracker/server.ts` during state loading (`normalizeState` or `loadStateSync`).
+- **Auto-Migrations**: If schema changes are strictly necessary, implement automatic on-the-fly migration paths in `/server.ts` during state loading (`normalizeState` or `loadStateSync`).
 
 ---
 
@@ -36,9 +37,9 @@ This application is used **live** inside Home Assistant as an add-on. Therefore:
 Whenever a new feature adds information, properties, or records to the application:
 - Ensure the new data fields are integrated into the central JSON and ZIP backup mechanisms.
 - Files to audit:
-  - **Server-Side API**: Check `/freezer_inventory_tracker/server.ts` backup and restore endpoints (e.g. `/api/backups/create`, `/api/backups/restore/:filename`, `/api/backups/export-zip`, `/api/backups/import-zip`).
-  - **Client-Side Views**: Update data managers like `/freezer_inventory_tracker/views/DataImportView.tsx` to handle selections for the new data scope during custom backups or restores.
-  - **Mapping Guide**: Keep `/freezer_inventory_tracker/FREEZER_MAPPING_AI_GUIDE.md` updated with relevant data formats to assist users with CSV/AppSheet translations.
+  - **Server-Side API**: Check `/server.ts` backup and restore endpoints (e.g. `/api/backups/create`, `/api/backups/restore/:filename`, `/api/backups/export-zip`, `/api/backups/import-zip`).
+  - **Client-Side Views**: Update data managers like `/views/DataImportView.tsx` to handle selections for the new data scope during custom backups or restores.
+  - **Mapping Guide**: Keep `/FREEZER_MAPPING_AI_GUIDE.md` updated with relevant data formats to assist users with CSV/AppSheet translations.
 
 ---
 
@@ -52,6 +53,6 @@ The application utilizes a relational SQLite database architecture. Always adher
 
 ## 6. Living System Documentation & Architecture Reference (`APP_CONTEXT.md`)
 Whenever new features, database entities, synchronization changes, or architectural workflows are introduced or modified:
-- Keep `/APP_CONTEXT.md` (and `/freezer_inventory_tracker/APP_CONTEXT.md`) updated to reflect the latest state, data models, and architectural decisions.
+- Keep `/APP_CONTEXT.md` updated to reflect the latest state, data models, and architectural decisions.
 - This ensures that modular chat windows focusing on specific subsystems (e.g., multi-user sync, off-site freight, butcher tracking) maintain complete, accurate, and up-to-date context across the entire lifecycle of the project.
 

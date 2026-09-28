@@ -1,3 +1,141 @@
+### [2.48.2] - 2026-09-28
+
+### Fixed
+- **Root-Cause Resolution for Persistent PWA Name & Icon Caching**:
+  - Disabled static manifest generation in `vite.config.ts` (`manifest: false`), eliminating hardcoded `manifest.webmanifest` creation and preventing Workbox from precaching the default static manifest file.
+  - Added timestamp-based version query hashes (`?v=timestamp`) to dynamic custom icon URLs in `getDynamicManifest()` inside `server.ts`, guaranteeing that updated icons bypass browser and OS WebAPK caches.
+  - Updated `/api/pwa/icon-192.png`, `/api/pwa/icon-512.png`, and `/apple-touch-icon.png` response headers to `Cache-Control: no-cache, no-store, must-revalidate` for dynamic custom icons, ending the 1-hour HTTP cache lock.
+  - Updated `LibraryView.tsx` branding save and reset actions to immediately dispatch updated `appConfig` state into React memory, allowing `App.tsx` and all dependent components to update titles, favicons, and manifest link hashes without requiring a manual refresh.
+
+### Files Modified
+- `/vite.config.ts`
+- `/server.ts`
+- `/views/LibraryView.tsx`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.48.1] - 2026-09-28
+
+### Fixed
+- **Busted Cache for PWA Manifest and Branding Updates**:
+  - Implemented dynamic, cache-busting `<link rel="manifest">` updates in `App.tsx` by generating a unique hash from active custom branding configuration parameters (app name, short name, and icon).
+  - Appended the unique hash as a `?v=` query parameter to `./manifest.json` on the fly. This forces the browser to immediately fetch and apply dynamic manifest branding modifications, ensuring that changes to the PWA name and icon are instantly recognized and queued for installed devices.
+  - Added a compliant, relative `<link rel="manifest" href="./manifest.json" />` reference directly inside the `<head>` of `index.html` to guarantee universal PWA manifest discovery in both development and production environments.
+
+### Files Modified
+- `/App.tsx`
+- `/index.html`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.48.0] - 2026-09-28
+
+### Changed
+- **Restructured Repository to Root Application File Structure**:
+  - Consolidated and migrated the entire application from the legacy `/freezer_inventory_tracker` subfolder directly into the repository root directory (`/`).
+  - Eliminated redundant duplicate configuration files, package manifests, and trampoline loader scripts:
+    - Root `package.json` is now the primary manifest with scripts for development (`tsx server.ts`), production build, and linting.
+    - Removed duplicate `server.js` trampoline script.
+    - Updated `server.ts` path resolutions (`DATA_DIR`, public assets, production dist) to cleanly target root directory paths.
+    - Consolidated `public/` directory with latest service worker and offline caching assets.
+  - Updated GitHub Actions Home Assistant Builder workflow (`.github/workflows/build-addon.yml`) to build from the repository root (`--target .`), publishing pre-built multi-architecture container images to GitHub Container Registry (GHCR).
+  - Synchronized and updated documentation and agent guidelines (`APP_CONTEXT.md`, `README.md`, `AGENTS.md`, `GEMINI.md`) to reflect the unified root project structure.
+
+### Files Modified
+- `/.github/workflows/build-addon.yml`
+- `/package.json`
+- `/config.yaml`
+- `/version.ts`
+- `/server.ts`
+- `/AGENTS.md`
+- `/GEMINI.md`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.47.0] - 2026-09-28
+
+### Removed
+- **Removed Forced Multi-User Operating Mode**:
+  - Deprecated and removed the manual "Forced Multi-User" operating mode from the application, simplifying the collaboration architecture into two streamlined operating modes: **Smart Auto Mode** (default) and **Exclusive Single-User Lock Mode**.
+  - Smart Auto mode automatically detects connected client presence per operational zone (`onsite` vs `offsite`):
+    - Runs in zero-latency solo buffering when a single user is working in a zone.
+    - Seamlessly and dynamically promotes to live 1.2s collaborative synchronization whenever multiple operators work concurrently within the same zone.
+  - Removed the "Multi" button and 3-way toggle in the sync status dropdown, replaced with a clean 2-way toggle (**Auto Mode** and **Force Single**).
+  - Removed the persistent "Multi-User Mode (Collaborative Sync) Forced" sticky alert banner from `App.tsx`.
+  - Removed `forcedMulti` state management, heartbeat tracking, and inactivity timers in `useInventory.ts` and `server.ts`.
+  - Updated `/api/operating-mode/status` and `/api/operating-mode/set` to gracefully treat legacy multi requests as Auto mode and release locks cleanly without regressions.
+  - Updated break-in countdown notification text to announce return to Auto mode upon expiration.
+
+### Files Modified
+- `/freezer_inventory_tracker/types.ts`
+- `/freezer_inventory_tracker/components/ConnectedClientsModalContent.tsx`
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/version.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.46.7] - 2026-09-28
+
+### Removed
+- **Removed Duplicate Device Identity from Sync Status Dropdown**:
+  - Removed the "This Device Identity" row and edit button from the header sync/status dropdown menu in `App.tsx`.
+  - Consolidated device identity and operator configuration into its primary canonical home inside the **PWA & Connected Devices** settings tab (`PwaDeviceManagerCard`).
+  - Streamlined the sync dropdown menu to focus strictly on real-time server connectivity, sync timestamps, and manual synchronization actions.
+
+### Files Modified
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/version.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.46.6] - 2026-09-28
+
+### Added
+- **On-Demand PWA Cache Purge & Force Refresh in Settings**:
+  - Added dedicated **Force Refresh Cache** button inside the **Application Version & Update Status** section of the Settings page.
+  - Clicking this action purges all Service Worker `CacheStorage` keys, unregisters active service worker registrations, and immediately performs a hard reload directly from the server.
+  - Complements the existing boot-time emergency "Reset Cache & Reload" button on the loading screen and error boundary, giving operators an explicit way to bust stuck caches while the app is running.
+
+### Files Modified
+- `/freezer_inventory_tracker/views/LibraryView.tsx`
+- `/freezer_inventory_tracker/version.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.46.5] - 2026-09-28
+
+### Changed
+- **Consolidated Version Visibility to Settings Page Only**:
+  - Removed duplicate version metadata indicator from the shared header on the PWA & Connected Devices tab.
+  - Retained application version display and live update check system exclusively in one location: the dedicated **Application Version & Update Status** section inside the Settings tab.
+  - Adjusted version checking listener so server queries only trigger when viewing the Settings tab.
+
+### Files Modified
+- `/freezer_inventory_tracker/views/LibraryView.tsx`
+- `/freezer_inventory_tracker/version.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
 ### [2.46.4] - 2026-09-27
 
 ### Added

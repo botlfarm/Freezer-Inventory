@@ -232,13 +232,18 @@ export default function App() {
     return customUrlConfig?.value?.trim() || '';
   }, [state.appConfig]);
 
-  // Dynamically synchronize custom PWA branding (App Name, Short Name, Favicon, Title)
+  // Dynamically synchronize custom PWA branding (App Name, Short Name, Favicon, Title, Manifest URL)
   React.useEffect(() => {
     if (typeof window === 'undefined') return;
     const appNameCfg = (state.appConfig || []).find(i => i.key === 'pwa_app_name');
     const shortNameCfg = (state.appConfig || []).find(i => i.key === 'pwa_short_name');
     const icon192Cfg = (state.appConfig || []).find(i => i.key === 'pwa_icon_192');
     
+    const nameVal = appNameCfg?.value?.trim() || '';
+    const shortVal = shortNameCfg?.value?.trim() || '';
+    const iconVal = icon192Cfg?.value?.trim() || '';
+    const updateHash = btoa(encodeURIComponent(nameVal + shortVal + iconVal.substring(0, 50))).substring(0, 8);
+
     if (appNameCfg?.value?.trim()) {
       document.title = appNameCfg.value.trim();
     }
@@ -260,6 +265,15 @@ export default function App() {
         favIconLink.href = icon192Cfg.value.trim();
       }
     }
+
+    // Force browser to fetch the updated dynamic manifest immediately by appending a unique updateHash query parameter
+    let manifestLink = document.querySelector('link[rel="manifest"]') as HTMLLinkElement;
+    if (!manifestLink) {
+      manifestLink = document.createElement('link');
+      manifestLink.rel = 'manifest';
+      document.head.appendChild(manifestLink);
+    }
+    manifestLink.href = `./manifest.json?v=${updateHash}`;
   }, [state.appConfig]);
 
   const showPwaBanner = !isCurrentlyStandalone && isMobileDevice && customPwaUrl && !pwaBannerDismissed;
@@ -1813,7 +1827,7 @@ export default function App() {
                     </span>
                   </h4>
                   <p className="text-xs text-amber-200 mt-0.5 leading-snug whitespace-normal break-words">
-                    <span className="font-semibold text-amber-300">{singleUserLock?.breakInRequest?.requestedByName || 'Another user'}</span> is waiting to edit. Auto-syncing and returning to Multi-User Mode in <span className="font-bold font-mono text-white underline">{breakInCountdown}s</span>...
+                    <span className="font-semibold text-amber-300">{singleUserLock?.breakInRequest?.requestedByName || 'Another user'}</span> is waiting to edit. Auto-syncing and returning to Auto Mode in <span className="font-bold font-mono text-white underline">{breakInCountdown}s</span>...
                   </p>
                 </div>
               </div>
@@ -1989,64 +2003,6 @@ export default function App() {
                   await setOperatingMode('auto');
                 }}
                 className={`rounded-lg bg-emerald-500 hover:bg-emerald-400 font-bold text-slate-950 shadow-md transition cursor-pointer flex items-center justify-center gap-1 whitespace-nowrap flex-1 sm:flex-initial text-center ${isScrolled ? 'text-[11px] px-2.5 py-1' : 'text-xs px-3.5 py-1.5 gap-1.5'}`}
-              >
-                <span>⚡ <span className={isScrolled ? 'hidden sm:inline' : ''}>Switch to </span>Auto</span>
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Banner when Current User has Forced Multi-User Mode */}
-        {operatingMode === 'multi' && (
-          <div className={`sticky top-2 z-40 bg-blue-950/95 border border-blue-500/60 text-blue-100 shadow-2xl backdrop-blur-md transition-all duration-200 animate-scale-up w-full max-w-full box-border ${
-            isScrolled
-              ? 'px-3 sm:px-4 py-1.5 rounded-lg sm:rounded-xl mb-2.5 flex flex-row items-center justify-between gap-2 text-xs overflow-hidden'
-              : 'p-3 sm:p-4 rounded-xl mb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 sm:gap-3 text-sm'
-          }`}>
-            <div className={`flex items-start sm:items-center min-w-0 w-full sm:w-auto flex-1 ${isScrolled ? 'gap-2 truncate' : 'gap-2.5 sm:gap-3'}`}>
-              {isScrolled ? (
-                <Users className="w-4 h-4 text-blue-300 shrink-0" />
-              ) : (
-                <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-lg sm:rounded-xl bg-blue-500/20 border border-blue-400/50 flex items-center justify-center shrink-0 shadow-inner mt-0.5 sm:mt-0">
-                  <Users className="w-4 h-4 sm:w-5 sm:h-5 text-blue-300" />
-                </div>
-              )}
-              <div className={`min-w-0 flex-1 ${isScrolled ? 'truncate' : ''}`}>
-                <div className={`flex items-center gap-1.5 sm:gap-2 ${isScrolled ? 'truncate' : 'flex-wrap'}`}>
-                  <strong className={`text-white font-bold ${isScrolled ? 'text-xs truncate' : 'text-xs sm:text-sm'}`}>
-                    Multi-User Mode (Collaborative Sync) Forced
-                  </strong>
-                  {forcedMultiUser?.setByName && (
-                    <span className="px-1.5 py-0.5 rounded-full text-[10px] bg-blue-500/25 text-blue-200 border border-blue-400/40">
-                      by {forcedMultiUser.setByName}{forcedMultiUser.setByClientId === clientId ? ' (You)' : ''}
-                    </span>
-                  )}
-                  <span className="hidden sm:inline-flex px-1.5 py-0.5 rounded-full text-[10px] bg-blue-500/30 text-blue-300 font-bold border border-blue-500/50 uppercase tracking-wider shrink-0">
-                    Live Broadcasts
-                  </span>
-                </div>
-                {!isScrolled && (
-                  <p className="text-xs text-blue-200/90 mt-0.5 leading-snug whitespace-normal break-words">
-                    Rapid debounced synchronization (1.2s) & SSE broadcast streaming are forced on across devices. Auto-reverts to Auto mode after 5 minutes of inactivity.
-                  </p>
-                )}
-              </div>
-            </div>
-
-            <div className={`flex items-center gap-2 shrink-0 ${isScrolled ? '' : 'w-full sm:w-auto justify-end pt-1.5 sm:pt-0 border-t sm:border-t-0 border-blue-900/50'}`}>
-              <button
-                onClick={async () => {
-                  await flushAllPendingSyncs();
-                }}
-                className={`rounded-lg bg-blue-900/80 hover:bg-blue-800 border border-blue-600/60 font-bold text-blue-200 cursor-pointer transition shadow whitespace-nowrap flex-1 sm:flex-initial text-center justify-center ${isScrolled ? 'text-[11px] px-2.5 py-1' : 'text-xs px-3 py-1.5'}`}
-              >
-                Sync Now
-              </button>
-              <button
-                onClick={async () => {
-                  await setOperatingMode('auto');
-                }}
-                className={`rounded-lg bg-blue-500 hover:bg-blue-400 font-bold text-slate-950 shadow-md transition cursor-pointer flex items-center justify-center gap-1 whitespace-nowrap flex-1 sm:flex-initial text-center ${isScrolled ? 'text-[11px] px-2.5 py-1' : 'text-xs px-3.5 py-1.5 gap-1.5'}`}
               >
                 <span>⚡ <span className={isScrolled ? 'hidden sm:inline' : ''}>Switch to </span>Auto</span>
               </button>
@@ -2359,8 +2315,6 @@ export default function App() {
                         ? 'bg-emerald-950/40 text-emerald-300 border-emerald-500/50 shadow-md shadow-emerald-950/30 ring-1 ring-emerald-500/30'
                         : singleUserLock && singleUserLock.clientId !== clientId
                         ? 'bg-amber-950/40 text-amber-300 border-amber-500/50'
-                        : operatingMode === 'multi'
-                        ? 'bg-blue-950/40 text-blue-300 border-blue-500/50 shadow-md shadow-blue-950/30 ring-1 ring-blue-500/30'
                         : isSaving
                         ? 'bg-amber-950/40 text-amber-300 border-amber-500/50 animate-pulse'
                         : hasPendingChanges
@@ -2380,8 +2334,6 @@ export default function App() {
                         ? 'Single-User Mode Active (Zero-Lag Local Storage)'
                         : singleUserLock && singleUserLock.clientId !== clientId
                         ? `Locked in Single-User Mode by ${singleUserLock.holderName}`
-                        : operatingMode === 'multi'
-                        ? 'Forced Multi-User Mode Active (Collaborative Sync)'
                         : operatingMode === 'auto'
                         ? isAutoMultiActive
                           ? `Auto Mode: Multi-User Active (${activeClientCount} connected) — Live sync enabled`
@@ -2393,8 +2345,6 @@ export default function App() {
                       <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping mr-0.5 shrink-0" />
                     ) : singleUserLock && singleUserLock.clientId !== clientId ? (
                       <span className="text-amber-400 text-xs shrink-0">🔒</span>
-                    ) : operatingMode === 'multi' ? (
-                      <Users className="w-3.5 h-3.5 text-blue-400 shrink-0" />
                     ) : isSaving || isRefreshing ? (
                       <svg 
                         className="w-3.5 h-3.5 flex-shrink-0 animate-spin text-cyan-400" 
@@ -2417,7 +2367,7 @@ export default function App() {
                       >
                         <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
                       </svg>
-                    ) : isAutoMultiActive || operatingMode === 'multi' ? (
+                    ) : isAutoMultiActive ? (
                       <Users className="w-3.5 h-3.5 text-blue-400 shrink-0" />
                     ) : (
                       <Zap className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
@@ -2427,8 +2377,6 @@ export default function App() {
                         ? 'Single-User'
                         : singleUserLock && singleUserLock.clientId !== clientId
                         ? `Locked (${singleUserLock.holderName})`
-                        : operatingMode === 'multi'
-                        ? 'Multi-User'
                         : isSaving
                         ? 'Saving...'
                         : hasPendingChanges
@@ -2451,7 +2399,7 @@ export default function App() {
                       <div className="fixed inset-0 z-40" onClick={() => setIsSyncMenuOpen(false)} />
                       <div id="sync-status-dropdown" className="absolute right-0 mt-2 w-64 sm:w-72 bg-cool-gray-850 rounded-xl border border-cool-gray-700 shadow-2xl p-2.5 z-50 text-xs animate-scale-up max-h-[85vh] overflow-y-auto">
                         
-                        {/* 3-Way Operating Mode Control Panel */}
+                        {/* 2-Way Operating Mode Control Panel */}
                         <div className="p-2.5 bg-cool-gray-900/90 rounded-lg border border-cool-gray-750 mb-2.5 shadow-inner">
                           <div className="text-[10px] uppercase tracking-wider text-cool-gray-400 font-bold mb-2 flex items-center justify-between">
                             <span>Operating Mode</span>
@@ -2460,26 +2408,22 @@ export default function App() {
                                 ? isAutoMultiActive
                                   ? 'bg-blue-950/80 text-blue-300 border-blue-800/50'
                                   : 'bg-cyan-950/80 text-cyan-300 border-cyan-800/50'
-                                : operatingMode === 'multi'
-                                ? 'bg-blue-950/80 text-blue-300 border-blue-800/50'
                                 : 'bg-emerald-950/80 text-emerald-300 border-emerald-800/50'
                             }`}>
                               {operatingMode === 'auto' 
                                 ? (isAutoMultiActive ? `Auto: Multi (${activeClientCount})` : 'Auto: Single') 
-                                : operatingMode === 'multi' 
-                                ? 'Forced Multi' 
                                 : 'Exclusive Lock'}
                             </span>
                           </div>
 
-                          {/* 3-Mode Tab Buttons */}
-                          <div className="grid grid-cols-3 gap-1 bg-cool-gray-800/90 p-1 rounded-lg border border-cool-gray-700/60 mb-2.5">
+                          {/* 2-Mode Tab Buttons */}
+                          <div className="grid grid-cols-2 gap-1.5 bg-cool-gray-800/90 p-1 rounded-lg border border-cool-gray-700/60 mb-2.5">
                             <button
                               type="button"
                               onClick={async () => {
                                 await setOperatingMode('auto');
                               }}
-                              className={`py-1.5 px-1 rounded-md text-[11px] font-bold flex items-center justify-center gap-1 transition cursor-pointer ${
+                              className={`py-1.5 px-2 rounded-md text-[11px] font-bold flex items-center justify-center gap-1.5 transition cursor-pointer ${
                                 operatingMode === 'auto'
                                   ? isAutoMultiActive
                                     ? 'bg-blue-600 text-white shadow-sm'
@@ -2488,24 +2432,8 @@ export default function App() {
                               }`}
                               title="Auto Mode (Default): Runs solo locally with zero lag and seamlessly upgrades to collaborative sync when multiple users are active."
                             >
-                              {isAutoMultiActive ? <Users className="w-3 h-3 shrink-0" /> : <Zap className="w-3 h-3 shrink-0" />}
-                              <span>Auto</span>
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={async () => {
-                                await setOperatingMode('multi');
-                              }}
-                              className={`py-1.5 px-1 rounded-md text-[11px] font-bold flex items-center justify-center gap-1 transition cursor-pointer ${
-                                operatingMode === 'multi'
-                                  ? 'bg-blue-600 text-white shadow-sm'
-                                  : 'text-cool-gray-400 hover:text-cool-gray-200 hover:bg-cool-gray-700/50'
-                              }`}
-                              title="Multi-User Mode: Forces collaborative 1.2s sync and live broadcast updates. Ideal for multi-device testing. Auto-times out after 5m."
-                            >
-                              <Users className="w-3 h-3 shrink-0" />
-                              <span>Multi</span>
+                              {isAutoMultiActive ? <Users className="w-3.5 h-3.5 shrink-0" /> : <Zap className="w-3.5 h-3.5 shrink-0" />}
+                              <span>Auto Mode</span>
                             </button>
 
                             <button
@@ -2520,7 +2448,7 @@ export default function App() {
                                   });
                                 }
                               }}
-                              className={`py-1.5 px-1 rounded-md text-[11px] font-bold flex items-center justify-center gap-1 transition cursor-pointer ${
+                              className={`py-1.5 px-2 rounded-md text-[11px] font-bold flex items-center justify-center gap-1.5 transition cursor-pointer ${
                                 operatingMode === 'single'
                                   ? 'bg-emerald-600 text-slate-950 font-black shadow-sm'
                                   : singleUserLock && singleUserLock.clientId !== clientId
@@ -2529,8 +2457,8 @@ export default function App() {
                               }`}
                               title="Single-User Mode: Claims exclusive database lock for zero lag. Locks other users with break-in option. Auto-times out after 5m."
                             >
-                              <User className="w-3 h-3 shrink-0" />
-                              <span>Single</span>
+                              <User className="w-3.5 h-3.5 shrink-0" />
+                              <span>Force Single</span>
                             </button>
                           </div>
 
@@ -2564,40 +2492,6 @@ export default function App() {
                             </div>
                           )}
 
-                          {operatingMode === 'multi' && (
-                            <div className="space-y-2 text-[11px]">
-                              <p className="text-blue-200 leading-snug">
-                                <span className="font-semibold text-blue-300">👥 Forced Multi-User:</span> Real-time 1.2s debounced sync and SSE broadcasts are continuously active for live multi-device testing.
-                              </p>
-                              <div className="flex items-center justify-between text-[10px] text-cool-gray-400 pt-1 border-t border-cool-gray-800">
-                                <span className="font-medium">Active Clients:</span>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setIsSyncMenuOpen(false);
-                                    setActiveModal({ type: 'CONNECTED_CLIENTS' });
-                                  }}
-                                  className="font-bold flex items-center gap-1 px-2 py-0.5 rounded bg-blue-950/90 hover:bg-blue-900/90 text-blue-300 border border-blue-800/60 cursor-pointer transition hover:scale-105"
-                                  title="Click to view connected devices & active users"
-                                >
-                                  <span>{activeClientCount} Connected ➔</span>
-                                </button>
-                              </div>
-                              <p className="text-[10px] text-cool-gray-400 italic">
-                                Automatically reverts to Auto mode after 5 minutes of inactivity.
-                              </p>
-                              <button
-                                type="button"
-                                onClick={async () => {
-                                  await setOperatingMode('auto');
-                                }}
-                                className="w-full py-1.5 px-2 bg-blue-600/30 hover:bg-blue-600/50 border border-blue-500/40 text-blue-200 hover:text-white font-bold rounded-md text-xs transition cursor-pointer flex items-center justify-center gap-1.5"
-                              >
-                                <span>⚡ Revert to Auto Mode</span>
-                              </button>
-                            </div>
-                          )}
-
                           {operatingMode === 'single' && (
                             <div className="space-y-2 text-[11px]">
                               <p className="text-emerald-200 leading-snug">
@@ -2618,7 +2512,7 @@ export default function App() {
                             </div>
                           )}
 
-                          {/* Break-in prompt if another user holds the single-user lock while we are in Auto or Multi */}
+                          {/* Break-in prompt if another user holds the single-user lock while we are in Auto */}
                           {operatingMode !== 'single' && singleUserLock && singleUserLock.clientId !== clientId && (
                             <div className="mt-2 pt-2 border-t border-amber-900/60 space-y-1.5">
                               <p className="text-[11px] text-amber-300 leading-snug">
@@ -2680,26 +2574,6 @@ export default function App() {
                           </div>
                         </div>
 
-                        {/* Device & Operator Identity Row */}
-                        <div className="p-2 bg-cool-gray-900/90 rounded-lg border border-cool-gray-750 mb-2 flex items-center justify-between gap-2">
-                          <div className="min-w-0">
-                            <span className="text-[10px] font-bold text-cool-gray-400 uppercase tracking-wider block">This Device Identity</span>
-                            <span className="text-xs font-bold text-cyan-300 truncate block">
-                              {getOperatorName() ? `@${getOperatorName()}` : 'Unassigned'} • {getDeviceName()}
-                            </span>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setIsSyncMenuOpen(false);
-                              setShowDeviceSetupModal(true);
-                            }}
-                            className="px-2 py-1 rounded bg-cool-gray-800 hover:bg-cool-gray-700 text-cool-gray-200 text-[10px] font-bold border border-cool-gray-700 transition cursor-pointer shrink-0"
-                          >
-                            Edit
-                          </button>
-                        </div>
-
                         <button
                           onClick={async () => {
                             await flushAllPendingSyncs();
@@ -2724,8 +2598,6 @@ export default function App() {
                           <span className={`text-[10px] uppercase font-bold tracking-wide px-1.5 py-0.5 rounded ${
                             operatingMode === 'single' || isSingleUserMode
                               ? 'bg-emerald-950/80 text-emerald-400 border border-emerald-850/40'
-                              : operatingMode === 'multi'
-                              ? 'bg-blue-950/80 text-blue-400 border border-blue-850/40'
                               : isSaving
                               ? 'bg-amber-950/80 text-amber-300 border border-amber-850/40 animate-pulse'
                               : hasPendingChanges
@@ -2740,7 +2612,7 @@ export default function App() {
                               ? 'bg-amber-950/80 text-amber-400 border border-amber-850/40'
                               : 'bg-rose-950/80 text-rose-400 border border-rose-850/40'
                           }`}>
-                            {operatingMode === 'single' || isSingleUserMode ? 'Single-User' : operatingMode === 'multi' ? 'Multi-User' : isSaving ? 'Saving...' : hasPendingChanges ? 'Pending Sync' : isAutoMultiActive ? `Auto: Multi (${activeClientCount})` : syncStatus === 'remote_editing' ? 'User Editing' : syncStatus === 'synced' ? 'Auto: Single' : syncStatus === 'connecting' ? 'Connecting' : 'Offline'}
+                            {operatingMode === 'single' || isSingleUserMode ? 'Single-User' : isSaving ? 'Saving...' : hasPendingChanges ? 'Pending Sync' : isAutoMultiActive ? `Auto: Multi (${activeClientCount})` : syncStatus === 'remote_editing' ? 'User Editing' : syncStatus === 'synced' ? 'Auto: Single' : syncStatus === 'connecting' ? 'Connecting' : 'Offline'}
                           </span>
                         </button>
 

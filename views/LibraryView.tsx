@@ -365,7 +365,7 @@ const LibraryView: React.FC<{
   };
 
   React.useEffect(() => {
-    if (activeTab === "settings" || activeTab === "pwa") {
+    if (activeTab === "settings") {
       checkAppVersion();
     }
   }, [activeTab]);
@@ -409,6 +409,26 @@ const LibraryView: React.FC<{
       setIsCheckingUpdate(false);
       setTimeout(() => setUpdateMessage(null), 5000);
     }
+  };
+
+  const handlePurgeCacheAndReload = async () => {
+    setIsCheckingUpdate(true);
+    setUpdateMessage("Purging local caches, unregistering service workers, and reloading...");
+    try {
+      if ('caches' in window) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map(k => caches.delete(k)));
+      }
+      if ('serviceWorker' in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map(r => r.unregister()));
+      }
+    } catch (e) {
+      console.warn("Error purging cache:", e);
+    }
+    setTimeout(() => {
+      window.location.reload();
+    }, 400);
   };
 
   // Synchronize PWA branding states with state.appConfig updates
@@ -525,6 +545,21 @@ const LibraryView: React.FC<{
       });
 
       if (res.ok) {
+        const data = await res.json().catch(() => ({}));
+        if (data.configs) {
+          const newAppConfig = Object.entries(data.configs).map(([k, v]) => ({
+            key: k,
+            value: v as string,
+            updatedAt: new Date().toISOString()
+          }));
+          dispatch({
+            type: 'REPLACE_STATE',
+            payload: {
+              ...state,
+              appConfig: newAppConfig
+            }
+          });
+        }
         setPwaBrandingMessage({
           type: 'success',
           text: 'App name & icon saved! Browser title, manifest & icons updated.'
@@ -568,6 +603,21 @@ const LibraryView: React.FC<{
       });
 
       if (res.ok) {
+        const data = await res.json().catch(() => ({}));
+        if (data.configs) {
+          const newAppConfig = Object.entries(data.configs).map(([k, v]) => ({
+            key: k,
+            value: v as string,
+            updatedAt: new Date().toISOString()
+          }));
+          dispatch({
+            type: 'REPLACE_STATE',
+            payload: {
+              ...state,
+              appConfig: newAppConfig
+            }
+          });
+        }
         setPwaAppName('Freezer Inventory Tracker');
         setPwaShortName('FreezerApp');
         setPwaIconType('preset');
@@ -3135,38 +3185,25 @@ const LibraryView: React.FC<{
           <div className="space-y-6 mt-4 max-w-3xl font-sans">
             {/* Page Header */}
             <div className="bg-cool-gray-850 p-3 sm:p-4 rounded-xl border border-cool-gray-750 shadow-sm">
-              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2.5">
-                <div>
-                  <h3 className="text-sm sm:text-base font-bold text-cool-gray-100 flex items-center gap-2">
-                    {activeTab === "pwa" ? (
-                      <>
-                        <Smartphone className="w-4.5 h-4.5 text-cyan-400" />
-                        PWA & Connected Devices
-                      </>
-                    ) : (
-                      <>
-                        <Settings className="w-4.5 h-4.5 text-cyan-400" />
-                        Application & System Settings
-                      </>
-                    )}
-                  </h3>
-                  <p className="text-xs text-cool-gray-400 mt-0.5 font-medium">
-                    {activeTab === "pwa" 
-                      ? "Configure standalone mobile application parameters, customize icons, and manage connected clients."
-                      : "Configure general application preferences and manage sandbox duplicates."}
-                  </p>
-                </div>
-                <div className="flex items-center gap-2 text-xs text-cool-gray-400 font-mono shrink-0">
-                  <span>v{APP_VERSION}</span>
-                  <span aria-hidden="true">·</span>
-                  {serverVersionStatus === 'mismatch' ? (
-                    <span className="text-amber-400 font-sans font-medium">Update Available</span>
-                  ) : serverVersionStatus === 'offline' ? (
-                    <span className="text-sky-400 font-sans font-medium">Offline</span>
+              <div>
+                <h3 className="text-sm sm:text-base font-bold text-cool-gray-100 flex items-center gap-2">
+                  {activeTab === "pwa" ? (
+                    <>
+                      <Smartphone className="w-4.5 h-4.5 text-cyan-400" />
+                      PWA & Connected Devices
+                    </>
                   ) : (
-                    <span className="text-emerald-400 font-sans font-medium">Active</span>
+                    <>
+                      <Settings className="w-4.5 h-4.5 text-cyan-400" />
+                      Application & System Settings
+                    </>
                   )}
-                </div>
+                </h3>
+                <p className="text-xs text-cool-gray-400 mt-0.5 font-medium">
+                  {activeTab === "pwa" 
+                    ? "Configure standalone mobile application parameters, customize icons, and manage connected clients."
+                    : "Configure general application preferences and manage sandbox duplicates."}
+                </p>
               </div>
             </div>
 
@@ -3900,7 +3937,7 @@ const LibraryView: React.FC<{
 
                       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2 border-t border-cool-gray-800 text-[11px] text-cool-gray-450">
                         <span>Query the server to verify your installed PWA shell is current and trigger background update checks.</span>
-                        <div className="flex items-center gap-2 shrink-0">
+                        <div className="flex items-center gap-2 shrink-0 flex-wrap">
                           <button
                             type="button"
                             onClick={handleForceCheckAndUpdate}
@@ -3908,6 +3945,15 @@ const LibraryView: React.FC<{
                             className="px-3 py-1.5 bg-cool-gray-800 hover:bg-cool-gray-750 text-cool-gray-200 rounded-lg text-xs font-semibold transition cursor-pointer disabled:opacity-50"
                           >
                             {isCheckingUpdate ? 'Checking...' : 'Check for Updates'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handlePurgeCacheAndReload}
+                            disabled={isCheckingUpdate}
+                            className="px-3 py-1.5 bg-cool-gray-800 hover:bg-cool-gray-750 text-cool-gray-300 hover:text-cool-gray-100 rounded-lg text-xs font-semibold transition cursor-pointer disabled:opacity-50"
+                            title="Force clear Service Worker caches and reload page directly from server"
+                          >
+                            Force Refresh Cache
                           </button>
                           {serverVersionStatus === 'mismatch' && (
                             <button

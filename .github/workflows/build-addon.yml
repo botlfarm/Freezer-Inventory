@@ -37,6 +37,6 @@ jobs:
           args: |
             --aarch64 \
             --amd64 \
-            --target freezer_inventory_tracker \
+            --target . \
             --image "freezer-inventory-tracker-{arch}" \
             --docker-hub "ghcr.io/${{ github.repository_owner }}"

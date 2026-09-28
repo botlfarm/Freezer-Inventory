@@ -55,14 +55,14 @@
       "short_name": "Search",
       "description": "Search cuts and containers",
       "url": "/?view=inventory",
-      "icons": [{ src: "/pwa-192x192.png", sizes: "192x192" }]
+      "icons": [{ "src": "/pwa-192x192.png", "sizes": "192x192" }]
     },
     {
       "name": "Scan QR Code",
       "short_name": "Scan",
       "description": "Scan QR code",
       "url": "/?view=scan",
-      "icons": [{ src: "/pwa-192x192.png", sizes: "192x192" }]
+      "icons": [{ "src": "/pwa-192x192.png", "sizes": "192x192" }]
     }
   ]
 }

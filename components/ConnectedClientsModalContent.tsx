@@ -8,7 +8,7 @@ interface ConnectedClientsModalContentProps {
   activeClientCount: number;
   zoneCounts?: ZoneClientCounts;
   activeZone?: OperationalZone;
-  operatingMode: 'auto' | 'multi' | 'single';
+  operatingMode: 'auto' | 'single';
   isCollaborativeMode: boolean;
   onRefresh: () => Promise<ConnectedClientInfo[]>;
   onDisconnect: (clientId: string) => Promise<boolean>;
@@ -98,7 +98,7 @@ export const ConnectedClientsModalContent: React.FC<ConnectedClientsModalContent
     }
   };
 
-  const isMultiActive = operatingMode === 'multi' || (operatingMode === 'auto' && isCollaborativeMode);
+  const isMultiActive = operatingMode === 'auto' && isCollaborativeMode;
   const totalCount = zoneCounts?.total ?? (clients.length || activeClientCount);
   const onsiteCount = zoneCounts?.onsite ?? 1;
   const offsiteCount = zoneCounts?.offsite ?? 0;
