@@ -1,3 +1,18 @@
+### [2.48.3] - 2026-09-28
+
+### Fixed
+- **Resolved Docker/Vite Production Build Script Path Error**:
+  - Changed absolute script reference `/index.tsx` in `index.html` to relative path `./index.tsx`.
+  - This matches the production `base: './'` config inside `vite.config.ts`, ensuring Rollup and Vite successfully resolve the entrypoint during multi-stage production builds and Docker image compilations.
+
+### Files Modified
+- `/index.html`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
 ### [2.48.2] - 2026-09-28
 
 ### Fixed
