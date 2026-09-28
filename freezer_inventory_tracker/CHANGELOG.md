@@ -1,3 +1,44 @@
+### [2.46.4] - 2026-09-27
+
+### Added
+- **Application Version Visibility & Update Verification in Settings**:
+  - Added real-time application version display (`v2.46.4`) to the header of the Settings and PWA & Connected Devices pages.
+  - Implemented unboxed status indicator showing current connection state (`Active`, `Update Available`, or `Offline (Using cached shell)`).
+  - Added dedicated **Application Version & Update Status** section to the Settings panel displaying:
+    - Current installed client bundle version (`v2.46.4`).
+    - Live server connection and version match status.
+    - Interactive **Check for Updates** button that queries the server, requests Service Worker update checks via `reg.update()`, and verifies fresh caches.
+    - One-click **Reload to Apply** action if a server version mismatch is detected.
+  - Added dedicated `/api/version` backend endpoint in `server.ts` returning current server release version and timestamp with cache-busting headers.
+  - Created centralized `/freezer_inventory_tracker/version.ts` module exporting canonical `APP_VERSION`.
+
+### Files Modified
+- `/freezer_inventory_tracker/version.ts`
+- `/freezer_inventory_tracker/views/LibraryView.tsx`
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.46.3] - 2026-09-27
+
+### Changed
+- **PWA and Asset Cache-Buster Optimization**:
+  - Enhanced cache-control policies inside `server.ts` to solve issue where devices and browsers get locked into stale cached PWA page revisions and report "offline" status.
+  - Added strict `Cache-Control: no-cache, no-store, must-revalidate` headers to the main `/sw.js` registration endpoint to force background service worker update checking immediately.
+  - Implemented custom header injection on `express.static` file serving for all `.html` assets (including `/index.html` entrypoint) to prevent client-side HTTP aggressive caching of main scripts and stylesheets.
+  - Configured robust fallback `res.sendFile` middleware to inject `Cache-Control: no-cache, no-store, must-revalidate` headers for any direct path navigation fallbacks to `index.html`.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
 ### [2.46.2] - 2026-09-27
 
 ### Added

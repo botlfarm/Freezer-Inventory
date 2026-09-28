@@ -21,6 +21,7 @@ import crypto from 'crypto';
 import AdmZip from 'adm-zip';
 import Database from 'better-sqlite3';
 import { calculateHistoryRetention } from './utils/historyRetention';
+import { APP_VERSION } from './version';
 
 const PORT = 3000;
 
@@ -430,10 +431,12 @@ app.get('/sw.js', (req, res) => {
   for (const swPath of swPaths) {
     if (fs.existsSync(swPath)) {
       res.setHeader('Content-Type', 'application/javascript');
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
       return res.sendFile(swPath);
     }
   }
   res.setHeader('Content-Type', 'application/javascript');
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
   return res.send(`self.addEventListener('install', () => self.skipWaiting()); self.addEventListener('activate', () => self.registration.unregister());`);
 });
 
@@ -3876,6 +3879,14 @@ app.post('/api/app-config', async (req, res) => {
     console.error('Error saving app_config:', err);
     res.status(500).json({ error: 'Failed to save app config.', details: err.message });
   }
+});
+
+app.get('/api/version', (req, res) => {
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.json({
+    version: APP_VERSION,
+    timestamp: new Date().toISOString()
+  });
 });
 
 app.get('/api/config', (req, res) => {
@@ -12654,8 +12665,15 @@ async function startServer() {
         distPath = path.join(process.cwd(), 'freezer_inventory_tracker', 'dist');
       }
     }
-    app.use(express.static(distPath));
+    app.use(express.static(distPath, {
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith('.html') || filePath.endsWith('index.html')) {
+          res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        }
+      }
+    }));
     app.use((req, res) => {
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }

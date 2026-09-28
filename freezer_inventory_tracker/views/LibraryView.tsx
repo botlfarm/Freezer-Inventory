@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect } from "react";
 import { getApiUrl } from "../hooks/apiUrl";
+import { APP_VERSION } from "../version";
 import {
   Action,
   Container,
@@ -328,6 +329,87 @@ const LibraryView: React.FC<{
   const [pwaCustomImage, setPwaCustomImage] = useState<string | null>(null);
   const [isSavingPwaBranding, setIsSavingPwaBranding] = useState(false);
   const [pwaBrandingMessage, setPwaBrandingMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // Application Version & Update state management
+  const [serverVersion, setServerVersion] = useState<string | null>(null);
+  const [serverVersionStatus, setServerVersionStatus] = useState<'checking' | 'connected' | 'mismatch' | 'offline'>('checking');
+  const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
+  const [updateMessage, setUpdateMessage] = useState<string | null>(null);
+
+  const checkAppVersion = async () => {
+    setIsCheckingUpdate(true);
+    try {
+      const res = await fetch(getApiUrl("api/version?_t=" + Date.now()), {
+        signal: AbortSignal.timeout(3500)
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.version) {
+          setServerVersion(data.version);
+          if (data.version === APP_VERSION) {
+            setServerVersionStatus('connected');
+          } else {
+            setServerVersionStatus('mismatch');
+          }
+        } else {
+          setServerVersionStatus('connected');
+        }
+      } else {
+        setServerVersionStatus('offline');
+      }
+    } catch {
+      setServerVersionStatus('offline');
+    } finally {
+      setIsCheckingUpdate(false);
+    }
+  };
+
+  React.useEffect(() => {
+    if (activeTab === "settings" || activeTab === "pwa") {
+      checkAppVersion();
+    }
+  }, [activeTab]);
+
+  const handleForceCheckAndUpdate = async () => {
+    setIsCheckingUpdate(true);
+    setUpdateMessage("Checking for updates and querying server...");
+    try {
+      if ('serviceWorker' in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        for (const reg of regs) {
+          await reg.update().catch(() => {});
+        }
+      }
+      const res = await fetch(getApiUrl("api/version?_t=" + Date.now()), {
+        headers: { 'Cache-Control': 'no-cache, no-store' },
+        signal: AbortSignal.timeout(4000)
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setServerVersion(data.version);
+        if (data.version !== APP_VERSION) {
+          setServerVersionStatus('mismatch');
+          setUpdateMessage(`New version v${data.version} detected on server! Reloading application...`);
+          setTimeout(() => {
+            window.location.reload();
+          }, 800);
+          return;
+        } else {
+          setServerVersionStatus('connected');
+          setUpdateMessage(`Up to date! Running latest release v${APP_VERSION}.`);
+        }
+      } else {
+        setServerVersionStatus('offline');
+        setUpdateMessage("Server unreachable. Running offline with cached app shell.");
+      }
+    } catch {
+      setServerVersionStatus('offline');
+      setUpdateMessage("Offline mode: Client is running version v" + APP_VERSION);
+    } finally {
+      setIsCheckingUpdate(false);
+      setTimeout(() => setUpdateMessage(null), 5000);
+    }
+  };
 
   // Synchronize PWA branding states with state.appConfig updates
   React.useEffect(() => {
@@ -3053,25 +3135,38 @@ const LibraryView: React.FC<{
           <div className="space-y-6 mt-4 max-w-3xl font-sans">
             {/* Page Header */}
             <div className="bg-cool-gray-850 p-3 sm:p-4 rounded-xl border border-cool-gray-750 shadow-sm">
-              <div>
-                <h3 className="text-sm sm:text-base font-bold text-cool-gray-100 flex items-center gap-2">
-                  {activeTab === "pwa" ? (
-                    <>
-                      <Smartphone className="w-4.5 h-4.5 text-cyan-400" />
-                      PWA & Connected Devices
-                    </>
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2.5">
+                <div>
+                  <h3 className="text-sm sm:text-base font-bold text-cool-gray-100 flex items-center gap-2">
+                    {activeTab === "pwa" ? (
+                      <>
+                        <Smartphone className="w-4.5 h-4.5 text-cyan-400" />
+                        PWA & Connected Devices
+                      </>
+                    ) : (
+                      <>
+                        <Settings className="w-4.5 h-4.5 text-cyan-400" />
+                        Application & System Settings
+                      </>
+                    )}
+                  </h3>
+                  <p className="text-xs text-cool-gray-400 mt-0.5 font-medium">
+                    {activeTab === "pwa" 
+                      ? "Configure standalone mobile application parameters, customize icons, and manage connected clients."
+                      : "Configure general application preferences and manage sandbox duplicates."}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 text-xs text-cool-gray-400 font-mono shrink-0">
+                  <span>v{APP_VERSION}</span>
+                  <span aria-hidden="true">·</span>
+                  {serverVersionStatus === 'mismatch' ? (
+                    <span className="text-amber-400 font-sans font-medium">Update Available</span>
+                  ) : serverVersionStatus === 'offline' ? (
+                    <span className="text-sky-400 font-sans font-medium">Offline</span>
                   ) : (
-                    <>
-                      <Settings className="w-4.5 h-4.5 text-cyan-400" />
-                      Application & System Settings
-                    </>
+                    <span className="text-emerald-400 font-sans font-medium">Active</span>
                   )}
-                </h3>
-                <p className="text-xs text-cool-gray-400 mt-0.5 font-medium">
-                  {activeTab === "pwa" 
-                    ? "Configure standalone mobile application parameters, customize icons, and manage connected clients."
-                    : "Configure general application preferences and manage sandbox duplicates."}
-                </p>
+                </div>
               </div>
             </div>
 
@@ -3766,6 +3861,65 @@ const LibraryView: React.FC<{
                         min="1"
                         step="0.1"
                       />
+                    </div>
+                  </div>
+
+                  {/* System Version & Update Status */}
+                  <div className="border-t border-cool-gray-750/50 pt-4 space-y-3">
+                    <span className="text-xs font-bold text-cool-gray-300 block uppercase tracking-wider">
+                      Application Version & Update Status
+                    </span>
+                    <div className="bg-cool-gray-900/80 p-3.5 rounded-xl border border-cool-gray-800 space-y-3">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                        <div className="flex items-center gap-2">
+                          <span className="text-cool-gray-400 font-medium">Current Installed Version:</span>
+                          <span className="text-cool-gray-100 font-mono font-bold">v{APP_VERSION}</span>
+                        </div>
+                        <div className="flex items-center gap-2 text-xs">
+                          <span className="text-cool-gray-400 font-medium">Server Status:</span>
+                          {serverVersionStatus === 'checking' && (
+                            <span className="text-cool-gray-400 font-medium">Checking server...</span>
+                          )}
+                          {serverVersionStatus === 'connected' && (
+                            <span className="text-emerald-400 font-medium">Connected (v{serverVersion || APP_VERSION} · Up to date)</span>
+                          )}
+                          {serverVersionStatus === 'mismatch' && (
+                            <span className="text-amber-400 font-medium">Server running v{serverVersion} (Update pending)</span>
+                          )}
+                          {serverVersionStatus === 'offline' && (
+                            <span className="text-sky-400 font-medium">Offline (Using cached shell)</span>
+                          )}
+                        </div>
+                      </div>
+
+                      {updateMessage && (
+                        <div className="text-[11px] font-medium text-cyan-400 bg-cyan-950/40 border border-cyan-500/20 px-3 py-1.5 rounded-lg animate-fade-in">
+                          {updateMessage}
+                        </div>
+                      )}
+
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2 border-t border-cool-gray-800 text-[11px] text-cool-gray-450">
+                        <span>Query the server to verify your installed PWA shell is current and trigger background update checks.</span>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            type="button"
+                            onClick={handleForceCheckAndUpdate}
+                            disabled={isCheckingUpdate}
+                            className="px-3 py-1.5 bg-cool-gray-800 hover:bg-cool-gray-750 text-cool-gray-200 rounded-lg text-xs font-semibold transition cursor-pointer disabled:opacity-50"
+                          >
+                            {isCheckingUpdate ? 'Checking...' : 'Check for Updates'}
+                          </button>
+                          {serverVersionStatus === 'mismatch' && (
+                            <button
+                              type="button"
+                              onClick={() => window.location.reload()}
+                              className="px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg text-xs font-bold transition cursor-pointer"
+                            >
+                              Reload to Apply
+                            </button>
+                          )}
+                        </div>
+                      </div>
                     </div>
                   </div>
 
