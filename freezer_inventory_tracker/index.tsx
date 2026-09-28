@@ -25,6 +25,41 @@ if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
       if ('serviceWorker' in navigator) {
         navigator.serviceWorker.register('/sw.js').then((registration) => {
           console.log('[PWA] ServiceWorker registered with scope:', registration.scope);
+
+          // Register periodic background sync for automatic database updates
+          if ('periodicSync' in registration) {
+            const reg = registration as any;
+            (async () => {
+              try {
+                // Check if we already have the permission, otherwise request/register
+                const status = await (navigator as any).permissions.query({
+                  name: 'periodic-background-sync' as any,
+                });
+                if (status.state === 'granted') {
+                  await reg.periodicSync.register('update-database', {
+                    minInterval: 3 * 60 * 60 * 1000, // every 3 hours
+                  });
+                  console.log('[PWA] Periodic background sync registered successfully for tag update-database');
+                } else {
+                  console.log('[PWA] Periodic background sync permission state:', status.state);
+                  // Try to register directly just in case permission state check was overly strict
+                  await reg.periodicSync.register('update-database', {
+                    minInterval: 3 * 60 * 60 * 1000,
+                  });
+                }
+              } catch (e) {
+                // Fallback direct register
+                try {
+                  await reg.periodicSync.register('update-database', {
+                    minInterval: 3 * 60 * 60 * 1000,
+                  });
+                  console.log('[PWA] Periodic background sync registered directly');
+                } catch (err) {
+                  console.warn('[PWA] Could not register periodic background sync:', err);
+                }
+              }
+            })();
+          }
         }).catch((err) => {
           console.warn('[PWA] ServiceWorker registration fallback:', err);
           try {

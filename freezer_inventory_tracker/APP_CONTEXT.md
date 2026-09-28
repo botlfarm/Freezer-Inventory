@@ -1,6 +1,6 @@
 # Technical Architecture & Context Reference Document
 **Project:** Freezer Inventory Tracker  
-**Current Version:** `2.43.26`  
+**Current Version:** `2.46.2`  
 **Target Environment:** Standalone Web Application & Live Home Assistant Add-On (Ingress Compatible)
 
 ---
@@ -9,7 +9,8 @@
 The **Freezer Inventory Tracker** is a full-stack, real-time inventory and cold-chain traceability management platform designed for farms, butcheries, commercial kitchens, and household storage. It manages physical meat cuts and general food inventory across on-site physical freezers, display cases, storage containers/boxes, off-site commercial cold storage facilities, palletized bulk freight, and custom butcher processing orders.
 
 ### Key Functional Capabilities
-- **Progressive Web App (PWA) & Offline Resiliency**: Service Worker asset caching for 0-network boot, client-side IndexedDB database caching (`freezer_inventory_offline_db`) for 0ms loads, and persistent offline mutation queue with automatic FIFO background replay upon reconnect.
+- **Progressive Web App (PWA) & Offline Resiliency**: Service Worker asset caching for 0-network boot, client-side IndexedDB database caching (`freezer_inventory_offline_db`) for 0ms loads, custom PWA app name/icon branding, dedicated PWA & Devices main-level settings tab, and persistent offline mutation queue with automatic FIFO background replay upon reconnect.
+- **PWA Device Registry & Access Control**: Persistent hardware device identification (`deviceId` UUID) per device, initial operator & device setup prompts, relational SQLite `pwa_devices` registry, PWA Device Manager dashboard in Settings, and hardware-level device revocation (severing SSE connections and blocking mutations with `403 DEVICE_REVOKED` regardless of persistent cookies).
 - **On-Site & Display Case Inventory**: Real-time bin, shelf, and container tracking with instant quantity adjustments, math expression evaluation (`+5`, `-2`, `3*4`), split cuts, tag filtering, customizable hierarchy sorting (alphabetical or user-defined category/sub/cut sequence), and restock alerts.
 - **Off-Site Cold Storage & Movement Planning**: Multi-facility tracking, pallet and box hierarchies, drag-and-drop staging worksheets, barcoded QR scanning, pick/delivery order execution, and movement history.
 - **Butcher Processing & Traceability**: Harvest lot tracking, animal counts, live/hot/cold weights, yield calculations, butcher document attachments, and full parent-cut lineage.

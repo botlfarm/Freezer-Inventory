@@ -19,6 +19,27 @@ export function getApiUrl(path: string): string {
 }
 
 /**
+ * Resolves an image URL synchronously.
+ * If the URL starts with offline-image://, it checks the in-memory cache __offlineImagesCache.
+ * Otherwise, it handles http/https/data URLs and falls back to getApiUrl for relative server paths.
+ */
+export function resolveImageUrl(url: string | undefined): string {
+  if (!url) return '';
+  const trimmed = url.trim();
+  if (trimmed.startsWith('offline-image://')) {
+    const cache = (window as any).__offlineImagesCache;
+    if (cache && cache.has(trimmed)) {
+      return cache.get(trimmed);
+    }
+    return '';
+  }
+  if (trimmed.startsWith('http://') || trimmed.startsWith('https://') || trimmed.startsWith('data:')) {
+    return trimmed;
+  }
+  return getApiUrl(trimmed);
+}
+
+/**
  * Executes a fetch request with automatic retries, exponential backoff, and timeout guards
  * for resilient network communications in mobile, Home Assistant Ingress, and cloud environments.
  */

@@ -427,13 +427,34 @@ export interface ZoneClientCounts {
   offsite: number;
 }
 
+export interface PwaDevice {
+  id: string; // Persistent UUID
+  name: string; // Device label e.g. "Nick's iPhone"
+  operator?: string; // Operator name e.g. "Nick"
+  deviceType?: string; // "Standalone PWA (iOS)", "Mobile Browser", etc.
+  clientDevice?: string; // "Standalone PWA" | "Mobile Browser" | "Desktop Browser" | "HA Companion App"
+  clientInfo?: string; // Detailed browser and OS string
+  isPwa?: boolean;
+  firstSeen: string; // ISO string
+  lastSeen: string; // ISO string
+  lastIp?: string;
+  userAgent?: string;
+  status: 'authorized' | 'revoked';
+  notes?: string;
+  isCurrentDevice?: boolean;
+  isOnline?: boolean;
+}
+
 export interface ConnectedClientInfo {
   id: string;
   userName: string;
   device: string;
   browser: string;
-  clientDevice?: string; // "Desktop Browser" | "Mobile Browser" | "HA Companion App"
-  clientInfo?: string;   // detailed client info e.g. "Desktop Browser (Chrome / macOS)"
+  clientDevice?: string; // "Standalone PWA" | "Desktop Browser" | "Mobile Browser" | "HA Companion App"
+  clientInfo?: string;   // detailed client info e.g. "Standalone PWA (iOS / Safari)"
+  deviceId?: string;
+  deviceName?: string;
+  isPwa?: boolean;
   ip?: string;
   connectedAt: number;
   lastActive: number;

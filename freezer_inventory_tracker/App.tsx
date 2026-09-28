@@ -1,9 +1,10 @@
 import React, { useState, useMemo } from 'react';
 import { useInventory } from './hooks/useInventory';
 import { getApiUrl } from './hooks/apiUrl';
-import { getClientDeviceInfo } from './utils/clientDevice';
+import { getClientDeviceInfo, getDeviceId, getDeviceName, getOperatorName, FREEZER_DEVICE_PROMPTED_KEY, getClientAuditHeaders } from './utils/clientDevice';
+import { DeviceSetupModal } from './components/DeviceSetupModal';
 import { ModalType, View } from './types';
-import { Tag, PackagePlus, History, Sparkles, Table, Package, ClipboardList, Sun, Moon, Filter, Plus, Download, ChevronDown, ChevronUp, Eye, AlertTriangle, RefreshCw, Database, RotateCcw, Users, User, Zap, ArrowUpDown, SlidersHorizontal } from 'lucide-react';
+import { Tag, PackagePlus, History, Sparkles, Table, Package, ClipboardList, Sun, Moon, Filter, Plus, Download, ChevronDown, ChevronUp, Eye, AlertTriangle, RefreshCw, Database, RotateCcw, Users, User, Zap, ArrowUpDown, SlidersHorizontal, Smartphone } from 'lucide-react';
 import { FreezerIcon, SearchIcon, GridViewIcon, ListViewIcon } from './components/icons';
 import Modal from './components/Modal';
 import AddForms from './components/AddForms';
@@ -231,7 +232,70 @@ export default function App() {
     return customUrlConfig?.value?.trim() || '';
   }, [state.appConfig]);
 
+  // Dynamically synchronize custom PWA branding (App Name, Short Name, Favicon, Title)
+  React.useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const appNameCfg = (state.appConfig || []).find(i => i.key === 'pwa_app_name');
+    const shortNameCfg = (state.appConfig || []).find(i => i.key === 'pwa_short_name');
+    const icon192Cfg = (state.appConfig || []).find(i => i.key === 'pwa_icon_192');
+    
+    if (appNameCfg?.value?.trim()) {
+      document.title = appNameCfg.value.trim();
+    }
+    
+    if (shortNameCfg?.value?.trim()) {
+      const appleMeta = document.querySelector('meta[name="apple-mobile-web-app-title"]');
+      if (appleMeta) {
+        appleMeta.setAttribute('content', shortNameCfg.value.trim());
+      }
+    }
+
+    if (icon192Cfg?.value?.trim()) {
+      const appleIconLink = document.querySelector('link[rel="apple-touch-icon"]') as HTMLLinkElement;
+      if (appleIconLink) {
+        appleIconLink.href = icon192Cfg.value.trim();
+      }
+      const favIconLink = document.querySelector('link[rel="icon"]') as HTMLLinkElement;
+      if (favIconLink) {
+        favIconLink.href = icon192Cfg.value.trim();
+      }
+    }
+  }, [state.appConfig]);
+
   const showPwaBanner = !isCurrentlyStandalone && isMobileDevice && customPwaUrl && !pwaBannerDismissed;
+
+  const [showDeviceSetupModal, setShowDeviceSetupModal] = useState<boolean>(false);
+  const [isDeviceRevoked, setIsDeviceRevoked] = useState<boolean>(false);
+
+  // Initial device operator identification check and automatic SQLite hardware registration
+  React.useEffect(() => {
+    const op = getOperatorName();
+    const prompted = localStorage.getItem(FREEZER_DEVICE_PROMPTED_KEY);
+    if (!op && !prompted) {
+      setShowDeviceSetupModal(true);
+    }
+
+    const devInfo = getClientDeviceInfo();
+    fetch(getApiUrl('api/devices/register'), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...getClientAuditHeaders()
+      },
+      body: JSON.stringify({
+        deviceId: devInfo.deviceId,
+        deviceName: devInfo.deviceName,
+        operatorName: devInfo.operatorName,
+        isPwa: devInfo.isPwa,
+        clientDevice: devInfo.clientDevice,
+        clientInfo: devInfo.clientInfo
+      })
+    }).then(res => {
+      if (res.status === 403) {
+        setIsDeviceRevoked(true);
+      }
+    }).catch(() => {});
+  }, []);
 
   const [undoModalConfig, setUndoModalConfig] = useState<{
     isOpen: boolean;
@@ -560,7 +624,7 @@ export default function App() {
     setTheme(prev => (prev === "light" ? "dark" : prev === "dark" ? "auto" : "light"));
   };
 
-  const [initialLibraryTab, setInitialLibraryTab] = useState<"products" | "containers" | "freezers" | "lists" | "settings">("products");
+  const [initialLibraryTab, setInitialLibraryTab] = useState<"products" | "containers" | "freezers" | "lists" | "settings" | "pwa">("products");
 
   // Centralized Filters State
   const [selectedPrimary, setSelectedPrimary] = useState<string | null>(null);
@@ -765,6 +829,7 @@ export default function App() {
   const recalculateCollaborativeModeRef = React.useRef(recalculateCollaborativeMode);
   const activeZoneRef = React.useRef(activeZone);
   const currentViewRef = React.useRef(currentView);
+  const reconnectBackoffRef = React.useRef(3000);
 
   React.useEffect(() => {
     clientIdRef.current = clientId;
@@ -825,13 +890,17 @@ export default function App() {
       clientDevice: deviceInfo.clientDevice,
       clientInfo: deviceInfo.clientInfo,
       clientZone: activeZoneRef.current,
-      clientView: currentViewRef.current
+      clientView: currentViewRef.current,
+      deviceId: deviceInfo.deviceId,
+      deviceName: deviceInfo.deviceName,
+      isPwa: deviceInfo.isPwa ? '1' : '0'
     });
 
     const eventSource = new EventSource(`${streamUrl}?${params.toString()}`);
 
     eventSource.onopen = () => {
       setSyncStatus('synced');
+      reconnectBackoffRef.current = 3000; // Reset backoff on success
       fetchConnectedClientsRef.current().catch(() => {});
     };
 
@@ -841,7 +910,11 @@ export default function App() {
     eventSource.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        if (data.type === 'init') {
+        if (data.type === 'device_revoked') {
+          setIsDeviceRevoked(true);
+          try { eventSource.close(); } catch (e) {}
+          return;
+        } else if (data.type === 'init') {
           if (data.authenticatedUser && data.authenticatedUser !== 'User') {
             try {
               localStorage.setItem('freezerUserName', data.authenticatedUser);
@@ -958,10 +1031,19 @@ export default function App() {
       } else {
         setSyncStatus('error');
       }
+
+      // If we are offline, do not schedule aggressive reconnect loop.
+      // The 'online' window event listener will trigger connection restore.
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        return;
+      }
+
       if (!reconnectTimeout) {
         reconnectTimeout = setTimeout(() => {
           forceReconnect();
-        }, 3000);
+        }, reconnectBackoffRef.current);
+        // Exponential backoff up to 30 seconds
+        reconnectBackoffRef.current = Math.min(reconnectBackoffRef.current * 2, 30000);
       }
     };
 
@@ -972,7 +1054,7 @@ export default function App() {
     };
   }, [reconnectTrigger]);
 
-  // Reconnect on window/tab focus or transition to visible focus
+  // Reconnect on window/tab focus, transition to visible focus, or network coming back online
   React.useEffect(() => {
     const handleFocus = () => {
       if (syncStatus === 'error') {
@@ -990,12 +1072,20 @@ export default function App() {
       }
     };
 
+    const handleOnline = () => {
+      reconnectBackoffRef.current = 3000; // Reset backoff on reconnect
+      forceReconnect();
+      refreshStateRef.current();
+    };
+
     window.addEventListener('focus', handleFocus);
     document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('online', handleOnline);
 
     return () => {
       window.removeEventListener('focus', handleFocus);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('online', handleOnline);
     };
   }, [forceReconnect, syncStatus]);
 
@@ -1981,6 +2071,17 @@ export default function App() {
             <div className="flex items-center gap-2.5 shrink-0 w-full sm:w-auto justify-end">
               <button
                 onClick={() => {
+                  setInitialLibraryTab('pwa');
+                  setCurrentView('library');
+                }}
+                className="px-3.5 py-1.5 rounded-lg bg-cool-gray-850 hover:bg-cool-gray-750 border border-cool-gray-700 text-cyan-300 hover:text-white text-xs font-bold transition cursor-pointer flex items-center gap-1.5"
+                title="Configure PWA domain, icon, and connected devices"
+              >
+                <SlidersHorizontal className="w-3.5 h-3.5" />
+                <span>PWA Settings</span>
+              </button>
+              <button
+                onClick={() => {
                   setPwaBannerDismissed(true);
                   try {
                     localStorage.setItem('pwa-banner-dismissed-explicit-v2', Date.now().toString());
@@ -2579,6 +2680,26 @@ export default function App() {
                           </div>
                         </div>
 
+                        {/* Device & Operator Identity Row */}
+                        <div className="p-2 bg-cool-gray-900/90 rounded-lg border border-cool-gray-750 mb-2 flex items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <span className="text-[10px] font-bold text-cool-gray-400 uppercase tracking-wider block">This Device Identity</span>
+                            <span className="text-xs font-bold text-cyan-300 truncate block">
+                              {getOperatorName() ? `@${getOperatorName()}` : 'Unassigned'} • {getDeviceName()}
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setIsSyncMenuOpen(false);
+                              setShowDeviceSetupModal(true);
+                            }}
+                            className="px-2 py-1 rounded bg-cool-gray-800 hover:bg-cool-gray-700 text-cool-gray-200 text-[10px] font-bold border border-cool-gray-700 transition cursor-pointer shrink-0"
+                          >
+                            Edit
+                          </button>
+                        </div>
+
                         <button
                           onClick={async () => {
                             await flushAllPendingSyncs();
@@ -2843,7 +2964,7 @@ export default function App() {
                               setInitialLibraryTab('products');
                               setCurrentView('library');
                             }}
-                            className={`flex w-full items-center gap-2 px-4 py-2 text-left transition font-normal cursor-pointer ${currentView === 'library' && initialLibraryTab !== 'lists' ? 'bg-cyan-600 text-white' : 'text-cool-gray-300 hover:bg-cool-gray-750 hover:text-white'}`}
+                            className={`flex w-full items-center gap-2 px-4 py-2 text-left transition font-normal cursor-pointer ${currentView === 'library' && initialLibraryTab !== 'lists' && initialLibraryTab !== 'pwa' ? 'bg-cyan-600 text-white' : 'text-cool-gray-300 hover:bg-cool-gray-750 hover:text-white'}`}
                           >
                               <Tag className="w-3.5 h-3.5 text-cyan-500" /> Catalog & Settings
                           </button>
@@ -3649,6 +3770,38 @@ export default function App() {
           return res;
         }}
       />
+
+      {/* Initial Device & Operator Setup Modal */}
+      <DeviceSetupModal
+        isOpen={showDeviceSetupModal}
+        onClose={() => setShowDeviceSetupModal(false)}
+        onSaved={(_op, _dev) => {
+          fetchConnectedClients();
+        }}
+      />
+
+      {/* Revoked Device Blocking Screen */}
+      {isDeviceRevoked && (
+        <div className="fixed inset-0 z-50 bg-cool-gray-950/95 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="max-w-md w-full bg-cool-gray-900 border border-rose-500/50 rounded-2xl p-6 text-center shadow-2xl space-y-4 animate-scale-up">
+            <div className="w-16 h-16 rounded-full bg-rose-950/80 border border-rose-600/60 text-rose-400 mx-auto flex items-center justify-center text-3xl">
+              🚫
+            </div>
+            <h2 className="text-xl font-bold text-white">Device Access Revoked</h2>
+            <p className="text-sm text-cool-gray-300">
+              Access from this device has been revoked by an administrator in the PWA Device Manager.
+            </p>
+            <div className="p-3 bg-cool-gray-950 rounded-xl border border-cool-gray-800 text-xs font-mono text-cool-gray-400 text-left space-y-1">
+              <div><strong className="text-cool-gray-300">Device Label:</strong> {getDeviceName()}</div>
+              <div><strong className="text-cool-gray-300">Operator:</strong> {getOperatorName() || 'Unassigned'}</div>
+              <div className="truncate"><strong className="text-cool-gray-300">Device ID:</strong> {getDeviceId()}</div>
+            </div>
+            <p className="text-xs text-cool-gray-400">
+              To restore access, contact your system administrator to re-authorize this device in the PWA Device Manager.
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

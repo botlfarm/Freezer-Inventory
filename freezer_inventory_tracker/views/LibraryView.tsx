@@ -21,6 +21,7 @@ import { PhotoManagerView } from "./PhotoManagerView";
 import { MediaSelector } from "../components/MediaSelector";
 import { SearchableProductSelect } from "../components/SearchableProductSelect";
 import { PWAInstallButton } from "../components/PWAInstallButton";
+import { PwaDeviceManagerCard } from "../components/PwaDeviceManagerCard";
 import { ManagementForms, ManageFreezers } from "../components/ManagementForms";
 import {
   getContainerIcon,
@@ -59,10 +60,16 @@ import {
   Copy,
   Smartphone,
   Globe,
-  Download
+  Download,
+  Upload,
+  RotateCcw,
+  Snowflake,
+  Beef,
+  Fish,
+  Package
 } from "lucide-react";
 
-type LibraryTab = "products" | "containers" | "freezers" | "pallets" | "lists" | "settings" | "import" | "tags" | "locations" | "photos";
+type LibraryTab = "products" | "containers" | "freezers" | "pallets" | "lists" | "settings" | "import" | "tags" | "locations" | "photos" | "pwa";
 
 const InlineEdit: React.FC<{
   value: string;
@@ -292,11 +299,214 @@ const LibraryView: React.FC<{
     const val = localStorage.getItem("offsite-theoretical-box-weight");
     return val ? parseFloat(val) : 40;
   });
+  const [settingsSubTab, setSettingsSubTab] = useState<"general" | "pwa">(() => {
+    try {
+      return (localStorage.getItem("freezer-settings-subtab") as "general" | "pwa") || "general";
+    } catch {
+      return "general";
+    }
+  });
+
+  const handleSelectSettingsSubTab = (subTab: "general" | "pwa") => {
+    setSettingsSubTab(subTab);
+    try {
+      localStorage.setItem("freezer-settings-subtab", subTab);
+    } catch {}
+  };
   const [copiedUrl, setCopiedUrl] = useState(false);
   const [customPwaUrl, setCustomPwaUrl] = useState("");
   const [isEditingPwaUrl, setIsEditingPwaUrl] = useState(false);
   const [isSavingPwaUrl, setIsSavingPwaUrl] = useState(false);
   const [pwaUrlError, setPwaUrlError] = useState("");
+
+  // PWA Branding: App Name, Mobile Short Name, & Icon states
+  const [pwaAppName, setPwaAppName] = useState("Freezer Inventory Tracker");
+  const [pwaShortName, setPwaShortName] = useState("FreezerApp");
+  const [pwaIconType, setPwaIconType] = useState<"preset" | "custom">("preset");
+  const [pwaPresetIcon, setPwaPresetIcon] = useState("snowflake");
+  const [pwaIconColor, setPwaIconColor] = useState("#0f172a");
+  const [pwaCustomImage, setPwaCustomImage] = useState<string | null>(null);
+  const [isSavingPwaBranding, setIsSavingPwaBranding] = useState(false);
+  const [pwaBrandingMessage, setPwaBrandingMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // Synchronize PWA branding states with state.appConfig updates
+  React.useEffect(() => {
+    const appConfigs = state.appConfig || [];
+    const nameCfg = appConfigs.find(i => i.key === 'pwa_app_name');
+    const shortCfg = appConfigs.find(i => i.key === 'pwa_short_name');
+    const iconCfg = appConfigs.find(i => i.key === 'pwa_app_icon');
+    const colorCfg = appConfigs.find(i => i.key === 'pwa_app_icon_color');
+    const icon192Cfg = appConfigs.find(i => i.key === 'pwa_icon_192');
+
+    if (nameCfg?.value) setPwaAppName(nameCfg.value);
+    if (shortCfg?.value) setPwaShortName(shortCfg.value);
+    if (colorCfg?.value) setPwaIconColor(colorCfg.value);
+    if (iconCfg?.value) {
+      if (iconCfg.value === 'custom' && icon192Cfg?.value) {
+        setPwaIconType('custom');
+        setPwaCustomImage(icon192Cfg.value);
+      } else {
+        setPwaIconType('preset');
+        setPwaPresetIcon(iconCfg.value);
+      }
+    } else if (icon192Cfg?.value && !iconCfg) {
+      setPwaIconType('custom');
+      setPwaCustomImage(icon192Cfg.value);
+    }
+  }, [state.appConfig]);
+
+  // Helper to render preset or custom icon onto canvas for crisp PWA PNG generation
+  const generateIconDataUrl = async (
+    type: 'preset' | 'custom',
+    preset: string,
+    bgColor: string,
+    customImgSrc: string | null,
+    size: number
+  ): Promise<string> => {
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('Could not get canvas 2d context');
+
+    // Draw background squircle
+    const cornerRadius = size * 0.22;
+    ctx.fillStyle = bgColor;
+    ctx.beginPath();
+    if (typeof (ctx as any).roundRect === 'function') {
+      (ctx as any).roundRect(0, 0, size, size, cornerRadius);
+    } else {
+      ctx.rect(0, 0, size, size);
+    }
+    ctx.fill();
+
+    if (type === 'custom' && customImgSrc) {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error('Failed to load custom icon image'));
+        img.src = customImgSrc;
+      });
+      const padding = size * 0.14;
+      const drawSize = size - padding * 2;
+      ctx.drawImage(img, padding, padding, drawSize, drawSize);
+    } else {
+      const svgMap: Record<string, string> = {
+        snowflake: `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m10 20-1.25-2.5L6 18"/><path d="M10 4 8.75 6.5 6 6"/><path d="m14 20 1.25-2.5L18 18"/><path d="m14 4 1.25 2.5L18 6"/><path d="m17 21-3-6h-4"/><path d="m17 3-3 6 1.5 3"/><path d="M2 12h6.5L10 9"/><path d="m20 10-1.5 2 1.5 2"/><path d="M22 12h-6.5L14 15"/><path d="m4 10 1.5 2L4 14"/><path d="m7 21 3-6-1.5-3"/><path d="m7 3 3 6h4"/></svg>`,
+        beef: `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16.4 13.7A6.5 6.5 0 1 0 6.28 6.6c-1.1 3.13-.78 3.9-3.18 6.08A3 3 0 0 0 5 18c4 0 8.4-1.8 11.4-4.3"/><path d="m18.5 6 2.19 4.5a6.48 6.48 0 0 1-2.29 7.2C15.4 20.2 11 22 7 22a3 3 0 0 1-2.68-1.66L2.4 16.5"/><circle cx="12.5" cy="8.5" r="2.5"/></svg>`,
+        package: `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z"/><path d="M12 22V12"/><polyline points="3.29 7 12 12 20.71 7"/><path d="m7.5 4.27 9 5.15"/></svg>`,
+        truck: `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2"/><path d="M15 18H9"/><path d="M19 18h2a1 1 0 0 0 1-1v-3.65a1 1 0 0 0-.22-.624l-3.48-4.35A1 1 0 0 0 17.52 8H14"/><circle cx="17" cy="18" r="2"/><circle cx="7" cy="18" r="2"/></svg>`,
+        warehouse: `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 21V10a1 1 0 0 0-1-1H7a1 1 0 0 0-1 1v11"/><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 1.132-1.803l7.95-3.974a2 2 0 0 1 1.837 0l7.948 3.974A2 2 0 0 1 22 8z"/><path d="M6 13h12"/><path d="M6 17h12"/></svg>`,
+        fish: `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 12c.94-3.46 4.94-6 8.5-6 3.56 0 6.06 2.54 7 6-.94 3.47-3.44 6-7 6s-7.56-2.53-8.5-6Z"/><path d="M18 12v.5"/><path d="M16 17.93a9.77 9.77 0 0 1 0-11.86"/><path d="M7 10.67C7 8 5.58 5.97 2.73 5.5c-1 1.5-1 5 .23 6.5-1.24 1.5-1.24 5-.23 6.5C5.58 18.03 7 16 7 13.33"/><path d="M10.46 7.26C10.2 5.88 9.17 4.24 8 3h5.8a2 2 0 0 1 1.98 1.67l.23 1.4"/><path d="m16.01 17.93-.23 1.4A2 2 0 0 1 13.8 21H9.5a5.96 5.96 0 0 0 1.49-3.98"/></svg>`
+      };
+      const svgCode = svgMap[preset] || svgMap.snowflake;
+      const blob = new Blob([svgCode], { type: 'image/svg+xml;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const img = new Image();
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error('Failed to render preset SVG'));
+        img.src = url;
+      });
+      const padding = size * 0.22;
+      const drawSize = size - padding * 2;
+      ctx.drawImage(img, padding, padding, drawSize, drawSize);
+      URL.revokeObjectURL(url);
+    }
+
+    return canvas.toDataURL('image/png');
+  };
+
+  const handleSavePwaBranding = async () => {
+    setIsSavingPwaBranding(true);
+    setPwaBrandingMessage(null);
+    try {
+      const icon192 = await generateIconDataUrl(pwaIconType, pwaPresetIcon, pwaIconColor, pwaCustomImage, 192);
+      const icon512 = await generateIconDataUrl(pwaIconType, pwaPresetIcon, pwaIconColor, pwaCustomImage, 512);
+
+      const payload = {
+        configs: {
+          pwa_app_name: pwaAppName.trim() || 'Freezer Inventory Tracker',
+          pwa_short_name: pwaShortName.trim() || 'FreezerApp',
+          pwa_app_icon: pwaIconType === 'custom' ? 'custom' : pwaPresetIcon,
+          pwa_app_icon_color: pwaIconColor,
+          pwa_icon_192: icon192,
+          pwa_icon_512: icon512
+        }
+      };
+
+      const res = await fetch(getApiUrl('api/app-config'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (res.ok) {
+        setPwaBrandingMessage({
+          type: 'success',
+          text: 'App name & icon saved! Browser title, manifest & icons updated.'
+        });
+        setTimeout(() => setPwaBrandingMessage(null), 5000);
+      } else {
+        setPwaBrandingMessage({
+          type: 'error',
+          text: 'Failed to save branding configurations to server.'
+        });
+      }
+    } catch (err: any) {
+      setPwaBrandingMessage({
+        type: 'error',
+        text: err?.message || 'Error generating custom PWA icons.'
+      });
+    } finally {
+      setIsSavingPwaBranding(false);
+    }
+  };
+
+  const handleResetPwaBranding = async () => {
+    setIsSavingPwaBranding(true);
+    setPwaBrandingMessage(null);
+    try {
+      const payload = {
+        configs: {
+          pwa_app_name: 'Freezer Inventory Tracker',
+          pwa_short_name: 'FreezerApp',
+          pwa_app_icon: 'snowflake',
+          pwa_app_icon_color: '#0f172a',
+          pwa_icon_192: '',
+          pwa_icon_512: ''
+        }
+      };
+
+      const res = await fetch(getApiUrl('api/app-config'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (res.ok) {
+        setPwaAppName('Freezer Inventory Tracker');
+        setPwaShortName('FreezerApp');
+        setPwaIconType('preset');
+        setPwaPresetIcon('snowflake');
+        setPwaIconColor('#0f172a');
+        setPwaCustomImage(null);
+        setPwaBrandingMessage({
+          type: 'success',
+          text: 'Reset to default app name and icon.'
+        });
+        setTimeout(() => setPwaBrandingMessage(null), 4000);
+      }
+    } catch (err: any) {
+      setPwaBrandingMessage({
+        type: 'error',
+        text: 'Error resetting branding.'
+      });
+    } finally {
+      setIsSavingPwaBranding(false);
+    }
+  };
 
   // Synchronize local customPwaUrl with state.appConfig updates (e.g. from Server SSE)
   React.useEffect(() => {
@@ -416,7 +626,10 @@ const LibraryView: React.FC<{
   const theme = parentTheme || localTheme;
 
   React.useEffect(() => {
-    if (initialTab) {
+    if (initialTab === "pwa") {
+      setActiveTab("settings");
+      setSettingsSubTab("pwa");
+    } else if (initialTab) {
       setActiveTab(initialTab);
     }
   }, [initialTab]);
@@ -2834,435 +3047,736 @@ const LibraryView: React.FC<{
         );
       case "lists":
         return <ManageLists state={state} dispatch={dispatch} offSiteQuantityMap={offSiteQuantityMap} offSiteWeightMap={offSiteWeightMap} />;
+      case "pwa":
       case "settings":
         return (
-          <div className="space-y-6 mt-4 max-w-2xl font-sans">
-            {/* Standalone PWA / Open in Chrome Card */}
-            <div className="bg-gradient-to-br from-cool-gray-850 to-cool-gray-900 rounded-xl border border-cyan-500/30 p-5 shadow-sm space-y-4">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-cool-gray-750/70">
-                <div>
-                  <h3 className="text-base font-bold text-cyan-300 flex items-center gap-2">
-                    <Smartphone className="w-5 h-5 text-cyan-400" />
-                    Offline App Installation & Browser Launch
-                  </h3>
-                  <p className="text-xs text-cool-gray-400 mt-1 leading-relaxed">
-                    To install the tracker as a standalone home-screen app for true offline freezer usage, open it in an external browser window (<span className="text-cool-gray-200 font-semibold">Google Chrome</span> or <span className="text-cool-gray-200 font-semibold">Safari</span>) rather than inside the Home Assistant Companion App.
-                  </p>
-                </div>
-                <span className="self-start sm:self-auto text-[10px] font-extrabold text-cyan-400 bg-cyan-950/40 border border-cyan-500/30 px-2.5 py-1 rounded-full uppercase tracking-wider shrink-0 flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></span>
-                  PWA Ready
-                </span>
-              </div>
-
-              {/* Direct Link Display */}
-              <div className="space-y-3.5">
-                <div className="flex items-center justify-between">
-                  <label className="text-[10px] font-extrabold text-cool-gray-400 uppercase tracking-wider">
-                    Direct PWA App URL
-                  </label>
-                  {!isEditingPwaUrl && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const customUrlConfig = (state.appConfig || []).find(item => item.key === 'pwa_custom_url');
-                        setCustomPwaUrl(customUrlConfig?.value || "");
-                        setIsEditingPwaUrl(true);
-                        setPwaUrlError("");
-                      }}
-                      className="text-[11px] font-bold text-cyan-400 hover:text-cyan-300 hover:underline flex items-center gap-1 cursor-pointer bg-transparent border-0 outline-none"
-                    >
-                      <span>⚙️ Configure Custom Link</span>
-                    </button>
+          <div className="space-y-6 mt-4 max-w-3xl font-sans">
+            {/* Page Header */}
+            <div className="bg-cool-gray-850 p-3 sm:p-4 rounded-xl border border-cool-gray-750 shadow-sm">
+              <div>
+                <h3 className="text-sm sm:text-base font-bold text-cool-gray-100 flex items-center gap-2">
+                  {activeTab === "pwa" ? (
+                    <>
+                      <Smartphone className="w-4.5 h-4.5 text-cyan-400" />
+                      PWA & Connected Devices
+                    </>
+                  ) : (
+                    <>
+                      <Settings className="w-4.5 h-4.5 text-cyan-400" />
+                      Application & System Settings
+                    </>
                   )}
-                </div>
-
-                {!isEditingPwaUrl ? (
-                  /* Standard Link View */
-                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 bg-cool-gray-950 p-2.5 rounded-xl border border-cool-gray-800">
-                    <div className="flex items-center gap-2 flex-1 min-w-0 px-2 py-1 bg-cool-gray-900 rounded-lg border border-cool-gray-800/80">
-                      <Globe className="w-4 h-4 text-cyan-400 shrink-0" />
-                      <span className="text-xs font-mono text-cool-gray-300 truncate select-all">
-                        {(() => {
-                          const customUrlConfig = (state.appConfig || []).find(item => item.key === 'pwa_custom_url');
-                          if (customUrlConfig && customUrlConfig.value.trim()) {
-                            return customUrlConfig.value.trim();
-                          }
-                          return typeof window !== 'undefined' ? window.location.href : 'http://homeassistant.local:3000';
-                        })()}
-                      </span>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (typeof window !== 'undefined') {
-                          const customUrlConfig = (state.appConfig || []).find(item => item.key === 'pwa_custom_url');
-                          const activeUrl = (customUrlConfig && customUrlConfig.value.trim()) 
-                            ? customUrlConfig.value.trim() 
-                            : window.location.href;
-                          navigator.clipboard.writeText(activeUrl);
-                          setCopiedUrl(true);
-                          setTimeout(() => setCopiedUrl(false), 2500);
-                        }
-                      }}
-                      className={`px-3.5 py-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 shrink-0 cursor-pointer select-none ${
-                        copiedUrl
-                          ? 'bg-emerald-600 text-white shadow-md'
-                          : 'bg-cool-gray-800 hover:bg-cool-gray-700 text-cool-gray-200 border border-cool-gray-700 hover:text-white'
-                      }`}
-                      title="Copy full URL to clipboard"
-                    >
-                      {copiedUrl ? (
-                        <>
-                          <Check className="w-3.5 h-3.5 text-white" />
-                          <span>Copied Link!</span>
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="w-3.5 h-3.5 text-cyan-400" />
-                          <span>Copy URL</span>
-                        </>
-                      )}
-                    </button>
-                  </div>
-                ) : (
-                  /* Custom URL Edit Form */
-                  <div className="space-y-3 p-4 bg-cool-gray-900/60 rounded-xl border border-cool-gray-800/80 animate-fade-in">
-                    <div>
-                      <span className="text-[10px] font-bold text-cyan-300 block mb-1 uppercase tracking-wider">Set Custom Domain or IP Link</span>
-                      <p className="text-[11px] text-cool-gray-400 leading-relaxed font-medium">
-                        Enter your permanent public address (e.g. your Cloudflare Tunnel domain like <span className="text-cool-gray-300 font-semibold">https://freezer.nickweinstock.com</span>) or direct local IP address to allow your phone or tablet's Chrome browser to download, install, and run this application cleanly as an offline standalone PWA.
-                      </p>
-                    </div>
-
-                    <div className="space-y-2">
-                      <div className="flex gap-2">
-                        <div className="relative flex-grow">
-                          <input
-                            type="text"
-                            placeholder="e.g. https://freezer.nickweinstock.com"
-                            value={customPwaUrl}
-                            onChange={(e) => {
-                              setCustomPwaUrl(e.target.value);
-                              setPwaUrlError("");
-                            }}
-                            className="w-full bg-cool-gray-950 text-xs font-mono font-medium rounded-lg border border-cool-gray-750 px-3 py-2 text-cool-gray-200 outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all placeholder:text-cool-gray-600"
-                          />
-                        </div>
-                      </div>
-
-                      {pwaUrlError && (
-                        <p className="text-[11px] text-red-400 font-bold flex items-center gap-1 animate-pulse">
-                          ⚠️ {pwaUrlError}
-                        </p>
-                      )}
-
-                      <div className="flex flex-wrap items-center gap-2 pt-1 justify-end">
-                        {/* Reset to Default Button */}
-                        {((state.appConfig || []).some(item => item.key === 'pwa_custom_url' && item.value.trim())) && (
-                          <button
-                            type="button"
-                            disabled={isSavingPwaUrl}
-                            onClick={async () => {
-                              setIsSavingPwaUrl(true);
-                              try {
-                                const res = await fetch(getApiUrl('api/app-config'), {
-                                  method: 'POST',
-                                  headers: { 'Content-Type': 'application/json' },
-                                  body: JSON.stringify({ key: 'pwa_custom_url', value: "" })
-                                });
-                                if (res.ok) {
-                                  setCustomPwaUrl("");
-                                  setIsEditingPwaUrl(false);
-                                } else {
-                                  setPwaUrlError("Failed to clear custom URL.");
-                                }
-                              } catch (err) {
-                                setPwaUrlError("Network error clearing custom URL.");
-                              } finally {
-                                setIsSavingPwaUrl(false);
-                              }
-                            }}
-                            className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-red-950/40 text-red-400 border border-red-900/30 hover:bg-red-900/35 hover:text-white transition cursor-pointer disabled:opacity-50"
-                          >
-                            Reset to Default Link
-                          </button>
-                        )}
-
-                        <div className="flex gap-2 ml-auto">
-                          <button
-                            type="button"
-                            disabled={isSavingPwaUrl}
-                            onClick={() => {
-                              setIsEditingPwaUrl(false);
-                              setPwaUrlError("");
-                            }}
-                            className="px-3 py-1.5 rounded-lg text-xs font-bold bg-cool-gray-800 hover:bg-cool-gray-750 text-cool-gray-300 transition cursor-pointer disabled:opacity-50"
-                          >
-                            Cancel
-                          </button>
-
-                          <button
-                            type="button"
-                            disabled={isSavingPwaUrl}
-                            onClick={async () => {
-                              const trimmed = customPwaUrl.trim();
-                              if (trimmed) {
-                                // Simple URL validation helper: check if it starts with http:// or https://
-                                if (!/^https?:\/\//i.test(trimmed)) {
-                                  setPwaUrlError("URL must start with http:// or https://");
-                                  return;
-                                }
-                              }
-
-                              setIsSavingPwaUrl(true);
-                              try {
-                                const res = await fetch(getApiUrl('api/app-config'), {
-                                  method: 'POST',
-                                  headers: { 'Content-Type': 'application/json' },
-                                  body: JSON.stringify({ key: 'pwa_custom_url', value: trimmed })
-                                });
-                                if (res.ok) {
-                                  setIsEditingPwaUrl(false);
-                                } else {
-                                  setPwaUrlError("Failed to save custom URL.");
-                                }
-                              } catch (err) {
-                                setPwaUrlError("Network error saving custom URL.");
-                              } finally {
-                                setIsSavingPwaUrl(false);
-                              }
-                            }}
-                            className="px-4.5 py-1.5 rounded-lg text-xs font-extrabold bg-cyan-600 hover:bg-cyan-500 text-white shadow-sm flex items-center gap-1.5 transition cursor-pointer disabled:opacity-50"
-                          >
-                            {isSavingPwaUrl ? (
-                              <>
-                                <RefreshCw className="w-3.5 h-3.5 animate-spin text-white" />
-                                <span>Saving...</span>
-                              </>
-                            ) : (
-                              <>
-                                <Save className="w-3.5 h-3.5 text-white" />
-                                <span>Save Link</span>
-                              </>
-                            )}
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                )}
+                </h3>
+                <p className="text-xs text-cool-gray-400 mt-0.5 font-medium">
+                  {activeTab === "pwa" 
+                    ? "Configure standalone mobile application parameters, customize icons, and manage connected clients."
+                    : "Configure general application preferences and manage sandbox duplicates."}
+                </p>
               </div>
             </div>
 
-            {/* Demo Sandbox Playground Card */}
-            <div className="bg-gradient-to-br from-amber-950/20 to-cool-gray-850 rounded-xl border border-amber-500/25 p-5 shadow-sm space-y-4">
-              <div>
-                <h3 className="text-base font-bold text-amber-400 mb-1 flex items-center gap-2">
-                  <span className="flex h-2.5 w-2.5 relative">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
-                    <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-amber-500"></span>
-                  </span>
-                  Demo Sandbox Playground
-                </h3>
-                <p className="text-xs text-cool-gray-400 leading-relaxed font-medium">
-                  Spawn a temporary sandbox duplicate of your live inventory database. All changes made in the playground are isolated and discarded once you exit.
-                </p>
-              </div>
-
-              <div className="bg-cool-gray-900/60 p-4 rounded-xl border border-cool-gray-800/80">
-                <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
-                  <div className="flex-1 space-y-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-bold text-cool-gray-300">Playground Status:</span>
-                      {state.isDemoMode ? (
-                        <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20 uppercase tracking-wide">
-                          <span className="h-1.5 w-1.5 rounded-full bg-amber-400 animate-ping"></span>
-                          Active
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-cool-gray-800 text-cool-gray-400 border border-cool-gray-700 uppercase tracking-wide">
-                          Inactive
-                        </span>
-                      )}
+            {activeTab === "pwa" ? (
+              <div className="space-y-6 animate-fade-in">
+                {/* Standalone PWA / Open in Chrome Card */}
+                <div className="bg-gradient-to-br from-cool-gray-850 to-cool-gray-900 rounded-xl border border-cyan-500/30 p-5 shadow-sm space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-cool-gray-750/70">
+                    <div>
+                      <h3 className="text-base font-bold text-cyan-300 flex items-center gap-2">
+                        <Smartphone className="w-5 h-5 text-cyan-400" />
+                        Offline App Installation & Browser Launch
+                      </h3>
+                      <p className="text-xs text-cool-gray-400 mt-1 leading-relaxed">
+                        To install the tracker as a standalone home-screen app for true offline freezer usage, open it in an external browser window (<span className="text-cool-gray-200 font-semibold">Google Chrome</span> or <span className="text-cool-gray-200 font-semibold">Safari</span>) rather than inside the Home Assistant Companion App.
+                      </p>
                     </div>
-                    <p className="text-[11px] text-cool-gray-450 leading-normal font-medium">
-                      {state.isDemoMode 
-                        ? "Currently running inside the safe sandbox. Your pristine live database is paused." 
-                        : "Currently running on the live database. Create a sandbox to play safely."}
-                    </p>
+                    <span className="self-start sm:self-auto text-[10px] font-extrabold text-cyan-400 bg-cyan-950/40 border border-cyan-500/30 px-2.5 py-1 rounded-full uppercase tracking-wider shrink-0 flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></span>
+                      PWA Ready
+                    </span>
                   </div>
 
-                  <div className="flex-shrink-0 w-full sm:w-auto">
-                    {state.isDemoMode ? (
-                      <div className="space-y-2">
-                        {!showDemoEndConfirm ? (
-                          <button
-                            type="button"
-                            onClick={() => setShowDemoEndConfirm(true)}
-                            className="w-full sm:w-auto bg-amber-500 hover:bg-amber-400 text-cool-gray-950 font-bold px-4 py-2 rounded-lg text-xs transition duration-150 shadow focus:outline-none cursor-pointer"
-                          >
-                            Exit Demo Sandbox
-                          </button>
-                        ) : (
-                          <div className="p-2 bg-amber-950/45 rounded-lg border border-amber-500/20 text-center space-y-2 max-w-[240px]">
-                            <p className="text-[10px] text-amber-300 leading-relaxed font-bold">
-                              Are you sure? This will permanently discard all sandbox changes.
-                            </p>
-                            <div className="flex gap-2 justify-center">
-                              <button
-                                type="button"
-                                disabled={isDemoActionLoading}
-                                onClick={handleEndDemoAction}
-                                className="bg-red-600 hover:bg-red-500 text-white font-extrabold px-2.5 py-1 rounded-md text-[10px] transition cursor-pointer"
-                              >
-                                {isDemoActionLoading ? 'Exiting...' : 'Yes, Discard'}
-                              </button>
-                              <button
-                                type="button"
-                                disabled={isDemoActionLoading}
-                                onClick={() => setShowDemoEndConfirm(false)}
-                                className="bg-cool-gray-800 hover:bg-cool-gray-750 text-cool-gray-300 font-bold px-2.5 py-1 rounded-md text-[10px] transition cursor-pointer"
-                              >
-                                Cancel
-                              </button>
-                            </div>
-                          </div>
-                        )}
+                  {/* Direct Link Display */}
+                  <div className="space-y-3.5">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[10px] font-extrabold text-cool-gray-400 uppercase tracking-wider">
+                        Direct PWA App URL
+                      </label>
+                      {!isEditingPwaUrl && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const customUrlConfig = (state.appConfig || []).find(item => item.key === 'pwa_custom_url');
+                            setCustomPwaUrl(customUrlConfig?.value || "");
+                            setIsEditingPwaUrl(true);
+                            setPwaUrlError("");
+                          }}
+                          className="text-[11px] font-bold text-cyan-400 hover:text-cyan-300 hover:underline flex items-center gap-1 cursor-pointer bg-transparent border-0 outline-none"
+                        >
+                          <span>⚙️ Configure Custom Link</span>
+                        </button>
+                      )}
+                    </div>
+
+                    {!isEditingPwaUrl ? (
+                      /* Standard Link View */
+                      <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 bg-cool-gray-950 p-2.5 rounded-xl border border-cool-gray-800">
+                        <div className="flex items-center gap-2 flex-1 min-w-0 px-2 py-1 bg-cool-gray-900 rounded-lg border border-cool-gray-800/80">
+                          <Globe className="w-4 h-4 text-cyan-400 shrink-0" />
+                          <span className="text-xs font-mono text-cool-gray-300 truncate select-all">
+                            {(() => {
+                              const customUrlConfig = (state.appConfig || []).find(item => item.key === 'pwa_custom_url');
+                              if (customUrlConfig && customUrlConfig.value.trim()) {
+                                return customUrlConfig.value.trim();
+                              }
+                              return typeof window !== 'undefined' ? window.location.href : 'http://homeassistant.local:3000';
+                            })()}
+                          </span>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (typeof window !== 'undefined') {
+                              const customUrlConfig = (state.appConfig || []).find(item => item.key === 'pwa_custom_url');
+                              const activeUrl = (customUrlConfig && customUrlConfig.value.trim()) 
+                                ? customUrlConfig.value.trim() 
+                                : window.location.href;
+                              navigator.clipboard.writeText(activeUrl);
+                              setCopiedUrl(true);
+                              setTimeout(() => setCopiedUrl(false), 2500);
+                            }
+                          }}
+                          className={`px-3.5 py-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 shrink-0 cursor-pointer select-none ${
+                            copiedUrl
+                              ? 'bg-emerald-600 text-white shadow-md'
+                              : 'bg-cool-gray-800 hover:bg-cool-gray-700 text-cool-gray-200 border border-cool-gray-700 hover:text-white'
+                          }`}
+                          title="Copy full URL to clipboard"
+                        >
+                          {copiedUrl ? (
+                            <>
+                              <Check className="w-3.5 h-3.5 text-white" />
+                              <span>Copied Link!</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-3.5 h-3.5 text-cyan-400" />
+                              <span>Copy URL</span>
+                            </>
+                          )}
+                        </button>
+
+                        <PWAInstallButton />
                       </div>
                     ) : (
-                      <div className="space-y-2">
-                        {!showDemoStartConfirm ? (
-                          <button
-                            type="button"
-                            onClick={() => setShowDemoStartConfirm(true)}
-                            className="w-full sm:w-auto bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-4 py-2 rounded-lg text-xs transition duration-150 shadow focus:outline-none cursor-pointer"
-                          >
-                            Launch Demo Sandbox
-                          </button>
-                        ) : (
-                          <div className="p-3 bg-indigo-950/45 rounded-lg border border-indigo-500/20 text-center space-y-2 max-w-[240px]">
-                            <p className="text-[10px] text-indigo-300 leading-relaxed font-bold">
-                              Duplicate live database into a safe playground?
+                      /* Custom URL Edit Form */
+                      <div className="space-y-3 p-4 bg-cool-gray-900/60 rounded-xl border border-cool-gray-800/80 animate-fade-in">
+                        <div>
+                          <span className="text-[10px] font-bold text-cyan-300 block mb-1 uppercase tracking-wider">Set Custom Domain or IP Link</span>
+                          <p className="text-[11px] text-cool-gray-400 leading-relaxed font-medium">
+                            Enter your permanent public address (e.g. your Cloudflare Tunnel domain like <span className="text-cool-gray-300 font-semibold">https://freezer.nickweinstock.com</span>) or direct local IP address to allow your phone or tablet's Chrome browser to download, install, and run this application cleanly as an offline standalone PWA.
+                          </p>
+                        </div>
+
+                        <div className="space-y-2">
+                          <div className="flex gap-2">
+                            <div className="relative flex-grow">
+                              <input
+                                type="text"
+                                placeholder="e.g. https://freezer.nickweinstock.com"
+                                value={customPwaUrl}
+                                onChange={(e) => {
+                                  setCustomPwaUrl(e.target.value);
+                                  setPwaUrlError("");
+                                }}
+                                className="w-full bg-cool-gray-950 text-xs font-mono font-medium rounded-lg border border-cool-gray-750 px-3 py-2 text-cool-gray-200 outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all placeholder:text-cool-gray-600"
+                              />
+                            </div>
+                          </div>
+
+                          {pwaUrlError && (
+                            <p className="text-[11px] text-red-400 font-bold flex items-center gap-1 animate-pulse">
+                              ⚠️ {pwaUrlError}
                             </p>
-                            <div className="flex gap-2 justify-center">
+                          )}
+
+                          <div className="flex flex-wrap items-center gap-2 pt-1 justify-end">
+                            {/* Reset to Default Button */}
+                            {((state.appConfig || []).some(item => item.key === 'pwa_custom_url' && item.value.trim())) && (
                               <button
                                 type="button"
-                                disabled={isDemoActionLoading}
-                                onClick={handleStartDemoAction}
-                                className="bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold px-2.5 py-1 rounded-md text-[10px] transition cursor-pointer"
+                                disabled={isSavingPwaUrl}
+                                onClick={async () => {
+                                  setIsSavingPwaUrl(true);
+                                  try {
+                                    const res = await fetch(getApiUrl('api/app-config'), {
+                                      method: 'POST',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ key: 'pwa_custom_url', value: "" })
+                                    });
+                                    if (res.ok) {
+                                      setCustomPwaUrl("");
+                                      setIsEditingPwaUrl(false);
+                                    } else {
+                                      setPwaUrlError("Failed to clear custom URL.");
+                                    }
+                                  } catch (err) {
+                                    setPwaUrlError("Network error clearing custom URL.");
+                                  } finally {
+                                    setIsSavingPwaUrl(false);
+                                  }
+                                }}
+                                className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-red-950/40 text-red-400 border border-red-900/30 hover:bg-red-900/35 hover:text-white transition cursor-pointer disabled:opacity-50"
                               >
-                                {isDemoActionLoading ? 'Spawning...' : 'Yes, Enter'}
+                                Reset to Default Link
                               </button>
+                            )}
+
+                            <div className="flex gap-2 ml-auto">
                               <button
                                 type="button"
-                                disabled={isDemoActionLoading}
-                                onClick={() => setShowDemoStartConfirm(false)}
-                                className="bg-cool-gray-800 hover:bg-cool-gray-750 text-cool-gray-300 font-bold px-2.5 py-1 rounded-md text-[10px] transition cursor-pointer"
+                                disabled={isSavingPwaUrl}
+                                onClick={() => {
+                                  setIsEditingPwaUrl(false);
+                                  setPwaUrlError("");
+                                }}
+                                className="px-3 py-1.5 rounded-lg text-xs font-bold bg-cool-gray-800 hover:bg-cool-gray-750 text-cool-gray-300 transition cursor-pointer disabled:opacity-50"
                               >
                                 Cancel
                               </button>
+
+                              <button
+                                type="button"
+                                disabled={isSavingPwaUrl}
+                                onClick={async () => {
+                                  const trimmed = customPwaUrl.trim();
+                                  if (trimmed) {
+                                    // Simple URL validation helper: check if it starts with http:// or https://
+                                    if (!/^https?:\/\//i.test(trimmed)) {
+                                      setPwaUrlError("URL must start with http:// or https://");
+                                      return;
+                                    }
+                                  }
+
+                                  setIsSavingPwaUrl(true);
+                                  try {
+                                    const res = await fetch(getApiUrl('api/app-config'), {
+                                      method: 'POST',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ key: 'pwa_custom_url', value: trimmed })
+                                    });
+                                    if (res.ok) {
+                                      setIsEditingPwaUrl(false);
+                                    } else {
+                                      setPwaUrlError("Failed to save custom URL.");
+                                    }
+                                  } catch (err) {
+                                    setPwaUrlError("Network error saving custom URL.");
+                                  } finally {
+                                    setIsSavingPwaUrl(false);
+                                  }
+                                }}
+                                className="px-4.5 py-1.5 rounded-lg text-xs font-extrabold bg-cyan-600 hover:bg-cyan-500 text-white shadow-sm flex items-center gap-1.5 transition cursor-pointer disabled:opacity-50"
+                              >
+                                {isSavingPwaUrl ? (
+                                  <>
+                                    <RefreshCw className="w-3.5 h-3.5 animate-spin text-white" />
+                                    <span>Saving...</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Save className="w-3.5 h-3.5 text-white" />
+                                    <span>Save Link</span>
+                                  </>
+                                )}
+                              </button>
                             </div>
                           </div>
-                        )}
+                        </div>
                       </div>
                     )}
                   </div>
-                </div>
-              </div>
-            </div>
 
-            <div className="bg-cool-gray-850 rounded-xl border border-cool-gray-750 p-5 shadow-sm space-y-5">
-              <div>
-                <h3 className="text-base font-bold text-cool-gray-100 mb-1 flex items-center gap-2">
-                  ⚙️ Application Preferences
-                </h3>
-                <p className="text-xs text-cool-gray-400 font-medium">
-                  Customize your local application and display preferences.
-                </p>
-              </div>
+                  {/* PWA App Name & Icon Customization */}
+                  <div className="pt-4 border-t border-cool-gray-750/70 space-y-4">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <div>
+                        <h4 className="text-sm font-bold text-cool-gray-200 flex items-center gap-2">
+                          <Sparkles className="w-4 h-4 text-cyan-400" />
+                          App Name & Home Screen Icon
+                        </h4>
+                        <p className="text-[11px] text-cool-gray-400 mt-0.5 leading-relaxed">
+                          Customize how the app appears when installed on your phone, tablet, or desktop home screen.
+                        </p>
+                      </div>
+                      {pwaBrandingMessage && (
+                        <span className={`text-[11px] font-bold px-2.5 py-1 rounded-md flex items-center gap-1.5 animate-fade-in ${
+                          pwaBrandingMessage.type === 'success' 
+                            ? 'bg-emerald-950/80 text-emerald-400 border border-emerald-800/60' 
+                            : 'bg-red-950/80 text-red-400 border border-red-800/60'
+                        }`}>
+                          {pwaBrandingMessage.type === 'success' ? <Check className="w-3.5 h-3.5" /> : <AlertCircle className="w-3.5 h-3.5" />}
+                          {pwaBrandingMessage.text}
+                        </span>
+                      )}
+                    </div>
 
-              <div className="border-t border-cool-gray-750/50 pt-4 space-y-4">
-                <span className="text-xs font-bold text-cool-gray-300 block uppercase tracking-wider">
-                  Default Movement Report Shipper (From Address)
-                </span>
-                <p className="text-[11px] text-cool-gray-400 font-medium leading-relaxed">
-                  Set the default origin details printed on your Delivery Slips and Transfer Manifests. These can still be customized live inside each report form.
-                </p>
-                <div className="space-y-3">
-                  <div>
-                    <label className="block text-[10px] font-extrabold text-cool-gray-400 mb-1 uppercase tracking-wider">Default Shipper Name</label>
-                    <input
-                      type="text"
-                      value={defaultFromName}
-                      onChange={(e) => {
-                        setDefaultFromName(e.target.value);
-                        localStorage.setItem("report-from-name", e.target.value);
-                        saveAppConfigKey("report-from-name", e.target.value);
-                      }}
-                      className="w-full max-w-md bg-cool-gray-900 border border-cool-gray-750 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:border-cyan-500 font-semibold"
-                      placeholder="Shipper or farm name (e.g. My Ranch)"
-                    />
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      {/* Left 2 Cols: Form fields & Icon selection */}
+                      <div className="md:col-span-2 space-y-3.5">
+                        {/* App Full Name */}
+                        <div>
+                          <label className="text-[10px] font-extrabold text-cool-gray-400 uppercase tracking-wider block mb-1">
+                            Application Name (Full Title)
+                          </label>
+                          <input
+                            type="text"
+                            placeholder="e.g. Freezer Inventory Tracker"
+                            value={pwaAppName}
+                            onChange={(e) => setPwaAppName(e.target.value)}
+                            className="w-full bg-cool-gray-950 text-xs font-semibold rounded-lg border border-cool-gray-750 px-3 py-2 text-cool-gray-200 outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all placeholder:text-cool-gray-600"
+                          />
+                          <span className="text-[10px] text-cool-gray-500 mt-0.5 block">
+                            Displayed in browser tabs, window headers, and full install dialogs.
+                          </span>
+                        </div>
+
+                        {/* App Short Name */}
+                        <div>
+                          <label className="text-[10px] font-extrabold text-cool-gray-400 uppercase tracking-wider block mb-1">
+                            Mobile Home Screen Short Name
+                          </label>
+                          <input
+                            type="text"
+                            placeholder="e.g. FreezerApp"
+                            maxLength={15}
+                            value={pwaShortName}
+                            onChange={(e) => setPwaShortName(e.target.value)}
+                            className="w-full bg-cool-gray-950 text-xs font-semibold rounded-lg border border-cool-gray-750 px-3 py-2 text-cool-gray-200 outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all placeholder:text-cool-gray-600"
+                          />
+                          <span className="text-[10px] text-cool-gray-500 mt-0.5 block">
+                            Shown beneath the icon on your device home screen (recommended: 12 chars or fewer).
+                          </span>
+                        </div>
+
+                        {/* Icon Mode Tabs: Preset vs Custom */}
+                        <div>
+                          <div className="flex items-center justify-between mb-1.5">
+                            <label className="text-[10px] font-extrabold text-cool-gray-400 uppercase tracking-wider">
+                              Choose App Icon
+                            </label>
+                            <div className="flex items-center rounded-lg bg-cool-gray-950 p-0.5 border border-cool-gray-800 text-[10px] font-bold">
+                              <button
+                                type="button"
+                                onClick={() => setPwaIconType('preset')}
+                                className={`px-2.5 py-0.5 rounded-md transition cursor-pointer ${pwaIconType === 'preset' ? 'bg-cyan-600 text-white' : 'text-cool-gray-400 hover:text-white'}`}
+                              >
+                                Preset Icons
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setPwaIconType('custom')}
+                                className={`px-2.5 py-0.5 rounded-md transition cursor-pointer ${pwaIconType === 'custom' ? 'bg-cyan-600 text-white' : 'text-cool-gray-400 hover:text-white'}`}
+                              >
+                                Custom Image
+                              </button>
+                            </div>
+                          </div>
+
+                          {pwaIconType === 'preset' ? (
+                            <div className="space-y-2.5">
+                              {/* Preset Icons Selection */}
+                              <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
+                                {[
+                                  { id: 'snowflake', name: 'Freezer', icon: Snowflake },
+                                  { id: 'beef', name: 'Butcher', icon: Beef },
+                                  { id: 'package', name: 'Storage', icon: Package },
+                                  { id: 'truck', name: 'Transport', icon: Truck },
+                                  { id: 'warehouse', name: 'Depot', icon: Warehouse },
+                                  { id: 'fish', name: 'Seafood', icon: Fish },
+                                ].map((preset) => {
+                                  const IconComp = preset.icon;
+                                  const isSelected = pwaPresetIcon === preset.id;
+                                  return (
+                                    <button
+                                      key={preset.id}
+                                      type="button"
+                                      onClick={() => setPwaPresetIcon(preset.id)}
+                                      className={`p-2 rounded-xl flex flex-col items-center gap-1 transition cursor-pointer border ${
+                                        isSelected 
+                                          ? 'bg-cyan-950/60 border-cyan-500 text-cyan-300 ring-2 ring-cyan-500/30' 
+                                          : 'bg-cool-gray-950 border-cool-gray-800 text-cool-gray-400 hover:border-cool-gray-700 hover:text-cool-gray-200'
+                                      }`}
+                                    >
+                                      <IconComp className="w-5 h-5" />
+                                      <span className="text-[10px] font-semibold">{preset.name}</span>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+
+                              {/* Color Palette */}
+                              <div>
+                                <span className="text-[10px] font-extrabold text-cool-gray-400 uppercase tracking-wider block mb-1">
+                                  Icon Background Color
+                                </span>
+                                <div className="flex flex-wrap gap-2 items-center">
+                                  {[
+                                    { color: '#0f172a', name: 'Navy' },
+                                    { color: '#0284c7', name: 'Cyan' },
+                                    { color: '#0ea5e9', name: 'Sky' },
+                                    { color: '#991b1b', name: 'Crimson' },
+                                    { color: '#d97706', name: 'Amber' },
+                                    { color: '#047857', name: 'Emerald' },
+                                    { color: '#6d28d9', name: 'Violet' },
+                                    { color: '#334155', name: 'Slate' }
+                                  ].map(({ color, name }) => (
+                                    <button
+                                      key={color}
+                                      type="button"
+                                      onClick={() => setPwaIconColor(color)}
+                                      style={{ backgroundColor: color }}
+                                      title={name}
+                                      className={`w-6 h-6 rounded-full border-2 transition-all cursor-pointer ${
+                                        pwaIconColor === color ? 'border-white scale-110 shadow-md shadow-cyan-500/20' : 'border-cool-gray-700 hover:scale-105'
+                                      }`}
+                                    />
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+                          ) : (
+                            /* Custom Image Upload */
+                            <div className="space-y-2 p-3 bg-cool-gray-950 rounded-xl border border-cool-gray-800">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[11px] font-medium text-cool-gray-300">
+                                  Upload farm logo, crest, or custom icon (PNG, JPG, SVG, WebP)
+                                </span>
+                                {pwaCustomImage && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setPwaCustomImage(null)}
+                                    className="text-[10px] text-red-400 hover:underline cursor-pointer"
+                                  >
+                                    Remove Image
+                                  </button>
+                                )}
+                              </div>
+                              <label className="flex flex-col items-center justify-center p-3.5 border-2 border-dashed border-cool-gray-750 hover:border-cyan-500/60 rounded-lg cursor-pointer bg-cool-gray-900/40 hover:bg-cool-gray-900/80 transition-all">
+                                <Upload className="w-5 h-5 text-cyan-400 mb-1" />
+                                <span className="text-xs font-semibold text-cool-gray-200">
+                                  {pwaCustomImage ? 'Change Image File' : 'Choose or Drag Image File'}
+                                </span>
+                                <span className="text-[10px] text-cool-gray-500 mt-0.5">
+                                  Square transparent PNG or SVG recommended
+                                </span>
+                                <input
+                                  type="file"
+                                  accept="image/*"
+                                  className="hidden"
+                                  onChange={(e) => {
+                                    const file = e.target.files?.[0];
+                                    if (file) {
+                                      const reader = new FileReader();
+                                      reader.onload = (loadEv) => {
+                                        if (loadEv.target?.result) {
+                                          setPwaCustomImage(loadEv.target.result as string);
+                                        }
+                                      };
+                                      reader.readAsDataURL(file);
+                                    }
+                                  }}
+                                />
+                              </label>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Right Col: Live Interactive Mobile Home Screen Preview */}
+                      <div className="flex flex-col items-center justify-center p-4 bg-cool-gray-950/80 rounded-xl border border-cool-gray-800 text-center">
+                        <span className="text-[10px] font-bold text-cool-gray-400 uppercase tracking-wider mb-3">
+                          Home Screen Preview
+                        </span>
+                        <div className="flex flex-col items-center gap-1.5 my-auto">
+                          {/* Squircle App Icon */}
+                          <div
+                            className="w-16 h-16 rounded-2xl flex items-center justify-center shadow-xl border border-white/10 relative overflow-hidden transition-all duration-300"
+                            style={{ backgroundColor: pwaIconColor }}
+                          >
+                            {pwaIconType === 'custom' && pwaCustomImage ? (
+                              <img src={pwaCustomImage} alt="App Icon" className="w-11 h-11 object-contain" />
+                            ) : (
+                              <div className="text-white">
+                                {pwaPresetIcon === 'snowflake' && <Snowflake className="w-9 h-9 stroke-[1.8]" />}
+                                {pwaPresetIcon === 'beef' && <Beef className="w-9 h-9 stroke-[1.8]" />}
+                                {pwaPresetIcon === 'package' && <Package className="w-9 h-9 stroke-[1.8]" />}
+                                {pwaPresetIcon === 'truck' && <Truck className="w-9 h-9 stroke-[1.8]" />}
+                                {pwaPresetIcon === 'warehouse' && <Warehouse className="w-9 h-9 stroke-[1.8]" />}
+                                {pwaPresetIcon === 'fish' && <Fish className="w-9 h-9 stroke-[1.8]" />}
+                              </div>
+                            )}
+                            <div className="absolute inset-0 bg-gradient-to-b from-white/20 via-transparent to-black/25 pointer-events-none rounded-2xl"></div>
+                          </div>
+                          {/* Short Name Label Under Icon */}
+                          <span className="text-xs font-bold text-cool-gray-200 tracking-tight max-w-[100px] truncate">
+                            {pwaShortName || 'FreezerApp'}
+                          </span>
+                        </div>
+                        <span className="text-[10px] text-cool-gray-500 mt-3">
+                          Rendered on device home screen
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Save and Reset Action Buttons */}
+                    <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-cool-gray-800">
+                      <button
+                        type="button"
+                        disabled={isSavingPwaBranding}
+                        onClick={handleResetPwaBranding}
+                        className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-cool-gray-800 hover:bg-cool-gray-750 text-cool-gray-300 border border-cool-gray-700 transition flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5 text-cool-gray-400" />
+                        <span>Reset to Defaults</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        disabled={isSavingPwaBranding}
+                        onClick={handleSavePwaBranding}
+                        className="px-4.5 py-1.5 rounded-lg text-xs font-extrabold bg-cyan-600 hover:bg-cyan-500 text-white shadow-sm flex items-center gap-1.5 transition cursor-pointer disabled:opacity-50"
+                      >
+                        {isSavingPwaBranding ? (
+                          <>
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin text-white" />
+                            <span>Saving Branding...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Save className="w-3.5 h-3.5 text-white" />
+                            <span>Save App Name & Icon</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
                   </div>
+                </div>
+
+                {/* PWA & Connected Devices Manager Card */}
+                <PwaDeviceManagerCard />
+              </div>
+            ) : (
+              <div className="space-y-6 animate-fade-in">
+                {/* Demo Sandbox Playground Card */}
+                <div className="bg-gradient-to-br from-amber-950/20 to-cool-gray-850 rounded-xl border border-amber-500/25 p-5 shadow-sm space-y-4">
                   <div>
-                    <label className="block text-[10px] font-extrabold text-cool-gray-400 mb-1 uppercase tracking-wider">Default Shipper Address</label>
-                    <textarea
-                      value={defaultFromAddress}
-                      onChange={(e) => {
-                        setDefaultFromAddress(e.target.value);
-                        localStorage.setItem("report-from-address", e.target.value);
-                        saveAppConfigKey("report-from-address", e.target.value);
-                      }}
-                      rows={3}
-                      className="w-full max-w-md bg-cool-gray-900 border border-cool-gray-750 rounded-xl px-4 py-2 text-white text-sm focus:outline-none focus:border-cyan-500 font-semibold"
-                      placeholder="Street address, City, State, Zip"
-                    />
+                    <h3 className="text-base font-bold text-amber-400 mb-1 flex items-center gap-2">
+                      <span className="flex h-2.5 w-2.5 relative">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-amber-500"></span>
+                      </span>
+                      Demo Sandbox Playground
+                    </h3>
+                    <p className="text-xs text-cool-gray-400 leading-relaxed font-medium">
+                      Spawn a temporary sandbox duplicate of your live inventory database. All changes made in the playground are isolated and discarded once you exit.
+                    </p>
+                  </div>
+
+                  <div className="bg-cool-gray-900/60 p-4 rounded-xl border border-cool-gray-800/80">
+                    <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
+                      <div className="flex-1 space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold text-cool-gray-300">Playground Status:</span>
+                          {state.isDemoMode ? (
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20 uppercase tracking-wide">
+                              <span className="h-1.5 w-1.5 rounded-full bg-amber-400 animate-ping"></span>
+                              Active
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-cool-gray-800 text-cool-gray-400 border border-cool-gray-700 uppercase tracking-wide">
+                              Inactive
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[11px] text-cool-gray-450 leading-normal font-medium">
+                          {state.isDemoMode 
+                            ? "Currently running inside the safe sandbox. Your pristine live database is paused." 
+                            : "Currently running on the live database. Create a sandbox to play safely."}
+                        </p>
+                      </div>
+
+                      <div className="flex-shrink-0 w-full sm:w-auto">
+                        {state.isDemoMode ? (
+                          <div className="space-y-2">
+                            {!showDemoEndConfirm ? (
+                              <button
+                                type="button"
+                                onClick={() => setShowDemoEndConfirm(true)}
+                                className="w-full sm:w-auto bg-amber-500 hover:bg-amber-400 text-cool-gray-950 font-bold px-4 py-2 rounded-lg text-xs transition duration-150 shadow focus:outline-none cursor-pointer"
+                              >
+                                Exit Demo Sandbox
+                              </button>
+                            ) : (
+                              <div className="p-2 bg-amber-950/45 rounded-lg border border-amber-500/20 text-center space-y-2 max-w-[240px]">
+                                <p className="text-[10px] text-amber-300 leading-relaxed font-bold">
+                                  Are you sure? This will permanently discard all sandbox changes.
+                                </p>
+                                <div className="flex gap-2 justify-center">
+                                  <button
+                                    type="button"
+                                    disabled={isDemoActionLoading}
+                                    onClick={handleEndDemoAction}
+                                    className="bg-red-600 hover:bg-red-500 text-white font-extrabold px-2.5 py-1 rounded-md text-[10px] transition cursor-pointer"
+                                  >
+                                    {isDemoActionLoading ? 'Exiting...' : 'Yes, Discard'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={isDemoActionLoading}
+                                    onClick={() => setShowDemoEndConfirm(false)}
+                                    className="bg-cool-gray-800 hover:bg-cool-gray-750 text-cool-gray-300 font-bold px-2.5 py-1 rounded-md text-[10px] transition cursor-pointer"
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="space-y-2">
+                            {!showDemoStartConfirm ? (
+                              <button
+                                type="button"
+                                onClick={() => setShowDemoStartConfirm(true)}
+                                className="w-full sm:w-auto bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-4 py-2 rounded-lg text-xs transition duration-150 shadow focus:outline-none cursor-pointer"
+                              >
+                                Launch Demo Sandbox
+                              </button>
+                            ) : (
+                              <div className="p-3 bg-indigo-950/45 rounded-lg border border-indigo-500/20 text-center space-y-2 max-w-[240px]">
+                                <p className="text-[10px] text-indigo-300 leading-relaxed font-bold">
+                                  Duplicate live database into a safe playground?
+                                </p>
+                                <div className="flex gap-2 justify-center">
+                                  <button
+                                    type="button"
+                                    disabled={isDemoActionLoading}
+                                    onClick={handleStartDemoAction}
+                                    className="bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold px-2.5 py-1 rounded-md text-[10px] transition cursor-pointer"
+                                  >
+                                    {isDemoActionLoading ? 'Spawning...' : 'Yes, Enter'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={isDemoActionLoading}
+                                    onClick={() => setShowDemoStartConfirm(false)}
+                                    className="bg-cool-gray-800 hover:bg-cool-gray-750 text-cool-gray-300 font-bold px-2.5 py-1 rounded-md text-[10px] transition cursor-pointer"
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-cool-gray-850 rounded-xl border border-cool-gray-750 p-5 shadow-sm space-y-5">
+                  <div>
+                    <h3 className="text-base font-bold text-cool-gray-100 mb-1 flex items-center gap-2">
+                      ⚙️ Application Preferences
+                    </h3>
+                    <p className="text-xs text-cool-gray-400 font-medium">
+                      Customize your local application and display preferences.
+                    </p>
+                  </div>
+
+                  <div className="border-t border-cool-gray-750/50 pt-4 space-y-4">
+                    <span className="text-xs font-bold text-cool-gray-300 block uppercase tracking-wider">
+                      Default Movement Report Shipper (From Address)
+                    </span>
+                    <p className="text-[11px] text-cool-gray-400 font-medium leading-relaxed">
+                      Set the default origin details printed on your Delivery Slips and Transfer Manifests. These can still be customized live inside each report form.
+                    </p>
+                    <div className="space-y-3">
+                      <div>
+                        <label className="block text-[10px] font-extrabold text-cool-gray-400 mb-1 uppercase tracking-wider">Default Shipper Name</label>
+                        <input
+                          type="text"
+                          value={defaultFromName}
+                          onChange={(e) => {
+                            setDefaultFromName(e.target.value);
+                            localStorage.setItem("report-from-name", e.target.value);
+                            saveAppConfigKey("report-from-name", e.target.value);
+                          }}
+                          className="w-full max-w-md bg-cool-gray-900 border border-cool-gray-750 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:border-cyan-500 font-semibold"
+                          placeholder="Shipper or farm name (e.g. My Ranch)"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-extrabold text-cool-gray-400 mb-1 uppercase tracking-wider">Default Shipper Address</label>
+                        <textarea
+                          value={defaultFromAddress}
+                          onChange={(e) => {
+                            setDefaultFromAddress(e.target.value);
+                            localStorage.setItem("report-from-address", e.target.value);
+                            saveAppConfigKey("report-from-address", e.target.value);
+                          }}
+                          rows={3}
+                          className="w-full max-w-md bg-cool-gray-900 border border-cool-gray-750 rounded-xl px-4 py-2 text-white text-sm focus:outline-none focus:border-cyan-500 font-semibold"
+                          placeholder="Street address, City, State, Zip"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="border-t border-cool-gray-750/50 pt-4 space-y-4">
+                    <span className="text-xs font-bold text-cool-gray-300 block uppercase tracking-wider">
+                      Off-Site Storage Settings
+                    </span>
+                    <p className="text-[11px] text-cool-gray-400 font-medium leading-relaxed">
+                      Specify the theoretical box weight (lbs) used in simulated box count calculations inside the Off-Site view.
+                    </p>
+                    <div>
+                      <label className="block text-[10px] font-extrabold text-cool-gray-400 mb-1 uppercase tracking-wider">Theoretical Box Weight (lbs)</label>
+                      <input
+                        type="number"
+                        value={theoreticalBoxWeight === 0 ? '' : theoreticalBoxWeight}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          setTheoreticalBoxWeight(isNaN(val) ? 0 : val);
+                          if (!isNaN(val) && val > 0) {
+                            localStorage.setItem("offsite-theoretical-box-weight", val.toString());
+                            saveAppConfigKey("offsite-theoretical-box-weight", val.toString());
+                          }
+                        }}
+                        onBlur={() => {
+                          if (!theoreticalBoxWeight || theoreticalBoxWeight <= 0) {
+                            setTheoreticalBoxWeight(40);
+                            localStorage.setItem("offsite-theoretical-box-weight", "40");
+                            saveAppConfigKey("offsite-theoretical-box-weight", "40");
+                          }
+                        }}
+                        className="w-full max-w-xs bg-cool-gray-900 border border-cool-gray-750 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:border-cyan-500 font-semibold"
+                        placeholder="40"
+                        min="1"
+                        step="0.1"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="border-t border-cool-gray-750/40 pt-5 text-xs text-cool-gray-450 leading-relaxed font-semibold">
+                    <p>
+                      🔒 Application preferences are stored in your SQLite database (<code className="text-cyan-400 text-[11px] font-mono">app_config</code>) and mirrored in local cache, persisting across devices, reloads, and container restarts.
+                    </p>
                   </div>
                 </div>
               </div>
-
-              <div className="border-t border-cool-gray-750/50 pt-4 space-y-4">
-                <span className="text-xs font-bold text-cool-gray-300 block uppercase tracking-wider">
-                  Off-Site Storage Settings
-                </span>
-                <p className="text-[11px] text-cool-gray-400 font-medium leading-relaxed">
-                  Specify the theoretical box weight (lbs) used in simulated box count calculations inside the Off-Site view.
-                </p>
-                <div>
-                  <label className="block text-[10px] font-extrabold text-cool-gray-400 mb-1 uppercase tracking-wider">Theoretical Box Weight (lbs)</label>
-                  <input
-                    type="number"
-                    value={theoreticalBoxWeight === 0 ? '' : theoreticalBoxWeight}
-                    onChange={(e) => {
-                      const val = parseFloat(e.target.value);
-                      setTheoreticalBoxWeight(isNaN(val) ? 0 : val);
-                      if (!isNaN(val) && val > 0) {
-                        localStorage.setItem("offsite-theoretical-box-weight", val.toString());
-                        saveAppConfigKey("offsite-theoretical-box-weight", val.toString());
-                      }
-                    }}
-                    onBlur={() => {
-                      if (!theoreticalBoxWeight || theoreticalBoxWeight <= 0) {
-                        setTheoreticalBoxWeight(40);
-                        localStorage.setItem("offsite-theoretical-box-weight", "40");
-                        saveAppConfigKey("offsite-theoretical-box-weight", "40");
-                      }
-                    }}
-                    className="w-full max-w-xs bg-cool-gray-900 border border-cool-gray-750 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:border-cyan-500 font-semibold"
-                    placeholder="40"
-                    min="1"
-                    step="0.1"
-                  />
-                </div>
-              </div>
-
-              <div className="border-t border-cool-gray-750/40 pt-5 text-xs text-cool-gray-450 leading-relaxed font-semibold">
-                <p>
-                  🔒 Application preferences are stored in your SQLite database (<code className="text-cyan-400 text-[11px] font-mono">app_config</code>) and mirrored in local cache, persisting across devices, reloads, and container restarts.
-                </p>
-              </div>
-            </div>
+            )}
           </div>
         );
       case "tags":
@@ -3359,6 +3873,14 @@ const LibraryView: React.FC<{
             className={`px-3 py-2 text-sm font-semibold rounded-t-md transition-all whitespace-nowrap ${activeTab === "import" ? "border-b-2 border-cyan-500 bg-cool-gray-800 text-cyan-300" : "text-cool-gray-400 hover:text-white hover:bg-cool-gray-800/40"}`}
           >
             Import / Manage Data
+          </button>
+          <button
+            onClick={() => {
+              setActiveTab("pwa");
+            }}
+            className={`px-3 py-2 text-sm font-semibold rounded-t-md transition-all whitespace-nowrap ${activeTab === "pwa" ? "border-b-2 border-cyan-500 bg-cool-gray-800 text-cyan-300" : "text-cool-gray-400 hover:text-white hover:bg-cool-gray-800/40"}`}
+          >
+            PWA & Devices
           </button>
           <button
             onClick={() => {

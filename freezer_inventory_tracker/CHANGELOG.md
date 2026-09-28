@@ -1,3 +1,169 @@
+### [2.46.2] - 2026-09-27
+
+### Added
+- **Integrated PWA & Connected Devices as an independent main tab**:
+  - Moved **PWA & Connected Devices** from being a nested sub-tab under general settings to its own dedicated horizontal main-level tab inside Catalog & Settings (`LibraryView.tsx`).
+  - Streamlined both tabs: **Settings** now displays only general preferences, demo playground, database information, and address/box weight metrics; **PWA & Devices** contains installation details, URL config, branding controls, and the `PwaDeviceManagerCard` table.
+  - Eliminated nested sub-tab switcher navigation pills inside the settings page, reducing visual clutter and layout depth.
+  - Removed the duplicate/standalone **PWA & Devices** entry from the hamburger dropdown menu in `App.tsx` and consolidated navigation directly inside the main horizontal tab bar of the **Catalog & Settings** view.
+  - Fully maintained fallback compatibility with existing direct URLs, routing parameters (`initialLibraryTab === 'pwa'`), and quick launch buttons.
+
+### Files Modified
+- `/freezer_inventory_tracker/views/LibraryView.tsx`
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.46.1] - 2026-09-27
+
+### Added
+- **Dedicated PWA & Standalone Devices Sub-Tab in Settings**:
+  - Organized the Library Settings view (`LibraryView.tsx`) into dedicated sub-tabs: **General Settings** and **PWA & Devices**, eliminating clutter and visual fatigue.
+  - The **General Settings** tab houses the Demo Sandbox Playground and Application Preferences (default delivery shipper address, off-site theoretical box weight, and database persistence documentation).
+  - The **PWA & Devices** tab consolidates all offline standalone capabilities: Offline App Installation & Browser Launch (direct PWA link, custom tunnel/domain configurator, copy link button), live in-settings `PWAInstallButton`, App Name & Home Screen Icon customization (title, short name, presets/custom upload, squircle live preview), and the central PWA & Connected Devices Manager (`PwaDeviceManagerCard.tsx`).
+  - Added sticky sub-tab persistence via `localStorage` (`freezer-settings-subtab`) to seamlessly retain the administrator's chosen view across visits.
+- **Enhanced PWA Quick-Routing & Navigation**:
+  - Added support for `"pwa"` tab routing in `LibraryTab` and `App.tsx` (`initialLibraryTab`), allowing direct jumps into PWA & Device settings from anywhere in the application.
+  - Added a direct **PWA Settings** shortcut button on the home-screen PWA suggestion banner in `App.tsx`.
+  - Added a **PWA & Devices** link in the header profile menu dropdown for immediate 1-click access.
+
+### Files Modified
+- `/freezer_inventory_tracker/views/LibraryView.tsx`
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.46.0] - 2026-09-27
+
+### Added
+- **PWA Device & Operator Identity Setup on First Launch**:
+  - Implemented an initial Device & Operator Setup Modal (`DeviceSetupModal.tsx`) prompting users upon first launch in a browser or installed PWA to configure their Operator Name (e.g., "Nick", "Sarah") and a friendly Device Label (e.g., "Nick's iPhone", "Walk-In Freezer Tablet").
+  - Generates a permanent unique device identifier (`deviceId` UUID) saved in device `localStorage` alongside friendly labels and operator name.
+  - Added helper methods in `utils/clientDevice.ts` (`getClientDeviceInfo`, `getClientAuditHeaders`, `setClientDeviceInfo`) attaching device ID, device label, operator name, and `isPwa` flags to all client API requests and SSE heartbeats.
+- **Relational SQLite PWA Device Registry (`pwa_devices`)**:
+  - Created a normalized relational table `pwa_devices` in SQLite storing device UUID (`id`), friendly name (`name`), operator name (`operator`), device category (`clientDevice`), detailed OS/browser info (`clientInfo`), `isPwa` boolean, `firstSeen`, `lastSeen`, `lastIp`, `status` (`authorized` or `revoked`), and notes.
+  - Implemented automatic SQLite registration and touch heartbeat endpoints (`/api/devices`, `/api/devices/register`, `PUT /api/devices/:id`, `POST /api/devices/:id/revoke`, `POST /api/devices/:id/authorize`, `DELETE /api/devices/:id`).
+  - Added live online presence detection in the device list comparing active client heartbeat connections with registered hardware devices.
+- **PWA Device Manager in Settings**:
+  - Embedded a dedicated **PWA & Connected Devices Manager Card** (`PwaDeviceManagerCard.tsx`) inside the Library Settings view.
+  - Provides administrators full visibility over all installed PWAs and accessing devices, displaying device labels, assigned operators, client platform badges, IP addresses, registration date, and live connection status.
+  - Allows editing device names and operator tags directly with instant updates.
+- **Device Access Revocation & Anti-Stale Cookie Protection**:
+  - Implemented hardware-level access revocation: when an administrator revokes a device in the PWA Device Manager, the server immediately severs active SSE streams and returns `403 DEVICE_REVOKED` on all subsequent inventory mutations and heartbeats.
+  - Added a full-screen Revoked Device Blocking Screen in `App.tsx` ensuring that even if a device retains persistent cookies or cached offline assets, it is locked out from reading or modifying the database.
+- **Enriched Audit Logging & History Attribution**:
+  - Upgraded `extractUserFromReq` and `extractClientInfoFromReq` in `server.ts` to seamlessly prioritize Home Assistant Ingress user headers, client-sent operator headers, and fallback lookup against the SQLite `pwa_devices` registry.
+  - Updated `HistoryView.tsx` to prominently display the recorded operator name (`@Nick`), client platform badge (`⚡ Standalone PWA`), and device label (`(Nick's iPhone)`) on all historical activity records instead of generic "web browser".
+
+### Files Modified
+- `/freezer_inventory_tracker/types.ts`
+- `/freezer_inventory_tracker/utils/clientDevice.ts`
+- `/freezer_inventory_tracker/components/DeviceSetupModal.tsx`
+- `/freezer_inventory_tracker/components/PwaDeviceManagerCard.tsx`
+- `/freezer_inventory_tracker/views/LibraryView.tsx`
+- `/freezer_inventory_tracker/views/HistoryView.tsx`
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/public/sw.js`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.45.0] - 2026-09-27
+
+### Added
+- **PWA Custom Application Name & Icon Picker in Settings**:
+  - Added dedicated controls in the PWA Settings tab to allow users to fully customize the Application Full Name (`pwa_app_name`) and Mobile Home Screen Short Name (`pwa_short_name`).
+  - Added an interactive App Icon Picker featuring 6 tailored preset icons (❄️ Freezer Snowflake, 🥩 Butcher Cut, 📦 Storage Box, 🚛 Cold Freight Truck, 🏢 Cold Storage Depot, 🐟 Wild Catch Seafood) along with an 8-color theme swatch palette.
+  - Added custom image and logo upload support (PNG, JPG, SVG, WebP) allowing users to upload their own farm, butcher shop, or company crest directly.
+  - Integrated client-side HTML `<canvas>` generation to automatically render and package 192x192 and 512x512 high-resolution squircle app icon PNGs.
+  - Added a Live Interactive Smartphone Home Screen Preview displaying the squircle app icon, background gradient, chosen graphic, and short name label underneath in real time.
+  - Updated `/manifest.webmanifest` and `/manifest.json` in `server.ts` to dynamically serve the configured application name, short name, theme color, and custom icon paths with `no-cache` headers.
+  - Added dynamic icon serving endpoints in `server.ts` (`/api/pwa/icon-192.png`, `/api/pwa/icon-512.png`, `/apple-touch-icon.png`) to decode and stream custom branding PNGs with proper MIME types and caching.
+  - Added real-time client synchronization in `App.tsx` updating `document.title`, `<meta name="apple-mobile-web-app-title">`, `<link rel="icon">`, and `<link rel="apple-touch-icon">` as soon as custom branding is configured.
+
+### Files Modified
+- `/freezer_inventory_tracker/server.ts`
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/views/LibraryView.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/public/sw.js`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+
+### [2.44.1] - 2026-09-27
+
+### Added
+- **PWA Service Worker Background Database Sync & Auto-Updates**:
+  - Implemented background synchronization using the standard modern **Periodic Background Sync API** to keep the IndexedDB offline state updated periodically (every 3 hours) even when the app is completely closed.
+  - Added a smart, throttled stale-while-revalidate auto-update check inside the Service Worker `fetch` handler on HTML navigation events. If the cached database state in IndexedDB is older than 3 hours, a background sync fetch is automatically initiated, adding perfect support and compatibility for iOS Safari (which doesn't support the Periodic Sync API yet).
+  - Implemented Client Broadcast Messaging in the Service Worker using `postMessage` to broadcast `BACKGROUND_SYNC_COMPLETE` updates directly to all active/open browser tabs when a background synchronization succeeds.
+  - Wired up `useInventory.ts` with a custom `useEffect` listener to intercept broadcast messages and apply the newly fetched database state in real-time, eliminating manual page reloads or stale database views.
+  - Safely configured absolute API paths in the Service Worker to seamlessly support standalone environments and live Home Assistant Ingress.
+
+### Files Modified
+- `/freezer_inventory_tracker/public/sw.js`
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/index.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.44.0] - 2026-09-27
+
+### Added
+- **Full Offline Image Caching & Local Storage in PWA**:
+  - Implemented automatic, non-intrusive offline image caching for previously viewed images via a dedicated Cache Storage bucket (`'freezer-tracker-images'`) in the Service Worker.
+  - Added support for offline photo capture ("Take Photo") and image uploading ("Upload File") in both `PhotoManagerView.tsx` and `MediaSelector.tsx` when the device is offline.
+  - Uploaded image files are automatically saved to IndexedDB (`offline_images` store) and assigned a temporary local reference URL (`/uploads/offline-image-xxx.jpg`).
+  - Integrated Service Worker interception for temporary offline image references, dynamically loading and rendering binary Blobs straight from local IndexedDB with zero changes to existing `<img>` tags.
+  - Upgraded the client-side background sync queue (`syncOfflineQueue` in `useInventory.ts`) to automatically detect offline images, upload them to the server upon reconnection, delete them from local IndexedDB, and transparently replay mutations with actual server image links.
+
+### Files Modified
+- `/freezer_inventory_tracker/public/sw.js`
+- `/freezer_inventory_tracker/utils/offlineStorage.ts`
+- `/freezer_inventory_tracker/components/MediaSelector.tsx`
+- `/freezer_inventory_tracker/views/PhotoManagerView.tsx`
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
+### [2.43.27] - 2026-09-27
+
+### Fixed
+- **Robust Cross-Platform Offline Detection (Safari & WebView Network Patterns)**:
+  - Fixed a critical iOS Safari / Home Assistant Ingress bug where offline database operations would fail with a "can't connect to the database" error dialog instead of transitioning to the IndexedDB offline queue.
+  - Upgraded `isNetworkFailure` in `useInventory.ts` to be case-insensitive and specifically catch Safari-specific `"Load failed"` and other standard mobile browser offline exception patterns.
+- **Smart SSE Exponential Backoff & Connection Throttling**:
+  - Solved the infinite rapid reconnection loop that hammered the client and network state machine every 3 seconds while offline.
+  - Enhanced the `EventSource` onerror handler in `App.tsx` to recognize offline states and instantly suspend reconnection attempts.
+  - Implemented an intelligent exponential backoff algorithm (reconnect time doubles from 3s up to 30s) when the network is online but the server is unreachable.
+  - Integrated a global `window` online event listener to instantly restore live sync connections the exact millisecond the device regains network access.
+
+### Files Modified
+- `/freezer_inventory_tracker/hooks/useInventory.ts`
+- `/freezer_inventory_tracker/App.tsx`
+- `/freezer_inventory_tracker/package.json`
+- `/freezer_inventory_tracker/config.yaml`
+- `/freezer_inventory_tracker/CHANGELOG.md`
+- `/APP_CONTEXT.md`
+- `/freezer_inventory_tracker/APP_CONTEXT.md`
+
 ### [2.43.26] - 2026-09-26
 
 ### Fixed

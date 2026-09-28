@@ -264,10 +264,12 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch, onOpenUndo, 
             }
         });
         // Ensure standard options are available for intuitive filtering
-        ['Desktop Browser', 'Mobile Browser', 'HA Companion App'].forEach(d => devices.add(d));
+        ['Desktop Browser', 'Mobile Browser', 'Standalone PWA', 'HA Companion App'].forEach(d => devices.add(d));
         return Array.from(devices).sort().map(dev => {
             let icon = '💻';
-            if (dev.includes('Companion') || dev.includes('Mobile')) icon = '📱';
+            if (dev.includes('Companion')) icon = '📱';
+            else if (dev.includes('Standalone') || dev.includes('PWA')) icon = '⚡';
+            else if (dev.includes('Mobile')) icon = '📱';
             return {
                 id: dev,
                 name: `${icon} ${dev}`,
@@ -914,14 +916,19 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch, onOpenUndo, 
                                                 className={`inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded border ${
                                                     entry.clientDevice.includes('Companion')
                                                         ? 'bg-blue-950/80 border-blue-800/80 text-blue-300'
+                                                        : entry.clientDevice.includes('Standalone') || entry.clientDevice.includes('PWA')
+                                                        ? 'bg-cyan-950/80 border-cyan-800/80 text-cyan-300'
                                                         : entry.clientDevice.includes('Mobile')
                                                         ? 'bg-purple-950/80 border-purple-800/80 text-purple-300'
                                                         : 'bg-emerald-950/80 border-emerald-800/80 text-emerald-300'
                                                 }`}
                                                 title={entry.clientInfo || entry.clientDevice}
                                             >
-                                                <span>{entry.clientDevice.includes('Companion') || entry.clientDevice.includes('Mobile') ? '📱' : '💻'}</span>
-                                                <span>{entry.clientDevice}</span>
+                                                <span>{entry.clientDevice.includes('Companion') ? '📱' : entry.clientDevice.includes('Standalone') || entry.clientDevice.includes('PWA') ? '⚡' : entry.clientDevice.includes('Mobile') ? '📱' : '💻'}</span>
+                                                <span>
+                                                    {entry.clientDevice}
+                                                    {entry.clientInfo && entry.clientInfo.includes('•') ? ` (${entry.clientInfo.split('•').slice(1).join('•').trim()})` : ''}
+                                                </span>
                                             </span>
                                         )}
                                         <p className="text-cool-gray-400 font-mono text-[11px]">

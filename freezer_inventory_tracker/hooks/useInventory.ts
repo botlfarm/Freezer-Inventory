@@ -9,11 +9,54 @@ import {
   getOfflineQueue,
   removeOfflineAction,
   getOfflineQueueCount,
-  getCachedStateTimestamp
+  getCachedStateTimestamp,
+  getOfflineImage,
+  deleteOfflineImage
 } from '../utils/offlineStorage';
 import { useOnlineStatus } from './useOnlineStatus';
 
 export type { OperatingMode, ForcedMultiUser, OperationalZone, ZoneClientCounts };
+
+function findOfflineImageUrls(obj: any): string[] {
+  const urls: string[] = [];
+  function recurse(val: any) {
+    if (!val) return;
+    if (typeof val === 'string') {
+      if (val.includes('offline-image-')) {
+        urls.push(val);
+      }
+    } else if (typeof val === 'object') {
+      for (const k of Object.keys(val)) {
+        recurse(val[k]);
+      }
+    }
+  }
+  recurse(obj);
+  return urls;
+}
+
+function replaceOfflineImageUrls(obj: any, map: Record<string, string>): any {
+  if (!obj) return obj;
+  if (typeof obj === 'string') {
+    for (const key of Object.keys(map)) {
+      if (obj === key || obj.includes(key)) {
+        return map[key];
+      }
+    }
+    return obj;
+  }
+  if (Array.isArray(obj)) {
+    return obj.map(item => replaceOfflineImageUrls(item, map));
+  }
+  if (typeof obj === 'object') {
+    const next: any = {};
+    for (const k of Object.keys(obj)) {
+      next[k] = replaceOfflineImageUrls(obj[k], map);
+    }
+    return next;
+  }
+  return obj;
+}
 
 const defaultInitialState: InventoryState = {
   freezers: [],
@@ -629,11 +672,17 @@ export const useInventory = (activeView: View = 'product') => {
               }
             }));
           } else {
+            const errMsgLower = (err.message || '').toLowerCase();
             const isNetworkFailure = (typeof navigator !== 'undefined' && !navigator.onLine) ||
               err.name === 'AbortError' ||
-              err.message?.includes('Failed to fetch') ||
-              err.message?.includes('Network request failed') ||
-              err.message?.includes('NetworkError');
+              errMsgLower.includes('failed to fetch') ||
+              errMsgLower.includes('network request failed') ||
+              errMsgLower.includes('networkerror') ||
+              errMsgLower.includes('load failed') ||
+              errMsgLower.includes('failed to load') ||
+              errMsgLower.includes('network error') ||
+              errMsgLower.includes('connection refused') ||
+              errMsgLower.includes('aborted');
 
             if (isNetworkFailure) {
               // Graceful offline queueing: keep optimistic changes in memory and persist in IndexedDB queue
@@ -1001,7 +1050,59 @@ export const useInventory = (activeView: View = 'product') => {
     try {
       for (const item of queue) {
         try {
-          const success = await sendActionDirectlyToServer(item.action);
+          let actionToSync = item.action;
+          
+          // Detect and upload offline image files before sending the action
+          const offlineUrls = findOfflineImageUrls(actionToSync);
+          if (offlineUrls.length > 0) {
+            console.log('Sync queue: Uploading offline images before syncing action:', offlineUrls);
+            const replacements: Record<string, string> = {};
+            let uploadFailed = false;
+            
+            for (const url of offlineUrls) {
+              const filename = url.split('/').pop() || '';
+              const idKey = filename.split('.')[0];
+              
+              const record = await getOfflineImage(idKey);
+              if (record && record.base64) {
+                try {
+                  const token = getToken();
+                  const headers: Record<string, string> = {
+                    'Content-Type': 'application/json'
+                  };
+                  if (token) headers['Authorization'] = `Bearer ${token}`;
+                  
+                  const uploadRes = await fetch(getApiUrl('api/upload'), {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify({ base64: record.base64, filename: record.filename })
+                  });
+                  
+                  if (uploadRes.ok) {
+                    const data = await uploadRes.json();
+                    replacements[url] = data.imageUrl;
+                    await deleteOfflineImage(idKey);
+                  } else {
+                    uploadFailed = true;
+                    break;
+                  }
+                } catch (uploadErr) {
+                  uploadFailed = true;
+                  break;
+                }
+              } else {
+                replacements[url] = ''; // Fallback if image not found in IndexedDB
+              }
+            }
+            
+            if (uploadFailed) {
+              break; // Stop draining, retry later when connection stabilizes
+            }
+            
+            actionToSync = replaceOfflineImageUrls(actionToSync, replacements);
+          }
+
+          const success = await sendActionDirectlyToServer(actionToSync);
           if (success) {
             await removeOfflineAction(item.id);
           } else {
@@ -1029,6 +1130,30 @@ export const useInventory = (activeView: View = 'product') => {
       syncOfflineQueue().catch(() => {});
     }
   }, [isOnline, offlineQueueCount, syncOfflineQueue]);
+
+  // Listen to background sync updates from the Service Worker
+  useEffect(() => {
+    if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+      const handleSWMessage = (event: MessageEvent) => {
+        if (event.data && event.data.type === 'BACKGROUND_SYNC_COMPLETE') {
+          const newState = event.data.state;
+          if (newState) {
+            console.log('[PWA] Received database update from background sync');
+            const affectedTables = newState._affectedTables;
+            const normalized = normalizeClientState(newState);
+            const finalState = reconcileStateReferences(stateRef.current, normalized, affectedTables);
+            stateRef.current = finalState;
+            setState(finalState);
+            setLastSyncTime(Date.now());
+          }
+        }
+      };
+      navigator.serviceWorker.addEventListener('message', handleSWMessage);
+      return () => {
+        navigator.serviceWorker.removeEventListener('message', handleSWMessage);
+      };
+    }
+  }, []);
 
   // Dispatch an action with instant client updates and debounced server sync for quantities and movement orders
   const dispatch = useCallback(async (action: Action): Promise<boolean> => {

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { InventoryState, Action, Product, Container } from '../types';
 import { getApiUrl } from '../hooks/apiUrl';
+import { saveOfflineImage } from '../utils/offlineStorage';
 import { 
   Image as ImageIcon, Trash2, Search, Filter, ArrowUpDown, Sparkles, 
   Upload, Check, Plus, AlertTriangle, Link, Unlink, RefreshCw, X, ChevronRight, CheckCircle2, Box, Package, Camera
@@ -389,18 +390,76 @@ export function PhotoManagerView({ state, dispatch }: PhotoManagerViewProps) {
     setIsLoading(true);
     try {
       const base64 = await fileToBase64(file);
-      const token = localStorage.getItem('freezerToken');
-      const uploadRes = await fetch(getApiUrl('api/upload'), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
-        body: JSON.stringify({ base64, filename: file.name })
-      });
+      
+      let uploadRes;
+      let isNetworkError = false;
+      try {
+        const token = localStorage.getItem('freezerToken');
+        uploadRes = await fetch(getApiUrl('api/upload'), {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+          },
+          body: JSON.stringify({ base64, filename: file.name })
+        });
+      } catch (fetchErr: any) {
+        const errMsgLower = (fetchErr.message || '').toLowerCase();
+        const isOffline = (typeof navigator !== 'undefined' && !navigator.onLine) ||
+          fetchErr.name === 'AbortError' ||
+          errMsgLower.includes('failed to fetch') ||
+          errMsgLower.includes('network request failed') ||
+          errMsgLower.includes('networkerror') ||
+          errMsgLower.includes('load failed') ||
+          errMsgLower.includes('failed to load') ||
+          errMsgLower.includes('network error') ||
+          errMsgLower.includes('connection refused') ||
+          errMsgLower.includes('aborted');
+
+        if (isOffline) {
+          isNetworkError = true;
+        } else {
+          throw fetchErr;
+        }
+      }
+
+      if (isNetworkError) {
+        const offlineImgId = `offline-image-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`;
+        const offlineUrl = `uploads/${offlineImgId}.jpg`;
+        
+        await saveOfflineImage({
+          id: offlineImgId,
+          base64,
+          filename: file.name,
+          savedAt: Date.now()
+        });
+
+        // Optimistically update the target element's photo and queue the action
+        if (assigningElement.type === 'product') {
+          await dispatch({
+            type: 'EDIT_PRODUCT',
+            payload: { productId: assigningElement.id, updates: { imageUrl: offlineUrl } }
+          });
+        } else {
+          await dispatch({
+            type: 'EDIT_CONTAINER',
+            payload: { containerId: assigningElement.id, updates: { imageUrl: offlineUrl } }
+          });
+        }
+
+        showStatus('success', `✨ Saved locally! You are currently offline. The photo for "${assigningElement.name}" was saved locally and will sync automatically when you reconnect.`);
+        setAssigningElement(null);
+        return;
+      }
+
+      if (!uploadRes) {
+        showStatus('error', 'Image upload to server failed.');
+        return;
+      }
 
       if (uploadRes.ok) {
         const { imageUrl } = await uploadRes.json();
+        const token = localStorage.getItem('freezerToken');
         // Assign to element
         const assignRes = await fetch(getApiUrl('api/photos/assign'), {
           method: 'POST',

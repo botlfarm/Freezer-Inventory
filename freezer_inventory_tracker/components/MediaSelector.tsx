@@ -1,6 +1,7 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { Camera, Upload, Link, X, Loader2, Video, RefreshCw, Image as ImageIcon, Search, Check } from 'lucide-react';
 import { getApiUrl } from '../hooks/apiUrl';
+import { saveOfflineImage } from '../utils/offlineStorage';
 
 interface MediaSelectorProps {
   imageUrl?: string;
@@ -161,18 +162,59 @@ export const MediaSelector: React.FC<MediaSelectorProps> = ({ imageUrl = '', onC
         ctx?.drawImage(img, 0, 0, width, height);
         const compressedBase64 = canvas.toDataURL('image/jpeg', 0.85);
 
-        const token = localStorage.getItem('freezerToken');
-        const headers: Record<string, string> = {
-          'Content-Type': 'application/json'
-        };
-        if (token) {
-          headers['Authorization'] = `Bearer ${token}`;
+        let res;
+        let isNetworkError = false;
+        try {
+          const token = localStorage.getItem('freezerToken');
+          const headers: Record<string, string> = {
+            'Content-Type': 'application/json'
+          };
+          if (token) {
+            headers['Authorization'] = `Bearer ${token}`;
+          }
+          res = await fetch(getApiUrl('api/upload'), {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ base64: compressedBase64, filename })
+          });
+        } catch (fetchErr: any) {
+          const errMsgLower = (fetchErr.message || '').toLowerCase();
+          const isOffline = (typeof navigator !== 'undefined' && !navigator.onLine) ||
+            fetchErr.name === 'AbortError' ||
+            errMsgLower.includes('failed to fetch') ||
+            errMsgLower.includes('network request failed') ||
+            errMsgLower.includes('networkerror') ||
+            errMsgLower.includes('load failed') ||
+            errMsgLower.includes('failed to load') ||
+            errMsgLower.includes('network error') ||
+            errMsgLower.includes('connection refused') ||
+            errMsgLower.includes('aborted');
+
+          if (isOffline) {
+            isNetworkError = true;
+          } else {
+            throw fetchErr;
+          }
         }
-        const res = await fetch(getApiUrl('api/upload'), {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ base64: compressedBase64, filename })
-        });
+
+        if (isNetworkError) {
+          const offlineImgId = `offline-image-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`;
+          const offlineUrl = `uploads/${offlineImgId}.jpg`;
+          
+          await saveOfflineImage({
+            id: offlineImgId,
+            base64: compressedBase64,
+            filename,
+            savedAt: Date.now()
+          });
+
+          onChange(offlineUrl);
+          return;
+        }
+
+        if (!res) {
+          throw new Error('Upload failed.');
+        }
 
         const contentType = res.headers.get('content-type') || '';
         if (!res.ok) {

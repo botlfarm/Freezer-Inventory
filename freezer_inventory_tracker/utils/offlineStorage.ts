@@ -1,12 +1,20 @@
 import { InventoryState, Action } from '../types';
 
 const DB_NAME = 'freezer_inventory_offline_db';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STATE_STORE = 'state_cache';
 const QUEUE_STORE = 'action_queue';
+const IMAGES_STORE = 'offline_images';
 const STATE_KEY = 'current_inventory_state';
 const LOCAL_STORAGE_BACKUP_KEY = 'freezer_cached_inventory_state';
 const LOCAL_STORAGE_QUEUE_KEY = 'freezer_offline_action_queue';
+
+export interface OfflineImage {
+  id: string; // e.g. "offline-image://unique_id"
+  base64: string;
+  filename: string;
+  savedAt: number;
+}
 
 export interface QueuedOfflineAction {
   id: number;
@@ -40,6 +48,9 @@ function getIndexedDB(): Promise<IDBDatabase> {
         if (!db.objectStoreNames.contains(QUEUE_STORE)) {
           const store = db.createObjectStore(QUEUE_STORE, { keyPath: 'id', autoIncrement: true });
           store.createIndex('timestamp', 'timestamp', { unique: false });
+        }
+        if (!db.objectStoreNames.contains(IMAGES_STORE)) {
+          db.createObjectStore(IMAGES_STORE, { keyPath: 'id' });
         }
       };
 
@@ -327,3 +338,73 @@ export async function clearOfflineQueue(): Promise<void> {
     localStorage.removeItem(LOCAL_STORAGE_QUEUE_KEY);
   } catch (e) {}
 }
+
+/**
+ * Saves an offline image to IndexedDB.
+ */
+export async function saveOfflineImage(image: OfflineImage): Promise<void> {
+  try {
+    const db = await getIndexedDB();
+    await new Promise<void>((resolve, reject) => {
+      try {
+        const tx = db.transaction(IMAGES_STORE, 'readwrite');
+        const store = tx.objectStore(IMAGES_STORE);
+        store.put(image);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  } catch (err) {
+    console.warn('Failed to save offline image in IndexedDB:', err);
+  }
+}
+
+/**
+ * Retrieves an offline image from IndexedDB.
+ */
+export async function getOfflineImage(id: string): Promise<OfflineImage | null> {
+  try {
+    const db = await getIndexedDB();
+    const result = await new Promise<any>((resolve, reject) => {
+      try {
+        const tx = db.transaction(IMAGES_STORE, 'readonly');
+        const store = tx.objectStore(IMAGES_STORE);
+        const req = store.get(id);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      } catch (err) {
+        reject(err);
+      }
+    });
+    return result || null;
+  } catch (err) {
+    console.warn('Failed to retrieve offline image from IndexedDB:', err);
+    return null;
+  }
+}
+
+/**
+ * Deletes an offline image from IndexedDB.
+ */
+export async function deleteOfflineImage(id: string): Promise<void> {
+  try {
+    const db = await getIndexedDB();
+    await new Promise<void>((resolve, reject) => {
+      try {
+        const tx = db.transaction(IMAGES_STORE, 'readwrite');
+        const store = tx.objectStore(IMAGES_STORE);
+        const req = store.delete(id);
+        req.onsuccess = () => resolve();
+        req.onerror = () => reject(req.error);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  } catch (err) {
+    console.warn('Failed to delete offline image from IndexedDB:', err);
+  }
+}
+

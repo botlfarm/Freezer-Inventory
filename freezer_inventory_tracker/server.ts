@@ -57,20 +57,55 @@ app.use((req, res, next) => {
 });
 
 // Top-level PWA Manifest endpoint with full CORS and compliance standards
-const pwaManifestData = {
-  id: "/",
-  name: "Freezer Inventory Tracker",
-  short_name: "FreezerApp",
-  description: "Comprehensive freezer, butcher processing, and off-site cold storage inventory tracker with QR scanning.",
-  start_url: "/",
-  scope: "/",
-  display: "standalone",
-  display_override: ["standalone", "minimal-ui", "window-controls-overlay"],
-  orientation: "any",
-  theme_color: "#0f172a",
-  background_color: "#0f172a",
-  categories: ["utilities", "productivity", "food"],
-  icons: [
+function getDynamicManifest() {
+  let appName = 'Freezer Inventory Tracker';
+  let shortName = 'FreezerApp';
+  let themeColor = '#0f172a';
+  let hasCustomIcon = false;
+
+  try {
+    if (!db) initDatabase();
+    const nameRow = db.prepare("SELECT value FROM app_config WHERE key = 'pwa_app_name'").get() as any;
+    if (nameRow?.value && nameRow.value.trim()) appName = nameRow.value.trim();
+
+    const shortRow = db.prepare("SELECT value FROM app_config WHERE key = 'pwa_short_name'").get() as any;
+    if (shortRow?.value && shortRow.value.trim()) shortName = shortRow.value.trim();
+
+    const colorRow = db.prepare("SELECT value FROM app_config WHERE key = 'pwa_app_icon_color'").get() as any;
+    if (colorRow?.value && colorRow.value.trim()) themeColor = colorRow.value.trim();
+
+    const iconRow = db.prepare("SELECT value FROM app_config WHERE key = 'pwa_icon_192'").get() as any;
+    if (iconRow?.value && iconRow.value.trim()) hasCustomIcon = true;
+  } catch (e) {
+    console.error('Error fetching PWA config for manifest:', e);
+  }
+
+  const icons = hasCustomIcon ? [
+    {
+      src: "api/pwa/icon-192.png",
+      sizes: "192x192",
+      type: "image/png",
+      purpose: "any"
+    },
+    {
+      src: "api/pwa/icon-512.png",
+      sizes: "512x512",
+      type: "image/png",
+      purpose: "any"
+    },
+    {
+      src: "api/pwa/icon-512.png",
+      sizes: "512x512",
+      type: "image/png",
+      purpose: "maskable"
+    },
+    {
+      src: "apple-touch-icon.png",
+      sizes: "192x192",
+      type: "image/png",
+      purpose: "any"
+    }
+  ] : [
     {
       src: "/pwa-192x192.png",
       sizes: "192x192",
@@ -107,24 +142,40 @@ const pwaManifestData = {
       type: "image/svg+xml",
       purpose: "any"
     }
-  ],
-  shortcuts: [
-    {
-      name: "Search Inventory",
-      short_name: "Search",
-      description: "Search cuts and containers",
-      url: "/?view=inventory",
-      icons: [{ src: "/pwa-192x192.png", sizes: "192x192" }]
-    },
-    {
-      name: "Scan QR Code",
-      short_name: "Scan",
-      description: "Scan QR code",
-      url: "/?view=scan",
-      icons: [{ src: "/pwa-192x192.png", sizes: "192x192" }]
-    }
-  ]
-};
+  ];
+
+  return {
+    id: "/",
+    name: appName,
+    short_name: shortName,
+    description: "Comprehensive freezer, butcher processing, and off-site cold storage inventory tracker with QR scanning.",
+    start_url: "./",
+    scope: "./",
+    display: "standalone",
+    display_override: ["standalone", "minimal-ui", "window-controls-overlay"],
+    orientation: "any",
+    theme_color: themeColor,
+    background_color: "#0f172a",
+    categories: ["utilities", "productivity", "food"],
+    icons: icons,
+    shortcuts: [
+      {
+        name: "Search Inventory",
+        short_name: "Search",
+        description: "Search cuts and containers",
+        url: "/?view=inventory",
+        icons: [{ src: hasCustomIcon ? "api/pwa/icon-192.png" : "/pwa-192x192.png", sizes: "192x192" }]
+      },
+      {
+        name: "Scan QR Code",
+        short_name: "Scan",
+        description: "Scan QR code",
+        url: "/?view=scan",
+        icons: [{ src: hasCustomIcon ? "api/pwa/icon-192.png" : "/pwa-192x192.png", sizes: "192x192" }]
+      }
+    ]
+  };
+}
 
 // Explicit Service Worker and PWA Manifest handler supporting both direct root and nested ingress paths
 app.use((req, res, next) => {
@@ -132,8 +183,9 @@ app.use((req, res, next) => {
   if (p.endsWith('/manifest.json') || p.endsWith('/manifest.webmanifest') || p.endsWith('/site.webmanifest')) {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-    res.setHeader('Cache-Control', 'public, max-age=0, must-revalidate');
-    return res.type('application/manifest+json; charset=utf-8').send(JSON.stringify(pwaManifestData, null, 2));
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    const dynamicManifest = getDynamicManifest();
+    return res.type('application/manifest+json; charset=utf-8').send(JSON.stringify(dynamicManifest, null, 2));
   }
   if (p.endsWith('/sw.js')) {
     const swPaths = [
@@ -207,9 +259,159 @@ app.use('/uploads', express.static(UPLOADS_DIR));
 app.use('/images', express.static(UPLOADS_DIR));
 app.use('/photos', express.static(UPLOADS_DIR));
 
-// Public PWA assets & icons static serving
+// Public PWA assets & icons paths
 const APP_PUBLIC_DIR = path.join(process.cwd(), 'public');
 const LOCAL_PUBLIC_DIR = path.join(process.cwd(), 'freezer_inventory_tracker', 'public');
+
+function getPublicFilePath(filename: string): string | null {
+  const p1 = path.join(LOCAL_PUBLIC_DIR, filename);
+  if (fs.existsSync(p1)) return p1;
+  const p2 = path.join(APP_PUBLIC_DIR, filename);
+  if (fs.existsSync(p2)) return p2;
+  return null;
+}
+
+// Direct PWA Web Manifest endpoint ensuring correct MIME type, custom branding, and valid icons across all routes
+app.use((req, res, next) => {
+  if (req.path.endsWith('/manifest.webmanifest') || req.path.endsWith('/manifest.json')) {
+    res.setHeader('Content-Type', 'application/manifest+json');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+
+    let appName = 'Freezer Inventory Tracker';
+    let shortName = 'FreezerApp';
+    let themeColor = '#0f172a';
+    let hasCustomIcon = false;
+
+    try {
+      if (!db) initDatabase();
+      const nameRow = db.prepare("SELECT value FROM app_config WHERE key = 'pwa_app_name'").get() as any;
+      if (nameRow?.value && nameRow.value.trim()) appName = nameRow.value.trim();
+
+      const shortRow = db.prepare("SELECT value FROM app_config WHERE key = 'pwa_short_name'").get() as any;
+      if (shortRow?.value && shortRow.value.trim()) shortName = shortRow.value.trim();
+
+      const colorRow = db.prepare("SELECT value FROM app_config WHERE key = 'pwa_app_icon_color'").get() as any;
+      if (colorRow?.value && colorRow.value.trim()) themeColor = colorRow.value.trim();
+
+      const iconRow = db.prepare("SELECT value FROM app_config WHERE key = 'pwa_icon_192'").get() as any;
+      if (iconRow?.value && iconRow.value.trim()) hasCustomIcon = true;
+    } catch (e) {
+      console.error('Error fetching PWA config for manifest:', e);
+    }
+
+    return res.json({
+      id: 'freezer-inventory-tracker-pwa',
+      name: appName,
+      short_name: shortName,
+      description: 'Comprehensive freezer, butcher processing, and off-site cold storage inventory tracker with QR scanning.',
+      theme_color: themeColor,
+      background_color: '#0f172a',
+      display: 'standalone',
+      orientation: 'any',
+      start_url: './',
+      scope: './',
+      icons: hasCustomIcon ? [
+        {
+          src: 'api/pwa/icon-192.png',
+          sizes: '192x192',
+          type: 'image/png',
+          purpose: 'any'
+        },
+        {
+          src: 'api/pwa/icon-512.png',
+          sizes: '512x512',
+          type: 'image/png',
+          purpose: 'any'
+        },
+        {
+          src: 'api/pwa/icon-512.png',
+          sizes: '512x512',
+          type: 'image/png',
+          purpose: 'maskable'
+        }
+      ] : [
+        {
+          src: 'pwa-192x192.png',
+          sizes: '192x192',
+          type: 'image/png',
+          purpose: 'any'
+        },
+        {
+          src: 'pwa-512x512.png',
+          sizes: '512x512',
+          type: 'image/png',
+          purpose: 'any'
+        },
+        {
+          src: 'pwa-maskable-512x512.png',
+          sizes: '512x512',
+          type: 'image/png',
+          purpose: 'maskable'
+        }
+      ]
+    });
+  }
+  next();
+});
+
+// Dynamic PWA Icon endpoints serving custom or default icons
+app.get(['/api/pwa/icon-192.png', '/api/pwa/icon-512.png', '/api/pwa/icon.png'], (req, res) => {
+  const is512 = req.path.includes('512');
+  try {
+    if (!db) initDatabase();
+    const configKey = is512 ? 'pwa_icon_512' : 'pwa_icon_192';
+    const row = db.prepare('SELECT value FROM app_config WHERE key = ?').get(configKey) as any;
+    
+    // Fallback to the other size if available
+    const val = row?.value || (is512 
+      ? (db.prepare("SELECT value FROM app_config WHERE key = 'pwa_icon_192'").get() as any)?.value 
+      : (db.prepare("SELECT value FROM app_config WHERE key = 'pwa_icon_512'").get() as any)?.value);
+
+    if (val && typeof val === 'string' && val.startsWith('data:image/')) {
+      const match = val.match(/^data:image\/([a-zA-Z0-9+]+);base64,(.+)$/);
+      if (match) {
+        const imageType = match[1] === 'svg+xml' ? 'image/svg+xml' : `image/${match[1]}`;
+        const buffer = Buffer.from(match[2], 'base64');
+        res.setHeader('Content-Type', imageType);
+        res.setHeader('Cache-Control', 'public, max-age=3600');
+        return res.send(buffer);
+      }
+    }
+  } catch (err) {
+    console.error('Error fetching custom PWA icon:', err);
+  }
+
+  // Fallback to static default file
+  const fallbackFile = is512 ? 'pwa-512x512.png' : 'pwa-192x192.png';
+  const filePath = getPublicFilePath(fallbackFile);
+  if (filePath) {
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    return res.sendFile(filePath);
+  }
+  return res.status(404).send('Icon not found');
+});
+
+// Dynamic Apple Touch Icon support
+app.get(['/apple-touch-icon.png', '/apple-touch-icon-precomposed.png'], (req, res, next) => {
+  try {
+    if (!db) initDatabase();
+    const row = (db.prepare("SELECT value FROM app_config WHERE key = 'pwa_icon_192'").get() as any) 
+             || (db.prepare("SELECT value FROM app_config WHERE key = 'pwa_icon_512'").get() as any);
+    if (row?.value && typeof row.value === 'string' && row.value.startsWith('data:image/')) {
+      const match = row.value.match(/^data:image\/([a-zA-Z0-9+]+);base64,(.+)$/);
+      if (match) {
+        const buffer = Buffer.from(match[2], 'base64');
+        res.setHeader('Content-Type', 'image/png');
+        res.setHeader('Cache-Control', 'public, max-age=3600');
+        return res.send(buffer);
+      }
+    }
+  } catch (e) {}
+  next();
+});
+
+// Public PWA assets & icons static serving
 if (fs.existsSync(APP_PUBLIC_DIR)) app.use(express.static(APP_PUBLIC_DIR));
 if (fs.existsSync(LOCAL_PUBLIC_DIR)) app.use(express.static(LOCAL_PUBLIC_DIR));
 
@@ -233,47 +435,6 @@ app.get('/sw.js', (req, res) => {
   }
   res.setHeader('Content-Type', 'application/javascript');
   return res.send(`self.addEventListener('install', () => self.skipWaiting()); self.addEventListener('activate', () => self.registration.unregister());`);
-});
-
-// Direct PWA Web Manifest endpoint ensuring correct MIME type and valid icons across all routes
-app.use((req, res, next) => {
-  if (req.path.endsWith('/manifest.webmanifest') || req.path.endsWith('/manifest.json')) {
-    res.setHeader('Content-Type', 'application/manifest+json');
-    res.setHeader('Cache-Control', 'public, max-age=86400');
-    return res.json({
-      id: 'freezer-inventory-tracker-pwa',
-      name: 'Freezer Inventory Tracker',
-      short_name: 'FreezerApp',
-      description: 'Comprehensive freezer, butcher processing, and off-site cold storage inventory tracker with QR scanning.',
-      theme_color: '#0f172a',
-      background_color: '#0f172a',
-      display: 'standalone',
-      orientation: 'any',
-      start_url: './',
-      scope: './',
-      icons: [
-        {
-          src: 'pwa-192x192.png',
-          sizes: '192x192',
-          type: 'image/png',
-          purpose: 'any'
-        },
-        {
-          src: 'pwa-512x512.png',
-          sizes: '512x512',
-          type: 'image/png',
-          purpose: 'any'
-        },
-        {
-          src: 'pwa-maskable-512x512.png',
-          sizes: '512x512',
-          type: 'image/png',
-          purpose: 'maskable'
-        }
-      ]
-    });
-  }
-  next();
 });
 
 // Read-Only Live Preview Guard Middleware
@@ -1122,6 +1283,57 @@ const TABLE_SCHEMAS: Record<string, {
       key: item.key,
       value: item.value,
       updatedAt: item.updatedAt || new Date().toISOString()
+    })
+  },
+  pwa_devices: {
+    primaryKey: 'id',
+    createSql: `
+      CREATE TABLE IF NOT EXISTS pwa_devices (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        operator TEXT,
+        deviceType TEXT,
+        clientDevice TEXT,
+        clientInfo TEXT,
+        isPwa INTEGER DEFAULT 0,
+        firstSeen TEXT NOT NULL,
+        lastSeen TEXT NOT NULL,
+        lastIp TEXT,
+        userAgent TEXT,
+        status TEXT DEFAULT 'authorized',
+        notes TEXT
+      )
+    `,
+    columns: ['id', 'name', 'operator', 'deviceType', 'clientDevice', 'clientInfo', 'isPwa', 'firstSeen', 'lastSeen', 'lastIp', 'userAgent', 'status', 'notes'],
+    fromDb: (row: any) => ({
+      id: row.id,
+      name: row.name,
+      operator: row.operator || '',
+      deviceType: row.deviceType || '',
+      clientDevice: row.clientDevice || '',
+      clientInfo: row.clientInfo || '',
+      isPwa: Boolean(row.isPwa),
+      firstSeen: row.firstSeen,
+      lastSeen: row.lastSeen,
+      lastIp: row.lastIp || '',
+      userAgent: row.userAgent || '',
+      status: row.status || 'authorized',
+      notes: row.notes || ''
+    }),
+    toDb: (item: any) => ({
+      id: item.id,
+      name: item.name || 'Unnamed Device',
+      operator: item.operator || null,
+      deviceType: item.deviceType || null,
+      clientDevice: item.clientDevice || null,
+      clientInfo: item.clientInfo || null,
+      isPwa: item.isPwa ? 1 : 0,
+      firstSeen: item.firstSeen || new Date().toISOString(),
+      lastSeen: item.lastSeen || new Date().toISOString(),
+      lastIp: item.lastIp || null,
+      userAgent: item.userAgent || null,
+      status: item.status || 'authorized',
+      notes: item.notes || null
     })
   }
 };
@@ -6204,8 +6416,11 @@ interface ActiveClient {
   userName: string;
   device: string;
   browser: string;
-  clientDevice?: string; // 'Desktop Browser' | 'Mobile Browser' | 'HA Companion App'
+  clientDevice?: string; // 'Desktop Browser' | 'Mobile Browser' | 'HA Companion App' | 'Standalone PWA'
   clientInfo?: string;
+  deviceId?: string;
+  deviceName?: string;
+  isPwa?: boolean;
   ip: string;
   connectedAt: number;
   lastActive: number;
@@ -6216,6 +6431,95 @@ interface ActiveClient {
 
 const activeClients = new Map<string, ActiveClient>();
 let currentVersion = 1;
+
+function isDeviceAuthorized(deviceId?: string): boolean {
+  if (!deviceId || !db) return true;
+  try {
+    const dev = db.prepare('SELECT status FROM pwa_devices WHERE id = ?').get(deviceId);
+    if (dev && dev.status === 'revoked') {
+      return false;
+    }
+  } catch (e) {}
+  return true;
+}
+
+function trackOrRegisterDevice(params: {
+  deviceId?: string;
+  deviceName?: string;
+  operator?: string;
+  clientDevice?: string;
+  clientInfo?: string;
+  userAgent?: string;
+  ip?: string;
+  isPwa?: boolean;
+}): { authorized: boolean; device?: any } {
+  if (!params.deviceId || !db) return { authorized: true };
+  try {
+    const existing = db.prepare('SELECT * FROM pwa_devices WHERE id = ?').get(params.deviceId);
+    const now = new Date().toISOString();
+    if (existing) {
+      if (existing.status === 'revoked') {
+        return { authorized: false, device: existing };
+      }
+      const cleanName = params.deviceName && params.deviceName !== 'Unnamed Device' && params.deviceName.trim() ? params.deviceName.trim() : existing.name;
+      const cleanOp = params.operator && params.operator.trim() && params.operator.trim() !== 'User' && params.operator.trim() !== 'Home Assistant' ? params.operator.trim() : existing.operator;
+      const isPwaVal = params.isPwa !== undefined ? (params.isPwa ? 1 : 0) : existing.isPwa;
+
+      db.prepare(`
+        UPDATE pwa_devices 
+        SET lastSeen = ?, 
+            lastIp = COALESCE(?, lastIp),
+            name = ?,
+            operator = ?,
+            clientDevice = COALESCE(?, clientDevice),
+            clientInfo = COALESCE(?, clientInfo),
+            userAgent = COALESCE(?, userAgent),
+            isPwa = ?
+        WHERE id = ?
+      `).run(
+        now,
+        params.ip || null,
+        cleanName,
+        cleanOp,
+        params.clientDevice || null,
+        params.clientInfo || null,
+        params.userAgent || null,
+        isPwaVal,
+        params.deviceId
+      );
+      return { authorized: true, device: { ...existing, lastSeen: now, name: cleanName, operator: cleanOp } };
+    } else {
+      const newDevice = {
+        id: params.deviceId,
+        name: params.deviceName && params.deviceName.trim() ? params.deviceName.trim() : (params.isPwa ? 'Standalone PWA' : 'Web Device'),
+        operator: params.operator && params.operator.trim() !== 'User' && params.operator.trim() !== 'Home Assistant' ? params.operator.trim() : null,
+        deviceType: params.clientDevice || (params.isPwa ? 'Standalone PWA' : 'Web Browser'),
+        clientDevice: params.clientDevice || (params.isPwa ? 'Standalone PWA' : 'Desktop Browser'),
+        clientInfo: params.clientInfo || null,
+        isPwa: params.isPwa ? 1 : 0,
+        firstSeen: now,
+        lastSeen: now,
+        lastIp: params.ip || null,
+        userAgent: params.userAgent || null,
+        status: 'authorized',
+        notes: null
+      };
+      db.prepare(`
+        INSERT INTO pwa_devices (id, name, operator, deviceType, clientDevice, clientInfo, isPwa, firstSeen, lastSeen, lastIp, userAgent, status, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        newDevice.id, newDevice.name, newDevice.operator, newDevice.deviceType,
+        newDevice.clientDevice, newDevice.clientInfo, newDevice.isPwa,
+        newDevice.firstSeen, newDevice.lastSeen, newDevice.lastIp, newDevice.userAgent,
+        newDevice.status, newDevice.notes
+      );
+      return { authorized: true, device: newDevice };
+    }
+  } catch (err) {
+    console.error('Error tracking device in SQLite:', err);
+    return { authorized: true };
+  }
+}
 
 function getZoneForView(view?: string): 'onsite' | 'offsite' {
   if (view === 'offsite' || view === 'butcher_records' || view === 'traceability') {
@@ -6231,12 +6535,17 @@ function parseUserAgentInfo(
 ): { device: string; browser: string; clientDevice: string; clientInfo: string } {
   const ua = userAgent || '';
 
-  // 1. Determine clientDevice category ('Desktop Browser', 'Mobile Browser', 'HA Companion App')
+  // 1. Determine clientDevice category ('Desktop Browser', 'Mobile Browser', 'HA Companion App', 'Standalone PWA')
   let clientDevice = 'Desktop Browser';
   const isCompanion =
     /Home\s*Assistant|HomeAssistant|io\.robbie\.HomeAssistant|io\.homeassistant\.companion/i.test(ua) ||
     clientDeviceHeader === 'HA Companion App' ||
     clientDeviceHeader?.toLowerCase().includes('companion');
+
+  const isStandalone =
+    clientDeviceHeader === 'Standalone PWA' ||
+    clientDeviceHeader?.toLowerCase().includes('pwa') ||
+    clientDeviceHeader?.toLowerCase().includes('standalone');
 
   const isMobile = !isCompanion && (
     /iPhone|iPad|iPod|Android.*Mobile|Mobile.*Android|webOS|BlackBerry|IEMobile|Opera Mini|Windows Phone/i.test(ua) ||
@@ -6247,6 +6556,8 @@ function parseUserAgentInfo(
 
   if (isCompanion) {
     clientDevice = 'HA Companion App';
+  } else if (isStandalone) {
+    clientDevice = 'Standalone PWA';
   } else if (isMobile) {
     clientDevice = 'Mobile Browser';
   } else {
@@ -6295,6 +6606,8 @@ function parseUserAgentInfo(
     if (isCompanion) {
       const os = /iPhone|iPad|iOS/i.test(ua) ? 'iOS' : /Android/i.test(ua) ? 'Android' : 'Mobile';
       clientInfo = `HA Companion App (${os})`;
+    } else if (isStandalone) {
+      clientInfo = `Standalone PWA (${browser} / ${device})`;
     } else if (isMobile) {
       clientInfo = `Mobile Browser (${browser} / ${device})`;
     } else {
@@ -6336,6 +6649,9 @@ function registerOrTouchClient(
     userAgent?: string;
     clientDevice?: string;
     clientInfo?: string;
+    deviceId?: string;
+    deviceName?: string;
+    isPwa?: boolean;
     ip?: string;
     zone?: 'onsite' | 'offsite';
     currentView?: string;
@@ -6355,14 +6671,19 @@ function registerOrTouchClient(
     zone = getZoneForView(options.currentView);
   }
 
+  const effectiveDevice = options?.deviceName || device;
+
   if (!client) {
     client = {
       id: clientId,
       userName: options?.userName || 'Home Assistant',
-      device,
+      device: effectiveDevice,
       browser,
       clientDevice,
       clientInfo,
+      deviceId: options?.deviceId,
+      deviceName: options?.deviceName,
+      isPwa: options?.isPwa,
       ip: options?.ip || '',
       connectedAt: now,
       lastActive: now,
@@ -6376,6 +6697,16 @@ function registerOrTouchClient(
     if (options?.userName && (client.userName === 'User' || client.userName === 'Home Assistant' || (options.userName !== 'User' && options.userName !== 'Home Assistant'))) {
       client.userName = options.userName;
     }
+    if (options?.deviceId) {
+      client.deviceId = options.deviceId;
+    }
+    if (options?.deviceName) {
+      client.deviceName = options.deviceName;
+      client.device = options.deviceName;
+    }
+    if (options?.isPwa !== undefined) {
+      client.isPwa = options.isPwa;
+    }
     if (zone) {
       client.zone = zone;
     }
@@ -6386,7 +6717,7 @@ function registerOrTouchClient(
       }
     }
     if (options?.userAgent || options?.clientDevice || options?.clientInfo) {
-      client.device = device;
+      if (!options?.deviceName) client.device = device;
       client.browser = browser;
       client.clientDevice = clientDevice;
       client.clientInfo = clientInfo;
@@ -6402,6 +6733,20 @@ function registerOrTouchClient(
       }
       client.res = options.res;
     }
+  }
+
+  // Auto-record / touch persistent device registry
+  if (options?.deviceId) {
+    trackOrRegisterDevice({
+      deviceId: options.deviceId,
+      deviceName: options.deviceName || effectiveDevice,
+      operator: options.userName,
+      clientDevice,
+      clientInfo,
+      userAgent: options.userAgent,
+      ip: options.ip,
+      isPwa: options.isPwa || clientDevice === 'Standalone PWA'
+    });
   }
 
   // Also touch any single-user or forced-multi locks held by this client
@@ -6423,10 +6768,13 @@ function getConnectedClientsSummary() {
   return Array.from(activeClients.values()).map(c => ({
     id: c.id,
     userName: c.userName || 'Home Assistant',
-    device: c.device || 'Desktop',
+    device: c.deviceName || c.device || 'Desktop',
     browser: c.browser || 'Browser',
     clientDevice: c.clientDevice || (c.device?.includes('Home Assistant') ? 'HA Companion App' : (c.device?.includes('iPhone') || c.device?.includes('Android') || c.device?.includes('iPad') ? 'Mobile Browser' : 'Desktop Browser')),
     clientInfo: c.clientInfo || `${c.device} (${c.browser})`,
+    deviceId: c.deviceId,
+    deviceName: c.deviceName,
+    isPwa: c.isPwa,
     ip: c.ip || '',
     connectedAt: c.connectedAt,
     lastActive: c.lastActive,
@@ -7108,15 +7456,25 @@ app.get('/api/inventory/stream', (req: any, res: any) => {
   }
 
   const clientId = (req.query.clientId as string) || (req.headers['x-client-id'] as string) || String(Date.now() + Math.random());
+  const deviceId = (req.query.deviceId as string) || (req.headers['x-device-id'] as string) || '';
+  const deviceName = req.headers['x-device-name'] ? decodeURIComponent(req.headers['x-device-name'] as string) : (req.query.deviceName as string) || '';
+  const isPwa = req.headers['x-is-pwa'] === '1' || req.query.isPwa === '1';
+
+  if (deviceId && !isDeviceAuthorized(deviceId)) {
+    res.write(`data: ${JSON.stringify({ type: 'device_revoked', deviceId, error: 'DEVICE_REVOKED' })}\n\n`);
+    res.end();
+    return;
+  }
+
   const userName = extractUserFromReq(req);
   const userAgent = (req.headers['user-agent'] as string) || '';
-  const clientDevice = (req.query.clientDevice as string) || (req.headers['x-client-device'] as string) || '';
+  const clientDevice = (req.query.clientDevice as string) || (req.headers['x-client-device'] as string) || (isPwa ? 'Standalone PWA' : '');
   const clientInfo = (req.query.clientInfo as string) || (req.headers['x-client-info'] as string) || '';
   const zone = ((req.query.zone as string) || (req.query.clientZone as string) || (req.headers['x-client-zone'] as string) || '') as 'onsite' | 'offsite' | undefined;
   const currentView = (req.query.currentView as string) || (req.query.clientView as string) || (req.headers['x-client-view'] as string) || undefined;
   const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.socket?.remoteAddress || '';
 
-  registerOrTouchClient(clientId, { userName, userAgent, clientDevice, clientInfo, ip, zone, currentView, res });
+  registerOrTouchClient(clientId, { userName, userAgent, clientDevice, clientInfo, deviceId, deviceName, isPwa, ip, zone, currentView, res });
 
   checkSingleUserLockStaleness();
   checkForcedMultiStaleness();
@@ -7197,9 +7555,20 @@ app.get('/api/inventory/stream', (req: any, res: any) => {
 // Endpoint for active client heartbeat ping (sent every 4s while client is visible)
 app.post('/api/inventory/clients/heartbeat', (req, res) => {
   const reqClientId = (req.headers['x-client-id'] as string) || req.body?.clientId || (req.query?.clientId as string);
+  const deviceId = (req.headers['x-device-id'] as string) || req.body?.deviceId || (req.query?.deviceId as string) || '';
+  const deviceName = req.headers['x-device-name'] ? decodeURIComponent(req.headers['x-device-name'] as string) : req.body?.deviceName || (req.query?.deviceName as string) || '';
+  const isPwa = req.headers['x-is-pwa'] === '1' || req.body?.isPwa === true;
+
+  if (deviceId && !isDeviceAuthorized(deviceId)) {
+    return res.status(403).json({
+      error: 'DEVICE_REVOKED',
+      message: 'This device access has been revoked by an administrator in the PWA Device Manager.'
+    });
+  }
+
   const userName = extractUserFromReq(req);
   const userAgent = (req.headers['user-agent'] as string) || '';
-  const clientDevice = (req.headers['x-client-device'] as string) || req.body?.clientDevice || (req.query?.clientDevice as string) || '';
+  const clientDevice = (req.headers['x-client-device'] as string) || req.body?.clientDevice || (req.query?.clientDevice as string) || (isPwa ? 'Standalone PWA' : '');
   const clientInfo = (req.headers['x-client-info'] as string) || req.body?.clientInfo || (req.query?.clientInfo as string) || '';
   const zone = ((req.headers['x-client-zone'] as string) || req.body?.zone || (req.query?.zone as string) || '') as 'onsite' | 'offsite' | undefined;
   const currentView = (req.headers['x-client-view'] as string) || req.body?.currentView || (req.query?.currentView as string) || undefined;
@@ -7209,7 +7578,7 @@ app.post('/api/inventory/clients/heartbeat', (req, res) => {
     const isNew = !activeClients.has(reqClientId);
     const existingClient = activeClients.get(reqClientId);
     const prevZone = existingClient?.zone;
-    registerOrTouchClient(reqClientId, { userName, userAgent, clientDevice, clientInfo, ip, zone, currentView });
+    registerOrTouchClient(reqClientId, { userName, userAgent, clientDevice, clientInfo, deviceId, deviceName, isPwa, ip, zone, currentView });
     if (isNew || (zone && prevZone && prevZone !== zone)) {
       broadcastSSE({ type: 'clients_changed', count: getActiveClientCount(), zoneCounts: getZoneClientCounts(), clients: getConnectedClientsSummary() });
     }
@@ -7262,9 +7631,13 @@ app.post('/api/inventory/clients/leave', (req, res) => {
 // Endpoint to fetch active connected clients
 app.get('/api/inventory/clients', (req, res) => {
   const reqClientId = (req.headers['x-client-id'] as string) || (req.query.clientId as string);
+  const deviceId = (req.headers['x-device-id'] as string) || (req.query.deviceId as string) || '';
+  const deviceName = req.headers['x-device-name'] ? decodeURIComponent(req.headers['x-device-name'] as string) : (req.query.deviceName as string) || '';
+  const isPwa = req.headers['x-is-pwa'] === '1' || req.query.isPwa === '1';
+
   const userName = extractUserFromReq(req);
   const userAgent = (req.headers['user-agent'] as string) || '';
-  const clientDevice = (req.headers['x-client-device'] as string) || (req.query.clientDevice as string) || '';
+  const clientDevice = (req.headers['x-client-device'] as string) || (req.query.clientDevice as string) || (isPwa ? 'Standalone PWA' : '');
   const clientInfo = (req.headers['x-client-info'] as string) || (req.query.clientInfo as string) || '';
   const zone = ((req.headers['x-client-zone'] as string) || (req.query.zone as string) || '') as 'onsite' | 'offsite' | undefined;
   const currentView = (req.headers['x-client-view'] as string) || (req.query.currentView as string) || undefined;
@@ -7274,7 +7647,7 @@ app.get('/api/inventory/clients', (req, res) => {
     const isNew = !activeClients.has(reqClientId);
     const existingClient = activeClients.get(reqClientId);
     const prevZone = existingClient?.zone;
-    registerOrTouchClient(reqClientId, { userName, userAgent, clientDevice, clientInfo, ip, zone, currentView });
+    registerOrTouchClient(reqClientId, { userName, userAgent, clientDevice, clientInfo, deviceId, deviceName, isPwa, ip, zone, currentView });
     if (isNew || (zone && prevZone && prevZone !== zone)) {
       broadcastSSE({ type: 'clients_changed', count: getActiveClientCount(), zoneCounts: getZoneClientCounts(), clients: getConnectedClientsSummary() });
     }
@@ -7336,6 +7709,159 @@ app.post('/api/inventory/clients/disconnect/:id', (req, res) => {
     res.json({ success: true, count: getActiveClientCount() });
   } else {
     res.json({ success: false, message: 'Client not found or already closed', count: getActiveClientCount() });
+  }
+});
+
+// ---------------- PWA & DEVICE REGISTRY ENDPOINTS ----------------
+
+// Fetch all registered devices with live online presence status
+app.get('/api/devices', (req, res) => {
+  if (!db) initDatabase();
+  try {
+    const devices = db.prepare('SELECT * FROM pwa_devices ORDER BY lastSeen DESC').all() as any[];
+    const activeClientList = Array.from(activeClients.values());
+    const result = devices.map(d => {
+      const isOnline = activeClientList.some(c => 
+        (c.deviceId && c.deviceId === d.id) ||
+        (c.ip && d.lastIp && c.ip === d.lastIp && (Date.now() - c.lastActive < 20000))
+      );
+      return {
+        id: d.id,
+        name: d.name,
+        operator: d.operator || '',
+        deviceType: d.deviceType || '',
+        clientDevice: d.clientDevice || '',
+        clientInfo: d.clientInfo || '',
+        isPwa: Boolean(d.isPwa),
+        firstSeen: d.firstSeen,
+        lastSeen: d.lastSeen,
+        lastIp: d.lastIp || '',
+        status: d.status || 'authorized',
+        notes: d.notes || '',
+        isOnline
+      };
+    });
+    res.json({ success: true, devices: result });
+  } catch (err: any) {
+    console.error('Error fetching devices:', err);
+    res.status(500).json({ error: 'Failed to fetch devices.', details: err.message });
+  }
+});
+
+// Explicit device registration / heartbeat endpoint
+app.post('/api/devices/register', (req, res) => {
+  const { deviceId, deviceName, operatorName, isPwa, clientDevice, clientInfo, notes } = req.body;
+  if (!deviceId) {
+    return res.status(400).json({ error: 'deviceId is required' });
+  }
+  const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.socket?.remoteAddress || '';
+  const userAgent = (req.headers['user-agent'] as string) || '';
+
+  const result = trackOrRegisterDevice({
+    deviceId,
+    deviceName,
+    operator: operatorName,
+    clientDevice,
+    clientInfo,
+    userAgent,
+    ip,
+    isPwa
+  });
+
+  if (!result.authorized) {
+    return res.status(403).json({
+      error: 'DEVICE_REVOKED',
+      message: 'This device access has been revoked by an administrator in the PWA Device Manager.'
+    });
+  }
+
+  res.json({ success: true, authorized: true, device: result.device });
+});
+
+// Update device name, operator, or notes
+app.put('/api/devices/:id', (req, res) => {
+  if (!db) initDatabase();
+  const deviceId = req.params.id;
+  const { name, operator, notes } = req.body;
+  try {
+    const existing = db.prepare('SELECT * FROM pwa_devices WHERE id = ?').get(deviceId);
+    if (!existing) {
+      return res.status(404).json({ error: 'Device not found' });
+    }
+    db.prepare(`
+      UPDATE pwa_devices
+      SET name = COALESCE(?, name),
+          operator = COALESCE(?, operator),
+          notes = COALESCE(?, notes),
+          lastSeen = ?
+      WHERE id = ?
+    `).run(
+      name !== undefined ? name : null,
+      operator !== undefined ? operator : null,
+      notes !== undefined ? notes : null,
+      new Date().toISOString(),
+      deviceId
+    );
+    // If active client has this deviceId, update its displayed operator/name
+    for (const client of activeClients.values()) {
+      if (client.deviceId === deviceId) {
+        if (operator) client.userName = operator;
+        if (name) client.device = name;
+      }
+    }
+    broadcastSSE({ type: 'clients_changed', count: getActiveClientCount(), clients: getConnectedClientsSummary() });
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to update device', details: err.message });
+  }
+});
+
+// Revoke device access
+app.post('/api/devices/:id/revoke', (req, res) => {
+  if (!db) initDatabase();
+  const deviceId = req.params.id;
+  try {
+    db.prepare("UPDATE pwa_devices SET status = 'revoked' WHERE id = ?").run(deviceId);
+    // Instantly terminate any live SSE streams for this device
+    for (const [clientId, client] of activeClients.entries()) {
+      if (client.deviceId === deviceId) {
+        try {
+          if (client.res) {
+            client.res.write(`data: ${JSON.stringify({ type: 'device_revoked', deviceId, error: 'DEVICE_REVOKED' })}\n\n`);
+            client.res.end();
+          }
+        } catch (e) {}
+        activeClients.delete(clientId);
+      }
+    }
+    broadcastSSE({ type: 'clients_changed', count: getActiveClientCount(), clients: getConnectedClientsSummary() });
+    res.json({ success: true, status: 'revoked' });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to revoke device', details: err.message });
+  }
+});
+
+// Authorize / restore device access
+app.post('/api/devices/:id/authorize', (req, res) => {
+  if (!db) initDatabase();
+  const deviceId = req.params.id;
+  try {
+    db.prepare("UPDATE pwa_devices SET status = 'authorized' WHERE id = ?").run(deviceId);
+    res.json({ success: true, status: 'authorized' });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to authorize device', details: err.message });
+  }
+});
+
+// Delete device registration
+app.delete('/api/devices/:id', (req, res) => {
+  if (!db) initDatabase();
+  const deviceId = req.params.id;
+  try {
+    db.prepare('DELETE FROM pwa_devices WHERE id = ?').run(deviceId);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to delete device', details: err.message });
   }
 });
 
@@ -7440,21 +7966,38 @@ function extractUserFromReq(req: any): string {
     if (clean) return clean;
   }
 
-  // 2. Client-provided explicit user name from custom headers or payload (ignore generic fallback 'User')
+  // 2. Client-provided explicit user or operator name from custom headers or payload (ignore generic fallback 'User')
   const clientUser =
     req?.headers?.['x-user-name'] ||
+    req?.headers?.['x-operator-name'] ||
     req?.body?.action?.user ||
+    req?.body?.action?.operator ||
     req?.body?.userName ||
+    req?.body?.operator ||
     req?.body?.user ||
-    req?.query?.userName;
+    req?.query?.userName ||
+    req?.query?.operator;
 
-  if (clientUser && String(clientUser).trim() && String(clientUser).trim() !== 'User') {
+  if (clientUser && String(clientUser).trim() && String(clientUser).trim() !== 'User' && String(clientUser).trim() !== 'Home Assistant') {
     let clean = String(clientUser).trim();
     if (clean.startsWith('@')) clean = clean.substring(1).trim();
     if (clean) return clean;
   }
 
-  // 3. If ingress had 'User' or generic fallback, check ingress again
+  // 3. Registered device operator lookup in SQLite if device ID is present
+  const deviceId = (req?.headers?.['x-device-id'] as string) || req?.body?.deviceId || req?.body?.action?.deviceId || req?.query?.deviceId;
+  if (deviceId && db) {
+    try {
+      const dev = db.prepare('SELECT operator FROM pwa_devices WHERE id = ?').get(deviceId);
+      if (dev?.operator && String(dev.operator).trim() && String(dev.operator).trim() !== 'User' && String(dev.operator).trim() !== 'Home Assistant') {
+        let clean = String(dev.operator).trim();
+        if (clean.startsWith('@')) clean = clean.substring(1).trim();
+        if (clean) return clean;
+      }
+    } catch (e) {}
+  }
+
+  // 4. If ingress had 'User' or generic fallback, check ingress again
   if (ingressUser && String(ingressUser).trim()) {
     let clean = String(ingressUser).trim();
     if (clean.startsWith('@')) clean = clean.substring(1).trim();
@@ -7464,7 +8007,7 @@ function extractUserFromReq(req: any): string {
   return 'Home Assistant';
 }
 
-function extractClientInfoFromReq(req: any): { clientDevice: string; clientInfo: string } {
+function extractClientInfoFromReq(req: any): { clientDevice: string; clientInfo: string; deviceId?: string; deviceName?: string; isPwa?: boolean } {
   const userAgent = (req?.headers?.['user-agent'] as string) || '';
   const headerDevice = (req?.headers?.['x-client-device'] as string) ||
                        req?.body?.clientDevice ||
@@ -7472,11 +8015,22 @@ function extractClientInfoFromReq(req: any): { clientDevice: string; clientInfo:
   const headerInfo = (req?.headers?.['x-client-info'] as string) ||
                      req?.body?.clientInfo ||
                      req?.body?.action?.clientInfo;
+  const deviceId = (req?.headers?.['x-device-id'] as string) || req?.body?.deviceId || req?.body?.action?.deviceId;
+  const deviceName = req?.headers?.['x-device-name'] ? decodeURIComponent(req.headers['x-device-name'] as string) : req?.body?.deviceName || req?.body?.action?.deviceName;
+  const isPwaHeader = req?.headers?.['x-is-pwa'];
+  const isPwa = isPwaHeader === '1' || isPwaHeader === 'true' || req?.body?.isPwa === true || headerDevice === 'Standalone PWA';
 
   const parsed = parseUserAgentInfo(userAgent, headerDevice, headerInfo);
+  let effectiveClientInfo = headerInfo || parsed.clientInfo;
+  if (deviceName && !effectiveClientInfo.includes(deviceName)) {
+    effectiveClientInfo = `${effectiveClientInfo} • ${deviceName}`;
+  }
   return {
-    clientDevice: headerDevice || parsed.clientDevice,
-    clientInfo: headerInfo || parsed.clientInfo
+    clientDevice: headerDevice || (isPwa ? 'Standalone PWA' : parsed.clientDevice),
+    clientInfo: effectiveClientInfo,
+    deviceId,
+    deviceName,
+    isPwa
   };
 }
 
@@ -8260,6 +8814,14 @@ app.post('/api/inventory/action', async (req: any, res) => {
   const { action } = req.body;
   if (!action || !action.type) {
     return res.status(400).json({ error: 'Action type is required.' });
+  }
+
+  const deviceId = (req.headers['x-device-id'] as string) || req.body?.deviceId || req.body?.action?.deviceId;
+  if (deviceId && !isDeviceAuthorized(deviceId)) {
+    return res.status(403).json({
+      error: 'DEVICE_REVOKED',
+      message: 'This device access has been revoked by an administrator in the PWA Device Manager.'
+    });
   }
 
   checkSingleUserLockStaleness();
