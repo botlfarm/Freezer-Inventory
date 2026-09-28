@@ -1,3 +1,21 @@
+### [2.48.5] - 2026-09-28
+
+### Fixed
+- **Complete Git Tracking Synchronization for All Subsystem Modules**:
+  - Registered all 5 custom hooks (`useInventory.ts`, `apiUrl.ts`, `useHomeAssistantTheme.ts`, `useOnlineStatus.ts`, `usePWAInstall.ts`), 6 utility libraries (`clientDevice.ts`, `offlineStorage.ts`, `sortOrder.ts`, `barcode.ts`, `historyRetention.ts`, `boxSort.ts`), 18 UI components, and 20 application views into the git tracking system.
+  - Fixes missing module import errors (`Could not resolve "./hooks/useInventory" from "App.tsx"`) during multi-stage Docker builds on GitHub Actions by ensuring the entire source directory structure is fully committed and synchronized to the GitHub repository.
+
+### Files Modified
+- `/hooks/*` (all 5 hooks)
+- `/utils/*` (all 6 utils)
+- `/components/*` (all 18 missing components)
+- `/views/*` (all 20 views)
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
 ### [2.48.4] - 2026-09-28
 
 ### Fixed
