@@ -1,3 +1,20 @@
+### [2.48.4] - 2026-09-28
+
+### Fixed
+- **Registered All Root Entrypoint & Configuration Files in Repository Git Tracking**:
+  - Explicitly registered and updated `index.tsx`, `types.ts`, and `index.css` via the file management pipeline.
+  - Ensures GitHub Actions Docker build stages (`COPY . .`) include the required `index.tsx` entrypoint during compilation.
+
+### Files Modified
+- `/index.tsx`
+- `/types.ts`
+- `/index.css`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
 ### [2.48.3] - 2026-09-28
 
 ### Fixed
