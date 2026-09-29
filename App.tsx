@@ -265,15 +265,6 @@ export default function App() {
         favIconLink.href = icon192Cfg.value.trim();
       }
     }
-
-    // Force browser to fetch the updated dynamic manifest immediately by appending a unique updateHash query parameter
-    let manifestLink = document.querySelector('link[rel="manifest"]') as HTMLLinkElement;
-    if (!manifestLink) {
-      manifestLink = document.createElement('link');
-      manifestLink.rel = 'manifest';
-      document.head.appendChild(manifestLink);
-    }
-    manifestLink.href = `./manifest.json?v=${updateHash}`;
   }, [state.appConfig]);
 
   const showPwaBanner = !isCurrentlyStandalone && isMobileDevice && customPwaUrl && !pwaBannerDismissed;

@@ -12,10 +12,10 @@ import './index.css';
 // Service Worker Management for PWA offline operation & sandbox stability
 if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
   const isIframe = window.self !== window.top;
-  const isDevHost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' || window.location.hostname.endsWith('.run.app');
+  const isPreviewHost = window.location.hostname.endsWith('.run.app');
 
-  if (isIframe || isDevHost) {
-    // Inside sandboxed iframes or development/preview host environments, unregister any active service workers
+  if (isIframe || isPreviewHost) {
+    // Inside sandboxed iframes or cloud preview host environments, unregister any active service workers
     // to avoid stale module cache conflicts, 404s, and iframe security errors.
     navigator.serviceWorker.getRegistrations().then(regs => {
       regs.forEach(r => r.unregister().catch(() => {}));
@@ -24,7 +24,7 @@ if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
     // In direct/top-level browser windows, register service worker to meet Chrome Android PWA installability criteria
     try {
       if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.register('/sw.js').then((registration) => {
+        navigator.serviceWorker.register('./sw.js', { scope: './' }).then((registration) => {
           console.log('[PWA] ServiceWorker registered with scope:', registration.scope);
 
           // Register periodic background sync for automatic database updates

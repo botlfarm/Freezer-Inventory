@@ -152,7 +152,7 @@ function getDynamicManifest() {
   ];
 
   return {
-    id: "/",
+    id: "./",
     name: appName,
     short_name: shortName,
     description: "Comprehensive freezer, butcher processing, and off-site cold storage inventory tracker with QR scanning.",
@@ -170,15 +170,15 @@ function getDynamicManifest() {
         name: "Search Inventory",
         short_name: "Search",
         description: "Search cuts and containers",
-        url: "/?view=inventory",
-        icons: [{ src: hasCustomIcon ? "api/pwa/icon-192.png" : "/pwa-192x192.png", sizes: "192x192" }]
+        url: "./?view=inventory",
+        icons: [{ src: hasCustomIcon ? `api/pwa/icon-192.png${iconVersion}` : "pwa-192x192.png", sizes: "192x192" }]
       },
       {
         name: "Scan QR Code",
         short_name: "Scan",
         description: "Scan QR code",
-        url: "/?view=scan",
-        icons: [{ src: hasCustomIcon ? "api/pwa/icon-192.png" : "/pwa-192x192.png", sizes: "192x192" }]
+        url: "./?view=scan",
+        icons: [{ src: hasCustomIcon ? `api/pwa/icon-192.png${iconVersion}` : "pwa-192x192.png", sizes: "192x192" }]
       }
     ]
   };
@@ -196,6 +196,8 @@ app.use((req, res, next) => {
   }
   if (p.endsWith('/sw.js')) {
     const swPaths = [
+      path.join(process.cwd(), 'dist', 'sw.js'),
+      path.join(appDirname, 'dist', 'sw.js'),
       path.join(process.cwd(), 'public', 'sw.js'),
       path.join(appDirname, 'public', 'sw.js')
     ];

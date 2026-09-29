@@ -1,3 +1,38 @@
+### [2.48.7] - 2026-09-28
+
+### Fixed
+- **Restored tsconfig.json and Root TypeScript Compilation Integrity**:
+  - Restored `/tsconfig.json` at root to maintain strict type definitions, aliases, and clean execution for `tsc --noEmit` and Vite bundling.
+  - Verified full production build and type checking with zero errors.
+
+### Files Modified
+- `/tsconfig.json`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.48.6] - 2026-09-28
+
+### Fixed
+- **Restored PWA Installability across Chrome, Android, and Home Assistant Ingress**:
+  - Aligned manifest `id: "./"` to match `scope: "./"`, fixing Chromium installability rejections caused by an `id` (`"/"`) falling outside of the nested Ingress application scope.
+  - Corrected `shortcuts` URLs from absolute `/` paths to relative `./?view=...` paths.
+  - Updated Service Worker registration in `index.tsx` from absolute `/sw.js` to relative `./sw.js` with `{ scope: './' }`, ensuring successful worker registration under subpath proxies and Home Assistant Ingress.
+  - Prioritized production `dist/sw.js` in `server.ts` to ensure Workbox offline navigation handlers are served directly to the browser.
+  - Removed dynamic manifest link href mutation on initial page load in `App.tsx`, keeping `<link rel="manifest">` stable and preventing Chromium from aborting the `beforeinstallprompt` event.
+
+### Files Modified
+- `/server.ts`
+- `/App.tsx`
+- `/index.tsx`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
 ### [2.48.5] - 2026-09-28
 
 ### Fixed
