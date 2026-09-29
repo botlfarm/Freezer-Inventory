@@ -13,10 +13,13 @@ import './index.css';
 if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
   const isIframe = window.self !== window.top;
   const isPreviewHost = window.location.hostname.endsWith('.run.app');
+  const isDevMode = import.meta.env.DEV;
 
-  if (isIframe || isPreviewHost) {
-    // Inside sandboxed iframes or cloud preview host environments, unregister any active service workers
-    // to avoid stale module cache conflicts, 404s, and iframe security errors.
+  // Only disable the service worker in the development editor sandbox preview
+  // and cloud preview host environments in development mode.
+  // In production (such as the live Home Assistant add-on or direct deployments),
+  // always allow service worker registration to enable PWA installability and offline support.
+  if (isDevMode && (isIframe || isPreviewHost)) {
     navigator.serviceWorker.getRegistrations().then(regs => {
       regs.forEach(r => r.unregister().catch(() => {}));
     }).catch(() => {});

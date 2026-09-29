@@ -1,3 +1,19 @@
+### [2.48.8] - 2026-09-29
+
+### Fixed
+- **Scoped Service Worker Bypassing to Development Environments Only**:
+  - Modified the Service Worker registration engine to check `import.meta.env.DEV`.
+  - Service Workers are now only unregistered/bypassed in the active development editor sandboxes or live hot-reload environments.
+  - In production (such as the live Home Assistant add-on or compiled production deployments), the Service Worker is registered unconditionally—even when nested inside Home Assistant's `<iframe>` Ingress frames—restoring full PWA installability and offline support for end-users.
+
+### Files Modified
+- `/index.tsx`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
 ### [2.48.7] - 2026-09-28
 
 ### Fixed
