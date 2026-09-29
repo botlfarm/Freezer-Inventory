@@ -1,3 +1,47 @@
+### [2.48.10] - 2026-09-29
+
+### Removed
+- **Removed PWA Manifest Shortcuts**:
+  - Completely removed unnecessary `shortcuts` array from `getDynamicManifest()` in `server.ts`, as well as static manifest templates in `publicIcons.ts`, `public/manifest.json`, and `public/manifest.webmanifest`.
+
+### Fixed
+- **Cross-Origin & Ingress Authentication for Web App Manifest**:
+  - Added `crossorigin="use-credentials"` to `<link rel="manifest">` in `index.html` to pass session cookies through authenticated reverse proxies and Home Assistant Ingress.
+  - Enabled dynamic `Access-Control-Allow-Origin` and `Access-Control-Allow-Credentials: true` in `server.ts` manifest endpoint to resolve "No manifest detected" errors caused by unauthenticated/rejected manifest fetches.
+  - Fixed relative icon link paths in `index.html`.
+
+### Files Modified
+- `/server.ts`
+- `/publicIcons.ts`
+- `/public/manifest.json`
+- `/public/manifest.webmanifest`
+- `/index.html`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.48.9] - 2026-09-29
+
+### Fixed
+- **Guaranteed Availability of PWA Icons and Static Assets Across All Production Environments**:
+  - Embedded binary default square icon buffers (`ICON_192_BUFFER`, `ICON_512_BUFFER`, `DEFAULT_ICON_SVG`) in `publicIcons.ts`.
+  - Added `ensurePublicIconsExist` to write missing icons to disk across `public/` and `dist/` on server initialization.
+  - Implemented `pwaIconMiddleware` in `server.ts` to directly serve `/pwa-192x192.png`, `/pwa-512x512.png`, `/pwa-maskable-512x512.png`, `/apple-touch-icon.png`, `/favicon.ico`, and `/icon.svg` with HTTP 200 and image MIME types, preventing fallback to 404 or HTML SPA routing.
+  - Updated `Dockerfile` runner stage to copy `/app/public` in addition to `/app/dist`.
+  - Fixes Chrome DevTools manifest error: `"Icon ... failed to load. Most operating systems require square icons."` which prevented PWA installation.
+
+### Files Modified
+- `/publicIcons.ts`
+- `/server.ts`
+- `/Dockerfile`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
 ### [2.48.8] - 2026-09-29
 
 ### Fixed

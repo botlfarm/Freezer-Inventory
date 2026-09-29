@@ -22,6 +22,7 @@ import AdmZip from 'adm-zip';
 import Database from 'better-sqlite3';
 import { calculateHistoryRetention } from './utils/historyRetention';
 import { APP_VERSION } from './version';
+import { ensurePublicIconsExist, pwaIconMiddleware, ICON_192_BUFFER, ICON_512_BUFFER, DEFAULT_ICON_SVG } from './publicIcons';
 
 const PORT = 3000;
 
@@ -164,23 +165,7 @@ function getDynamicManifest() {
     theme_color: themeColor,
     background_color: "#0f172a",
     categories: ["utilities", "productivity", "food"],
-    icons: icons,
-    shortcuts: [
-      {
-        name: "Search Inventory",
-        short_name: "Search",
-        description: "Search cuts and containers",
-        url: "./?view=inventory",
-        icons: [{ src: hasCustomIcon ? `api/pwa/icon-192.png${iconVersion}` : "pwa-192x192.png", sizes: "192x192" }]
-      },
-      {
-        name: "Scan QR Code",
-        short_name: "Scan",
-        description: "Scan QR code",
-        url: "./?view=scan",
-        icons: [{ src: hasCustomIcon ? `api/pwa/icon-192.png${iconVersion}` : "pwa-192x192.png", sizes: "192x192" }]
-      }
-    ]
+    icons: icons
   };
 }
 
@@ -188,7 +173,13 @@ function getDynamicManifest() {
 app.use((req, res, next) => {
   const p = req.path;
   if (p.endsWith('/manifest.json') || p.endsWith('/manifest.webmanifest') || p.endsWith('/site.webmanifest')) {
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    const origin = req.headers.origin;
+    if (origin) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+    } else {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+    }
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     const dynamicManifest = getDynamicManifest();
@@ -270,14 +261,26 @@ app.use('/photos', express.static(UPLOADS_DIR));
 // Public PWA assets & icons paths
 const APP_PUBLIC_DIR = path.join(process.cwd(), 'public');
 const LOCAL_PUBLIC_DIR = path.join(appDirname, 'public');
+const APP_DIST_DIR = path.join(process.cwd(), 'dist');
+const LOCAL_DIST_DIR = path.join(appDirname, 'dist');
+
+// Guarantee that default PWA icons exist on disk in all possible static asset directories
+ensurePublicIconsExist([APP_PUBLIC_DIR, LOCAL_PUBLIC_DIR, APP_DIST_DIR, LOCAL_DIST_DIR]);
 
 function getPublicFilePath(filename: string): string | null {
   const p1 = path.join(APP_PUBLIC_DIR, filename);
   if (fs.existsSync(p1)) return p1;
   const p2 = path.join(LOCAL_PUBLIC_DIR, filename);
   if (fs.existsSync(p2)) return p2;
+  const p3 = path.join(APP_DIST_DIR, filename);
+  if (fs.existsSync(p3)) return p3;
+  const p4 = path.join(LOCAL_DIST_DIR, filename);
+  if (fs.existsSync(p4)) return p4;
   return null;
 }
+
+// Dedicated middleware intercepting all direct PWA icon requests (including Ingress subpaths)
+app.use(pwaIconMiddleware);
 
 // Dynamic PWA Icon endpoints serving custom or default icons
 app.get(['/api/pwa/icon-192.png', '/api/pwa/icon-512.png', '/api/pwa/icon.png'], (req, res) => {
@@ -306,15 +309,10 @@ app.get(['/api/pwa/icon-192.png', '/api/pwa/icon-512.png', '/api/pwa/icon.png'],
     console.error('Error fetching custom PWA icon:', err);
   }
 
-  // Fallback to static default file
-  const fallbackFile = is512 ? 'pwa-512x512.png' : 'pwa-192x192.png';
-  const filePath = getPublicFilePath(fallbackFile);
-  if (filePath) {
-    res.setHeader('Content-Type', 'image/png');
-    res.setHeader('Cache-Control', 'public, max-age=86400');
-    return res.sendFile(filePath);
-  }
-  return res.status(404).send('Icon not found');
+  // Fallback to embedded default icon buffer
+  res.setHeader('Content-Type', 'image/png');
+  res.setHeader('Cache-Control', 'public, max-age=86400');
+  return res.send(is512 ? ICON_512_BUFFER : ICON_192_BUFFER);
 });
 
 // Dynamic Apple Touch Icon support
@@ -333,12 +331,16 @@ app.get(['/apple-touch-icon.png', '/apple-touch-icon-precomposed.png'], (req, re
       }
     }
   } catch (e) {}
-  next();
+  res.setHeader('Content-Type', 'image/png');
+  res.setHeader('Cache-Control', 'public, max-age=86400');
+  return res.send(ICON_192_BUFFER);
 });
 
 // Public PWA assets & icons static serving
 if (fs.existsSync(APP_PUBLIC_DIR)) app.use(express.static(APP_PUBLIC_DIR));
 if (fs.existsSync(LOCAL_PUBLIC_DIR)) app.use(express.static(LOCAL_PUBLIC_DIR));
+if (fs.existsSync(APP_DIST_DIR)) app.use(express.static(APP_DIST_DIR));
+if (fs.existsSync(LOCAL_DIST_DIR)) app.use(express.static(LOCAL_DIST_DIR));
 
 // Production dist assets serving (ensures pre-cached production bundles resolve even in dev server mode)
 const APP_DIST_ASSETS = path.join(process.cwd(), 'dist', 'assets');
