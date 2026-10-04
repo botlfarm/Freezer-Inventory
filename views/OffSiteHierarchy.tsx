@@ -1,6 +1,6 @@
 // Offsite hierarchy view
 import React, { useState, useMemo } from 'react';
-import { ChevronDown, ChevronRight, MapPin, Layers, PackageOpen, Edit3, FileText } from 'lucide-react';
+import { ChevronDown, ChevronRight, MapPin, Layers, PackageOpen, Edit3, FileText, X } from 'lucide-react';
 import { compareBoxLabels } from '../utils/boxSort';
 
 export const OffSiteHierarchy = ({ state, dispatch }) => {
@@ -264,6 +264,50 @@ export const OffSiteHierarchy = ({ state, dispatch }) => {
                                     <div className="font-mono text-sm font-bold text-emerald-400 flex items-center gap-2 flex-wrap">
                                       <PackageOpen size={14} className="text-emerald-500/50" />
                                       {bNode.id}
+                                      {(() => {
+                                        const boxTags = Array.from(new Set(bNode.items.flatMap((i: any) => i.tagIds || [])));
+                                        if (boxTags.length === 0) return null;
+                                        return (
+                                          <div className="flex flex-wrap gap-1 items-center font-sans">
+                                            {boxTags.map((tagId: any) => {
+                                              const tag = (state.tags || []).find((t: any) => t.id === tagId);
+                                              if (!tag) return null;
+                                              return (
+                                                <span
+                                                  key={tag.id}
+                                                  style={{ 
+                                                    backgroundColor: `${tag.color}15`, 
+                                                    borderColor: `${tag.color}35`, 
+                                                    color: tag.color || '#60a5fa' 
+                                                  }}
+                                                  className="inline-flex items-center gap-1 text-[8px] border px-1.5 py-0.2 rounded font-black tracking-wide uppercase select-none group/boxtag hover:border-red-500/40 transition-colors"
+                                                  title={`Tag: ${tag.description || tag.name} (Click ✕ to remove tag from box)`}
+                                                >
+                                                  <span>{tag.id === 'use-first' ? '🍳 ' : tag.id === 'not-for-sale' ? '🛑 ' : '🏷️ '}{tag.name}</span>
+                                                  <button
+                                                    type="button"
+                                                    onClick={async (e) => {
+                                                      e.stopPropagation();
+                                                      const itemsToUpdate = bNode.items.filter((it: any) => (it.tagIds || []).includes(tag.id));
+                                                      for (const item of itemsToUpdate) {
+                                                        const nextTagIds = (item.tagIds || []).filter((id: string) => id !== tag.id);
+                                                        await dispatch({
+                                                          type: 'UPDATE_OFFSITE_ENTRY',
+                                                          payload: { id: item.id, updates: { tagIds: nextTagIds } }
+                                                        });
+                                                      }
+                                                    }}
+                                                    className="hover:text-red-400 text-cool-gray-400 p-0.5 rounded transition-colors cursor-pointer"
+                                                    title={`Remove tag "${tag.name}" from all items in this box`}
+                                                  >
+                                                    <X size={9} />
+                                                  </button>
+                                                </span>
+                                              );
+                                            })}
+                                          </div>
+                                        );
+                                      })()}
                                     </div>
                                     <div className="text-xs text-cool-gray-400 mt-1">
                                       {bNode.items.length} items

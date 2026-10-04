@@ -215,6 +215,30 @@ export const UnifiedInboundMoveForm: React.FC<UnifiedInboundMoveFormProps> = ({
     );
   }, [destTab, newContainerName, selectedFreezerId, newContainerFreezerId, state.containers]);
 
+  const liveNewContainerMatches = useMemo(() => {
+    const trimmed = newContainerName.trim().toLowerCase();
+    if (!trimmed || destTab !== 'new') return [];
+    const searchWords = trimmed.split(/\s+/).filter(Boolean);
+
+    return state.containers
+      .filter(c => {
+        const nameLower = (c.name || '').toLowerCase();
+        const freezer = c.freezerId ? state.freezers?.find(f => f.id === c.freezerId) : null;
+        const freezerLower = (freezer?.name || '').toLowerCase();
+        return searchWords.every(word => nameLower.includes(word) || freezerLower.includes(word));
+      })
+      .sort((a, b) => {
+        const aName = a.name.toLowerCase();
+        const bName = b.name.toLowerCase();
+        if (aName === trimmed && bName !== trimmed) return -1;
+        if (bName === trimmed && aName !== trimmed) return 1;
+        if (!a.freezerId && b.freezerId) return -1;
+        if (a.freezerId && !b.freezerId) return 1;
+        return aName.localeCompare(bName, undefined, { numeric: true, sensitivity: 'base' });
+      })
+      .slice(0, 4);
+  }, [newContainerName, destTab, state.containers, state.freezers]);
+
   const retiredContainer = useMemo(() => {
     if (destTab !== 'retired' || !selectedContainerId) return null;
     const found = state.containers.find(c => c.id === selectedContainerId);
@@ -605,8 +629,15 @@ export const UnifiedInboundMoveForm: React.FC<UnifiedInboundMoveFormProps> = ({
         }
         // If user selected a specific container and chose or changed its freezer location in Section 2B
         if (selectedContainerId !== 'staging_loose' && !selectedContainerId.endsWith('_loose') && selectedContainer) {
-          if (selectedFreezerId && selectedFreezerId !== selectedContainer.freezerId) {
-            await dispatch({ type: 'MOVE_CONTAINER', payload: { containerId: selectedContainerId, newFreezerId: selectedFreezerId } });
+          const currentFreezerId = selectedContainer.freezerId || '';
+          if (selectedFreezerId !== currentFreezerId) {
+            await dispatch({ 
+              type: 'MOVE_CONTAINER', 
+              payload: { 
+                containerId: selectedContainerId, 
+                newFreezerId: selectedFreezerId ? selectedFreezerId : undefined 
+              } 
+            });
           }
         }
       }
@@ -992,7 +1023,11 @@ export const UnifiedInboundMoveForm: React.FC<UnifiedInboundMoveFormProps> = ({
 
             {/* Quick select for Staging Area */}
             <div 
-              onClick={() => handleFreezerSelect('')}
+              onClick={() => {
+                setSelectedContainerId('staging_loose');
+                setSelectedFreezerId('');
+                setErrorMsg('');
+              }}
               className={`p-3 rounded-xl border transition-all duration-300 flex items-center justify-between gap-3 text-left cursor-pointer ${
                 selectedContainerId === 'staging_loose'
                   ? 'bg-amber-950/40 border-amber-500 ring-2 ring-amber-400/30 shadow-md'
@@ -1010,6 +1045,12 @@ export const UnifiedInboundMoveForm: React.FC<UnifiedInboundMoveFormProps> = ({
               </div>
               <button
                 type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setSelectedContainerId('staging_loose');
+                  setSelectedFreezerId('');
+                  setErrorMsg('');
+                }}
                 className={`py-1.5 px-3 rounded-lg text-xs font-black uppercase tracking-wide transition shrink-0 ${
                   selectedContainerId === 'staging_loose'
                     ? 'bg-amber-500 border border-amber-400 text-cool-gray-950 shadow-md'
@@ -1178,8 +1219,7 @@ export const UnifiedInboundMoveForm: React.FC<UnifiedInboundMoveFormProps> = ({
                   containers={state.containers.filter(c => {
                     if (c.isArchived) return false;
                     if (c.id === sourceMeatCut?.containerId) return false;
-                    if (!c.freezerId) return false;
-                    if (c.isBox) {
+                    if (c.isBox && c.freezerId) {
                       const freezer = state.freezers.find(f => f.id === c.freezerId);
                       if (!freezer || freezer.isPallet) return false;
                     }
@@ -1238,6 +1278,55 @@ export const UnifiedInboundMoveForm: React.FC<UnifiedInboundMoveFormProps> = ({
                     placeholder="e.g., box - arctic max"
                     className="w-full px-3 py-2 text-xs bg-cool-gray-950 border border-cool-gray-700 rounded-lg text-white font-bold focus:outline-none focus:ring-1 focus:ring-cyan-500"
                   />
+
+                  {/* Duplicate notice if in same freezer */}
+                  {hasNewDuplicateInSameFreezer && (
+                    <div className="p-2 rounded bg-amber-950/70 border border-amber-500/60 text-amber-200 text-[11px] animate-fadeIn">
+                      ⚠️ <strong>Duplicate:</strong> A container named "{newContainerName}" already exists in the selected freezer.
+                    </div>
+                  )}
+
+                  {/* Live matching containers preview */}
+                  {liveNewContainerMatches.length > 0 && (
+                    <div className="mt-1 p-2 bg-cool-gray-900 border border-cool-gray-750 rounded-lg text-xs space-y-1 animate-fadeIn">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-cool-gray-400">
+                        🔍 Existing Containers Matching "{newContainerName}":
+                      </span>
+                      <div className="divide-y divide-cool-gray-800 max-h-32 overflow-y-auto space-y-1">
+                        {liveNewContainerMatches.map(mc => {
+                          const freezer = mc.freezerId ? state.freezers?.find(f => f.id === mc.freezerId) : null;
+                          const cutsCount = (state.meatCuts || []).filter(cut => cut.containerId === mc.id).reduce((s, cut) => s + cut.quantity, 0);
+                          const isSpare = !mc.freezerId;
+
+                          return (
+                            <div key={mc.id} className="pt-1 first:pt-0 flex items-center justify-between gap-1.5 text-[11px]">
+                              <div className="min-w-0">
+                                <span className="font-bold text-white truncate">{mc.name}</span>
+                                <span className="text-cool-gray-400 ml-1.5">
+                                  {freezer ? `❄️ ${freezer.name}` : '📦 Spare Pool'} ({cutsCount} pcs)
+                                </span>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (isSpare) {
+                                    setDestTab('retired');
+                                    setSelectedContainerId(mc.id);
+                                  } else {
+                                    setDestTab('existing');
+                                    setSelectedContainerId(mc.id);
+                                  }
+                                }}
+                                className="px-2 py-0.5 bg-cool-gray-800 hover:bg-cyan-600 text-cyan-300 hover:text-white font-bold rounded text-[10px] border border-cool-gray-700 transition cursor-pointer shrink-0"
+                              >
+                                Use This Box
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
                 </div>
                 
                 <div className="flex items-center">

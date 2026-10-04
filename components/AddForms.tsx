@@ -124,6 +124,64 @@ const ContainerForm: React.FC<ContainerFormProps> = ({ dispatch, onClose, freeze
     [name, state.containers]
   );
 
+  // Live container search matching across placed, spare, and template containers
+  const liveContainerMatches = useMemo(() => {
+    const trimmed = name.trim().toLowerCase();
+    if (!trimmed) return [];
+    const searchWords = trimmed.split(/\s+/).filter(Boolean);
+
+    const allContainers = state.containers || [];
+    return allContainers
+      .filter(c => {
+        const nameLower = (c.name || '').toLowerCase();
+        const freezer = c.freezerId ? state.freezers?.find(f => f.id === c.freezerId) : null;
+        const freezerLower = (freezer?.name || '').toLowerCase();
+        return searchWords.every(word => nameLower.includes(word) || freezerLower.includes(word));
+      })
+      .sort((a, b) => {
+        const aName = a.name.toLowerCase();
+        const bName = b.name.toLowerCase();
+        const aExact = aName === trimmed;
+        const bExact = bName === trimmed;
+        if (aExact && !bExact) return -1;
+        if (!aExact && bExact) return 1;
+
+        // Prioritize unassigned/spare containers so user sees they can reuse them
+        if (!a.freezerId && b.freezerId) return -1;
+        if (a.freezerId && !b.freezerId) return 1;
+
+        return aName.localeCompare(bName, undefined, { numeric: true, sensitivity: 'base' });
+      })
+      .slice(0, 5);
+  }, [name, state.containers, state.freezers]);
+
+  const duplicateInCurrentFreezer = useMemo(() => {
+    const trimmed = name.trim().toLowerCase();
+    if (!trimmed || !finalFreezerId) return null;
+    return state.containers.find(c => c.freezerId === finalFreezerId && c.name.trim().toLowerCase() === trimmed);
+  }, [name, finalFreezerId, state.containers]);
+
+  const handlePlaceExistingSpare = async (spareContainerId: string) => {
+    setIsSubmitting(true);
+    try {
+      if (finalFreezerId) {
+        await dispatch({
+          type: 'MOVE_CONTAINER',
+          payload: { containerId: spareContainerId, newFreezerId: finalFreezerId }
+        } as any);
+      }
+      if (onContainerCreated) {
+        onContainerCreated(spareContainerId);
+      } else {
+        onClose();
+      }
+    } catch (err) {
+      console.error("Failed to place existing spare container:", err);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   const handleSubmit = async (e?: React.FormEvent) => {
     if (e) {
       e.preventDefault();
@@ -198,26 +256,99 @@ const ContainerForm: React.FC<ContainerFormProps> = ({ dispatch, onClose, freeze
         </select>
       </div>
 
-      <div className="flex gap-2 items-center">
-        <div className="flex-grow">
-          <ComboboxInput
-            value={name}
-            onChange={setName}
-            options={existingContainerNames}
-            placeholder="Container Name (e.g., Red Stripe)"
-            required
-            className="w-full px-3 py-2 bg-cool-gray-700 border border-cool-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-cyan-500 text-sm placeholder-cool-gray-500 text-white"
-            autoFocus
-          />
+      <div className="space-y-1">
+        <div className="flex justify-between items-center">
+          <label className="block text-xs font-bold text-cool-gray-400 uppercase tracking-wider">Container Name:</label>
+          {liveContainerMatches.length > 0 && (
+            <span className="text-[10px] text-cyan-400 font-bold">
+              🔍 {liveContainerMatches.length} matching {liveContainerMatches.length === 1 ? 'container' : 'containers'}
+            </span>
+          )}
         </div>
-        <button
-          type="button"
-          onClick={() => generateContainerName()}
-          className="h-[38px] px-3 py-2 bg-cool-gray-850 hover:bg-cool-gray-750 border border-cool-gray-650 rounded-md text-xs font-semibold text-cyan-400 flex items-center gap-1 shrink-0 transition cursor-pointer"
-          title="Suggest a generic name"
-        >
-          🎲 Suggest Name
-        </button>
+        <div className="flex gap-2 items-center">
+          <div className="flex-grow">
+            <ComboboxInput
+              value={name}
+              onChange={setName}
+              options={existingContainerNames}
+              placeholder="Container Name (e.g., Red Stripe)"
+              required
+              className="w-full px-3 py-2 bg-cool-gray-700 border border-cool-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-cyan-500 text-sm placeholder-cool-gray-500 text-white"
+              autoFocus
+            />
+          </div>
+          <button
+            type="button"
+            onClick={() => generateContainerName()}
+            className="h-[38px] px-3 py-2 bg-cool-gray-850 hover:bg-cool-gray-750 border border-cool-gray-650 rounded-md text-xs font-semibold text-cyan-400 flex items-center gap-1 shrink-0 transition cursor-pointer"
+            title="Suggest a generic name"
+          >
+            🎲 Suggest Name
+          </button>
+        </div>
+
+        {/* Duplicate Warning in Same Freezer */}
+        {duplicateInCurrentFreezer && (
+          <div className="p-2.5 rounded bg-amber-950/70 border border-amber-500/60 text-amber-200 text-xs mt-1 animate-fadeIn">
+            ⚠️ <strong>Duplicate warning:</strong> A container named "{duplicateInCurrentFreezer.name}" is already placed in this freezer.
+          </div>
+        )}
+
+        {/* Live Matching Containers in Inventory */}
+        {liveContainerMatches.length > 0 && (
+          <div className="mt-1.5 p-2.5 bg-cool-gray-850 border border-cool-gray-700 rounded-lg text-xs space-y-1.5 animate-fadeIn shadow-lg">
+            <div className="flex items-center justify-between pb-1 border-b border-cool-gray-750">
+              <span className="text-[10.5px] font-bold uppercase tracking-wider text-cool-gray-400 flex items-center gap-1">
+                <span>📦 Existing Containers Matching "{name}":</span>
+              </span>
+            </div>
+            <div className="divide-y divide-cool-gray-750 max-h-40 overflow-y-auto space-y-1 pr-0.5">
+              {liveContainerMatches.map(mc => {
+                const freezer = mc.freezerId ? state.freezers?.find(f => f.id === mc.freezerId) : null;
+                const cutsCount = (state.meatCuts || []).filter(cut => cut.containerId === mc.id).reduce((s, cut) => s + cut.quantity, 0);
+                const isSpare = !mc.freezerId;
+
+                return (
+                  <div key={mc.id} className="pt-1.5 first:pt-0 flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 p-1 rounded hover:bg-cool-gray-800 transition">
+                    <div className="flex items-center gap-2 min-w-0">
+                      {mc.imageUrl ? (
+                        <img src={mc.imageUrl} alt={mc.name} className="w-6 h-6 rounded object-cover border border-cool-gray-700 shrink-0" />
+                      ) : (
+                        <div className="w-6 h-6 rounded bg-cool-gray-800 border border-cool-gray-700 flex items-center justify-center shrink-0 text-xs">
+                          📦
+                        </div>
+                      )}
+                      <div className="min-w-0">
+                        <p className="font-bold text-xs text-white truncate">{mc.name}</p>
+                        <p className="text-[10px] text-cool-gray-400 flex items-center gap-1">
+                          {freezer ? (
+                            <span className="text-cyan-300">❄️ {freezer.name}</span>
+                          ) : (
+                            <span className="text-amber-300 font-semibold">📦 Spare Pool (Unassigned)</span>
+                          )}
+                          <span>• {cutsCount} {cutsCount === 1 ? 'item' : 'items'}</span>
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1 shrink-0 self-end sm:self-center">
+                      {isSpare && (
+                        <button
+                          type="button"
+                          onClick={() => handlePlaceExistingSpare(mc.id)}
+                          className="px-2 py-0.5 bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-[10.5px] rounded transition cursor-pointer shadow-xs"
+                          title="Move and place this existing spare container here"
+                        >
+                          📍 Place This Spare Here
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
 
       {!selectedTemplateId && (

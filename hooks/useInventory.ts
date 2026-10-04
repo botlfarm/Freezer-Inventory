@@ -1498,6 +1498,90 @@ export const useInventory = (activeView: View = 'product') => {
       return sendActionToServer(action);
     }
 
+    if (action.type === 'UPDATE_OFFSITE_ENTRY') {
+      const { id, updates } = action.payload;
+      setState(prev => {
+        const entries = prev.offSiteEntries || [];
+        const nextEntries = entries.map(e => {
+          if (e.id === id) {
+            return { ...e, ...updates };
+          }
+          return e;
+        });
+        return {
+          ...prev,
+          offSiteEntries: nextEntries
+        };
+      });
+      return sendActionToServer(action);
+    }
+
+    if (action.type === 'TOGGLE_OFFSITE_ENTRY_TAG') {
+      const { entryId, tagId } = action.payload;
+      setState(prev => {
+        const entries = prev.offSiteEntries || [];
+        const nextEntries = entries.map(e => {
+          if (e.id === entryId) {
+            const currentTagIds = e.tagIds || [];
+            const isSet = currentTagIds.includes(tagId);
+            const nextTagIds = isSet
+              ? currentTagIds.filter(id => id !== tagId)
+              : [...currentTagIds, tagId];
+            return {
+              ...e,
+              tagIds: nextTagIds
+            };
+          }
+          return e;
+        });
+        return {
+          ...prev,
+          offSiteEntries: nextEntries
+        };
+      });
+      return sendActionToServer(action);
+    }
+
+    if (action.type === 'CLEAR_OFFSITE_ENTRY_TAGS') {
+      const { entryId } = action.payload;
+      setState(prev => {
+        const entries = prev.offSiteEntries || [];
+        const nextEntries = entries.map(e => {
+          if (e.id === entryId) {
+            return {
+              ...e,
+              tagIds: []
+            };
+          }
+          return e;
+        });
+        return {
+          ...prev,
+          offSiteEntries: nextEntries
+        };
+      });
+      return sendActionToServer(action);
+    }
+
+    if (action.type === 'BULK_EDIT_OFFSITE_ENTRIES') {
+      const { ids, updates } = action.payload;
+      const idSet = new Set(ids || []);
+      setState(prev => {
+        const entries = prev.offSiteEntries || [];
+        const nextEntries = entries.map(e => {
+          if (idSet.has(e.id)) {
+            return { ...e, ...updates };
+          }
+          return e;
+        });
+        return {
+          ...prev,
+          offSiteEntries: nextEntries
+        };
+      });
+      return sendActionToServer(action);
+    }
+
     if (action.type === 'DELETE_CONTAINER') {
       const { containerId } = action.payload;
       setState(prev => ({
@@ -1535,13 +1619,15 @@ export const useInventory = (activeView: View = 'product') => {
     }
 
     if (action.type === 'MOVE_CONTAINER') {
-      const { containerId, newFreezerId, emptyCuts } = action.payload;
+      const { containerId, newFreezerId, emptyCuts, deleteCuts } = action.payload;
 
       setState(prev => {
         let updatedMeatCuts = prev.meatCuts;
         let updatedContainers = prev.containers;
 
-        if (emptyCuts) {
+        if (deleteCuts) {
+          updatedMeatCuts = prev.meatCuts.filter(mc => mc.containerId !== containerId);
+        } else if (emptyCuts) {
           updatedMeatCuts = prev.meatCuts.map(mc => 
             mc.containerId === containerId ? { ...mc, containerId: 'staging_loose' } : mc
           );
@@ -1549,7 +1635,7 @@ export const useInventory = (activeView: View = 'product') => {
 
         const targetContainer = prev.containers.find(c => c.id === containerId);
         if (targetContainer) {
-          if (emptyCuts) {
+          if (deleteCuts || emptyCuts) {
             updatedContainers = prev.containers.map(c => 
               c.id === containerId ? { ...c, freezerId: undefined, isArchived: true } : c
             );

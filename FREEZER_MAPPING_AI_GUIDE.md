@@ -70,12 +70,26 @@ interface Tag {
 // Complete Unified Root Application State
 interface InventoryState {
   freezers: Freezer[];
+  containerTemplates?: ContainerTemplate[];
   containers: Container[];
+  categories?: ProductCategory[];
   products: Product[];
   meatCuts: MeatCut[];
+  locations?: StorageLocation[];
+  pallets?: StoragePallet[];
+  boxes?: StorageBox[];
+  offSiteEntries?: OffSiteInventoryEntry[];
+  movementOrders?: MovementOrder[];
+  butcherOrders?: ButcherOrder[];
+  customLists?: CustomList[];
   tags?: Tag[];
   history: HistoryEntry[];
   containerTypes: ContainerType[];
+  appConfig?: AppConfigItem[];
+  notificationSettings?: NotificationSettings[];
+  notificationLogs?: NotificationLog[];
+  pwaDevices?: PwaDevice[];
+  undoJournal?: UndoSqlJournalEntry[];
 }
 ```
 

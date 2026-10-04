@@ -69,6 +69,97 @@ const ProductForm: React.FC<CommonFormProps & { products: Product[], existingPro
         return existingProduct?.defaultTagIds || [];
     });
     const [isArchived, setIsArchived] = useState<boolean>(existingProduct?.isArchived || false);
+    const [showMatchesDismissed, setShowMatchesDismissed] = useState(false);
+
+    const allProducts = useMemo(() => {
+        return products && products.length > 0 ? products : (state?.products || []);
+    }, [products, state?.products]);
+
+    // Live search of all existing and archived products as user types
+    const liveProductMatches = useMemo(() => {
+        const trimmed = name.trim().toLowerCase();
+        if (!trimmed || showMatchesDismissed) return [];
+        const searchWords = trimmed.split(/\s+/).filter(Boolean);
+
+        return allProducts
+            .filter(p => {
+                if (existingProduct && p.id === existingProduct.id) return false;
+                const nameLower = (p.name || '').toLowerCase();
+                const primaryLower = (p.primaryCategory || '').toLowerCase();
+                const subLower = (p.subCategory || '').toLowerCase();
+                const numbersLower = (p.productNumbers || []).join(' ').toLowerCase();
+                const barcodeLower = (p.barcode || '').toLowerCase();
+
+                return searchWords.every(word =>
+                    nameLower.includes(word) ||
+                    primaryLower.includes(word) ||
+                    subLower.includes(word) ||
+                    numbersLower.includes(word) ||
+                    barcodeLower.includes(word)
+                );
+            })
+            .sort((a, b) => {
+                const aName = a.name.toLowerCase();
+                const bName = b.name.toLowerCase();
+                const aExact = aName === trimmed;
+                const bExact = bName === trimmed;
+                if (aExact && !bExact) return -1;
+                if (!aExact && bExact) return 1;
+
+                const aStarts = aName.startsWith(trimmed);
+                const bStarts = bName.startsWith(trimmed);
+                if (aStarts && !bStarts) return -1;
+                if (!aStarts && bStarts) return 1;
+
+                if (a.isArchived !== b.isArchived) {
+                    return a.isArchived ? -1 : 1; // Prioritize showing archived matches so users notice
+                }
+
+                return aName.localeCompare(bName, undefined, { numeric: true, sensitivity: 'base' });
+            })
+            .slice(0, 6);
+    }, [name, allProducts, existingProduct, showMatchesDismissed]);
+
+    // Check for exact name match across catalog
+    const exactNameMatch = useMemo(() => {
+        const trimmed = name.trim().toLowerCase();
+        if (!trimmed) return null;
+        return allProducts.find(p => (!existingProduct || p.id !== existingProduct.id) && p.name.trim().toLowerCase() === trimmed);
+    }, [name, allProducts, existingProduct]);
+
+    const handleAutofillFromProduct = (p: Product) => {
+        setPrimaryCategory(p.primaryCategory || '');
+        setSubCategory(p.subCategory || '');
+        setImageUrl(p.imageUrl || '');
+        setProductNumbersInput((p.productNumbers || []).join(', '));
+        setBarcodeInput(p.barcode || '');
+        setSalePriceInput(p.salePrice !== undefined && p.salePrice !== null ? String(p.salePrice) : '');
+        setSalePriceUnit(p.salePriceUnit || 'lb');
+        if (p.defaultTagIds && p.defaultTagIds.length > 0) {
+            setDefaultTagIds(p.defaultTagIds);
+        }
+        if (p.listThresholds) {
+            setListThresholds(p.listThresholds);
+        }
+        if (p.listControlSources) {
+            setListControlSources(p.listControlSources);
+        }
+    };
+
+    const handleRestoreArchivedProduct = async (p: Product) => {
+        await dispatch({
+            type: 'EDIT_PRODUCT',
+            payload: {
+                productId: p.id,
+                updates: { isArchived: false }
+            }
+        });
+        if (onProductCreated) {
+            onProductCreated({ ...p, isArchived: false });
+        } else {
+            onClose();
+        }
+    };
 
     const primaryCategories = useMemo(() => {
         const fromProducts = products.map(p => p.primaryCategory);
@@ -222,7 +313,158 @@ const ProductForm: React.FC<CommonFormProps & { products: Product[], existingPro
 
     return (
          <form onSubmit={handleSubmit} className="space-y-4">
-            <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="Product Name" required className="w-full px-3 py-2 bg-cool-gray-700 border border-cool-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-cyan-500" autoFocus />
+            <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                    <label className="block text-xs font-semibold text-cool-gray-400">Product Name</label>
+                    {liveProductMatches.length > 0 && (
+                        <span className="text-[11px] text-cyan-400 font-semibold flex items-center gap-1">
+                            <span>🔍</span> {liveProductMatches.length} existing {liveProductMatches.length === 1 ? 'item' : 'items'} found
+                        </span>
+                    )}
+                </div>
+                <input 
+                    type="text" 
+                    value={name} 
+                    onChange={(e) => {
+                        setName(e.target.value);
+                        setShowMatchesDismissed(false);
+                    }} 
+                    placeholder="Product Name" 
+                    required 
+                    className="w-full px-3 py-2 bg-cool-gray-700 border border-cool-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-cyan-500 text-white placeholder-cool-gray-500 font-medium" 
+                    autoFocus 
+                />
+
+                {/* Prominent Exact Match Warning (especially for Archived Items) */}
+                {exactNameMatch && (
+                    <div className={`p-3 rounded-lg border text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 animate-fadeIn mt-1.5 ${
+                        exactNameMatch.isArchived 
+                            ? 'bg-amber-950/70 border-amber-500/60 text-amber-200 ring-1 ring-amber-500/20' 
+                            : 'bg-cyan-950/70 border-cyan-500/50 text-cyan-200'
+                    }`}>
+                        <div className="space-y-0.5">
+                            <div className="flex items-center gap-1.5 font-bold">
+                                <span>{exactNameMatch.isArchived ? '📁' : 'ℹ️'}</span>
+                                <span>
+                                    {exactNameMatch.isArchived 
+                                        ? `Archived item "${exactNameMatch.name}" already exists in inventory!` 
+                                        : `Active item "${exactNameMatch.name}" already exists.`}
+                                </span>
+                            </div>
+                            <p className="text-[11px] opacity-85">
+                                Category: <strong>{exactNameMatch.primaryCategory} &gt; {exactNameMatch.subCategory}</strong>
+                                {exactNameMatch.productNumbers && exactNameMatch.productNumbers.length > 0 && ` • #${exactNameMatch.productNumbers.join(', #')}`}
+                            </p>
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                            {exactNameMatch.isArchived ? (
+                                <button
+                                    type="button"
+                                    onClick={() => handleRestoreArchivedProduct(exactNameMatch)}
+                                    className="px-3 py-1.5 rounded-md bg-amber-500 hover:bg-amber-400 text-cool-gray-950 font-extrabold text-xs transition cursor-pointer shadow-sm flex items-center gap-1"
+                                >
+                                    <span>⚡ Restore & Use</span>
+                                </button>
+                            ) : (
+                                <button
+                                    type="button"
+                                    onClick={() => handleAutofillFromProduct(exactNameMatch)}
+                                    className="px-3 py-1.5 rounded-md bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs transition cursor-pointer shadow-sm"
+                                >
+                                    Autofill Details
+                                </button>
+                            )}
+                        </div>
+                    </div>
+                )}
+
+                {/* Live Search Matching Dropdown / Preview Tray */}
+                {liveProductMatches.length > 0 && !showMatchesDismissed && (
+                    <div className="mt-1.5 p-2.5 bg-cool-gray-850/95 border border-cool-gray-700/80 rounded-lg shadow-xl space-y-2 animate-fadeIn">
+                        <div className="flex items-center justify-between pb-1.5 border-b border-cool-gray-750">
+                            <span className="text-[10.5px] font-bold uppercase tracking-wider text-cool-gray-400 flex items-center gap-1.5">
+                                <span className="text-cyan-400">⚡ Live Catalog Matches:</span>
+                            </span>
+                            <button
+                                type="button"
+                                onClick={() => setShowMatchesDismissed(true)}
+                                className="text-[10px] text-cool-gray-400 hover:text-cool-gray-200 transition underline cursor-pointer"
+                            >
+                                Dismiss
+                            </button>
+                        </div>
+                        <div className="divide-y divide-cool-gray-750/50 max-h-48 overflow-y-auto space-y-1 pr-0.5">
+                            {liveProductMatches.map(match => {
+                                const onSite = (state?.meatCuts || []).filter(mc => mc.productId === match.id).reduce((s, mc) => s + mc.quantity, 0);
+                                const offSite = (state?.offSiteEntries || []).filter(e => e.productId === match.id && !e.archived).reduce((s, e) => s + (e.pieces || 1), 0);
+                                const total = onSite + offSite;
+
+                                return (
+                                    <div key={match.id} className="pt-1.5 first:pt-0 flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-1.5 rounded hover:bg-cool-gray-800/80 transition">
+                                        <div className="flex items-center gap-2.5 min-w-0">
+                                            {match.imageUrl ? (
+                                                <img src={match.imageUrl} alt={match.name} className="w-8 h-8 rounded object-cover border border-cool-gray-700 shrink-0" />
+                                            ) : (
+                                                <div className="w-8 h-8 rounded bg-cool-gray-800 border border-cool-gray-700 flex items-center justify-center shrink-0 text-sm">
+                                                    🥩
+                                                </div>
+                                            )}
+                                            <div className="min-w-0 space-y-0.5">
+                                                <div className="flex items-center gap-1.5 flex-wrap">
+                                                    <span className="font-bold text-xs text-white truncate">{match.name}</span>
+                                                    {match.isArchived ? (
+                                                        <span className="px-1.5 py-0.2 rounded text-[9px] font-extrabold bg-amber-950/80 text-amber-300 border border-amber-800/60 shrink-0">
+                                                            📁 Archived
+                                                        </span>
+                                                    ) : (
+                                                        <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-emerald-950/70 text-emerald-300 border border-emerald-800/50 shrink-0">
+                                                            ✓ Active
+                                                        </span>
+                                                    )}
+                                                    {total > 0 && (
+                                                        <span className="text-[10px] text-cool-gray-300 font-mono bg-cool-gray-900 px-1 py-0.2 rounded border border-cool-gray-750">
+                                                            {total} in stock
+                                                        </span>
+                                                    )}
+                                                </div>
+                                                <div className="text-[10.5px] text-cool-gray-400 truncate flex items-center gap-1.5">
+                                                    <span>{match.primaryCategory} &gt; {match.subCategory}</span>
+                                                    {match.productNumbers && match.productNumbers.length > 0 && (
+                                                        <span className="font-mono text-cool-gray-450">#{match.productNumbers.join(', #')}</span>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div className="flex items-center gap-1.5 shrink-0 self-end sm:self-center">
+                                            {match.isArchived ? (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => handleRestoreArchivedProduct(match)}
+                                                    className="px-2.5 py-1 bg-amber-600 hover:bg-amber-500 text-cool-gray-950 font-extrabold text-[11px] rounded transition cursor-pointer shadow-xs"
+                                                    title="Unarchive and use this item"
+                                                >
+                                                    Unarchive &amp; Select
+                                                </button>
+                                            ) : (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => handleAutofillFromProduct(match)}
+                                                    className="px-2.5 py-1 bg-cool-gray-700 hover:bg-cool-gray-600 text-cyan-300 font-bold text-[11px] rounded border border-cool-gray-650 transition cursor-pointer"
+                                                    title="Copy categories, SKU, and barcode to this form"
+                                                >
+                                                    Autofill Form
+                                                </button>
+                                            )}
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+                )}
+            </div>
+
             {/* Single Category / Subcategory Dropdown Selector */}
             <div className="space-y-1">
                 <label className="block text-xs font-semibold text-cool-gray-400">Category / Subcategory</label>
@@ -712,6 +954,22 @@ const EditContainerForm: React.FC<CommonFormProps & { container: Container; stat
         );
     }, [name, container.id, container.freezerId, state.containers]);
 
+    const liveContainerMatches = useMemo(() => {
+        const trimmed = name.trim().toLowerCase();
+        if (!trimmed) return [];
+        const searchWords = trimmed.split(/\s+/).filter(Boolean);
+
+        return state.containers
+            .filter(c => {
+                if (c.id === container.id) return false;
+                const nameLower = (c.name || '').toLowerCase();
+                const freezer = c.freezerId ? state.freezers?.find(f => f.id === c.freezerId) : null;
+                const freezerLower = (freezer?.name || '').toLowerCase();
+                return searchWords.every(word => nameLower.includes(word) || freezerLower.includes(word));
+            })
+            .slice(0, 5);
+    }, [name, container.id, state.containers, state.freezers]);
+
     const existingContainer = useMemo(() => 
         state.containers.find(c => c.id !== container.id && c.name.trim().toLowerCase() === name.trim().toLowerCase()),
         [name, container.id, state.containers]
@@ -761,6 +1019,28 @@ const EditContainerForm: React.FC<CommonFormProps & { container: Container; stat
                         ℹ️ Notice: Another container with this name exists in another location. (Allowed duplicate)
                     </p>
                 ) : null}
+
+                {liveContainerMatches.length > 0 && (
+                    <div className="mt-1.5 p-2 bg-cool-gray-800/90 border border-cool-gray-700 rounded-lg text-xs space-y-1">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-cool-gray-400 flex items-center gap-1">
+                            <span>📦 Matching Containers in Inventory:</span>
+                        </span>
+                        <div className="divide-y divide-cool-gray-750 max-h-32 overflow-y-auto">
+                            {liveContainerMatches.map(mc => {
+                                const freezer = mc.freezerId ? state.freezers?.find(f => f.id === mc.freezerId) : null;
+                                const cutsCount = (state.meatCuts || []).filter(cut => cut.containerId === mc.id).reduce((s, cut) => s + cut.quantity, 0);
+                                return (
+                                    <div key={mc.id} className="py-1 flex items-center justify-between text-cool-gray-300">
+                                        <span className="font-semibold text-white truncate">{mc.name}</span>
+                                        <span className="text-[10px] text-cool-gray-400">
+                                            {freezer ? `❄️ ${freezer.name}` : '📦 Spare Pool'} ({cutsCount} pcs)
+                                        </span>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+                )}
             </div>
 
             <div className="flex items-center">

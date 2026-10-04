@@ -34,12 +34,12 @@ This application is used **live** inside Home Assistant as an add-on. Therefore:
 ---
 
 ## 4. Comprehensive Backup & Restore Integrity
-Whenever a new feature adds information, properties, or records to the application:
-- Ensure the new data fields are integrated into the central JSON and ZIP backup mechanisms.
+Whenever a new feature adds information, properties, records, or brand new database tables/entities to the application:
+- Ensure the new tables and data fields are integrated into the central SQLite (.db), JSON, and ZIP backup/restore mechanisms across all 20+ tables.
 - Files to audit:
-  - **Server-Side API**: Check `/server.ts` backup and restore endpoints (e.g. `/api/backups/create`, `/api/backups/restore/:filename`, `/api/backups/export-zip`, `/api/backups/import-zip`).
-  - **Client-Side Views**: Update data managers like `/views/DataImportView.tsx` to handle selections for the new data scope during custom backups or restores.
-  - **Mapping Guide**: Keep `/FREEZER_MAPPING_AI_GUIDE.md` updated with relevant data formats to assist users with CSV/AppSheet translations.
+  - **Server-Side API**: Check `/server.ts` schema definitions (`TABLE_SCHEMAS`, `DATABASE_TABLE_DEFINITIONS`, `TABLE_ALIAS_MAP`), state syncing (`loadStateSync`/`saveStateSync`), and backup/restore endpoints (e.g. `/api/backups/create`, `/api/backups/restore/:filename`, `/api/backups/preview/:filename`, `/api/backups/check-dependencies/:filename`, `/api/backups/export-zip`, `/api/backups/import-zip`).
+  - **Client-Side Views**: Update data managers like `/views/DataImportView.tsx` to handle selections for the new data scope and Table-by-Table comparison matrices during custom backups or restores.
+  - **Types & Mapping Guide**: Keep `/types.ts`, `/APP_CONTEXT.md`, and `/FREEZER_MAPPING_AI_GUIDE.md` updated with relevant schemas and data formats.
 
 ---
 

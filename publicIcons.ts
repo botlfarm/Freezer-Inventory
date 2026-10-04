@@ -67,22 +67,51 @@ export function ensurePublicIconsExist(directories: string[]) {
 
 export function pwaIconMiddleware(req: Request, res: Response, next: NextFunction) {
   const p = req.path;
-  if (p.endsWith("/pwa-192x192.png") || p.endsWith("/apple-touch-icon.png") || p.endsWith("/api/pwa/icon-192.png")) {
-    res.setHeader("Content-Type", "image/png");
+  const is192 = p.endsWith("/pwa-192x192.png") || p.endsWith("/apple-touch-icon.png") || p.endsWith("/api/pwa/icon-192.png") || p.endsWith("/apple-touch-icon-precomposed.png");
+  const is512 = p.endsWith("/pwa-512x512.png") || p.endsWith("/pwa-maskable-512x512.png") || p.endsWith("/api/pwa/icon-512.png") || p.endsWith("/api/pwa/icon.png");
+  const isFavicon = p.endsWith("/favicon.ico");
+  const isSvg = p.endsWith("/icon.svg");
+
+  if (!is192 && !is512 && !isFavicon && !isSvg) {
+    return next();
+  }
+
+  // Check if custom icon is in database
+  try {
+    const globalDb = (global as any).__FREEZER_SQLITE_DB__;
+    if (globalDb) {
+      const configKey = is512 ? 'pwa_icon_512' : 'pwa_icon_192';
+      const row = globalDb.prepare('SELECT value FROM app_config WHERE key = ?').get(configKey) as any;
+      const val = row?.value || (is512 
+        ? (globalDb.prepare("SELECT value FROM app_config WHERE key = 'pwa_icon_192'").get() as any)?.value 
+        : (globalDb.prepare("SELECT value FROM app_config WHERE key = 'pwa_icon_512'").get() as any)?.value);
+
+      if (val && typeof val === 'string' && val.startsWith('data:image/')) {
+        const match = val.match(/^data:image\/([a-zA-Z0-9+]+);base64,(.+)$/);
+        if (match) {
+          const imageType = match[1] === 'svg+xml' ? 'image/svg+xml' : `image/${match[1]}`;
+          const buffer = Buffer.from(match[2], 'base64');
+          res.setHeader('Content-Type', isFavicon ? 'image/x-icon' : imageType);
+          res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+          return res.send(buffer);
+        }
+      }
+    }
+  } catch (err) {
+    // Silently proceed to default icon
+  }
+
+  if (is192 || isFavicon) {
+    res.setHeader("Content-Type", isFavicon ? "image/x-icon" : "image/png");
     res.setHeader("Cache-Control", "public, max-age=86400");
     return res.send(ICON_192_BUFFER);
   }
-  if (p.endsWith("/pwa-512x512.png") || p.endsWith("/pwa-maskable-512x512.png") || p.endsWith("/api/pwa/icon-512.png")) {
+  if (is512) {
     res.setHeader("Content-Type", "image/png");
     res.setHeader("Cache-Control", "public, max-age=86400");
     return res.send(ICON_512_BUFFER);
   }
-  if (p.endsWith("/favicon.ico")) {
-    res.setHeader("Content-Type", "image/x-icon");
-    res.setHeader("Cache-Control", "public, max-age=86400");
-    return res.send(ICON_192_BUFFER);
-  }
-  if (p.endsWith("/icon.svg")) {
+  if (isSvg) {
     res.setHeader("Content-Type", "image/svg+xml");
     res.setHeader("Cache-Control", "public, max-age=86400");
     return res.send(DEFAULT_ICON_SVG);

@@ -1934,7 +1934,7 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
                       <button
                         type="button"
                         onClick={() => {
-                          const onSiteOnly = ['freezers', 'containers', 'products', 'meat_cuts', 'custom_lists', 'tags', 'butcher_orders', 'butcher_cut_records', 'history_logs'];
+                          const onSiteOnly = ['freezers', 'containers', 'container_templates', 'products', 'categories', 'meat_cuts', 'custom_lists', 'tags', 'butcher_orders', 'notification_settings', 'notification_logs', 'app_config', 'history', 'pwa_devices', 'undo_sql_journal'];
                           selectAllTables(onSiteOnly);
                         }}
                         className="px-2.5 py-1 text-[11px] font-bold bg-cool-gray-850 hover:bg-cool-gray-800 text-indigo-300 rounded-lg border border-cool-gray-750 transition cursor-pointer"
@@ -1944,7 +1944,7 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
                       <button
                         type="button"
                         onClick={() => {
-                          const offSiteOnly = ['off_site_entries', 'off_site_cuts', 'off_site_packages'];
+                          const offSiteOnly = ['locations', 'pallets', 'boxes', 'off_site_entries', 'movement_orders'];
                           selectAllTables(offSiteOnly);
                         }}
                         className="px-2.5 py-1 text-[11px] font-bold bg-cool-gray-850 hover:bg-cool-gray-800 text-cyan-300 rounded-lg border border-cool-gray-750 transition cursor-pointer"
@@ -1971,19 +1971,26 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
                         </thead>
                         <tbody className="divide-y divide-cool-gray-800/60 font-medium">
                           {(previewData.tableDefinitions || [
-                            { name: 'freezers', label: 'Freezers (Locations)', category: 'layout', description: 'Freezer storage units and physical appliances' },
-                            { name: 'containers', label: 'Containers (Bins & Drawers)', category: 'layout', description: 'Bins, drawers, baskets and shelves inside freezers' },
-                            { name: 'products', label: 'Product Catalog', category: 'inventory', description: 'Master catalog of meat products, standard weights and descriptions' },
-                            { name: 'meat_cuts', label: 'On-Site Meat Cuts', category: 'inventory', description: 'Individual meat cut items and inventory tracking records' },
-                            { name: 'off_site_entries', label: 'Off-Site Cold Storage', category: 'offsite', description: 'Commercial cold storage manifests, bulk orders and lots' },
-                            { name: 'off_site_cuts', label: 'Off-Site Cut Items', category: 'offsite', description: 'Individual cut lines stored at off-site facilities' },
-                            { name: 'off_site_packages', label: 'Off-Site Pallets/Packages', category: 'offsite', description: 'Packaged boxes and bulk storage containers off-site' },
-                            { name: 'custom_lists', label: 'Custom Lists', category: 'lists', description: 'Custom shopping and pick lists' },
-                            { name: 'tags', label: 'Quality & Status Tags', category: 'lists', description: 'Labels and tags for meat cuts' },
-                            { name: 'butcher_orders', label: 'Butcher Carcass Orders', category: 'inventory', description: 'Incoming butcher processing batches and carcasses' },
-                            { name: 'butcher_cut_records', label: 'Butcher Packaged Cuts', category: 'inventory', description: 'Packaged cuts linked to butcher orders' },
-                            { name: 'history_logs', label: 'Activity Logs', category: 'settings', description: 'Audit trail of user changes and movements' },
-                            { name: 'app_config', label: 'System Settings', category: 'settings', description: 'Default address, simulated size, and preferences' }
+                            { name: 'freezers', label: 'Freezers & Storage Units', category: 'layout', description: 'Freezers, walk-in coolers, uprights, and chests' },
+                            { name: 'container_templates', label: 'Container Dimension Templates', category: 'layout', description: 'Preset blueprints and standard sizes for containers' },
+                            { name: 'containers', label: 'Containers, Bins & Baskets', category: 'layout', description: 'Boxes, drawers, baskets, and dividers located inside freezers' },
+                            { name: 'categories', label: 'Product Categories', category: 'catalog', description: 'Taxonomy groupings and classifications for products' },
+                            { name: 'products', label: 'Product Master Catalog', category: 'catalog', description: 'Master catalog of meat cuts, weights, barcodes, and descriptions' },
+                            { name: 'meat_cuts', label: 'On-Site Meat Cuts Stock', category: 'inventory', description: 'Active individual stock cuts, batches, and item tallies' },
+                            { name: 'locations', label: 'Off-Site Facility Locations', category: 'offsite', description: 'External cold storage warehouses and facility sites' },
+                            { name: 'pallets', label: 'Off-Site Pallets / Racks', category: 'offsite', description: 'Pallets and bulk structural units in cold storage facilities' },
+                            { name: 'boxes', label: 'Off-Site Storage Boxes', category: 'offsite', description: 'Cardboard cartons and master pack boxes stored on pallets' },
+                            { name: 'off_site_entries', label: 'Off-Site Cold Storage Manifest', category: 'offsite', description: 'Detailed cold storage inventory records, serials, and weights' },
+                            { name: 'movement_orders', label: 'Transfer & Movement Orders', category: 'offsite', description: 'Freight transfers, intake scans, and staging movement orders' },
+                            { name: 'butcher_orders', label: 'Butcher Processing Orders', category: 'inventory', description: 'Incoming harvest lots, hanging weights, and butcher yields' },
+                            { name: 'custom_lists', label: 'Custom Shopping & Pick Lists', category: 'lists', description: 'Pick lists, shopping requisitions, and custom lists' },
+                            { name: 'tags', label: 'Quality & Status Tags', category: 'lists', description: 'Custom tags, quality flags, and search labels' },
+                            { name: 'app_config', label: 'System & Application Config', category: 'system', description: 'Application settings, preferences, and operational defaults' },
+                            { name: 'notification_settings', label: 'Notification Settings', category: 'system', description: 'Alert criteria, threshold rules, and notification endpoints' },
+                            { name: 'notification_logs', label: 'Notification Audit Logs', category: 'system', description: 'Historical record of sent alerts and system notifications' },
+                            { name: 'history', label: 'Activity Audit Log', category: 'system', description: 'Comprehensive transaction history and user audit trails' },
+                            { name: 'pwa_devices', label: 'PWA Device Registry', category: 'system', description: 'Connected mobile scanner devices and client sync endpoints' },
+                            { name: 'undo_sql_journal', label: 'Undo Transaction SQL Journal', category: 'system', description: 'Microsecond inverse SQL rollback operations for transaction undo' }
                           ])
                             .filter((def: any) => tableFilterCategory === 'all' || def.category === tableFilterCategory)
                             .map((def: any) => {

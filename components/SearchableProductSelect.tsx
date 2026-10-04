@@ -42,7 +42,7 @@ export const SearchableProductSelect: React.FC<SearchableProductSelectProps> = (
     }
   }, [selectedProduct]);
 
-  // Filter products based on search term
+  // Filter products based on search term (searches all products including archived when typing)
   const filteredProducts = useMemo(() => {
     const term = searchTerm.toLowerCase().trim();
     
@@ -58,21 +58,29 @@ export const SearchableProductSelect: React.FC<SearchableProductSelectProps> = (
 
     const searchWords = term.split(/\s+/).filter(Boolean);
 
-    return baseProducts
+    // When actively typing a search, include all products (even archived) to find matches
+    return products
       .filter(p => {
-        const nameLower = p.name.toLowerCase();
-        const categoryLower = p.primaryCategory.toLowerCase();
-        const subCategoryLower = p.subCategory.toLowerCase();
+        const nameLower = (p.name || '').toLowerCase();
+        const categoryLower = (p.primaryCategory || '').toLowerCase();
+        const subCategoryLower = (p.subCategory || '').toLowerCase();
         
         return searchWords.every(word => 
           nameLower.includes(word) || 
           categoryLower.includes(word) || 
           subCategoryLower.includes(word) ||
-          (p.productNumbers || []).some(n => n.toLowerCase().includes(word))
+          (p.productNumbers || []).some(n => n.toLowerCase().includes(word)) ||
+          (p.barcode && p.barcode.toLowerCase().includes(word))
         );
       })
-      .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
-  }, [baseProducts, searchTerm, selectedProduct]);
+      .sort((a, b) => {
+        // Prioritize active over archived in search order unless exact name match
+        if (a.name.toLowerCase() === term && b.name.toLowerCase() !== term) return -1;
+        if (b.name.toLowerCase() === term && a.name.toLowerCase() !== term) return 1;
+        if (a.isArchived !== b.isArchived) return a.isArchived ? 1 : -1;
+        return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+      });
+  }, [baseProducts, products, searchTerm, selectedProduct]);
 
   // Close dropdown when clicking outside
   useEffect(() => {

@@ -1,3 +1,366 @@
+### [2.51.4] - 2026-10-04
+
+### Fixed
+- **PWA Custom URL Reset & Persistence Flow**:
+  - Fixed an issue where clicking "Reset to Default Link" in the Direct PWA App URL configuration reverted back to the previous custom URL on re-render.
+  - Added dedicated `DELETE /api/app-config/:key` backend endpoint and updated `POST /api/app-config` to remove or clear empty configuration rows atomically.
+  - Updated `LibraryView.tsx` to immediately dispatch the purged `appConfig` state upon reset, preventing stale in-memory state regressions and ensuring the link reverts cleanly to the browser's origin URL (`window.location.href`).
+
+### Files Modified
+- `/server.ts`
+- `/views/LibraryView.tsx`
+- `/APP_CONTEXT.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/CHANGELOG.md`
+
+### [2.51.3] - 2026-10-04
+
+### Fixed
+- **PWA Name, Label, & Theme Color Dynamic Synchronization**:
+  - Resolved an issue where updating the PWA Application Name, Mobile Home Screen Short Name, or Theme Color in Settings did not dynamically propagate to client headers or PWA manifest caches.
+  - Implemented real-time DOM synchronization across `document.title`, `<meta name="apple-mobile-web-app-title">`, `<meta name="application-name">`, `<meta name="theme-color">`, `<link rel="icon">`, `<link rel="apple-touch-icon">`, and dynamic manifest links with cache-busting version query tags (`./manifest.json?v=...`).
+- **PWA Icon Serving & Middleware Bypass Fix**:
+  - Fixed `pwaIconMiddleware` in `publicIcons.ts` which previously intercepted `/api/pwa/*`, `/pwa-192x192.png`, and `/apple-touch-icon.png` requests with a static fallback buffer before database `app_config` could be inspected.
+  - Dynamically queries custom icons stored in SQLite `app_config` (`pwa_icon_192`, `pwa_icon_512`) across all icon and favicon routes.
+
+### Added
+- **Official App Icon (Freezer Grid Logo) in Settings Preset Picker**:
+  - Added the official high-resolution Freezer Grid Logo (featuring the glowing hexagonal crystalline core and six radiating branch arms) as the first and primary default preset option in the App Name & Icon Customization panel.
+  - Added an expanded preset icon palette including Snowflake, Butcher/Beef, Storage Box, Pallet/Staging, Transport/Truck, Depot Facility, Seafood/Fish, Sub-Zero Cryo, and QR Scanner.
+  - Updated HTML5 Canvas vector drawing engine in `LibraryView.tsx` to render crisp 192x192 and 512x512 PWA icons with custom backgrounds.
+
+### Files Modified
+- `/publicIcons.ts`
+- `/server.ts`
+- `/views/LibraryView.tsx`
+- `/App.tsx`
+- `/APP_CONTEXT.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/CHANGELOG.md`
+
+### [2.51.2] - 2026-10-04
+
+### Added
+- **Mandatory Future Table Backup & Restore Integration Architecture Rule**:
+  - Explicitly codified the mandatory 8-step backup and restore integration standard in `APP_CONTEXT.md`, `AGENTS.md`, and `GEMINI.md`.
+  - Stipulates that whenever any new database tables or entities are introduced in the future, they must be registered across `TABLE_SCHEMAS`, `DATABASE_TABLE_DEFINITIONS`, `TABLE_ALIAS_MAP`, `InventoryState`, `loadStateSync`/`saveStateSync`, `.db`/`.zip`/`.json` backup routes, dependency checkers, and `DataImportView` Table-by-Table selectors.
+
+### Files Modified
+- `/APP_CONTEXT.md`
+- `/AGENTS.md`
+- `/GEMINI.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/CHANGELOG.md`
+
+### [2.51.1] - 2026-10-04
+
+### Added
+- **20th System Table (`undo_sql_journal`) Integration**:
+  - Integrated `undo_sql_journal` (used for atomic inverse SQL operation rollbacks during microsecond transaction undos) into:
+    - Central database schemas `TABLE_SCHEMAS`
+    - `DATABASE_TABLE_DEFINITIONS` metadata catalog
+    - State synchronization (`loadStateSync` & `saveStateSync`)
+    - Granular selective restore routes (`selectiveRestoreFromDb` and `restoreFromJsonData`)
+    - Backup preview inspector and `DataImportView` Table-by-Table selector
+  - Updated `types.ts`, `FREEZER_MAPPING_AI_GUIDE.md`, and `APP_CONTEXT.md` to document the complete set of 20 relational database tables.
+
+### Files Modified
+- `/types.ts`
+- `/server.ts`
+- `/views/DataImportView.tsx`
+- `/FREEZER_MAPPING_AI_GUIDE.md`
+- `/APP_CONTEXT.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/CHANGELOG.md`
+
+### [2.51.0] - 2026-10-04
+
+### Added
+- **Full 19-Table Backup & Granular Table-by-Table Selective Restore**:
+  - Expanded backup captures to encompass every single system table across SQLite `.db`, complete `.zip` capsules, and `.json` files:
+    1. `freezers` (Freezers & Storage Units)
+    2. `container_templates` (Container Templates & Dimensions)
+    3. `containers` (Containers, Bins & Baskets)
+    4. `categories` (Product Categories)
+    5. `products` (Product Master Catalog)
+    6. `meat_cuts` (On-Site Meat Cuts Stock)
+    7. `locations` (Off-Site Facility Locations)
+    8. `pallets` (Off-Site Pallets / Racks)
+    9. `boxes` (Off-Site Storage Boxes)
+    10. `off_site_entries` (Off-Site Manifest Records)
+    11. `movement_orders` (Transfer & Staging Orders)
+    12. `butcher_orders` (Butcher Processing Batches)
+    13. `custom_lists` (Custom Shopping & Pick Lists)
+    14. `tags` (Quality & Status Tags)
+    15. `app_config` (System Preferences & Configuration)
+    16. `notification_settings` (Alert Threshold Rules)
+    17. `notification_logs` (Notification Audit History)
+    18. `history` (Activity Audit Log)
+    19. `pwa_devices` (PWA Device Registry & Client Tokens)
+  - Updated `DATABASE_TABLE_DEFINITIONS`, `TABLE_SCHEMAS`, dependency checking (`checkDatabaseDependencies`, `checkJsonDependencies`), `selectiveRestoreFromDb`, `restoreFromJsonState`, `export-zip`, and `import-zip` on the server to support full table mappings and aliases across all backup formats.
+  - Enhanced `DataImportView.tsx` with full table definitions, quick-select filters ("All Tables", "On-Site Only", "Off-Site Only"), and live pre-flight foreign key dependency checks before restoring.
+  - Updated `types.ts` to include `pwaDevices` in `InventoryState` and synchronized state persistence in `loadStateSync` / `saveStateSync`.
+  - Updated `FREEZER_MAPPING_AI_GUIDE.md` and `APP_CONTEXT.md` to document all 19 entities and table mapping capabilities.
+
+### Files Modified
+- `/types.ts`
+- `/server.ts`
+- `/views/DataImportView.tsx`
+- `/FREEZER_MAPPING_AI_GUIDE.md`
+- `/APP_CONTEXT.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/CHANGELOG.md`
+
+### [2.50.2] - 2026-10-04
+
+### Fixed
+- **PWA & Devices Tab Navigation in Catalog & Settings**:
+  - Fixed an issue where clicking on the "PWA & Devices" tab button inside Catalog & Settings redirected to the Settings tab on the first click and required a second click to navigate to PWA.
+  - Removed obsolete `initialTab === "pwa"` effect that was re-routing `activeTab` to `"settings"`, allowing direct 1-click tab switching to the standalone PWA installation and device manager dashboard.
+
+### Files Modified
+- `/views/LibraryView.tsx`
+- `/App.tsx`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/CHANGELOG.md`
+
+### [2.50.1] - 2026-10-04
+
+### Removed
+- **Sticky Header Back Button**:
+  - Removed the on-screen Back button (`#nav-go-back-btn`) from the top navigation header, streamlining the UI and relying cleanly on native browser back controls, hardware back buttons, and mobile edge swipe-back gestures.
+
+### Files Modified
+- `/App.tsx`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.50.0] - 2026-10-04
+
+### Added
+- **Live Inventory Item Matching as You Type**:
+  - Implemented real-time live search across all products (including active and archived products) in `ManagementForms.ProductForm`.
+  - Displays instant visual search suggestions matching by product name, primary category, subcategory, SKU/backend numbers, and UPC-A barcodes.
+  - Highlights whether each matched item is **Active** (`✓ Active`) or **Archived** (`📁 Archived`).
+  - Provides a 1-click **"⚡ Autofill Details"** action to populate primary/sub categories, image URL, barcodes, pricing, and threshold controls from the existing product.
+  - Added a dedicated 1-click **"⚡ Restore & Use"** / **"Unarchive & Select"** action for archived items, preventing duplicate product records when re-introducing items into inventory.
+  - Prominent top warning banner when an exact name match exists for active or archived products.
+  - Enhanced `SearchableProductSelect` to search both active and archived catalog items as users type, with clear visual tags on archived entries.
+- **Live Container Matching & Duplicate Prevention When Creating Containers**:
+  - Implemented real-time container matching in `AddForms.ContainerForm`, `UnifiedInboundMoveForm`, and `ManagementForms.EditContainerForm`.
+  - Searches active containers across all freezers, display cases, pallets, staging queues, and the unassigned spare pool.
+  - Displays container locations (e.g. `❄️ Garage Chest`, `★ Showroom Display`, `📦 Spare Pool (Unassigned)`) and current item counts.
+  - Provides a 1-click **"📍 Place This Spare Here"** action to assign existing unassigned/spare containers directly to the target freezer instead of creating redundant duplicate container IDs.
+  - Warns users when an identical container name already exists in the selected target freezer.
+
+### Files Modified
+- `/components/ManagementForms.tsx`
+- `/components/AddForms.tsx`
+- `/components/SearchableProductSelect.tsx`
+- `/components/UnifiedInboundMoveForm.tsx`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.49.2] - 2026-10-02
+
+### Fixed
+- **Off-Site Inventory Tag Removal & Server Normalization**:
+  - Resolved root cause where removing tags from off-site items would fail because `normalizeState()` on the backend automatically resurrected product `defaultTagIds` whenever an entry's `tagIds` array was empty (`tagIds.length === 0`).
+  - Off-site entries now preserve an empty `tagIds: []` array without having default tags re-injected on database load, synchronization, or action normalization.
+  - Corrected `IMPORT_OFFSITE_ENTRIES` logic so existing items that have had their tags cleared do not have default product tags re-assigned on merge.
+  - Added SQLite database migration check for `off_site_entries` table to guarantee the `tagIds` column exists across existing deployments.
+  - Ensured `fromDb` always decodes `tagIds` as an array (`[]`) and `toDb` serializes `[]` safely as JSON.
+
+### Added
+- **One-Click Tag Removal in Off-Site Views**:
+  - Added an interactive `✕` remove button directly on all tag badges in the off-site spreadsheet (both in the action icons column and cuts column) to immediately remove individual tags with a single click.
+  - Added an `✕` remove button directly on box header tag badges to quickly remove a tag from all items in a box.
+  - Added a prominent **"Clear All Tags"** button in `OffSiteTagPopover`, enabling instant clearing of all tags from an off-site entry.
+  - Added **"Clear All Tags"** buttons in both the single-item inline row edit form (`editForm`) and the Bulk Edit modal (`bulkEditForm`).
+  - Added new `CLEAR_OFFSITE_ENTRY_TAGS` action and updated `OffSiteTagPopover` to use atomic `UPDATE_OFFSITE_ENTRY` rather than separate un-awaited toggle actions.
+  - Added optimistic client updates in `hooks/useInventory.ts` for `UPDATE_OFFSITE_ENTRY`, `TOGGLE_OFFSITE_ENTRY_TAG`, `CLEAR_OFFSITE_ENTRY_TAGS`, and `BULK_EDIT_OFFSITE_ENTRIES` for instant UI feedback.
+  - Added tag badges to the off-site storage hierarchy view for increased box visibility.
+
+### Files Modified
+- `/server.ts`
+- `/types.ts`
+- `/hooks/useInventory.ts`
+- `/views/OffSiteSpreadsheet.tsx`
+- `/views/OffSiteHierarchy.tsx`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.49.0] - 2026-10-02
+
+### Added
+- **User Grouping in PWA & Device Settings**:
+  - Added a view mode toggle between **"Group by User"** and **"All Devices"** (flat list) in the PWA & Device Manager card.
+  - Devices are automatically categorized by their assigned operator/user name (e.g. `@Nick`, `@Sarah`), with dedicated grouping for unassigned/anonymous browser sessions.
+  - User group cards display avatar initials, operator handle, total devices count, standalone PWA count, live presence indicator (e.g. "Online Now" with pulsing indicator), and aggregate authorization status badge (`All Authorized`, `Partially Revoked`, or `All Revoked`).
+  - Individual user group accordion expand/collapse toggles, with convenient global **"Expand All"** and **"Collapse All"** controls.
+- **User-Level & Device-Level Revocation Workflows**:
+  - Added user-level **"Revoke User"** action and confirmation modal, enabling administrators to immediately revoke all devices owned by a user in a single operation.
+  - Added user-level **"Authorize User"** action to quickly restore access to all devices of an operator.
+  - Added user-level **"Delete User Records"** confirmation modal to clean up obsolete device records.
+  - Added server-side endpoints in `/server.ts`:
+    - `POST /api/devices/user/:operator/revoke`
+    - `POST /api/devices/user/:operator/authorize`
+    - `DELETE /api/devices/user/:operator`
+    - `POST /api/devices/batch-revoke`
+    - `POST /api/devices/batch-authorize`
+  - Revoking a user or device immediately terminates active real-time SSE streams, disconnects active clients, and blocks subsequent requests on the SQLite authorization layer.
+- **Comprehensive Device & User Filtering and Search**:
+  - Live search input matching device labels, user names, hardware device IDs, IP addresses, client/OS info, and administrative notes.
+  - Status filter: All Status / Authorized Only / Revoked Only.
+  - Presence filter: All Presence / Online Now Only / Offline Only.
+  - Device type filter: All Types / Standalone PWAs Only / Web Browsers Only.
+  - Sort options: Recently Active, User Name (A-Z), Device Name (A-Z), Most Devices, Oldest First.
+  - Summary filter counter ("Showing X of Y devices across Z users") with one-click "Reset Filters" button.
+- **Active Users KPI Metric**:
+  - Added an "Active Users" metric badge in the top KPI summary alongside Total Devices, Standalone PWAs, Online Now, and Revoked counts.
+
+### Files Modified
+- `/server.ts`
+- `/components/PwaDeviceManagerCard.tsx`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.48.16] - 2026-10-02
+
+### Added
+- **Browser History & Mobile Back-Button / Swipe-Back Navigation**:
+  - Integrated HTML5 browser session history (`window.history.pushState`, `replaceState`, and `popstate`) for all view and screen transitions.
+  - Pressing the browser/hardware back button or swiping back on mobile devices (iOS Safari, Android Chrome, and Home Assistant Companion App) now returns to the previous screen instead of exiting or kicking the user out of the application.
+  - Synchronized location hash (`#product`, `#freezer`, `#display_case`, `#offsite`, `#library`, `#history`, `#traceability`, `#butcher_records`, `#reconcile`) so direct links, bookmarks, and page refreshes cleanly retain the active screen.
+  - Implemented sub-screen and tab history tracking for Off-Site Storage views (`#offsite/hierarchy`, `#offsite/history`, etc.) and Catalog & Settings tabs (`#library/lists`, etc.).
+  - Added smart modal back-gesture handling: if a modal dialog, quick info popup, image preview, or undo confirmation is active when pressing back or swiping back, the modal is dismissed while retaining the current screen, preventing accidental app exit.
+  - Added an intuitive visual on-screen "Back" button in the sticky top navigation header (`#nav-go-back-btn`) with an arrow icon whenever navigation history exists or when browsing secondary screens.
+
+### Files Modified
+- `/App.tsx`
+- `/views/LibraryView.tsx`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.48.15] - 2026-09-30
+
+### Added
+- **"Retire & Delete All Items" Option in Container Retirement Modal**:
+  - Added a dedicated "Retire & Delete All Items" action button to the container retirement confirmation popup in `ContainerCard.tsx` when the container contains active items.
+  - Users can now choose to either:
+    1. Click "Yes, Retire" to empty the container and move all contents to the Sorting Table (Staging Area).
+    2. Click "Retire & Delete All Items" to retire the container and permanently remove all contents from active inventory.
+  - Added full client-side optimistic and server-side state execution support for `deleteCuts: true` in `MOVE_CONTAINER` (`types.ts`, `hooks/useInventory.ts`, `server.ts`).
+  - Recorded detailed audit history entries for container deletion with cuts, and enabled full rollback via `RESTORE_MOVE_CONTAINER` undo data.
+
+### Files Modified
+- `/types.ts`
+- `/hooks/useInventory.ts`
+- `/server.ts`
+- `/components/ContainerCard.tsx`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.48.14] - 2026-09-30
+
+### Added
+- **Automated Lost Freezer and Lost Container Recovery to Staging**:
+  - Implemented automated recovery in `normalizeState` (`server.ts`) for containers that lose their physical freezer (e.g. if a freezer is deleted, missing, or renamed). The container's `freezerId` is automatically set to `undefined`, moving the container directly onto the on-site Staging Table / Sorting Table so it and its items are immediately visible and never lost.
+  - Added audit history logging to record when containers with missing/lost freezers are automatically relocated to the Staging Area.
+  - Reinforced existing orphaned meat cut recovery to ensure any items that lose their container (or whose container was archived or deleted) are safely moved to the unassigned Sorting Table (`staging_loose`).
+
+### Files Modified
+- `/server.ts`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.48.13] - 2026-09-30
+
+### Fixed
+- **Inbound Staging from Off-Site Movements to On-Site Storage**:
+  - Aligned the retroactive sanity and explicit unarchiving check in `EXECUTE_MOVEMENT_ORDER` (`server.ts`) to evaluate `stagingDestIds` alongside `moveToStaging`. This ensures items transitioned to on-site staging boxes are accurately marked as staged and archived from off-site storage.
+  - Confirmed that inbound off-site movement order transitions (which create on-site containers with `freezerId: undefined`) now keep those containers safely placed on the On-Site Staging Table rather than being hijacked into a physical freezer unit ('Canada').
+
+### Files Modified
+- `/server.ts`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.48.12] - 2026-09-30
+
+### Fixed
+- **Resolved Staging Area Container Hijacking & Forced Freezer Assignment**:
+  - Removed erroneous server-side logic in `normalizeState` (`server.ts`) that forcibly assigned containers holding cuts to `firstValidFreezerId` ('Canada' in demo/production setup) whenever their `freezerId` was undefined. Containers in the on-site Staging Area / Sorting Table intentionally have no physical freezer assigned (`freezerId: undefined`), allowing active boxes, bins, and bags with meat cuts to reside safely on the sorting table.
+  - Fixed `handleFormSubmit` in `UnifiedInboundMoveForm.tsx` where selecting Staging (`selectedFreezerId === ''`) for an existing container failed to dispatch `MOVE_CONTAINER` to clear its freezer assignment.
+  - Enhanced the Staging quick-select card and action button in `UnifiedInboundMoveForm.tsx` to immediately and explicitly set `selectedContainerId` to `'staging_loose'` and clear `selectedFreezerId`, preventing accidental retention of previous container selections.
+  - Removed unnecessary `!c.freezerId` filters in `SearchableContainerSelect` (`UnifiedInboundMoveForm.tsx`) and `MoveModalContent.tsx` (`MoveCut` and `ChangeContainerFlow`), enabling users to find and select active containers that are currently located in the Staging Area.
+  - Added clear `🛒 Staging Area` location badge indicators in `MoveModalContent.tsx` container option lists when a target container is currently stationed on the staging table.
+  - Ensured the Staging Area drop zone and header in `FreezerView.tsx` remain accessible and visible even when `hideZeroQuantity` is active.
+
+### Files Modified
+- `/server.ts`
+- `/components/UnifiedInboundMoveForm.tsx`
+- `/components/MoveModalContent.tsx`
+- `/views/FreezerView.tsx`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.48.11] - 2026-09-29
+
+### Changed
+- **Sticky Multi-Select Toolbar & Synchronized Column Headers in Off-Site Unified Spreadsheet**:
+  - Relocated the multi-select summary and bulk action window to sit immediately above the table and column headers instead of scrolling away above active filter badges.
+  - Configured the multi-select toolbar with sticky positioning (`sticky z-30`) pinned directly beneath the main navigation app header (`top: var(--header-height, 68px)`).
+  - Implemented dynamic toolbar height tracking using `useLayoutEffect` and `ResizeObserver` to set `--multi-select-bar-height` synchronously on mount, resize, and selection changes, preventing layout jumps and visual text bleed.
+  - Synchronized all 14 table column headers to stick seamlessly beneath the active multi-select toolbar using `top: calc(var(--header-height, 68px) + var(--multi-select-bar-height, 0px))`, automatically returning to standard header height when selections are cleared.
+
+### Files Modified
+- `/views/OffSiteSpreadsheet.tsx`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
 ### [2.48.10] - 2026-09-29
 
 ### Removed

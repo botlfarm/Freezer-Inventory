@@ -273,6 +273,14 @@ export interface ButcherOrder {
 }
 
 
+export interface UndoSqlJournalEntry {
+  id: string;
+  historyId: string;
+  description?: string;
+  inverseOps: string;
+  createdAt: string;
+}
+
 export interface AppConfigItem {
   key: string;
   value: string;
@@ -303,6 +311,8 @@ export type InventoryState = {
   notificationSettings?: NotificationSettings[];
   notificationLogs?: NotificationLog[];
   appConfig?: AppConfigItem[];
+  pwaDevices?: PwaDevice[];
+  undoJournal?: UndoSqlJournalEntry[];
 };
 
 export type View = 'freezer' | 'product' | 'library' | 'history' | 'reconcile' | 'import' | 'display_case' | 'restock' | 'offsite' | 'butcher_records' | 'traceability';
@@ -324,6 +334,7 @@ export type Action =
   | { type: 'UPDATE_MEAT_NOTES'; payload: { meatCutId: string; notes: string; originalCutName?: string } }
   | { type: 'TOGGLE_MEAT_TAG'; payload: { meatCutId: string; tagId: string } }
   | { type: 'TOGGLE_OFFSITE_ENTRY_TAG'; payload: { entryId: string; tagId: string } }
+  | { type: 'CLEAR_OFFSITE_ENTRY_TAGS'; payload: { entryId: string } }
   | { type: 'ADD_TAG'; payload: { tag: Tag } }
   | { type: 'EDIT_TAG'; payload: { tagId: string; updates: Partial<Omit<Tag, 'id'>> } }
   | { type: 'DELETE_TAG'; payload: { tagId: string } }
@@ -334,7 +345,7 @@ export type Action =
   | { type: 'EDIT_NOTE'; payload: { meatCutId: string; initialNotes: string } }
   | { type: 'RECONCILE_QUANTITIES'; payload: { updates: Array<{ meatCutId: string; newQuantity: number }> } }
   | { type: 'MOVE_MEAT_QUANTITY'; payload: { meatCutId: string; newContainerId: string; quantity: number; sourceContainerId: string; productId?: string; } }
-  | { type: 'MOVE_CONTAINER'; payload: { containerId: string; newFreezerId?: string; emptyCuts?: boolean } }
+  | { type: 'MOVE_CONTAINER'; payload: { containerId: string; newFreezerId?: string; emptyCuts?: boolean; deleteCuts?: boolean } }
   | { type: 'DELETE_CONTAINER'; payload: { containerId: string } }
   | { type: 'DELETE_PRODUCT'; payload: { productId: string } }
   | { type: 'BULK_DELETE_PRODUCTS'; payload: { productIds: string[] } }
@@ -405,7 +416,7 @@ export type ModalType =
   | { type: 'WRONG_LABEL'; meatCutId: string }
   | { type: 'RESTOCK_PROMPT'; productId: string; actionType: 'add' | 'remove'; productName: string }
   | { type: 'ADD_TO_LIST'; productId: string }
-  | { type: 'SELECT_MEAT_TAGS'; meatCutId: string }
+  | { type: 'SELECT_MEAT_TAGS'; meatCutId?: string; offSiteEntryId?: string }
   | { type: 'SPLIT_ITEM'; meatCutId: string }
   | { type: 'CHANGE_CONTAINER_FLOW'; containerId: string }
   | { type: 'LIST_THRESHOLD_ALERT'; listId: string; productId: string; actionType: 'add' | 'remove'; currentValue: number; thresholdValue: number; controlCondition: 'min' | 'max' }

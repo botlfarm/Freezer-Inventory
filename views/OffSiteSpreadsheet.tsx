@@ -1,5 +1,5 @@
 // Offsite spreadsheet view
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { Search, ChevronDown, ChevronRight, PackageOpen, ArrowRightCircle, Trash2, Edit3, X, Filter, Plus, PlusCircle, FileText, Flag, Tag, Download, Eye, EyeOff, AlertTriangle, RotateCcw } from 'lucide-react';
 import { Tag as AppTag, CustomList, Action } from '../types';
@@ -729,6 +729,49 @@ export const OffSiteSpreadsheet = ({
   const [selectedBoxIds, setSelectedBoxIds] = useState<Set<string>>(new Set());
   const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(new Set());
   const [bulkTargetDest, setBulkTargetDest] = useState('');
+
+  // Sticky Multi-Select Toolbar Height Tracking
+  const multiSelectRef = useRef<HTMLDivElement>(null);
+  const [multiSelectBarHeight, setMultiSelectBarHeight] = useState<number>(0);
+
+  const hasSelection = (selectedBoxIds.size > 0 || selectedItemIds.size > 0);
+
+  useLayoutEffect(() => {
+    if (!hasSelection) {
+      setMultiSelectBarHeight(0);
+      document.documentElement.style.setProperty('--multi-select-bar-height', '0px');
+      return;
+    }
+
+    const el = multiSelectRef.current;
+    if (!el) return;
+
+    const updateHeight = () => {
+      if (el) {
+        const height = el.offsetHeight;
+        setMultiSelectBarHeight(height);
+        document.documentElement.style.setProperty('--multi-select-bar-height', `${height}px`);
+      }
+    };
+
+    updateHeight();
+
+    const resizeObserver = new ResizeObserver(() => {
+      updateHeight();
+    });
+    resizeObserver.observe(el);
+
+    return () => {
+      resizeObserver.disconnect();
+      document.documentElement.style.setProperty('--multi-select-bar-height', '0px');
+    };
+  }, [hasSelection, selectedBoxIds.size, selectedItemIds.size]);
+
+  useEffect(() => {
+    return () => {
+      document.documentElement.style.setProperty('--multi-select-bar-height', '0px');
+    };
+  }, []);
   
   // Advanced Filter States
   const [simulateBoxCount, setSimulateBoxCount] = useState(() => localStorage.getItem("offsite-simulate-box-count") === "true");
@@ -907,6 +950,34 @@ export const OffSiteSpreadsheet = ({
     }
   };
 
+  const handleRemoveTagFromItem = async (itemId: string, tagIdToRemove: string) => {
+    const item = (rawEntries || []).find((e: any) => e.id === itemId);
+    if (!item) return;
+    const nextTagIds = (item.tagIds || []).filter((id: string) => id !== tagIdToRemove);
+    await dispatch({
+      type: 'UPDATE_OFFSITE_ENTRY',
+      payload: {
+        id: itemId,
+        updates: { tagIds: nextTagIds }
+      }
+    });
+  };
+
+  const handleRemoveTagFromBox = async (boxItems: any[], tagIdToRemove: string) => {
+    const itemsToUpdate = boxItems.filter(it => (it.tagIds || []).includes(tagIdToRemove));
+    if (itemsToUpdate.length === 0) return;
+    for (const item of itemsToUpdate) {
+      const nextTagIds = (item.tagIds || []).filter((id: string) => id !== tagIdToRemove);
+      await dispatch({
+        type: 'UPDATE_OFFSITE_ENTRY',
+        payload: {
+          id: item.id,
+          updates: { tagIds: nextTagIds }
+        }
+      });
+    }
+  };
+
   const OffSiteTagPopover: React.FC<{
     item: any;
     currentTagIds: string[];
@@ -922,73 +993,116 @@ export const OffSiteSpreadsheet = ({
       );
     };
 
-    const handleApply = () => {
-      const toAdd = selectedTagIds.filter(id => !currentTagIds.includes(id));
-      const toRemove = currentTagIds.filter(id => !selectedTagIds.includes(id));
-
-      toAdd.forEach(tagId => {
-        dispatch({ type: 'TOGGLE_OFFSITE_ENTRY_TAG', payload: { entryId: item.id, tagId } });
+    const handleClearAll = async () => {
+      setSelectedTagIds([]);
+      await dispatch({
+        type: 'UPDATE_OFFSITE_ENTRY',
+        payload: {
+          id: item.id,
+          updates: { tagIds: [] }
+        }
       });
-      toRemove.forEach(tagId => {
-        dispatch({ type: 'TOGGLE_OFFSITE_ENTRY_TAG', payload: { entryId: item.id, tagId } });
-      });
+      onClose();
+    };
 
+    const handleApply = async () => {
+      await dispatch({
+        type: 'UPDATE_OFFSITE_ENTRY',
+        payload: {
+          id: item.id,
+          updates: { tagIds: selectedTagIds }
+        }
+      });
       onClose();
     };
 
     const modal = (
       <>
         <div className="fixed inset-0 z-[120] bg-black/60 backdrop-blur-xs" onClick={(e) => { e.stopPropagation(); onClose(); }}></div>
-        <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[130] bg-cool-gray-850 border border-cool-gray-750 p-3 rounded-xl shadow-2xl flex flex-col gap-2 min-w-[220px] animate-scale-up text-left max-h-[80vh] overflow-y-auto">
-          <span className="text-[10px] font-bold text-cool-gray-400 uppercase tracking-wider border-b border-cool-gray-750 pb-1">
-            Select Tags
-          </span>
-          <div className="flex flex-col gap-1 my-1">
-            {tags.map((tag: any) => {
-              const isSelected = selectedTagIds.includes(tag.id);
-              return (
-                <button
-                  key={tag.id}
-                  type="button"
-                  onClick={() => handleToggle(tag.id)}
-                  style={{
-                    backgroundColor: isSelected ? `${tag.color}20` : 'transparent',
-                    borderColor: isSelected ? `${tag.color}40` : 'transparent'
-                  }}
-                  className="w-full text-left text-xs px-2 py-1.5 rounded border transition-colors flex items-center gap-2 hover:bg-cool-gray-800 cursor-pointer"
-                >
-                  <span 
-                    className="w-2.5 h-2.5 rounded-full shrink-0 border"
-                    style={{ 
-                      backgroundColor: tag.color || '#60a5fa',
-                      borderColor: isSelected ? '#ffffff' : 'transparent'
-                    }}
-                  />
-                  <span className="text-cool-gray-200 font-bold flex-1">
-                    {tag.name}
-                  </span>
-                  {isSelected && (
-                    <span className="text-cyan-400 text-[10px] font-black">✓</span>
-                  )}
-                </button>
-              );
-            })}
+        <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[130] bg-cool-gray-850 border border-cool-gray-750 p-3.5 rounded-xl shadow-2xl flex flex-col gap-2.5 min-w-[260px] max-w-[90vw] animate-scale-up text-left max-h-[85vh] overflow-y-auto">
+          <div className="flex items-center justify-between border-b border-cool-gray-750 pb-2">
+            <div>
+              <span className="text-[11px] font-bold text-cool-gray-300 uppercase tracking-wider block">
+                Manage Tags
+              </span>
+              <span className="text-xs text-cyan-400 font-semibold truncate block max-w-[180px]">
+                {item.cuts || item.originalCutName || 'Item'}
+              </span>
+            </div>
+            {selectedTagIds.length > 0 && (
+              <button
+                type="button"
+                onClick={handleClearAll}
+                className="text-[10px] text-red-400 hover:text-red-300 font-bold px-2 py-0.5 rounded bg-red-950/40 border border-red-800/40 hover:bg-red-900/60 transition cursor-pointer flex items-center gap-1 shrink-0"
+                title="Remove all tags from this item"
+              >
+                <Trash2 size={11} /> Clear All
+              </button>
+            )}
           </div>
-          <div className="flex justify-end gap-2 pt-2 border-t border-cool-gray-750">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-2.5 py-1 text-xs text-cool-gray-400 hover:text-white rounded bg-cool-gray-800 hover:bg-cool-gray-700 cursor-pointer font-semibold"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={handleApply}
-              className="px-3 py-1 text-xs text-white bg-cyan-600 hover:bg-cyan-500 rounded cursor-pointer font-extrabold shadow"
-            >
-              OK
-            </button>
+
+          <div className="flex flex-col gap-1.5 my-1">
+            {tags.length === 0 ? (
+              <p className="text-xs text-cool-gray-500 py-3 text-center">No tags configured in Catalog &gt; Tags.</p>
+            ) : (
+              tags.map((tag: any) => {
+                const isSelected = selectedTagIds.includes(tag.id);
+                return (
+                  <button
+                    key={tag.id}
+                    type="button"
+                    onClick={() => handleToggle(tag.id)}
+                    style={{
+                      backgroundColor: isSelected ? `${tag.color}25` : 'transparent',
+                      borderColor: isSelected ? tag.color || '#60a5fa' : '#374151'
+                    }}
+                    className={`w-full text-left text-xs px-2.5 py-1.5 rounded-lg border transition-colors flex items-center justify-between gap-2 cursor-pointer ${
+                      isSelected ? 'text-white' : 'text-cool-gray-300 hover:bg-cool-gray-800'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 truncate">
+                      <span 
+                        className="w-2.5 h-2.5 rounded-full shrink-0 border"
+                        style={{ 
+                          backgroundColor: tag.color || '#60a5fa',
+                          borderColor: isSelected ? '#ffffff' : 'transparent'
+                        }}
+                      />
+                      <span className="font-semibold truncate">
+                        {tag.name}
+                      </span>
+                    </div>
+                    {isSelected ? (
+                      <span className="text-cyan-400 text-xs font-black shrink-0">✓</span>
+                    ) : (
+                      <span className="text-cool-gray-600 text-[10px] shrink-0 font-mono">+</span>
+                    )}
+                  </button>
+                );
+              })
+            )}
+          </div>
+
+          <div className="flex justify-between items-center gap-2 pt-2 border-t border-cool-gray-750">
+            <span className="text-[10px] text-cool-gray-500 font-mono">
+              {selectedTagIds.length === 0 ? 'No tags selected' : `${selectedTagIds.length} tag${selectedTagIds.length > 1 ? 's' : ''} active`}
+            </span>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-2.5 py-1 text-xs text-cool-gray-400 hover:text-white rounded-lg bg-cool-gray-800 hover:bg-cool-gray-700 cursor-pointer font-semibold transition"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleApply}
+                className="px-3.5 py-1 text-xs text-white bg-cyan-600 hover:bg-cyan-500 rounded-lg cursor-pointer font-extrabold shadow transition"
+              >
+                Save
+              </button>
+            </div>
           </div>
         </div>
       </>
@@ -2833,7 +2947,7 @@ export const OffSiteSpreadsheet = ({
                 notes: '',
                 packDate: '',
                 lot: '',
-                              });
+              });
             }}
             className="flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2.5 rounded-xl border border-emerald-500 text-sm font-bold transition-all shadow-sm shrink-0 select-none cursor-pointer"
           >
@@ -2842,202 +2956,6 @@ export const OffSiteSpreadsheet = ({
           </button>
         </div>
       )}
-
-        {(selectedBoxIds.size > 0 || selectedItemIds.size > 0) && (
-          <div 
-            className="mb-5 flex flex-col gap-3.5 bg-cyan-950/95 border-2 border-cyan-500 rounded-xl p-4 shadow-2xl animate-fade-in w-full backdrop-blur-md"
-          >
-            {/* Top Row: Summaries of Checked Items */}
-            <div className="flex flex-col gap-2.5 border-b border-cyan-500/20 pb-3">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex flex-wrap items-center gap-2.5 text-xs">
-                  <span className="text-sm font-black text-cyan-300 uppercase tracking-wider flex items-center gap-1.5 select-none">
-                    <span>⚡</span> Selection Summary:
-                  </span>
-                  
-                  <span className="bg-cyan-900/60 text-cyan-200 border border-cyan-700/50 px-2 py-0.5 rounded-md font-extrabold shadow-sm">
-                    {selectedItemsSummary.boxCount > 0 && `📦 ${selectedItemsSummary.boxCount} Box${selectedItemsSummary.boxCount > 1 ? 'es' : ''}`}
-                    {selectedItemsSummary.boxCount > 0 && selectedItemsSummary.itemsCount > selectedItemsSummary.boxCount && ' & '}
-                    {selectedItemsSummary.itemsCount > 0 && `✂️ ${selectedItemsSummary.itemsCount} Item${selectedItemsSummary.itemsCount > 1 ? 's' : ''}`}
-                  </span>
-                  
-                  <span className="bg-emerald-950/60 text-emerald-450 border border-emerald-800/40 px-2.5 py-0.5 rounded-md font-black shadow-sm flex items-center gap-1 text-[13px]">
-                    <span className="text-[11px] opacity-75">⚖️ Total Weight:</span>
-                    <span>{selectedItemsSummary.totalWeight.toFixed(2)} lbs</span>
-                  </span>
-                  
-                  <span className="bg-blue-950/60 text-blue-300 border border-blue-900/40 px-2.5 py-0.5 rounded-md font-black shadow-sm flex items-center gap-1 text-[13px]">
-                    <span className="text-[11px] opacity-75">🧩 Total Count:</span>
-                    <span>{selectedItemsSummary.totalPieces} pcs</span>
-                  </span>
-                </div>
-
-                <button
-                  onClick={() => {
-                    setSelectedBoxIds(new Set());
-                    setSelectedItemIds(new Set());
-                  }}
-                  className="text-cool-gray-400 hover:text-white p-1.5 transition-colors md:ml-auto cursor-pointer bg-cool-gray-750/30 hover:bg-cool-gray-700 rounded-lg text-xs font-bold flex items-center gap-1"
-                  title="Clear Selection"
-                >
-                  <X size={14} />
-                  <span>Clear Selected</span>
-                </button>
-              </div>
-
-              {/* Checked Meat Cuts detailed pills */}
-              {selectedItemsSummary.cuts.length > 0 && (
-                <div className="flex flex-wrap gap-1.5 items-center bg-cool-gray-950/50 border border-cool-gray-800/40 p-2 rounded-lg max-h-[100px] overflow-y-auto">
-                  <span className="text-[9px] uppercase font-black text-cool-gray-400 tracking-wider">Checked cuts breakdown:</span>
-                  {selectedItemsSummary.cuts.map((cut, idx) => (
-                    <span 
-                      key={idx} 
-                      className="inline-flex items-center gap-1 bg-cool-gray-900 border border-cool-gray-750 rounded px-2 py-0.5 text-[11px] text-cool-gray-200"
-                    >
-                      <span className="font-bold text-cyan-400">{cut.name}</span>
-                      <span className="text-cool-gray-600 font-bold">•</span>
-                      <span className="text-blue-400 font-mono text-[10px]">{cut.pieces} pcs</span>
-                      <span className="text-cool-gray-600 font-bold">•</span>
-                      <span className="text-emerald-450 font-mono font-bold text-[10px]">{cut.weight.toFixed(1)} lbs</span>
-                      {cut.count > 1 && (
-                        <>
-                          <span className="text-cool-gray-600 font-bold">•</span>
-                          <span className="text-cool-gray-400 text-[10px]">({cut.count} pkgs)</span>
-                        </>
-                      )}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Bottom Row: Actions */}
-            <div className="flex flex-wrap items-center justify-between gap-3 w-full">
-              <span className="text-[10px] font-bold text-cyan-300 uppercase tracking-widest select-none">Bulk Actions Menu:</span>
-              
-              <div className="flex flex-wrap items-center gap-3">
-                {/* Active Plan Movement Controls */}
-                {activeOrder && activeOrder.status === 'planning' && (
-                  <div className="flex items-center gap-2 bg-blue-950/40 border border-blue-900/40 rounded-lg p-1.5 px-2">
-                    <span className="text-[10px] text-blue-300 font-bold uppercase tracking-wider">Plan:</span>
-                    {activeOrders.length > 1 && (
-                      <select
-                        className="bg-cool-gray-900 border border-indigo-500/50 text-indigo-200 rounded-md px-2 py-1 text-xs font-bold focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer max-w-[160px] truncate"
-                        value={activeOrder.id}
-                        onChange={(e) => {
-                          localStorage.setItem('selected-movement-order-id', e.target.value);
-                          if (onSelectActiveOrder) onSelectActiveOrder(e.target.value);
-                        }}
-                        title="Switch active movement order"
-                      >
-                        {activeOrders.map((o: any) => (
-                          <option key={o.id} value={o.id}>
-                            🚚 {o.name}
-                          </option>
-                        ))}
-                      </select>
-                    )}
-                    <select
-                      className="bg-cool-gray-900 border border-cool-gray-750 text-white rounded-md px-2.5 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
-                      value={bulkTargetDest}
-                      onChange={e => setBulkTargetDest(e.target.value)}
-                    >
-                      <option value="">Move selected to...</option>
-                      {(activeOrder.targetDestinations || []).map((dest: any, idx: number) => (
-                        <option key={`bulk-${dest.id}-${idx}`} value={dest.id}>
-                          {dest.palletName ? `${dest.palletName} - ${dest.locationName}` : dest.locationName}
-                        </option>
-                      ))}
-                    </select>
-                    <button
-                      onClick={() => handleBulkMove(bulkTargetDest)}
-                      disabled={!bulkTargetDest}
-                      className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold text-xs px-2.5 py-1 rounded-md transition-colors whitespace-nowrap shadow-sm cursor-pointer"
-                    >
-                      Apply Move
-                    </button>
-                  </div>
-                )}
-
-                {/* Direct Edit / Delete Controls */}
-                {isDirectEdit && (
-                  <div className="flex items-center gap-2 bg-amber-950/40 border border-amber-900/40 rounded-lg p-1.5 px-2">
-                    <span className="text-[10px] text-amber-300 font-bold uppercase tracking-wider">Direct Edit:</span>
-                    <button
-                      onClick={() => {
-                        setBulkEditForm({
-                          cuts: '',
-                          box: '',
-                          currentLocation: '',
-                          location: '',
-                          notes: '',
-                          packDate: '',
-                          lot: '',
-                          netWeight: '',
-                          pieces: '',
-                          tagIds: [],
-                        });
-                        setBulkEditFieldsToUpdate({
-                          cuts: false,
-                          box: false,
-                          currentLocation: false,
-                          location: false,
-                          notes: false,
-                          packDate: false,
-                          lot: false,
-                          netWeight: false,
-                          pieces: false,
-                          tags: false,
-                        });
-                        setIsBulkEditModalOpen(true);
-                      }}
-                      className="flex items-center gap-1 bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs px-2.5 py-1 rounded-md transition-colors whitespace-nowrap shadow-sm cursor-pointer"
-                    >
-                      <Edit3 size={13} />
-                      Bulk Edit
-                    </button>
-                    <button
-                      onClick={() => setIsBulkWrongLabelModalOpen(true)}
-                      className="flex items-center gap-1 bg-purple-650 hover:bg-purple-600 text-white font-bold text-xs px-2.5 py-1 rounded-md transition-colors whitespace-nowrap shadow-sm cursor-pointer"
-                    >
-                      <AlertTriangle size={13} />
-                      Bulk Wrong Label
-                    </button>
-                    {(() => {
-                      let allItemIds: string[];
-                      if (viewUngrouped) {
-                        allItemIds = Array.from(selectedBoxIds);
-                      } else {
-                        const selectedBoxesList = condensed.filter(g => selectedBoxIds.has(g.boxId));
-                        const allBoxItemIds = selectedBoxesList.flatMap(g => g.items.map(item => item.id));
-                        allItemIds = Array.from(new Set([...allBoxItemIds, ...Array.from(selectedItemIds)]));
-                      }
-                      const hasWrongLabelSelected = (entries || []).some(e => allItemIds.includes(e.id) && (e.isWrongLabel || e.wrongLabel || e.wrongLabelOriginal));
-                      if (!hasWrongLabelSelected) return null;
-                      return (
-                        <button
-                          onClick={handleExecuteBulkRevertWrongLabel}
-                          className="flex items-center gap-1 bg-amber-700 hover:bg-amber-650 text-white font-bold text-xs px-2.5 py-1 rounded-md transition-colors whitespace-nowrap shadow-sm cursor-pointer"
-                          title="Revert wrong label corrections for selected items back to original physical package labels"
-                        >
-                          <RotateCcw size={13} />
-                          Bulk Revert Labels
-                        </button>
-                      );
-                    })()}
-                    <button
-                      onClick={() => setIsBulkDeleteConfirmOpen(true)}
-                      className="flex items-center gap-1 bg-red-650 hover:bg-red-600 text-white font-bold text-xs px-2.5 py-1 rounded-md transition-colors whitespace-nowrap shadow-sm cursor-pointer"
-                    >
-                      <Trash2 size={13} />
-                      Bulk Delete
-                    </button>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
 
       {/* Active Filter Indicators & Clear Actions */}
       {(filterCuts.size > 0 || filterPallets.size > 0 || filterLocations.size > 0 || filterMoveTo.size > 0 || filterBoxes.size > 0 || filterSerials.size > 0 || filterLots.size > 0 || filterPackDates.size > 0 || breakdownSearch || filterOnlySplitBoxes || filterOnlyConflicts || (breakdownCategory && breakdownCategory !== 'All')) && (
@@ -3136,6 +3054,205 @@ export const OffSiteSpreadsheet = ({
         </div>
       )}
 
+      {/* Sticky Multi-Select Toolbar / Window right above column headers */}
+      {(selectedBoxIds.size > 0 || selectedItemIds.size > 0) && (
+        <div 
+          ref={multiSelectRef}
+          className="sticky z-30 mb-2 flex flex-col gap-3.5 bg-cyan-950/98 border-2 border-cyan-500 rounded-xl p-4 shadow-2xl animate-fade-in w-full backdrop-blur-md"
+          style={{ top: 'var(--header-height, 68px)' }}
+        >
+          {/* Top Row: Summaries of Checked Items */}
+          <div className="flex flex-col gap-2.5 border-b border-cyan-500/20 pb-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-2.5 text-xs">
+                <span className="text-sm font-black text-cyan-300 uppercase tracking-wider flex items-center gap-1.5 select-none">
+                  <span>⚡</span> Selection Summary:
+                </span>
+                
+                <span className="bg-cyan-900/60 text-cyan-200 border border-cyan-700/50 px-2 py-0.5 rounded-md font-extrabold shadow-sm">
+                  {selectedItemsSummary.boxCount > 0 && `📦 ${selectedItemsSummary.boxCount} Box${selectedItemsSummary.boxCount > 1 ? 'es' : ''}`}
+                  {selectedItemsSummary.boxCount > 0 && selectedItemsSummary.itemsCount > selectedItemsSummary.boxCount && ' & '}
+                  {selectedItemsSummary.itemsCount > 0 && `✂️ ${selectedItemsSummary.itemsCount} Item${selectedItemsSummary.itemsCount > 1 ? 's' : ''}`}
+                </span>
+                
+                <span className="bg-emerald-950/60 text-emerald-450 border border-emerald-800/40 px-2.5 py-0.5 rounded-md font-black shadow-sm flex items-center gap-1 text-[13px]">
+                  <span className="text-[11px] opacity-75">⚖️ Total Weight:</span>
+                  <span>{selectedItemsSummary.totalWeight.toFixed(2)} lbs</span>
+                </span>
+                
+                <span className="bg-blue-950/60 text-blue-300 border border-blue-900/40 px-2.5 py-0.5 rounded-md font-black shadow-sm flex items-center gap-1 text-[13px]">
+                  <span className="text-[11px] opacity-75">🧩 Total Count:</span>
+                  <span>{selectedItemsSummary.totalPieces} pcs</span>
+                </span>
+              </div>
+
+              <button
+                onClick={() => {
+                  setSelectedBoxIds(new Set());
+                  setSelectedItemIds(new Set());
+                }}
+                className="text-cool-gray-400 hover:text-white p-1.5 transition-colors md:ml-auto cursor-pointer bg-cool-gray-750/30 hover:bg-cool-gray-700 rounded-lg text-xs font-bold flex items-center gap-1"
+                title="Clear Selection"
+              >
+                <X size={14} />
+                <span>Clear Selected</span>
+              </button>
+            </div>
+
+            {/* Checked Meat Cuts detailed pills */}
+            {selectedItemsSummary.cuts.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 items-center bg-cool-gray-950/50 border border-cool-gray-800/40 p-2 rounded-lg max-h-[100px] overflow-y-auto">
+                <span className="text-[9px] uppercase font-black text-cool-gray-400 tracking-wider">Checked cuts breakdown:</span>
+                {selectedItemsSummary.cuts.map((cut, idx) => (
+                  <span 
+                    key={idx} 
+                    className="inline-flex items-center gap-1 bg-cool-gray-900 border border-cool-gray-750 rounded px-2 py-0.5 text-[11px] text-cool-gray-200"
+                  >
+                    <span className="font-bold text-cyan-400">{cut.name}</span>
+                    <span className="text-cool-gray-600 font-bold">•</span>
+                    <span className="text-blue-400 font-mono text-[10px]">{cut.pieces} pcs</span>
+                    <span className="text-cool-gray-600 font-bold">•</span>
+                    <span className="text-emerald-450 font-mono font-bold text-[10px]">{cut.weight.toFixed(1)} lbs</span>
+                    {cut.count > 1 && (
+                      <>
+                        <span className="text-cool-gray-600 font-bold">•</span>
+                        <span className="text-cool-gray-400 text-[10px]">({cut.count} pkgs)</span>
+                      </>
+                    )}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Bottom Row: Actions */}
+          <div className="flex flex-wrap items-center justify-between gap-3 w-full">
+            <span className="text-[10px] font-bold text-cyan-300 uppercase tracking-widest select-none">Bulk Actions Menu:</span>
+            
+            <div className="flex flex-wrap items-center gap-3">
+              {/* Active Plan Movement Controls */}
+              {activeOrder && activeOrder.status === 'planning' && (
+                <div className="flex items-center gap-2 bg-blue-950/40 border border-blue-900/40 rounded-lg p-1.5 px-2">
+                  <span className="text-[10px] text-blue-300 font-bold uppercase tracking-wider">Plan:</span>
+                  {activeOrders.length > 1 && (
+                    <select
+                      className="bg-cool-gray-900 border border-indigo-500/50 text-indigo-200 rounded-md px-2 py-1 text-xs font-bold focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer max-w-[160px] truncate"
+                      value={activeOrder.id}
+                      onChange={(e) => {
+                        localStorage.setItem('selected-movement-order-id', e.target.value);
+                        if (onSelectActiveOrder) onSelectActiveOrder(e.target.value);
+                      }}
+                      title="Switch active movement order"
+                    >
+                      {activeOrders.map((o: any) => (
+                        <option key={o.id} value={o.id}>
+                          🚚 {o.name}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  <select
+                    className="bg-cool-gray-900 border border-cool-gray-750 text-white rounded-md px-2.5 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
+                    value={bulkTargetDest}
+                    onChange={e => setBulkTargetDest(e.target.value)}
+                  >
+                    <option value="">Move selected to...</option>
+                    {(activeOrder.targetDestinations || []).map((dest: any, idx: number) => (
+                      <option key={`bulk-${dest.id}-${idx}`} value={dest.id}>
+                        {dest.palletName ? `${dest.palletName} - ${dest.locationName}` : dest.locationName}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={() => handleBulkMove(bulkTargetDest)}
+                    disabled={!bulkTargetDest}
+                    className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold text-xs px-2.5 py-1 rounded-md transition-colors whitespace-nowrap shadow-sm cursor-pointer"
+                  >
+                    Apply Move
+                  </button>
+                </div>
+              )}
+
+              {/* Direct Edit / Delete Controls */}
+              {isDirectEdit && (
+                <div className="flex items-center gap-2 bg-amber-950/40 border border-amber-900/40 rounded-lg p-1.5 px-2">
+                  <span className="text-[10px] text-amber-300 font-bold uppercase tracking-wider">Direct Edit:</span>
+                  <button
+                    onClick={() => {
+                      setBulkEditForm({
+                        cuts: '',
+                        box: '',
+                        currentLocation: '',
+                        location: '',
+                        notes: '',
+                        packDate: '',
+                        lot: '',
+                        netWeight: '',
+                        pieces: '',
+                        tagIds: [],
+                      });
+                      setBulkEditFieldsToUpdate({
+                        cuts: false,
+                        box: false,
+                        currentLocation: false,
+                        location: false,
+                        notes: false,
+                        packDate: false,
+                        lot: false,
+                        netWeight: false,
+                        pieces: false,
+                        tags: false,
+                      });
+                      setIsBulkEditModalOpen(true);
+                    }}
+                    className="flex items-center gap-1 bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs px-2.5 py-1 rounded-md transition-colors whitespace-nowrap shadow-sm cursor-pointer"
+                  >
+                    <Edit3 size={13} />
+                    Bulk Edit
+                  </button>
+                  <button
+                    onClick={() => setIsBulkWrongLabelModalOpen(true)}
+                    className="flex items-center gap-1 bg-purple-650 hover:bg-purple-600 text-white font-bold text-xs px-2.5 py-1 rounded-md transition-colors whitespace-nowrap shadow-sm cursor-pointer"
+                  >
+                    <AlertTriangle size={13} />
+                    Bulk Wrong Label
+                  </button>
+                  {(() => {
+                    let allItemIds: string[];
+                    if (viewUngrouped) {
+                      allItemIds = Array.from(selectedBoxIds);
+                    } else {
+                      const selectedBoxesList = condensed.filter(g => selectedBoxIds.has(g.boxId));
+                      const allBoxItemIds = selectedBoxesList.flatMap(g => g.items.map(item => item.id));
+                      allItemIds = Array.from(new Set([...allBoxItemIds, ...Array.from(selectedItemIds)]));
+                    }
+                    const hasWrongLabelSelected = (entries || []).some(e => allItemIds.includes(e.id) && (e.isWrongLabel || e.wrongLabel || e.wrongLabelOriginal));
+                    if (!hasWrongLabelSelected) return null;
+                    return (
+                      <button
+                        onClick={handleExecuteBulkRevertWrongLabel}
+                        className="flex items-center gap-1 bg-amber-700 hover:bg-amber-650 text-white font-bold text-xs px-2.5 py-1 rounded-md transition-colors whitespace-nowrap shadow-sm cursor-pointer"
+                        title="Revert wrong label corrections for selected items back to original physical package labels"
+                      >
+                        <RotateCcw size={13} />
+                        Bulk Revert Labels
+                      </button>
+                    );
+                  })()}
+                  <button
+                    onClick={() => setIsBulkDeleteConfirmOpen(true)}
+                    className="flex items-center gap-1 bg-red-650 hover:bg-red-600 text-white font-bold text-xs px-2.5 py-1 rounded-md transition-colors whitespace-nowrap shadow-sm cursor-pointer"
+                  >
+                    <Trash2 size={13} />
+                    Bulk Delete
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="bg-cool-gray-850 rounded-2xl border border-cool-gray-750 shadow-xl">
         {(() => {
           const showMovedTo = !!(visibleColumns?.has('movedTo') && activeOrder);
@@ -3154,6 +3271,7 @@ export const OffSiteSpreadsheet = ({
             displayColsCount = 8;
           }
           const totalCols = (isDirectEdit || activeOrder ? 1 : 0) + 1 + displayColsCount + (showFlag ? 1 : 0);
+          const headerStickyTop = 'calc(var(--header-height, 68px) + var(--multi-select-bar-height, 0px))';
           return (
             <div 
               id="offsite-spreadsheet-table-container"
@@ -3165,7 +3283,7 @@ export const OffSiteSpreadsheet = ({
                     {(isDirectEdit || activeOrder) && (
                       <th 
                         className="sticky bg-cool-gray-800 z-20 py-1.5 px-2 w-10 text-center border-b border-cool-gray-750 shadow-xs select-none first:rounded-tl-2xl"
-                        style={{ top: 'var(--header-height, 68px)' }}
+                        style={{ top: headerStickyTop }}
                       >
                         {(isDirectEdit || (activeOrder && activeOrder.status === 'planning')) && (
                           <input 
@@ -3188,12 +3306,12 @@ export const OffSiteSpreadsheet = ({
                     )}
                     <th 
                       className="sticky bg-cool-gray-800 z-20 py-1.5 px-2 w-8 border-b border-cool-gray-750 shadow-xs first:rounded-tl-2xl"
-                      style={{ top: 'var(--header-height, 68px)' }}
+                      style={{ top: headerStickyTop }}
                     ></th>
                     {visibleColumns?.has('box') && (
                       <th 
                         className="sticky bg-cool-gray-800 z-20 py-1.5 px-2.5 select-none border-b border-cool-gray-750 shadow-xs first:rounded-tl-2xl last:rounded-tr-2xl" 
-                        style={{ top: 'var(--header-height, 68px)', width: columnWidths.box, minWidth: columnWidths.box }}
+                        style={{ top: headerStickyTop, width: columnWidths.box, minWidth: columnWidths.box }}
                       >
                         <div className="flex items-center gap-2 overflow-hidden">
                           <span className="cursor-pointer hover:text-white truncate" onClick={() => toggleSort('box')}>
@@ -3217,7 +3335,7 @@ export const OffSiteSpreadsheet = ({
                     {visibleColumns?.has('cuts') && (
                       <th 
                         className="sticky bg-cool-gray-800 z-20 py-1.5 px-2.5 select-none border-b border-cool-gray-750 shadow-xs first:rounded-tl-2xl last:rounded-tr-2xl" 
-                        style={{ top: 'var(--header-height, 68px)', width: columnWidths.cuts, minWidth: columnWidths.cuts }}
+                        style={{ top: headerStickyTop, width: columnWidths.cuts, minWidth: columnWidths.cuts }}
                       >
                         <div className="flex items-center gap-2 overflow-hidden">
                           <span className="truncate">Cuts</span>
@@ -3239,7 +3357,7 @@ export const OffSiteSpreadsheet = ({
                     {visibleColumns?.has('category') && (
                       <th 
                         className="sticky bg-cool-gray-800 z-20 py-1.5 px-2.5 select-none border-b border-cool-gray-750 shadow-xs first:rounded-tl-2xl last:rounded-tr-2xl" 
-                        style={{ top: 'var(--header-height, 68px)', width: columnWidths.category, minWidth: columnWidths.category }}
+                        style={{ top: headerStickyTop, width: columnWidths.category, minWidth: columnWidths.category }}
                       >
                         <div className="flex items-center gap-2 overflow-hidden">
                           <span className="cursor-pointer hover:text-white truncate" onClick={() => toggleSort('primaryCategory')}>
@@ -3278,7 +3396,7 @@ export const OffSiteSpreadsheet = ({
                     {visibleColumns?.has('weight') && (
                       <th 
                         className="sticky bg-cool-gray-800 z-20 py-1.5 px-2.5 select-none cursor-pointer hover:text-white border-b border-cool-gray-750 shadow-xs first:rounded-tl-2xl last:rounded-tr-2xl" 
-                        style={{ top: 'var(--header-height, 68px)', width: columnWidths.weight, minWidth: columnWidths.weight }} 
+                        style={{ top: headerStickyTop, width: columnWidths.weight, minWidth: columnWidths.weight }} 
                         onClick={() => toggleSort('weight')}
                       >
                         <span className="truncate">Weight {sortField === 'weight' && (sortAsc ? '↑' : '↓')}</span>
@@ -3291,7 +3409,7 @@ export const OffSiteSpreadsheet = ({
                     {visibleColumns?.has('pieces') && (
                       <th 
                         className="sticky bg-cool-gray-800 z-20 py-1.5 px-2.5 select-none cursor-pointer hover:text-white border-b border-cool-gray-750 shadow-xs first:rounded-tl-2xl last:rounded-tr-2xl" 
-                        style={{ top: 'var(--header-height, 68px)', width: columnWidths.pieces, minWidth: columnWidths.pieces }} 
+                        style={{ top: headerStickyTop, width: columnWidths.pieces, minWidth: columnWidths.pieces }} 
                         onClick={() => toggleSort('pieces')}
                       >
                         <span className="truncate">Pieces {sortField === 'pieces' && (sortAsc ? '↑' : '↓')}</span>
@@ -3304,7 +3422,7 @@ export const OffSiteSpreadsheet = ({
                     {visibleColumns?.has('location') && (
                       <th 
                         className="sticky bg-cool-gray-800 z-20 py-1.5 px-2.5 select-none border-b border-cool-gray-750 shadow-xs first:rounded-tl-2xl last:rounded-tr-2xl" 
-                        style={{ top: 'var(--header-height, 68px)', width: columnWidths.location, minWidth: columnWidths.location }}
+                        style={{ top: headerStickyTop, width: columnWidths.location, minWidth: columnWidths.location }}
                       >
                         <div className="flex items-center gap-2 overflow-hidden">
                           <span className="truncate">location</span>
@@ -3326,7 +3444,7 @@ export const OffSiteSpreadsheet = ({
                     {visibleColumns?.has('pallet') && (
                       <th 
                         className="sticky bg-cool-gray-800 z-20 py-1.5 px-2.5 select-none border-b border-cool-gray-750 shadow-xs first:rounded-tl-2xl last:rounded-tr-2xl" 
-                        style={{ top: 'var(--header-height, 68px)', width: columnWidths.pallet, minWidth: columnWidths.pallet }}
+                        style={{ top: headerStickyTop, width: columnWidths.pallet, minWidth: columnWidths.pallet }}
                       >
                         <div className="flex items-center gap-2 overflow-hidden">
                           <span className="truncate">Pallet</span>
@@ -3348,7 +3466,7 @@ export const OffSiteSpreadsheet = ({
                     {showMovedTo && (
                       <th 
                         className="sticky bg-cool-gray-800 z-20 py-1.5 px-2.5 select-none border-b border-cool-gray-750 shadow-xs first:rounded-tl-2xl last:rounded-tr-2xl" 
-                        style={{ top: 'var(--header-height, 68px)', width: columnWidths.movedTo, minWidth: columnWidths.movedTo }}
+                        style={{ top: headerStickyTop, width: columnWidths.movedTo, minWidth: columnWidths.movedTo }}
                       >
                         <div className="flex items-center gap-2 overflow-hidden">
                           <span className="truncate">Moved To</span>
@@ -3370,7 +3488,7 @@ export const OffSiteSpreadsheet = ({
                     {activeOrder && visibleColumns?.has('flag') && (
                       <th 
                         className="sticky bg-cool-gray-800 z-20 py-1.5 px-2.5 text-center select-none border-b border-cool-gray-750 shadow-xs first:rounded-tl-2xl last:rounded-tr-2xl" 
-                        style={{ top: 'var(--header-height, 68px)', width: columnWidths.flag, minWidth: columnWidths.flag }}
+                        style={{ top: headerStickyTop, width: columnWidths.flag, minWidth: columnWidths.flag }}
                       >
                         <span className="truncate">Flag</span>
                         <div 
@@ -3382,7 +3500,7 @@ export const OffSiteSpreadsheet = ({
                     {visibleColumns?.has('serial') && (
                       <th 
                         className="sticky bg-cool-gray-800 z-20 py-1.5 px-2.5 select-none border-b border-cool-gray-750 shadow-xs first:rounded-tl-2xl last:rounded-tr-2xl" 
-                        style={{ top: 'var(--header-height, 68px)', width: columnWidths.serial, minWidth: columnWidths.serial }}
+                        style={{ top: headerStickyTop, width: columnWidths.serial, minWidth: columnWidths.serial }}
                       >
                         <div className="flex items-center gap-2 overflow-hidden">
                           <span className="cursor-pointer hover:text-white truncate" onClick={() => toggleSort('serial')}>
@@ -3406,7 +3524,7 @@ export const OffSiteSpreadsheet = ({
                     {visibleColumns?.has('lotNumber') && (
                       <th 
                         className="sticky bg-cool-gray-800 z-20 py-1.5 px-2.5 select-none border-b border-cool-gray-750 shadow-xs first:rounded-tl-2xl last:rounded-tr-2xl" 
-                        style={{ top: 'var(--header-height, 68px)', width: columnWidths.lotNumber, minWidth: columnWidths.lotNumber }}
+                        style={{ top: headerStickyTop, width: columnWidths.lotNumber, minWidth: columnWidths.lotNumber }}
                       >
                         <div className="flex items-center gap-2 overflow-hidden">
                           <span className="cursor-pointer hover:text-white truncate" onClick={() => toggleSort('lot')}>
@@ -3430,7 +3548,7 @@ export const OffSiteSpreadsheet = ({
                     {visibleColumns?.has('packDate') && (
                       <th 
                         className="sticky bg-cool-gray-800 z-20 py-1.5 px-2.5 select-none border-b border-cool-gray-750 shadow-xs first:rounded-tl-2xl last:rounded-tr-2xl" 
-                        style={{ top: 'var(--header-height, 68px)', width: columnWidths.packDate, minWidth: columnWidths.packDate }}
+                        style={{ top: headerStickyTop, width: columnWidths.packDate, minWidth: columnWidths.packDate }}
                       >
                         <div className="flex items-center gap-2 overflow-hidden">
                           <span className="cursor-pointer hover:text-white truncate" onClick={() => toggleSort('packDate')}>
@@ -3647,10 +3765,21 @@ export const OffSiteSpreadsheet = ({
                                         borderColor: `${tag.color}35`, 
                                         color: tag.color || '#60a5fa' 
                                       }}
-                                      className="inline-flex items-center gap-0.5 text-[8px] border px-1 py-0.2 rounded font-black tracking-wide uppercase select-none animate-fade-in"
-                                      title={`Tag on item: ${tag.description || tag.name}`}
+                                      className="inline-flex items-center gap-1 text-[8px] border px-1.5 py-0.5 rounded font-black tracking-wide uppercase select-none animate-fade-in group/boxtag hover:border-red-500/40 transition-colors"
+                                      title={`Tag on item: ${tag.description || tag.name} (Click ✕ to remove from box)`}
                                     >
-                                      {tag.id === 'use-first' ? '🍳 ' : tag.id === 'not-for-sale' ? '🛑 ' : '🏷️ '}{tag.name}
+                                      <span>{tag.id === 'use-first' ? '🍳 ' : tag.id === 'not-for-sale' ? '🛑 ' : '🏷️ '}{tag.name}</span>
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleRemoveTagFromBox(group.items, tag.id);
+                                        }}
+                                        className="hover:text-red-400 text-cool-gray-400 p-0.5 rounded transition-colors cursor-pointer"
+                                        title={`Remove tag "${tag.name}" from all items in this box`}
+                                      >
+                                        <X size={10} />
+                                      </button>
                                     </span>
                                   );
                                 })}
@@ -3730,10 +3859,21 @@ export const OffSiteSpreadsheet = ({
                                               borderColor: `${tag.color}35`, 
                                               color: tag.color || '#60a5fa' 
                                             }}
-                                            className="inline-flex items-center gap-0.5 text-[8px] border px-1 py-0.2 rounded font-black tracking-wide uppercase select-none"
-                                            title={`Tag: ${tag.description || tag.name}`}
+                                            className="inline-flex items-center gap-1 text-[8px] border px-1.5 py-0.2 rounded font-black tracking-wide uppercase select-none group/cutTag hover:border-red-500/40 transition-colors"
+                                            title={`Tag: ${tag.description || tag.name} (Click ✕ to remove tag from this cut)`}
                                           >
-                                            {tag.id === 'use-first' ? '🍳 ' : tag.id === 'not-for-sale' ? '🛑 ' : '🏷️ '}{tag.name}
+                                            <span>{tag.id === 'use-first' ? '🍳 ' : tag.id === 'not-for-sale' ? '🛑 ' : '🏷️ '}{tag.name}</span>
+                                            <button
+                                              type="button"
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                handleRemoveTagFromBox(stats.items, tag.id);
+                                              }}
+                                              className="hover:text-red-400 text-cool-gray-400 p-0.5 rounded transition-colors cursor-pointer"
+                                              title={`Remove tag "${tag.name}" from ${cutName}`}
+                                            >
+                                              <X size={9} />
+                                            </button>
                                           </span>
                                         );
                                       })}
@@ -4204,7 +4344,18 @@ export const OffSiteSpreadsheet = ({
                                         </div>
 
                                         <div className="sm:col-span-2">
-                                          <label className="block text-[10px] text-cool-gray-400 font-bold mb-1 uppercase">Item Tags</label>
+                                          <div className="flex items-center justify-between mb-1">
+                                            <label className="block text-[10px] text-cool-gray-400 font-bold uppercase">Item Tags</label>
+                                            {(editForm.tagIds || []).length > 0 && (
+                                              <button
+                                                type="button"
+                                                onClick={() => setEditForm({ ...editForm, tagIds: [] })}
+                                                className="text-[10px] text-red-400 hover:text-red-300 font-bold transition cursor-pointer"
+                                              >
+                                                Clear All Tags
+                                              </button>
+                                            )}
+                                          </div>
                                           <div className="flex flex-wrap gap-1.5 pt-1">
                                             {(state.tags || []).map((tag: any) => {
                                               const isSelected = (editForm.tagIds || []).includes(tag.id);
@@ -4318,7 +4469,8 @@ export const OffSiteSpreadsheet = ({
                                                   notes: item.notes || '',
                                                   packDate: item.packDate || '',
                                                   lot: item.lot || '',
-                                                                                                  });
+                                                  tagIds: item.tagIds ? [...item.tagIds] : [],
+                                                });
                                               }}
                                               className="p-1 text-amber-500 hover:text-amber-400 hover:bg-amber-500/10 rounded transition-colors shrink-0"
                                               title="Edit Item"
@@ -4362,10 +4514,21 @@ export const OffSiteSpreadsheet = ({
                                                 borderColor: `${tag.color}35`, 
                                                 color: tag.color || '#60a5fa' 
                                               }}
-                                              className="inline-flex items-center gap-0.5 text-[8px] border px-1 py-0.2 rounded font-semibold uppercase select-none"
-                                              title={tag.description || tag.name}
+                                              className="inline-flex items-center gap-1 text-[8px] border px-1.5 py-0.5 rounded font-semibold uppercase select-none group/tag hover:border-red-500/40 transition-colors"
+                                              title={`${tag.description || tag.name} (Click ✕ to remove tag)`}
                                             >
-                                              {tag.id === 'use-first' ? '🍳 ' : tag.id === 'not-for-sale' ? '🛑 ' : '🏷️ '}{tag.name}
+                                              <span>{tag.id === 'use-first' ? '🍳 ' : tag.id === 'not-for-sale' ? '🛑 ' : '🏷️ '}{tag.name}</span>
+                                              <button
+                                                type="button"
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  handleRemoveTagFromItem(item.id, tag.id);
+                                                }}
+                                                className="hover:text-red-400 text-cool-gray-400 p-0.5 rounded transition-colors cursor-pointer"
+                                                title={`Remove tag "${tag.name}"`}
+                                              >
+                                                <X size={10} />
+                                              </button>
                                             </span>
                                           );
                                         })}
@@ -4414,10 +4577,21 @@ export const OffSiteSpreadsheet = ({
                                                 borderColor: `${tag.color}35`, 
                                                 color: tag.color || '#60a5fa' 
                                               }}
-                                              className="inline-flex items-center gap-0.5 text-[8px] border px-1 py-0.2 rounded font-black tracking-wide uppercase select-none"
-                                              title={`Tag: ${tag.description || tag.name}`}
+                                              className="inline-flex items-center gap-1 text-[8px] border px-1.5 py-0.5 rounded font-black tracking-wide uppercase select-none group/tag hover:border-red-500/40 transition-colors"
+                                              title={`Tag: ${tag.description || tag.name} (Click ✕ to remove tag)`}
                                             >
-                                              {tag.id === 'use-first' ? '🍳 ' : tag.id === 'not-for-sale' ? '🛑 ' : '🏷️ '}{tag.name}
+                                              <span>{tag.id === 'use-first' ? '🍳 ' : tag.id === 'not-for-sale' ? '🛑 ' : '🏷️ '}{tag.name}</span>
+                                              <button
+                                                type="button"
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  handleRemoveTagFromItem(item.id, tag.id);
+                                                }}
+                                                className="hover:text-red-400 text-cool-gray-400 p-0.5 rounded transition-colors cursor-pointer"
+                                                title={`Remove tag "${tag.name}"`}
+                                              >
+                                                <X size={10} />
+                                              </button>
                                             </span>
                                           );
                                         })}
@@ -5257,9 +5431,20 @@ export const OffSiteSpreadsheet = ({
                     className="mt-1 rounded bg-cool-gray-950 border-cool-gray-700 text-amber-500 focus:ring-amber-500/50 cursor-pointer w-4 h-4 shrink-0"
                   />
                   <div className="flex-1">
-                    <label htmlFor="bulk-update-tags" className="block text-xs font-bold text-cool-gray-300 uppercase tracking-wider mb-1 cursor-pointer select-none">
-                      Item Tags
-                    </label>
+                    <div className="flex items-center justify-between mb-1">
+                      <label htmlFor="bulk-update-tags" className="block text-xs font-bold text-cool-gray-300 uppercase tracking-wider cursor-pointer select-none">
+                        Item Tags
+                      </label>
+                      {bulkEditFieldsToUpdate.tags && (bulkEditForm.tagIds || []).length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setBulkEditForm(prev => ({ ...prev, tagIds: [] }))}
+                          className="text-[10px] text-red-400 hover:text-red-300 font-bold transition cursor-pointer"
+                        >
+                          Clear All Tags
+                        </button>
+                      )}
+                    </div>
                     <div className={`flex flex-wrap gap-1.5 pt-1 ${!bulkEditFieldsToUpdate.tags ? 'opacity-40 pointer-events-none' : ''}`}>
                       {(state.tags || []).map((tag: any) => {
                         const isSelected = (bulkEditForm.tagIds || []).includes(tag.id);

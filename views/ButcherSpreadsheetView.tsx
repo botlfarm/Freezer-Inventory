@@ -107,26 +107,47 @@ const ButcherTagPopover: React.FC<{
     );
   };
 
-  const handleApply = () => {
-    const toAdd = selectedTagIds.filter(id => !tagIds.includes(id));
-    const toRemove = tagIds.filter(id => !selectedTagIds.includes(id));
-
-    toAdd.forEach(tagId => {
-      dispatch({ type: 'TOGGLE_OFFSITE_ENTRY_TAG', payload: { entryId: item.id, tagId } });
+  const handleClearAll = async () => {
+    setSelectedTagIds([]);
+    await dispatch({
+      type: 'UPDATE_OFFSITE_ENTRY',
+      payload: {
+        id: item.id,
+        updates: { tagIds: [] }
+      }
     });
-    toRemove.forEach(tagId => {
-      dispatch({ type: 'TOGGLE_OFFSITE_ENTRY_TAG', payload: { entryId: item.id, tagId } });
-    });
+    onClose();
+  };
 
+  const handleApply = async () => {
+    await dispatch({
+      type: 'UPDATE_OFFSITE_ENTRY',
+      payload: {
+        id: item.id,
+        updates: { tagIds: selectedTagIds }
+      }
+    });
     onClose();
   };
 
   return (
     <>
       <div className="fixed inset-0 z-30" onClick={() => onClose()} />
-      <div className="absolute right-0 top-full mt-1 bg-cool-gray-800 border border-cool-gray-650 rounded-xl p-2.5 shadow-xl z-40 w-52 text-left space-y-1">
-        <div className="text-[10px] font-bold text-cool-gray-400 uppercase tracking-wider pb-1 border-b border-cool-gray-700">
-          Item Tags
+      <div className="absolute right-0 top-full mt-1 bg-cool-gray-800 border border-cool-gray-650 rounded-xl p-2.5 shadow-xl z-40 w-56 text-left space-y-1">
+        <div className="flex items-center justify-between pb-1 border-b border-cool-gray-700">
+          <span className="text-[10px] font-bold text-cool-gray-400 uppercase tracking-wider">
+            Item Tags
+          </span>
+          {selectedTagIds.length > 0 && (
+            <button
+              type="button"
+              onClick={handleClearAll}
+              className="text-[10px] text-red-400 hover:text-red-300 font-bold px-1.5 py-0.5 rounded bg-red-950/40 border border-red-800/40 hover:bg-red-900/60 transition cursor-pointer flex items-center gap-1"
+              title="Remove all tags from item"
+            >
+              <Trash2 size={10} /> Clear All
+            </button>
+          )}
         </div>
         <div className="space-y-1 my-1 max-h-48 overflow-y-auto">
           {tags.map((t: AppTag) => {
@@ -2277,30 +2298,64 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({ 
 
                                   {visibleColumns.tags && (
                                     <td className="py-2 px-3 text-center whitespace-nowrap">
-                                      <div className="relative inline-block">
-                                        <button
-                                          type="button"
-                                          onClick={() => setOpenTagSelectorId(openTagSelectorId === item.id ? null : item.id)}
-                                          className={`p-1 rounded-lg border transition flex items-center justify-center cursor-pointer ${
-                                            tagIds.length > 0
-                                              ? 'bg-cyan-950 text-cyan-400 border-cyan-800'
-                                              : 'border-cool-gray-700 hover:border-cool-gray-500 text-cool-gray-400 hover:text-white'
-                                          }`}
-                                          title="Manage Tags"
-                                        >
-                                          <TagIcon size={12} />
-                                          {tagIds.length > 0 && <span className="ml-1 text-[10px] font-bold">{tagIds.length}</span>}
-                                        </button>
+                                      <div className="flex flex-wrap gap-1 items-center justify-center">
+                                        {tagIds.map(tagId => {
+                                          const tag = state.tags?.find(t => t.id === tagId);
+                                          if (!tag) return null;
+                                          return (
+                                            <span
+                                              key={tag.id}
+                                              style={{
+                                                backgroundColor: `${tag.color}15`,
+                                                borderColor: `${tag.color}35`,
+                                                color: tag.color || '#60a5fa'
+                                              }}
+                                              className="inline-flex items-center gap-1 text-[8px] border px-1.5 py-0.5 rounded font-black tracking-wide uppercase select-none group/tag hover:border-red-500/40 transition-colors"
+                                              title={`Tag: ${tag.description || tag.name} (Click ✕ to remove tag)`}
+                                            >
+                                              <span>{tag.id === 'use-first' ? '🍳 ' : tag.id === 'not-for-sale' ? '🛑 ' : '🏷️ '}{tag.name}</span>
+                                              <button
+                                                type="button"
+                                                onClick={async (e) => {
+                                                  e.stopPropagation();
+                                                  const nextTagIds = tagIds.filter(id => id !== tag.id);
+                                                  await dispatch({
+                                                    type: 'UPDATE_OFFSITE_ENTRY',
+                                                    payload: { id: item.id, updates: { tagIds: nextTagIds } }
+                                                  });
+                                                }}
+                                                className="hover:text-red-400 text-cool-gray-400 p-0.5 rounded transition-colors cursor-pointer"
+                                                title={`Remove tag "${tag.name}"`}
+                                              >
+                                                <X size={10} />
+                                              </button>
+                                            </span>
+                                          );
+                                        })}
+                                        <div className="relative inline-block">
+                                          <button
+                                            type="button"
+                                            onClick={() => setOpenTagSelectorId(openTagSelectorId === item.id ? null : item.id)}
+                                            className={`p-1 rounded-lg border transition flex items-center justify-center cursor-pointer ${
+                                              tagIds.length > 0
+                                                ? 'bg-cyan-950 text-cyan-400 border-cyan-800 hover:bg-cyan-900/60'
+                                                : 'border-cool-gray-700 hover:border-cool-gray-500 text-cool-gray-400 hover:text-white'
+                                            }`}
+                                            title="Manage Tags"
+                                          >
+                                            <TagIcon size={12} />
+                                          </button>
 
-                                        {openTagSelectorId === item.id && (
-                                          <ButcherTagPopover
-                                            item={item}
-                                            tagIds={tagIds}
-                                            tags={state.tags || []}
-                                            dispatch={dispatch}
-                                            onClose={() => setOpenTagSelectorId(null)}
-                                          />
-                                        )}
+                                          {openTagSelectorId === item.id && (
+                                            <ButcherTagPopover
+                                              item={item}
+                                              tagIds={tagIds}
+                                              tags={state.tags || []}
+                                              dispatch={dispatch}
+                                              onClose={() => setOpenTagSelectorId(null)}
+                                            />
+                                          )}
+                                        </div>
                                       </div>
                                     </td>
                                   )}
@@ -2419,7 +2474,65 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({ 
                           {visibleColumns.notes && <td className="py-2.5 px-3 text-cool-gray-400 max-w-xs truncate">{item.notes || '-'}</td>}
                           {visibleColumns.tags && (
                             <td className="py-2.5 px-3 text-center">
-                              <span className="text-cool-gray-400">{tagIds.length} tags</span>
+                              <div className="flex flex-wrap gap-1 items-center justify-center">
+                                {tagIds.map(tagId => {
+                                  const tag = state.tags?.find(t => t.id === tagId);
+                                  if (!tag) return null;
+                                  return (
+                                    <span
+                                      key={tag.id}
+                                      style={{
+                                        backgroundColor: `${tag.color}15`,
+                                        borderColor: `${tag.color}35`,
+                                        color: tag.color || '#60a5fa'
+                                      }}
+                                      className="inline-flex items-center gap-1 text-[8px] border px-1.5 py-0.5 rounded font-black tracking-wide uppercase select-none group/tag hover:border-red-500/40 transition-colors"
+                                      title={`Tag: ${tag.description || tag.name} (Click ✕ to remove tag)`}
+                                    >
+                                      <span>{tag.id === 'use-first' ? '🍳 ' : tag.id === 'not-for-sale' ? '🛑 ' : '🏷️ '}{tag.name}</span>
+                                      <button
+                                        type="button"
+                                        onClick={async (e) => {
+                                          e.stopPropagation();
+                                          const nextTagIds = tagIds.filter(id => id !== tag.id);
+                                          await dispatch({
+                                            type: 'UPDATE_OFFSITE_ENTRY',
+                                            payload: { id: item.id, updates: { tagIds: nextTagIds } }
+                                          });
+                                        }}
+                                        className="hover:text-red-400 text-cool-gray-400 p-0.5 rounded transition-colors cursor-pointer"
+                                        title={`Remove tag "${tag.name}"`}
+                                      >
+                                        <X size={10} />
+                                      </button>
+                                    </span>
+                                  );
+                                })}
+                                <div className="relative inline-block">
+                                  <button
+                                    type="button"
+                                    onClick={() => setOpenTagSelectorId(openTagSelectorId === item.id ? null : item.id)}
+                                    className={`p-1 rounded-lg border transition flex items-center justify-center cursor-pointer ${
+                                      tagIds.length > 0
+                                        ? 'bg-cyan-950 text-cyan-400 border-cyan-800 hover:bg-cyan-900/60'
+                                        : 'border-cool-gray-700 hover:border-cool-gray-500 text-cool-gray-400 hover:text-white'
+                                    }`}
+                                    title="Manage Tags"
+                                  >
+                                    <TagIcon size={12} />
+                                  </button>
+
+                                  {openTagSelectorId === item.id && (
+                                    <ButcherTagPopover
+                                      item={item}
+                                      tagIds={tagIds}
+                                      tags={state.tags || []}
+                                      dispatch={dispatch}
+                                      onClose={() => setOpenTagSelectorId(null)}
+                                    />
+                                  )}
+                                </div>
+                              </div>
                             </td>
                           )}
                           {visibleColumns.status && (

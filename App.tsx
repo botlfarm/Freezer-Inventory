@@ -38,6 +38,20 @@ import { loadSortOrderConfig, saveSortOrderConfig, sortPrimaryCategories, sortSu
 import { useHomeAssistantTheme } from './hooks/useHomeAssistantTheme';
 import { OfflineSyncBadge } from './components/OfflineSyncBadge';
 
+const VALID_VIEWS: Set<View> = new Set([
+  'freezer', 'product', 'library', 'history', 'reconcile', 'import', 
+  'display_case', 'restock', 'offsite', 'butcher_records', 'traceability'
+]);
+
+function parseViewFromHash(hashString?: string): View | null {
+  if (!hashString) return null;
+  const clean = hashString.replace(/^#\/?/, '').split('/')[0].split('?')[0];
+  if (VALID_VIEWS.has(clean as View)) {
+    return clean as View;
+  }
+  return null;
+}
+
 export default function App() {
   useHomeAssistantTheme();
   const [isScrolled, setIsScrolled] = useState(false);
@@ -75,15 +89,6 @@ export default function App() {
     observer.observe(header);
     return () => {
       observer.disconnect();
-    };
-  }, []);
-
-  React.useEffect(() => {
-    (window as any).__showImagePreview = (src: string, title: string) => {
-      setExpandedImage({ src, title });
-    };
-    return () => {
-      delete (window as any).__showImagePreview;
     };
   }, []);
 
@@ -161,7 +166,92 @@ export default function App() {
     };
   }, []);
 
-  const [currentView, setCurrentView] = useState<View>('product');
+  const navStepRef = React.useRef<number>(0);
+  const isPopNavigatingRef = React.useRef<boolean>(false);
+  const modalDepthRef = React.useRef<number>(0);
+  const isModalPopPendingRef = React.useRef<boolean>(false);
+
+  const [currentView, _setCurrentView] = useState<View>(() => {
+    if (typeof window !== 'undefined' && window.location.hash) {
+      const parsed = parseViewFromHash(window.location.hash);
+      if (parsed) return parsed;
+    }
+    return 'product';
+  });
+
+  const [reconcileFreezerId, setReconcileFreezerId] = useState<string | null>(null);
+  const [highlightContainerId, setHighlightContainerId] = useState<string | null>(null);
+  const [selectedProductId, setSelectedProductId] = useState<string | null>(null);
+  const [initialLibraryTab, setInitialLibraryTab] = useState<"products" | "containers" | "freezers" | "pallets" | "lists" | "settings" | "import" | "tags" | "locations" | "photos" | "pwa">("products");
+  const [offsiteSubTab, setOffsiteSubTab] = useState<'sheet' | 'import' | 'hierarchy' | 'history' | 'active-movement' | 'staging-worksheet'>('sheet');
+
+  const setCurrentView = React.useCallback((
+    newView: View,
+    options?: {
+      libraryTab?: "products" | "containers" | "freezers" | "pallets" | "lists" | "settings" | "import" | "tags" | "locations" | "photos" | "pwa";
+      subTab?: 'sheet' | 'import' | 'hierarchy' | 'history' | 'active-movement' | 'staging-worksheet';
+      highlightContainerId?: string | null;
+      selectedProductId?: string | null;
+      reconcileFreezerId?: string | null;
+      replace?: boolean;
+    }
+  ) => {
+    if (isPopNavigatingRef.current) {
+      _setCurrentView(newView);
+      if (options?.libraryTab) setInitialLibraryTab(options.libraryTab);
+      if (options?.subTab) setOffsiteSubTab(options.subTab);
+      if (options?.highlightContainerId !== undefined) setHighlightContainerId(options.highlightContainerId);
+      if (options?.selectedProductId !== undefined) setSelectedProductId(options.selectedProductId);
+      if (options?.reconcileFreezerId !== undefined) setReconcileFreezerId(options.reconcileFreezerId);
+      return;
+    }
+
+    if (
+      newView === currentView &&
+      !options?.libraryTab &&
+      !options?.subTab &&
+      !options?.highlightContainerId &&
+      !options?.selectedProductId &&
+      !options?.reconcileFreezerId
+    ) {
+      return;
+    }
+
+    if (typeof window !== 'undefined') {
+      const nextStep = navStepRef.current + 1;
+      navStepRef.current = nextStep;
+
+      let hash = `#${newView}`;
+      if (newView === 'offsite' && options?.subTab && options.subTab !== 'sheet') {
+        hash = `#offsite/${options.subTab}`;
+      } else if (newView === 'library' && options?.libraryTab && options.libraryTab !== 'products') {
+        hash = `#library/${options.libraryTab}`;
+      }
+
+      const stateObj = {
+        view: newView,
+        step: nextStep,
+        libraryTab: options?.libraryTab,
+        offsiteSubTab: options?.subTab,
+        highlightContainerId: options?.highlightContainerId,
+        selectedProductId: options?.selectedProductId,
+        reconcileFreezerId: options?.reconcileFreezerId
+      };
+
+      if (options?.replace) {
+        window.history.replaceState(stateObj, '', hash);
+      } else {
+        window.history.pushState(stateObj, '', hash);
+      }
+    }
+
+    _setCurrentView(newView);
+    if (options?.libraryTab) setInitialLibraryTab(options.libraryTab);
+    if (options?.subTab) setOffsiteSubTab(options.subTab);
+    if (options?.highlightContainerId !== undefined) setHighlightContainerId(options.highlightContainerId);
+    if (options?.selectedProductId !== undefined) setSelectedProductId(options.selectedProductId);
+    if (options?.reconcileFreezerId !== undefined) setReconcileFreezerId(options.reconcileFreezerId);
+  }, [currentView]);
 
   const {
     state,
@@ -237,33 +327,45 @@ export default function App() {
     if (typeof window === 'undefined') return;
     const appNameCfg = (state.appConfig || []).find(i => i.key === 'pwa_app_name');
     const shortNameCfg = (state.appConfig || []).find(i => i.key === 'pwa_short_name');
+    const colorCfg = (state.appConfig || []).find(i => i.key === 'pwa_app_icon_color');
     const icon192Cfg = (state.appConfig || []).find(i => i.key === 'pwa_icon_192');
     
-    const nameVal = appNameCfg?.value?.trim() || '';
-    const shortVal = shortNameCfg?.value?.trim() || '';
+    const nameVal = appNameCfg?.value?.trim() || 'Freezer Inventory Tracker';
+    const shortVal = shortNameCfg?.value?.trim() || 'FreezerApp';
+    const colorVal = colorCfg?.value?.trim() || '#0f172a';
     const iconVal = icon192Cfg?.value?.trim() || '';
-    const updateHash = btoa(encodeURIComponent(nameVal + shortVal + iconVal.substring(0, 50))).substring(0, 8);
+    const updateHash = btoa(encodeURIComponent(nameVal + shortVal + colorVal + iconVal.substring(0, 50))).substring(0, 8);
 
-    if (appNameCfg?.value?.trim()) {
-      document.title = appNameCfg.value.trim();
-    }
+    document.title = nameVal;
     
-    if (shortNameCfg?.value?.trim()) {
-      const appleMeta = document.querySelector('meta[name="apple-mobile-web-app-title"]');
-      if (appleMeta) {
-        appleMeta.setAttribute('content', shortNameCfg.value.trim());
-      }
+    const appleMeta = document.querySelector('meta[name="apple-mobile-web-app-title"]');
+    if (appleMeta) {
+      appleMeta.setAttribute('content', shortVal);
     }
 
-    if (icon192Cfg?.value?.trim()) {
-      const appleIconLink = document.querySelector('link[rel="apple-touch-icon"]') as HTMLLinkElement;
-      if (appleIconLink) {
-        appleIconLink.href = icon192Cfg.value.trim();
-      }
-      const favIconLink = document.querySelector('link[rel="icon"]') as HTMLLinkElement;
-      if (favIconLink) {
-        favIconLink.href = icon192Cfg.value.trim();
-      }
+    const appNameMeta = document.querySelector('meta[name="application-name"]');
+    if (appNameMeta) {
+      appNameMeta.setAttribute('content', nameVal);
+    }
+
+    const themeMeta = document.querySelector('meta[name="theme-color"]');
+    if (themeMeta) {
+      themeMeta.setAttribute('content', colorVal);
+    }
+
+    const manifestLink = document.querySelector('link[rel="manifest"]') as HTMLLinkElement;
+    if (manifestLink) {
+      manifestLink.href = `./manifest.json?v=${updateHash}`;
+    }
+
+    const appleIconLink = document.querySelector('link[rel="apple-touch-icon"]') as HTMLLinkElement;
+    if (appleIconLink) {
+      appleIconLink.href = iconVal || './apple-touch-icon.png';
+    }
+
+    const favIconLink = document.querySelector('link[rel="icon"]') as HTMLLinkElement;
+    if (favIconLink) {
+      favIconLink.href = iconVal || './icon.svg';
     }
   }, [state.appConfig]);
 
@@ -307,33 +409,6 @@ export default function App() {
     snapshotId?: string | null;
     historyId?: string | null;
   }>({ isOpen: false });
-
-  // Global keyboard shortcut for Undo (Ctrl+Z / Cmd+Z)
-  React.useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement;
-      if (
-        target &&
-        (target.tagName === 'INPUT' ||
-          target.tagName === 'TEXTAREA' ||
-          target.isContentEditable)
-      ) {
-        return;
-      }
-
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z') && !e.shiftKey) {
-        e.preventDefault();
-        setUndoModalConfig({
-          isOpen: true,
-          snapshotId: null,
-          historyId: null
-        });
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
 
   const [isDemoTransitioning, setIsDemoTransitioning] = useState(false);
   const [isPreviewTransitioning, setIsPreviewTransitioning] = useState(false);
@@ -490,14 +565,6 @@ export default function App() {
     }, 120);
   };
 
-  React.useEffect(() => {
-    (window as any).__showProductQuickInfo = (item: any) => {
-      setQuickInfoItem(item);
-    };
-    return () => {
-      delete (window as any).__showProductQuickInfo;
-    };
-  }, []);
   const prevMapsRef = React.useRef<{
     onsite: Record<string, number>;
     offsiteCount: Record<string, number>;
@@ -511,7 +578,6 @@ export default function App() {
   const [traceabilityInitialSearch, setTraceabilityInitialSearch] = useState<string>('');
 
   // Off-Site Lifted States & Refs
-  const [offsiteSubTab, setOffsiteSubTab] = useState<'sheet' | 'import' | 'hierarchy' | 'history' | 'active-movement' | 'staging-worksheet'>('sheet');
 
   React.useEffect(() => {
     (window as any).__setOffSiteSubTab = setOffsiteSubTab;
@@ -601,6 +667,245 @@ export default function App() {
     }
   }, [activeOrder?.id]);
 
+  const pushModalHistory = React.useCallback(() => {
+    if (typeof window === 'undefined') return;
+    if (modalDepthRef.current === 0) {
+      modalDepthRef.current = 1;
+      window.history.pushState({
+        view: currentView,
+        step: navStepRef.current,
+        isModal: true
+      }, '', window.location.hash || `#${currentView}`);
+    } else {
+      modalDepthRef.current += 1;
+    }
+  }, [currentView]);
+
+  const popModalHistory = React.useCallback(() => {
+    if (modalDepthRef.current > 0) {
+      modalDepthRef.current -= 1;
+      if (modalDepthRef.current === 0 && typeof window !== 'undefined') {
+        isModalPopPendingRef.current = true;
+        window.history.back();
+      }
+    }
+  }, []);
+
+  const handleGoBack = React.useCallback(() => {
+    if (modalDepthRef.current > 0) {
+      popModalHistory();
+      setActiveModal(null);
+      setQuickInfoItem(null);
+      setUndoModalConfig({ isOpen: false, snapshotId: null, historyId: null });
+      setExpandedImage(null);
+      setShowDeviceSetupModal(false);
+      setIsMovementPopdownOpen(false);
+      return;
+    }
+    if (navStepRef.current > 0) {
+      window.history.back();
+    } else {
+      setCurrentView('product');
+    }
+  }, [popModalHistory, setCurrentView]);
+
+  const handleOffsiteSubTabChange = React.useCallback((tab: 'sheet' | 'import' | 'hierarchy' | 'history' | 'active-movement' | 'staging-worksheet') => {
+    if (tab === offsiteSubTab) return;
+    if (typeof window !== 'undefined' && !isPopNavigatingRef.current) {
+      navStepRef.current += 1;
+      window.history.pushState({
+        view: 'offsite',
+        offsiteSubTab: tab,
+        step: navStepRef.current
+      }, '', `#offsite/${tab}`);
+    }
+    setOffsiteSubTab(tab);
+  }, [offsiteSubTab]);
+
+  const handleLibraryTabChange = React.useCallback((tab: "products" | "containers" | "freezers" | "pallets" | "lists" | "settings" | "import" | "tags" | "locations" | "photos" | "pwa") => {
+    if (tab === initialLibraryTab) return;
+    if (typeof window !== 'undefined' && !isPopNavigatingRef.current) {
+      navStepRef.current += 1;
+      window.history.pushState({
+        view: 'library',
+        libraryTab: tab,
+        step: navStepRef.current
+      }, '', `#library/${tab}`);
+    }
+    setInitialLibraryTab(tab);
+  }, [initialLibraryTab]);
+
+  const openActiveModal = React.useCallback((modal: ModalType) => {
+    if (modal) {
+      pushModalHistory();
+    }
+    setActiveModal(modal);
+  }, [pushModalHistory]);
+
+  const handleCloseModal = React.useCallback(() => {
+    if (activeModal && activeModal.type === 'LIST_THRESHOLD_ALERT') {
+      setPromptQueue(prev => prev.slice(1));
+    }
+    setActiveModal(null);
+    popModalHistory();
+  }, [activeModal, popModalHistory]);
+
+  const openQuickInfo = React.useCallback((item: any | null) => {
+    if (item && !quickInfoItem) {
+      pushModalHistory();
+    } else if (!item && quickInfoItem) {
+      popModalHistory();
+    }
+    setQuickInfoItem(item);
+  }, [quickInfoItem, pushModalHistory, popModalHistory]);
+
+  const openUndoModal = React.useCallback((config: { isOpen: boolean; snapshotId?: string | null; historyId?: string | null }) => {
+    if (config.isOpen && !undoModalConfig.isOpen) {
+      pushModalHistory();
+    } else if (!config.isOpen && undoModalConfig.isOpen) {
+      popModalHistory();
+    }
+    setUndoModalConfig(config);
+  }, [undoModalConfig.isOpen, pushModalHistory, popModalHistory]);
+
+  const showExpandedImage = React.useCallback((img: { src: string; title: string } | null) => {
+    if (img && !expandedImage) {
+      pushModalHistory();
+    } else if (!img && expandedImage) {
+      popModalHistory();
+    }
+    setExpandedImage(img);
+  }, [expandedImage, pushModalHistory, popModalHistory]);
+
+  // Synchronize browser history and popstate navigation
+  React.useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    // Initialize root history state if not already initialized
+    const currentHash = window.location.hash;
+    const initialParsed = parseViewFromHash(currentHash) || currentView;
+    const initialSub = currentHash.includes('/') ? currentHash.replace(/^#\/?/, '').split('/')[1]?.split('?')[0] : null;
+
+    if (initialParsed === 'offsite' && initialSub) {
+      setOffsiteSubTab(initialSub as any);
+    } else if (initialParsed === 'library' && initialSub) {
+      setInitialLibraryTab(initialSub as any);
+    }
+
+    const initialHash = `#${initialParsed}${initialSub ? `/${initialSub}` : ''}`;
+    window.history.replaceState({
+      view: initialParsed,
+      step: 0,
+      offsiteSubTab: initialParsed === 'offsite' ? initialSub || 'sheet' : undefined,
+      libraryTab: initialParsed === 'library' ? initialSub || 'products' : undefined
+    }, '', initialHash);
+
+    const handlePopState = (event: PopStateEvent) => {
+      // If modal was dismissed via close button which already invoked history.back():
+      if (isModalPopPendingRef.current) {
+        isModalPopPendingRef.current = false;
+        return;
+      }
+
+      // If user pressed physical back or swiped back while a modal or overlay was open:
+      if (modalDepthRef.current > 0) {
+        modalDepthRef.current = 0;
+        setActiveModal(null);
+        setQuickInfoItem(null);
+        setUndoModalConfig({ isOpen: false, snapshotId: null, historyId: null });
+        setExpandedImage(null);
+        setShowDeviceSetupModal(false);
+        setIsMovementPopdownOpen(false);
+        return;
+      }
+
+      const st = event.state;
+      const targetView: View = st?.view || parseViewFromHash(window.location.hash) || 'product';
+
+      isPopNavigatingRef.current = true;
+      _setCurrentView(targetView);
+
+      if (st?.step !== undefined) {
+        navStepRef.current = st.step;
+      } else {
+        navStepRef.current = Math.max(0, navStepRef.current - 1);
+      }
+
+      if (st?.libraryTab) {
+        setInitialLibraryTab(st.libraryTab);
+      }
+      if (st?.offsiteSubTab) {
+        setOffsiteSubTab(st.offsiteSubTab);
+      }
+      if (st?.highlightContainerId !== undefined) {
+        setHighlightContainerId(st.highlightContainerId);
+      }
+      if (st?.selectedProductId !== undefined) {
+        setSelectedProductId(st.selectedProductId);
+      }
+      if (st?.reconcileFreezerId !== undefined) {
+        setReconcileFreezerId(st.reconcileFreezerId);
+      }
+
+      // Ensure any open modals are dismissed
+      setActiveModal(null);
+      setQuickInfoItem(null);
+      setUndoModalConfig({ isOpen: false, snapshotId: null, historyId: null });
+      setExpandedImage(null);
+      setShowDeviceSetupModal(false);
+      setIsMovementPopdownOpen(false);
+
+      setTimeout(() => {
+        isPopNavigatingRef.current = false;
+      }, 50);
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+    };
+  }, []);
+
+  React.useEffect(() => {
+    (window as any).__showImagePreview = (src: string, title: string) => {
+      showExpandedImage({ src, title });
+    };
+    (window as any).__showProductQuickInfo = (item: any) => {
+      openQuickInfo(item);
+    };
+    return () => {
+      delete (window as any).__showImagePreview;
+      delete (window as any).__showProductQuickInfo;
+    };
+  }, [showExpandedImage, openQuickInfo]);
+
+  // Global keyboard shortcut for Undo (Ctrl+Z / Cmd+Z)
+  React.useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z') && !e.shiftKey) {
+        e.preventDefault();
+        openUndoModal({
+          isOpen: true,
+          snapshotId: null,
+          historyId: null
+        });
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [openUndoModal]);
+
   // Theme state: defaults to 'auto' for direct Home Assistant native CSS variable integration
   const [theme, setTheme] = useState<string>(() => {
     const saved = localStorage.getItem("freezer-theme");
@@ -628,8 +933,6 @@ export default function App() {
   const toggleTheme = () => {
     setTheme(prev => (prev === "light" ? "dark" : prev === "dark" ? "auto" : "light"));
   };
-
-  const [initialLibraryTab, setInitialLibraryTab] = useState<"products" | "containers" | "freezers" | "lists" | "settings" | "pwa">("products");
 
   // Centralized Filters State
   const [selectedPrimary, setSelectedPrimary] = useState<string | null>(null);
@@ -766,10 +1069,6 @@ export default function App() {
   }, [state.freezers, currentView]);
 
   const isDisplay = currentView === 'display_case';
-
-  const [reconcileFreezerId, setReconcileFreezerId] = useState<string | null>(null);
-  const [highlightContainerId, setHighlightContainerId] = useState<string | null>(null);
-  const [selectedProductId, setSelectedProductId] = useState<string | null>(null);
 
   React.useEffect(() => {
     (window as any).__navigateToLocation = (locationType: 'on-site', targetId: string) => {
@@ -1433,15 +1732,8 @@ export default function App() {
     return 'max-w-lg';
   };
   
-  const handleCloseModal = () => {
-      if (activeModal && activeModal.type === 'LIST_THRESHOLD_ALERT') {
-        setPromptQueue(prev => prev.slice(1));
-      }
-      setActiveModal(null);
-  };
-  
   const handleNavigateToFreezer = (containerId: string) => {
-      setCurrentView('freezer');
+      setCurrentView('freezer', { highlightContainerId: containerId });
       setHighlightContainerId(containerId);
   }
 
@@ -1555,7 +1847,7 @@ export default function App() {
       case 'ADD_TO_LIST':
         return <AddToListModalContent dispatch={dispatch} state={state} productId={activeModal.productId} onClose={handleCloseModal} />;
       case 'SELECT_MEAT_TAGS':
-        return <SelectTagsModalContent dispatch={dispatch} state={state} meatCutId={activeModal.meatCutId} onClose={handleCloseModal} />;
+        return <SelectTagsModalContent dispatch={dispatch} state={state} meatCutId={activeModal.meatCutId} offSiteEntryId={activeModal.offSiteEntryId} onClose={handleCloseModal} />;
       case 'SPLIT_ITEM':
         return <SplitItemModalContent dispatch={dispatch} state={state} meatCutId={activeModal.meatCutId} onClose={handleCloseModal} />;
       case 'LIST_THRESHOLD_ALERT':
@@ -1623,7 +1915,7 @@ export default function App() {
           <FreezerView 
             state={state} 
             dispatch={dispatch} 
-            openModal={setActiveModal} 
+            openModal={openActiveModal} 
             searchResults={searchResults} 
             startReconciliation={startReconciliation} 
             highlightContainerId={highlightContainerId} 
@@ -1640,8 +1932,7 @@ export default function App() {
             setSelectedPrimary={handleSelectPrimary}
             setSelectedSub={setSelectedSub}
             onNavigateToOffsiteStaging={() => {
-              setCurrentView('offsite');
-              setOffsiteSubTab('staging-worksheet');
+              setCurrentView('offsite', { subTab: 'staging-worksheet' });
             }}
           />
         );
@@ -1650,7 +1941,7 @@ export default function App() {
           <DisplayCaseView 
             state={state} 
             dispatch={dispatch} 
-            openModal={setActiveModal} 
+            openModal={openActiveModal} 
             searchTerm={searchTerm} 
             onNavigateToContainer={handleNavigateToFreezer}
             onNavigateToStaging={() => {
@@ -1671,7 +1962,7 @@ export default function App() {
           <ProductView 
             state={state} 
             dispatch={dispatch} 
-            openModal={setActiveModal} 
+            openModal={openActiveModal} 
             searchTerm={searchTerm} 
             onNavigateToContainer={handleNavigateToFreezer}
             selectedProductId={selectedProductId}
@@ -1684,8 +1975,7 @@ export default function App() {
             setSelectedPrimary={handleSelectPrimary}
             setSelectedSub={setSelectedSub}
             onNavigateToOffsiteStaging={() => {
-              setCurrentView('offsite');
-              setOffsiteSubTab('staging-worksheet');
+              setCurrentView('offsite', { subTab: 'staging-worksheet' });
             }}
             isLoading={isLoading}
           />
@@ -1695,9 +1985,10 @@ export default function App() {
           <LibraryView 
             state={state} 
             dispatch={dispatch} 
-            openModal={setActiveModal} 
+            openModal={openActiveModal} 
             navigateToFreezer={handleNavigateToFreezer} 
             initialTab={initialLibraryTab}
+            onTabChange={handleLibraryTabChange}
             theme={theme}
             onThemeChange={handleThemeChange}
             onNavigateToView={setCurrentView}
@@ -1710,7 +2001,7 @@ export default function App() {
             state={state}
             dispatch={dispatch}
             onOpenUndo={(historyId) =>
-              setUndoModalConfig({
+              openUndoModal({
                 isOpen: true,
                 historyId: historyId || null,
                 snapshotId: null
@@ -1724,7 +2015,7 @@ export default function App() {
             setCurrentView('freezer'); // Safety check
             return null;
         }
-        return <ReconciliationView state={state} dispatch={dispatch} freezerId={reconcileFreezerId} exitReconciliation={() => setCurrentView('freezer')} openModal={setActiveModal} />;
+        return <ReconciliationView state={state} dispatch={dispatch} freezerId={reconcileFreezerId} exitReconciliation={handleGoBack} openModal={openActiveModal} />;
       case 'restock':
         return (
           <div className="flex flex-col h-full animate-fade-in pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] max-w-7xl mx-auto w-full">
@@ -2183,7 +2474,7 @@ export default function App() {
                             <button
                               key={m.id}
                               id={`offsite-subtab-${m.id}`}
-                              onClick={() => setOffsiteSubTab(m.id as any)}
+                              onClick={() => handleOffsiteSubTabChange(m.id as any)}
                               type="button"
                               className={`px-2 sm:px-3 py-1 text-[11px] sm:text-xs font-bold transition-all rounded-md cursor-pointer flex items-center gap-1 ${
                                 isActive
@@ -3456,7 +3747,7 @@ export default function App() {
       {expandedImage && (
         <div 
           className="fixed inset-0 z-[9999] flex flex-col items-center justify-center bg-black/90 backdrop-blur-md p-4 sm:p-6 animate-fade-in"
-          onClick={() => setExpandedImage(null)}
+          onClick={() => showExpandedImage(null)}
           id="global-image-lightbox"
         >
           {/* Close button top right */}
@@ -3465,7 +3756,7 @@ export default function App() {
             className="absolute top-4 right-4 sm:top-6 sm:right-6 bg-cool-gray-800/85 hover:bg-cool-gray-700 text-cool-gray-100 hover:text-white p-2.5 rounded-full transition-all duration-200 border border-cool-gray-700 pointer-events-auto shadow-lg flex items-center justify-center cursor-pointer hover:scale-105 active:scale-95"
             onClick={(e) => {
               e.stopPropagation();
-              setExpandedImage(null);
+              showExpandedImage(null);
             }}
             title="Close image view"
           >
@@ -3497,7 +3788,7 @@ export default function App() {
       {quickInfoItem && (
         <ProductQuickInfoModal
           quickInfoItem={quickInfoItem}
-          onClose={() => setQuickInfoItem(null)}
+          onClose={() => openQuickInfo(null)}
           state={state}
           dispatch={dispatch}
           onFilterPallets={handleFilterPalletFromModal}
@@ -3613,7 +3904,7 @@ export default function App() {
       <UndoConfirmationModal
         isOpen={undoModalConfig.isOpen}
         onClose={() =>
-          setUndoModalConfig({
+          openUndoModal({
             isOpen: false,
             snapshotId: null,
             historyId: null

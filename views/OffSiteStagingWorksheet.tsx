@@ -84,13 +84,25 @@ const WorksheetTagPopover: React.FC<{
             <TagIcon size={12} className="text-cyan-400" />
             Tags: <span className="text-white truncate max-w-[140px]">{item.cuts}</span>
           </span>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-cool-gray-400 hover:text-white p-0.5 rounded transition cursor-pointer"
-          >
-            <X size={14} />
-          </button>
+          <div className="flex items-center gap-2">
+            {selectedTagIds.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setSelectedTagIds([])}
+                className="text-[10px] text-red-400 hover:text-red-300 font-bold px-1.5 py-0.5 rounded bg-red-950/40 border border-red-800/40 hover:bg-red-900/60 transition cursor-pointer"
+                title="Clear all tags"
+              >
+                Clear All
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onClose}
+              className="text-cool-gray-400 hover:text-white p-0.5 rounded transition cursor-pointer"
+            >
+              <X size={14} />
+            </button>
+          </div>
         </div>
         <div className="flex flex-col gap-1 my-1 max-h-60 overflow-y-auto pr-1">
           {tags.length === 0 ? (
@@ -176,13 +188,25 @@ const BulkTagPopover: React.FC<{
             <TagIcon size={12} className="text-cyan-400" />
             Bulk Assign Tags
           </span>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-cool-gray-400 hover:text-white p-0.5 rounded transition cursor-pointer"
-          >
-            <X size={14} />
-          </button>
+          <div className="flex items-center gap-2">
+            {localTagIds.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setLocalTagIds([])}
+                className="text-[10px] text-red-400 hover:text-red-300 font-bold px-1.5 py-0.5 rounded bg-red-950/40 border border-red-800/40 hover:bg-red-900/60 transition cursor-pointer"
+                title="Clear all tags"
+              >
+                Clear All
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onClose}
+              className="text-cool-gray-400 hover:text-white p-0.5 rounded transition cursor-pointer"
+            >
+              <X size={14} />
+            </button>
+          </div>
         </div>
         <div className="flex flex-col gap-1 my-1 max-h-60 overflow-y-auto pr-1">
           {tags.length === 0 ? (
@@ -1216,11 +1240,22 @@ export const OffSiteStagingWorksheet: React.FC<OffSiteStagingWorksheetProps> = (
                                             borderColor: `${tag.color || '#38bdf8'}40`, 
                                             color: tag.color || '#38bdf8' 
                                           }}
-                                          className="inline-flex items-center gap-1 text-[9px] border px-1.5 py-0.2 rounded font-semibold uppercase select-none"
-                                          title={tag.description || tag.name}
+                                          className="inline-flex items-center gap-1 text-[9px] border px-1.5 py-0.2 rounded font-semibold uppercase select-none group/tag hover:border-red-500/40 transition-colors"
+                                          title={`Tag: ${tag.description || tag.name} (Click ✕ to remove tag)`}
                                         >
                                           <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: tag.color || '#38bdf8' }} />
                                           <span className="truncate max-w-[80px]">{tag.name}</span>
+                                          <button
+                                            type="button"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              handleUpdateItem(it.id, { tagIds: (it.tagIds || []).filter((id: string) => id !== tag.id) });
+                                            }}
+                                            className="hover:text-red-400 text-cool-gray-400 p-0.5 rounded transition-colors cursor-pointer"
+                                            title={`Remove tag "${tag.name}"`}
+                                          >
+                                            <X size={9} />
+                                          </button>
                                         </span>
                                       );
                                     })}
@@ -1466,11 +1501,22 @@ export const OffSiteStagingWorksheet: React.FC<OffSiteStagingWorksheetProps> = (
                                       borderColor: `${tag.color || '#38bdf8'}40`, 
                                       color: tag.color || '#38bdf8' 
                                     }}
-                                    className="inline-flex items-center gap-1 text-[9px] border px-1.5 py-0.2 rounded font-semibold uppercase select-none"
-                                    title={tag.description || tag.name}
+                                    className="inline-flex items-center gap-1 text-[9px] border px-1.5 py-0.2 rounded font-semibold uppercase select-none group/tag hover:border-red-500/40 transition-colors"
+                                    title={`Tag: ${tag.description || tag.name} (Click ✕ to remove tag)`}
                                   >
                                     <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: tag.color || '#38bdf8' }} />
                                     <span className="truncate max-w-[80px]">{tag.name}</span>
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleUpdateItem(it.id, { tagIds: (it.tagIds || []).filter((id: string) => id !== tag.id) });
+                                      }}
+                                      className="hover:text-red-400 text-cool-gray-400 p-0.5 rounded transition-colors cursor-pointer"
+                                      title={`Remove tag "${tag.name}"`}
+                                    >
+                                      <X size={9} />
+                                    </button>
                                   </span>
                                 );
                               })}

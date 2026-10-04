@@ -67,8 +67,30 @@ import {
   Snowflake,
   Beef,
   Fish,
-  Package
+  Package,
+  Thermometer,
+  QrCode,
+  Layers,
+  Shield
 } from "lucide-react";
+
+export const FreezerAppLogoIcon: React.FC<{ className?: string }> = ({ className = 'w-5 h-5' }) => (
+  <svg className={className} viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <polygon points="256,232 276.78,244 276.78,268 256,280 235.22,268 235.22,244" fill="#e0f2fe" stroke="#0284c7" strokeWidth="6"/>
+    <g transform="translate(256, 256)">
+      {[0, 60, 120, 180, 240, 300].map((deg) => (
+        <g key={deg} transform={`rotate(${deg})`}>
+          <line x1="0" y1="-24" x2="0" y2="-150" stroke="#38bdf8" strokeWidth="16" strokeLinecap="round"/>
+          <line x1="0" y1="-80" x2="-45" y2="-120" stroke="#38bdf8" strokeWidth="14" strokeLinecap="round"/>
+          <line x1="0" y1="-80" x2="45" y2="-120" stroke="#38bdf8" strokeWidth="14" strokeLinecap="round"/>
+          <line x1="0" y1="-120" x2="-30" y2="-145" stroke="#38bdf8" strokeWidth="12" strokeLinecap="round"/>
+          <line x1="0" y1="-120" x2="30" y2="-145" stroke="#38bdf8" strokeWidth="12" strokeLinecap="round"/>
+          <circle cx="0" cy="-155" r="9" fill="#ffffff"/>
+        </g>
+      ))}
+    </g>
+  </svg>
+);
 
 type LibraryTab = "products" | "containers" | "freezers" | "pallets" | "lists" | "settings" | "import" | "tags" | "locations" | "photos" | "pwa";
 
@@ -273,6 +295,7 @@ const LibraryView: React.FC<{
   openModal: (modal: ModalType) => void;
   navigateToFreezer: (containerId: string) => void;
   initialTab?: LibraryTab;
+  onTabChange?: (tab: LibraryTab) => void;
   theme?: string;
   onThemeChange?: (newTheme: string) => void;
   onNavigateToView?: (view: any) => void;
@@ -283,12 +306,20 @@ const LibraryView: React.FC<{
   openModal,
   navigateToFreezer,
   initialTab,
+  onTabChange,
   theme: parentTheme,
   onThemeChange,
   onNavigateToView,
   isLoading = false,
 }) => {
   const [activeTab, setActiveTab] = useState<LibraryTab>(initialTab || "products");
+
+  const handleSwitchTab = (tab: LibraryTab) => {
+    setActiveTab(tab);
+    if (onTabChange) {
+      onTabChange(tab);
+    }
+  };
   const [productArchiveFilter, setProductArchiveFilter] = useState<'active' | 'archived' | 'all'>('active');
   const [localTheme, setLocalThemeState] = useState<string>(
     () => localStorage.getItem("freezer-theme") || "dark",
@@ -495,14 +526,70 @@ const LibraryView: React.FC<{
       ctx.drawImage(img, padding, padding, drawSize, drawSize);
     } else {
       const svgMap: Record<string, string> = {
+        freezer_logo: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="${size}" height="${size}" fill="none">
+          <polygon points="256,232 276.78,244 276.78,268 256,280 235.22,268 235.22,244" fill="#e0f2fe" stroke="#0284c7" stroke-width="6"/>
+          <g transform="translate(256, 256)">
+            <g>
+              <line x1="0" y1="-24" x2="0" y2="-150" stroke="#38bdf8" stroke-width="16" stroke-linecap="round"/>
+              <line x1="0" y1="-80" x2="-45" y2="-120" stroke="#38bdf8" stroke-width="14" stroke-linecap="round"/>
+              <line x1="0" y1="-80" x2="45" y2="-120" stroke="#38bdf8" stroke-width="14" stroke-linecap="round"/>
+              <line x1="0" y1="-120" x2="-30" y2="-145" stroke="#38bdf8" stroke-width="12" stroke-linecap="round"/>
+              <line x1="0" y1="-120" x2="30" y2="-145" stroke="#38bdf8" stroke-width="12" stroke-linecap="round"/>
+              <circle cx="0" cy="-155" r="9" fill="#ffffff"/>
+            </g>
+            <g transform="rotate(60)">
+              <line x1="0" y1="-24" x2="0" y2="-150" stroke="#38bdf8" stroke-width="16" stroke-linecap="round"/>
+              <line x1="0" y1="-80" x2="-45" y2="-120" stroke="#38bdf8" stroke-width="14" stroke-linecap="round"/>
+              <line x1="0" y1="-80" x2="45" y2="-120" stroke="#38bdf8" stroke-width="14" stroke-linecap="round"/>
+              <line x1="0" y1="-120" x2="-30" y2="-145" stroke="#38bdf8" stroke-width="12" stroke-linecap="round"/>
+              <line x1="0" y1="-120" x2="30" y2="-145" stroke="#38bdf8" stroke-width="12" stroke-linecap="round"/>
+              <circle cx="0" cy="-155" r="9" fill="#ffffff"/>
+            </g>
+            <g transform="rotate(120)">
+              <line x1="0" y1="-24" x2="0" y2="-150" stroke="#38bdf8" stroke-width="16" stroke-linecap="round"/>
+              <line x1="0" y1="-80" x2="-45" y2="-120" stroke="#38bdf8" stroke-width="14" stroke-linecap="round"/>
+              <line x1="0" y1="-80" x2="45" y2="-120" stroke="#38bdf8" stroke-width="14" stroke-linecap="round"/>
+              <line x1="0" y1="-120" x2="-30" y2="-145" stroke="#38bdf8" stroke-width="12" stroke-linecap="round"/>
+              <line x1="0" y1="-120" x2="30" y2="-145" stroke="#38bdf8" stroke-width="12" stroke-linecap="round"/>
+              <circle cx="0" cy="-155" r="9" fill="#ffffff"/>
+            </g>
+            <g transform="rotate(180)">
+              <line x1="0" y1="-24" x2="0" y2="-150" stroke="#38bdf8" stroke-width="16" stroke-linecap="round"/>
+              <line x1="0" y1="-80" x2="-45" y2="-120" stroke="#38bdf8" stroke-width="14" stroke-linecap="round"/>
+              <line x1="0" y1="-80" x2="45" y2="-120" stroke="#38bdf8" stroke-width="14" stroke-linecap="round"/>
+              <line x1="0" y1="-120" x2="-30" y2="-145" stroke="#38bdf8" stroke-width="12" stroke-linecap="round"/>
+              <line x1="0" y1="-120" x2="30" y2="-145" stroke="#38bdf8" stroke-width="12" stroke-linecap="round"/>
+              <circle cx="0" cy="-155" r="9" fill="#ffffff"/>
+            </g>
+            <g transform="rotate(240)">
+              <line x1="0" y1="-24" x2="0" y2="-150" stroke="#38bdf8" stroke-width="16" stroke-linecap="round"/>
+              <line x1="0" y1="-80" x2="-45" y2="-120" stroke="#38bdf8" stroke-width="14" stroke-linecap="round"/>
+              <line x1="0" y1="-80" x2="45" y2="-120" stroke="#38bdf8" stroke-width="14" stroke-linecap="round"/>
+              <line x1="0" y1="-120" x2="-30" y2="-145" stroke="#38bdf8" stroke-width="12" stroke-linecap="round"/>
+              <line x1="0" y1="-120" x2="30" y2="-145" stroke="#38bdf8" stroke-width="12" stroke-linecap="round"/>
+              <circle cx="0" cy="-155" r="9" fill="#ffffff"/>
+            </g>
+            <g transform="rotate(300)">
+              <line x1="0" y1="-24" x2="0" y2="-150" stroke="#38bdf8" stroke-width="16" stroke-linecap="round"/>
+              <line x1="0" y1="-80" x2="-45" y2="-120" stroke="#38bdf8" stroke-width="14" stroke-linecap="round"/>
+              <line x1="0" y1="-80" x2="45" y2="-120" stroke="#38bdf8" stroke-width="14" stroke-linecap="round"/>
+              <line x1="0" y1="-120" x2="-30" y2="-145" stroke="#38bdf8" stroke-width="12" stroke-linecap="round"/>
+              <line x1="0" y1="-120" x2="30" y2="-145" stroke="#38bdf8" stroke-width="12" stroke-linecap="round"/>
+              <circle cx="0" cy="-155" r="9" fill="#ffffff"/>
+            </g>
+          </g>
+        </svg>`,
         snowflake: `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m10 20-1.25-2.5L6 18"/><path d="M10 4 8.75 6.5 6 6"/><path d="m14 20 1.25-2.5L18 18"/><path d="m14 4 1.25 2.5L18 6"/><path d="m17 21-3-6h-4"/><path d="m17 3-3 6 1.5 3"/><path d="M2 12h6.5L10 9"/><path d="m20 10-1.5 2 1.5 2"/><path d="M22 12h-6.5L14 15"/><path d="m4 10 1.5 2L4 14"/><path d="m7 21 3-6-1.5-3"/><path d="m7 3 3 6h4"/></svg>`,
         beef: `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16.4 13.7A6.5 6.5 0 1 0 6.28 6.6c-1.1 3.13-.78 3.9-3.18 6.08A3 3 0 0 0 5 18c4 0 8.4-1.8 11.4-4.3"/><path d="m18.5 6 2.19 4.5a6.48 6.48 0 0 1-2.29 7.2C15.4 20.2 11 22 7 22a3 3 0 0 1-2.68-1.66L2.4 16.5"/><circle cx="12.5" cy="8.5" r="2.5"/></svg>`,
         package: `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z"/><path d="M12 22V12"/><polyline points="3.29 7 12 12 20.71 7"/><path d="m7.5 4.27 9 5.15"/></svg>`,
+        pallet: `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></svg>`,
         truck: `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2"/><path d="M15 18H9"/><path d="M19 18h2a1 1 0 0 0 1-1v-3.65a1 1 0 0 0-.22-.624l-3.48-4.35A1 1 0 0 0 17.52 8H14"/><circle cx="17" cy="18" r="2"/><circle cx="7" cy="18" r="2"/></svg>`,
         warehouse: `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 21V10a1 1 0 0 0-1-1H7a1 1 0 0 0-1 1v11"/><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 1.132-1.803l7.95-3.974a2 2 0 0 1 1.837 0l7.948 3.974A2 2 0 0 1 22 8z"/><path d="M6 13h12"/><path d="M6 17h12"/></svg>`,
-        fish: `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 12c.94-3.46 4.94-6 8.5-6 3.56 0 6.06 2.54 7 6-.94 3.47-3.44 6-7 6s-7.56-2.53-8.5-6Z"/><path d="M18 12v.5"/><path d="M16 17.93a9.77 9.77 0 0 1 0-11.86"/><path d="M7 10.67C7 8 5.58 5.97 2.73 5.5c-1 1.5-1 5 .23 6.5-1.24 1.5-1.24 5-.23 6.5C5.58 18.03 7 16 7 13.33"/><path d="M10.46 7.26C10.2 5.88 9.17 4.24 8 3h5.8a2 2 0 0 1 1.98 1.67l.23 1.4"/><path d="m16.01 17.93-.23 1.4A2 2 0 0 1 13.8 21H9.5a5.96 5.96 0 0 0 1.49-3.98"/></svg>`
+        fish: `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 12c.94-3.46 4.94-6 8.5-6 3.56 0 6.06 2.54 7 6-.94 3.47-3.44 6-7 6s-7.56-2.53-8.5-6Z"/><path d="M18 12v.5"/><path d="M16 17.93a9.77 9.77 0 0 1 0-11.86"/><path d="M7 10.67C7 8 5.58 5.97 2.73 5.5c-1 1.5-1 5 .23 6.5-1.24 1.5-1.24 5-.23 6.5C5.58 18.03 7 16 7 13.33"/><path d="M10.46 7.26C10.2 5.88 9.17 4.24 8 3h5.8a2 2 0 0 1 1.98 1.67l.23 1.4"/><path d="m16.01 17.93-.23 1.4A2 2 0 0 1 13.8 21H9.5a5.96 5.96 0 0 0 1.49-3.98"/></svg>`,
+        thermometer: `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4v10.54a4 4 0 1 1-4 0V4a2 2 0 0 1 4 0Z"/></svg>`,
+        qrcode: `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect width="5" height="5" x="3" y="3" rx="1"/><rect width="5" height="5" x="16" y="3" rx="1"/><rect width="5" height="5" x="3" y="16" rx="1"/><path d="M21 16h-3a2 2 0 0 0-2 2v3"/><path d="M21 21v.01"/><path d="M12 7v3a2 2 0 0 1-2 2H7"/><path d="M3 12h.01"/><path d="M12 3h.01"/><path d="M12 16v.01"/><path d="M16 12h1"/><path d="M21 12v.01"/><path d="M12 21v-1"/></svg>`
       };
-      const svgCode = svgMap[preset] || svgMap.snowflake;
+      const svgCode = svgMap[preset] || svgMap.freezer_logo || svgMap.snowflake;
       const blob = new Blob([svgCode], { type: 'image/svg+xml;charset=utf-8' });
       const url = URL.createObjectURL(blob);
       const img = new Image();
@@ -511,7 +598,7 @@ const LibraryView: React.FC<{
         img.onerror = () => reject(new Error('Failed to render preset SVG'));
         img.src = url;
       });
-      const padding = size * 0.22;
+      const padding = size * 0.18;
       const drawSize = size - padding * 2;
       ctx.drawImage(img, padding, padding, drawSize, drawSize);
       URL.revokeObjectURL(url);
@@ -524,14 +611,18 @@ const LibraryView: React.FC<{
     setIsSavingPwaBranding(true);
     setPwaBrandingMessage(null);
     try {
-      const icon192 = await generateIconDataUrl(pwaIconType, pwaPresetIcon, pwaIconColor, pwaCustomImage, 192);
-      const icon512 = await generateIconDataUrl(pwaIconType, pwaPresetIcon, pwaIconColor, pwaCustomImage, 512);
+      const finalPreset = pwaPresetIcon || 'freezer_logo';
+      const icon192 = await generateIconDataUrl(pwaIconType, finalPreset, pwaIconColor, pwaCustomImage, 192);
+      const icon512 = await generateIconDataUrl(pwaIconType, finalPreset, pwaIconColor, pwaCustomImage, 512);
+
+      const cleanName = pwaAppName.trim() || 'Freezer Inventory Tracker';
+      const cleanShort = pwaShortName.trim() || 'FreezerApp';
 
       const payload = {
         configs: {
-          pwa_app_name: pwaAppName.trim() || 'Freezer Inventory Tracker',
-          pwa_short_name: pwaShortName.trim() || 'FreezerApp',
-          pwa_app_icon: pwaIconType === 'custom' ? 'custom' : pwaPresetIcon,
+          pwa_app_name: cleanName,
+          pwa_short_name: cleanShort,
+          pwa_app_icon: pwaIconType === 'custom' ? 'custom' : finalPreset,
           pwa_app_icon_color: pwaIconColor,
           pwa_icon_192: icon192,
           pwa_icon_512: icon512
@@ -560,9 +651,34 @@ const LibraryView: React.FC<{
             }
           });
         }
+
+        // Immediately update DOM title and meta tags
+        if (typeof document !== 'undefined') {
+          document.title = cleanName;
+          const appleMeta = document.querySelector('meta[name="apple-mobile-web-app-title"]');
+          if (appleMeta) appleMeta.setAttribute('content', cleanShort);
+          const appNameMeta = document.querySelector('meta[name="application-name"]');
+          if (appNameMeta) appNameMeta.setAttribute('content', cleanName);
+          const themeMeta = document.querySelector('meta[name="theme-color"]');
+          if (themeMeta) themeMeta.setAttribute('content', pwaIconColor);
+
+          const manifestLink = document.querySelector('link[rel="manifest"]') as HTMLLinkElement;
+          if (manifestLink) {
+            manifestLink.href = `./manifest.json?v=${Date.now()}`;
+          }
+          const iconLink = document.querySelector('link[rel="icon"]') as HTMLLinkElement;
+          if (iconLink) {
+            iconLink.href = icon192;
+          }
+          const appleIconLink = document.querySelector('link[rel="apple-touch-icon"]') as HTMLLinkElement;
+          if (appleIconLink) {
+            appleIconLink.href = icon192;
+          }
+        }
+
         setPwaBrandingMessage({
           type: 'success',
-          text: 'App name & icon saved! Browser title, manifest & icons updated.'
+          text: `App branding saved! Name "${cleanName}" & label "${cleanShort}" applied.`
         });
         setTimeout(() => setPwaBrandingMessage(null), 5000);
       } else {
@@ -589,7 +705,7 @@ const LibraryView: React.FC<{
         configs: {
           pwa_app_name: 'Freezer Inventory Tracker',
           pwa_short_name: 'FreezerApp',
-          pwa_app_icon: 'snowflake',
+          pwa_app_icon: 'freezer_logo',
           pwa_app_icon_color: '#0f172a',
           pwa_icon_192: '',
           pwa_icon_512: ''
@@ -621,12 +737,27 @@ const LibraryView: React.FC<{
         setPwaAppName('Freezer Inventory Tracker');
         setPwaShortName('FreezerApp');
         setPwaIconType('preset');
-        setPwaPresetIcon('snowflake');
+        setPwaPresetIcon('freezer_logo');
         setPwaIconColor('#0f172a');
         setPwaCustomImage(null);
+
+        if (typeof document !== 'undefined') {
+          document.title = 'Freezer Inventory Tracker';
+          const appleMeta = document.querySelector('meta[name="apple-mobile-web-app-title"]');
+          if (appleMeta) appleMeta.setAttribute('content', 'FreezerApp');
+          const appNameMeta = document.querySelector('meta[name="application-name"]');
+          if (appNameMeta) appNameMeta.setAttribute('content', 'Freezer Inventory Tracker');
+          const manifestLink = document.querySelector('link[rel="manifest"]') as HTMLLinkElement;
+          if (manifestLink) manifestLink.href = `./manifest.json?v=${Date.now()}`;
+          const iconLink = document.querySelector('link[rel="icon"]') as HTMLLinkElement;
+          if (iconLink) iconLink.href = './icon.svg';
+          const appleIconLink = document.querySelector('link[rel="apple-touch-icon"]') as HTMLLinkElement;
+          if (appleIconLink) appleIconLink.href = './apple-touch-icon.png';
+        }
+
         setPwaBrandingMessage({
           type: 'success',
-          text: 'Reset to default app name and icon.'
+          text: 'Reset to default app name and official icon.'
         });
         setTimeout(() => setPwaBrandingMessage(null), 4000);
       }
@@ -643,8 +774,8 @@ const LibraryView: React.FC<{
   // Synchronize local customPwaUrl with state.appConfig updates (e.g. from Server SSE)
   React.useEffect(() => {
     const customUrlConfig = (state.appConfig || []).find(item => item.key === 'pwa_custom_url');
-    if (customUrlConfig) {
-      setCustomPwaUrl(customUrlConfig.value);
+    if (customUrlConfig && customUrlConfig.value && customUrlConfig.value.trim()) {
+      setCustomPwaUrl(customUrlConfig.value.trim());
     } else {
       setCustomPwaUrl("");
     }
@@ -652,11 +783,29 @@ const LibraryView: React.FC<{
 
   // Helper to persist preferences directly to database app_config table
   const saveAppConfigKey = (key: string, value: string) => {
-    fetch('/api/app-config', {
+    fetch(getApiUrl('api/app-config'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ key, value })
-    }).catch(err => console.warn(`Could not save app_config key "${key}":`, err));
+    })
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (data && data.configs) {
+          const newAppConfig = Object.entries(data.configs).map(([k, v]) => ({
+            key: k,
+            value: v as string,
+            updatedAt: new Date().toISOString()
+          }));
+          dispatch({
+            type: 'REPLACE_STATE',
+            payload: {
+              ...state,
+              appConfig: newAppConfig
+            }
+          });
+        }
+      })
+      .catch(err => console.warn(`Could not save app_config key "${key}":`, err));
   };
 
   // Synchronize preferences from database app_config table on mount, migrating any local data seamlessly
@@ -758,10 +907,7 @@ const LibraryView: React.FC<{
   const theme = parentTheme || localTheme;
 
   React.useEffect(() => {
-    if (initialTab === "pwa") {
-      setActiveTab("settings");
-      setSettingsSubTab("pwa");
-    } else if (initialTab) {
+    if (initialTab) {
       setActiveTab(initialTab);
     }
   }, [initialTab]);
@@ -3341,14 +3487,34 @@ const LibraryView: React.FC<{
                                 onClick={async () => {
                                   setIsSavingPwaUrl(true);
                                   try {
-                                    const res = await fetch(getApiUrl('api/app-config'), {
-                                      method: 'POST',
-                                      headers: { 'Content-Type': 'application/json' },
-                                      body: JSON.stringify({ key: 'pwa_custom_url', value: "" })
+                                    const res = await fetch(getApiUrl('api/app-config/pwa_custom_url'), {
+                                      method: 'DELETE',
+                                      headers: { 'Content-Type': 'application/json' }
                                     });
                                     if (res.ok) {
+                                      const data = await res.json().catch(() => ({}));
+                                      const remainingConfigs = (state.appConfig || []).filter(item => item.key !== 'pwa_custom_url');
+                                      if (data.configs) {
+                                        const newConfigs = Object.entries(data.configs)
+                                          .filter(([k]) => k !== 'pwa_custom_url')
+                                          .map(([k, v]) => ({
+                                            key: k,
+                                            value: v as string,
+                                            updatedAt: new Date().toISOString()
+                                          }));
+                                        dispatch({
+                                          type: 'REPLACE_STATE',
+                                          payload: { ...state, appConfig: newConfigs }
+                                        });
+                                      } else {
+                                        dispatch({
+                                          type: 'REPLACE_STATE',
+                                          payload: { ...state, appConfig: remainingConfigs }
+                                        });
+                                      }
                                       setCustomPwaUrl("");
                                       setIsEditingPwaUrl(false);
+                                      setPwaUrlError("");
                                     } else {
                                       setPwaUrlError("Failed to clear custom URL.");
                                     }
@@ -3398,7 +3564,21 @@ const LibraryView: React.FC<{
                                       body: JSON.stringify({ key: 'pwa_custom_url', value: trimmed })
                                     });
                                     if (res.ok) {
+                                      const data = await res.json().catch(() => ({}));
+                                      if (data.configs) {
+                                        const newConfigs = Object.entries(data.configs).map(([k, v]) => ({
+                                          key: k,
+                                          value: v as string,
+                                          updatedAt: new Date().toISOString()
+                                        }));
+                                        dispatch({
+                                          type: 'REPLACE_STATE',
+                                          payload: { ...state, appConfig: newConfigs }
+                                        });
+                                      }
+                                      setCustomPwaUrl(trimmed);
                                       setIsEditingPwaUrl(false);
+                                      setPwaUrlError("");
                                     } else {
                                       setPwaUrlError("Failed to save custom URL.");
                                     }
@@ -3518,30 +3698,39 @@ const LibraryView: React.FC<{
                           {pwaIconType === 'preset' ? (
                             <div className="space-y-2.5">
                               {/* Preset Icons Selection */}
-                              <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
+                              <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-5 gap-2">
                                 {[
-                                  { id: 'snowflake', name: 'Freezer', icon: Snowflake },
-                                  { id: 'beef', name: 'Butcher', icon: Beef },
-                                  { id: 'package', name: 'Storage', icon: Package },
-                                  { id: 'truck', name: 'Transport', icon: Truck },
-                                  { id: 'warehouse', name: 'Depot', icon: Warehouse },
-                                  { id: 'fish', name: 'Seafood', icon: Fish },
+                                  { id: 'freezer_logo', name: 'App Logo (Freezer)', icon: FreezerAppLogoIcon, isOfficial: true },
+                                  { id: 'snowflake', name: 'Snowflake', icon: Snowflake },
+                                  { id: 'beef', name: 'Butcher / Beef', icon: Beef },
+                                  { id: 'package', name: 'Storage Box', icon: Package },
+                                  { id: 'pallet', name: 'Pallet / Staging', icon: Layers },
+                                  { id: 'truck', name: 'Freight / Truck', icon: Truck },
+                                  { id: 'warehouse', name: 'Depot Facility', icon: Warehouse },
+                                  { id: 'fish', name: 'Seafood / Fish', icon: Fish },
+                                  { id: 'thermometer', name: 'Sub-Zero Cryo', icon: Thermometer },
+                                  { id: 'qrcode', name: 'QR Scanner', icon: QrCode },
                                 ].map((preset) => {
                                   const IconComp = preset.icon;
-                                  const isSelected = pwaPresetIcon === preset.id;
+                                  const isSelected = (pwaPresetIcon === preset.id) || (!pwaPresetIcon && preset.id === 'freezer_logo');
                                   return (
                                     <button
                                       key={preset.id}
                                       type="button"
                                       onClick={() => setPwaPresetIcon(preset.id)}
-                                      className={`p-2 rounded-xl flex flex-col items-center gap-1 transition cursor-pointer border ${
+                                      className={`p-2.5 rounded-xl flex flex-col items-center gap-1.5 transition cursor-pointer border relative ${
                                         isSelected 
-                                          ? 'bg-cyan-950/60 border-cyan-500 text-cyan-300 ring-2 ring-cyan-500/30' 
-                                          : 'bg-cool-gray-950 border-cool-gray-800 text-cool-gray-400 hover:border-cool-gray-700 hover:text-cool-gray-200'
+                                          ? 'bg-cyan-950/70 border-cyan-500 text-cyan-300 ring-2 ring-cyan-500/40 shadow-sm' 
+                                          : 'bg-cool-gray-950 border-cool-gray-800 text-cool-gray-400 hover:border-cool-gray-750 hover:text-cool-gray-200'
                                       }`}
                                     >
-                                      <IconComp className="w-5 h-5" />
-                                      <span className="text-[10px] font-semibold">{preset.name}</span>
+                                      {preset.isOfficial && (
+                                        <span className="absolute -top-1.5 -right-1 px-1.5 py-0.2 bg-cyan-600 text-white text-[8px] font-extrabold rounded-full uppercase tracking-tight shadow-sm">
+                                          Default
+                                        </span>
+                                      )}
+                                      <IconComp className={`w-5 h-5 ${preset.isOfficial ? 'text-cyan-400' : ''}`} />
+                                      <span className="text-[10px] font-semibold text-center truncate w-full">{preset.name}</span>
                                     </button>
                                   );
                                 })}
@@ -3640,12 +3829,16 @@ const LibraryView: React.FC<{
                               <img src={pwaCustomImage} alt="App Icon" className="w-11 h-11 object-contain" />
                             ) : (
                               <div className="text-white">
+                                {(!pwaPresetIcon || pwaPresetIcon === 'freezer_logo') && <FreezerAppLogoIcon className="w-11 h-11 text-white" />}
                                 {pwaPresetIcon === 'snowflake' && <Snowflake className="w-9 h-9 stroke-[1.8]" />}
                                 {pwaPresetIcon === 'beef' && <Beef className="w-9 h-9 stroke-[1.8]" />}
                                 {pwaPresetIcon === 'package' && <Package className="w-9 h-9 stroke-[1.8]" />}
+                                {pwaPresetIcon === 'pallet' && <Layers className="w-9 h-9 stroke-[1.8]" />}
                                 {pwaPresetIcon === 'truck' && <Truck className="w-9 h-9 stroke-[1.8]" />}
                                 {pwaPresetIcon === 'warehouse' && <Warehouse className="w-9 h-9 stroke-[1.8]" />}
                                 {pwaPresetIcon === 'fish' && <Fish className="w-9 h-9 stroke-[1.8]" />}
+                                {pwaPresetIcon === 'thermometer' && <Thermometer className="w-9 h-9 stroke-[1.8]" />}
+                                {pwaPresetIcon === 'qrcode' && <QrCode className="w-9 h-9 stroke-[1.8]" />}
                               </div>
                             )}
                             <div className="absolute inset-0 bg-gradient-to-b from-white/20 via-transparent to-black/25 pointer-events-none rounded-2xl"></div>
@@ -4012,7 +4205,7 @@ const LibraryView: React.FC<{
         <div className="flex border-b border-cool-gray-700 overflow-x-auto w-full lg:w-auto pb-1 gap-1">
           <button
             onClick={() => {
-              setActiveTab("products");
+              handleSwitchTab("products");
             }}
             className={`px-3 py-2 text-sm font-semibold rounded-t-md transition-all whitespace-nowrap ${activeTab === "products" ? "border-b-2 border-cyan-500 bg-cool-gray-800 text-cyan-300" : "text-cool-gray-400 hover:text-white hover:bg-cool-gray-800/40"}`}
           >
@@ -4020,7 +4213,7 @@ const LibraryView: React.FC<{
           </button>
           <button
             onClick={() => {
-              setActiveTab("containers");
+              handleSwitchTab("containers");
             }}
             className={`px-3 py-2 text-sm font-semibold rounded-t-md transition-all whitespace-nowrap ${activeTab === "containers" ? "border-b-2 border-cyan-500 bg-cool-gray-800 text-cyan-300" : "text-cool-gray-400 hover:text-white hover:bg-cool-gray-800/40"}`}
           >
@@ -4028,7 +4221,7 @@ const LibraryView: React.FC<{
           </button>
           <button
             onClick={() => {
-              setActiveTab("freezers");
+              handleSwitchTab("freezers");
             }}
             className={`px-3 py-2 text-sm font-semibold rounded-t-md transition-all whitespace-nowrap ${activeTab === "freezers" ? "border-b-2 border-cyan-500 bg-cool-gray-800 text-cyan-300" : "text-cool-gray-400 hover:text-white hover:bg-cool-gray-800/40"}`}
           >
@@ -4036,7 +4229,7 @@ const LibraryView: React.FC<{
           </button>
           <button
             onClick={() => {
-              setActiveTab("lists");
+              handleSwitchTab("lists");
             }}
             className={`px-3 py-2 text-sm font-semibold rounded-t-md transition-all whitespace-nowrap ${activeTab === "lists" ? "border-b-2 border-cyan-500 bg-cool-gray-800 text-cyan-300" : "text-cool-gray-400 hover:text-white hover:bg-cool-gray-800/40"}`}
           >
@@ -4044,7 +4237,7 @@ const LibraryView: React.FC<{
           </button>
           <button
             onClick={() => {
-              setActiveTab("tags");
+              handleSwitchTab("tags");
             }}
             className={`px-3 py-2 text-sm font-semibold rounded-t-md transition-all whitespace-nowrap ${activeTab === "tags" ? "border-b-2 border-cyan-500 bg-cool-gray-800 text-cyan-300" : "text-cool-gray-400 hover:text-white hover:bg-cool-gray-800/40"}`}
           >
@@ -4052,7 +4245,7 @@ const LibraryView: React.FC<{
           </button>
           <button
             onClick={() => {
-              setActiveTab("locations");
+              handleSwitchTab("locations");
             }}
             className={`px-3 py-2 text-sm font-semibold rounded-t-md transition-all whitespace-nowrap ${activeTab === "locations" ? "border-b-2 border-cyan-500 bg-cool-gray-800 text-cyan-300" : "text-cool-gray-400 hover:text-white hover:bg-cool-gray-800/40"}`}
           >
@@ -4060,7 +4253,7 @@ const LibraryView: React.FC<{
           </button>
           <button
             onClick={() => {
-              setActiveTab("photos");
+              handleSwitchTab("photos");
             }}
             className={`px-3 py-2 text-sm font-semibold rounded-t-md transition-all whitespace-nowrap ${activeTab === "photos" ? "border-b-2 border-cyan-500 bg-cool-gray-800 text-cyan-300" : "text-cool-gray-400 hover:text-white hover:bg-cool-gray-800/40"}`}
           >
@@ -4068,7 +4261,7 @@ const LibraryView: React.FC<{
           </button>
           <button
             onClick={() => {
-              setActiveTab("import");
+              handleSwitchTab("import");
             }}
             className={`px-3 py-2 text-sm font-semibold rounded-t-md transition-all whitespace-nowrap ${activeTab === "import" ? "border-b-2 border-cyan-500 bg-cool-gray-800 text-cyan-300" : "text-cool-gray-400 hover:text-white hover:bg-cool-gray-800/40"}`}
           >
@@ -4076,7 +4269,7 @@ const LibraryView: React.FC<{
           </button>
           <button
             onClick={() => {
-              setActiveTab("pwa");
+              handleSwitchTab("pwa");
             }}
             className={`px-3 py-2 text-sm font-semibold rounded-t-md transition-all whitespace-nowrap ${activeTab === "pwa" ? "border-b-2 border-cyan-500 bg-cool-gray-800 text-cyan-300" : "text-cool-gray-400 hover:text-white hover:bg-cool-gray-800/40"}`}
           >
@@ -4084,7 +4277,7 @@ const LibraryView: React.FC<{
           </button>
           <button
             onClick={() => {
-              setActiveTab("settings");
+              handleSwitchTab("settings");
             }}
             className={`px-3 py-2 text-sm font-semibold rounded-t-md transition-all whitespace-nowrap ${activeTab === "settings" ? "border-b-2 border-cyan-500 bg-cool-gray-800 text-cyan-300" : "text-cool-gray-400 hover:text-white hover:bg-cool-gray-800/40"}`}
           >

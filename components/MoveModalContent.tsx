@@ -240,12 +240,16 @@ const MoveMeat: React.FC<CommonMoveProps & { meatCutId: string }> = ({ dispatch,
           )}
           <div className="flex-1 min-w-0">
             <p className="font-semibold truncate">{container.name}</p>
-            {freezer && (
+            {freezer ? (
               <p className="text-xs text-cool-gray-300 flex items-center gap-1">
                 <span>❄️ {freezer.name}</span>
                 {freezer.isSpecial && (
                   <Star className="w-2.5 h-2.5 text-amber-400 fill-amber-400 inline shrink-0" title="Display Case" />
                 )}
+              </p>
+            ) : (
+              <p className="text-xs text-amber-300 font-bold flex items-center gap-1">
+                <span>🛒 Staging Area</span>
               </p>
             )}
           </div>
@@ -258,7 +262,7 @@ const MoveMeat: React.FC<CommonMoveProps & { meatCutId: string }> = ({ dispatch,
     const searchWords = searchRetiredText.toLowerCase().trim().split(/\s+/).filter(Boolean);
 
     if (destinationType === 'existing') {
-        containerList = state.containers.filter(c => c.freezerId && c.id !== meatCut.containerId && !c.isArchived);
+        containerList = state.containers.filter(c => !c.isArchived && c.id !== meatCut.containerId && (c.id === 'staging_loose' || !c.id.endsWith('_loose')));
         if (searchWords.length > 0) {
             containerList = containerList.filter(c => {
                 const nameLower = c.name.toLowerCase();
@@ -754,12 +758,16 @@ const ChangeContainerFlow: React.FC<CommonMoveProps & { containerId: string }> =
           )}
           <div className="flex-1 min-w-0">
             <p className="font-semibold text-xs truncate">{container.name}</p>
-            {freezer && (
+            {freezer ? (
               <p className="text-[10px] text-cool-gray-300 flex items-center gap-1">
                 <span>❄️ {freezer.name}</span>
                 {freezer.isSpecial && (
                   <Star className="w-2.5 h-2.5 text-amber-400 fill-amber-400 inline shrink-0" title="Display Case" />
                 )}
+              </p>
+            ) : (
+              <p className="text-[10px] text-amber-300 font-bold flex items-center gap-1">
+                <span>🛒 Staging Area</span>
               </p>
             )}
           </div>
@@ -772,7 +780,7 @@ const ChangeContainerFlow: React.FC<CommonMoveProps & { containerId: string }> =
     const searchWords = searchRetiredText.toLowerCase().trim().split(/\s+/).filter(Boolean);
 
     if (destinationType === 'existing') {
-        containerList = state.containers.filter(c => c.freezerId && c.id !== containerId && !c.isBox && !c.id.startsWith('box-') && !c.isArchived);
+        containerList = state.containers.filter(c => !c.isArchived && c.id !== containerId && (c.id === 'staging_loose' || (!c.isBox && !c.id.startsWith('box-') && !c.id.endsWith('_loose'))));
         if (searchWords.length > 0) {
             containerList = containerList.filter(c => {
                 const nameLower = c.name.toLowerCase();

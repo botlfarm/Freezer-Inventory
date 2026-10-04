@@ -1,6 +1,6 @@
 # Technical Architecture & Context Reference Document
 **Project:** Freezer Inventory Tracker  
-**Current Version:** `2.48.10`  
+**Current Version:** `2.51.4`  
 **Target Environment:** Standalone Web Application & Live Home Assistant Add-On (Ingress Compatible)
 
 ---
@@ -9,10 +9,11 @@
 The **Freezer Inventory Tracker** is a full-stack, real-time inventory and cold-chain traceability management platform designed for farms, butcheries, commercial kitchens, and household storage. It manages physical meat cuts and general food inventory across on-site physical freezers, display cases, storage containers/boxes, off-site commercial cold storage facilities, palletized bulk freight, and custom butcher processing orders.
 
 ### Key Functional Capabilities
+- **Live Inventory Item & Container Matching**: Real-time live search across active and archived catalog items and containers during product intake and container creation. Automatically detects duplicate names, highlights archived items (`📁 Archived`), provides 1-click unarchive & restore workflows, and allows placing existing spare containers into target freezers with 1-click.
 - **Progressive Web App (PWA) & Offline Resiliency**: Service Worker asset caching for 0-network boot, client-side IndexedDB database caching (`freezer_inventory_offline_db`) for 0ms loads, custom PWA app name/icon branding, dedicated PWA & Devices main-level settings tab, and persistent offline mutation queue with automatic FIFO background replay upon reconnect.
-- **PWA Device Registry & Access Control**: Persistent hardware device identification (`deviceId` UUID) per device, initial operator & device setup prompts, relational SQLite `pwa_devices` registry, PWA Device Manager dashboard in Settings, and hardware-level device revocation (severing SSE connections and blocking mutations with `403 DEVICE_REVOKED` regardless of persistent cookies).
+- **PWA Device Registry, User Grouping & Access Control**: Persistent hardware device identification (`deviceId` UUID) per device, initial operator & device setup prompts, relational SQLite `pwa_devices` registry, PWA Device Manager dashboard in Settings. Features user-centric grouping (viewing all devices organized by operator handle), multi-criteria filtering (status, online presence, standalone PWA vs. browser, search), individual device killswitch, and user-level bulk revocation (`/api/devices/user/:operator/revoke`) which severs real-time SSE streams and blocks all of a user's registered devices with `403 DEVICE_REVOKED` regardless of persistent cookies.
 - **On-Site & Display Case Inventory**: Real-time bin, shelf, and container tracking with instant quantity adjustments, math expression evaluation (`+5`, `-2`, `3*4`), split cuts, tag filtering, customizable hierarchy sorting (alphabetical or user-defined category/sub/cut sequence), and restock alerts.
-- **Off-Site Cold Storage & Movement Planning**: Multi-facility tracking, pallet and box hierarchies, drag-and-drop staging worksheets, barcoded QR scanning, pick/delivery order execution, and movement history.
+- **Off-Site Cold Storage & Movement Planning**: Multi-facility tracking, pallet and box hierarchies, drag-and-drop staging worksheets, unified worksheet spreadsheet with synchronized sticky multi-select toolbar and column headers, barcoded QR scanning, pick/delivery order execution, and movement history.
 - **Butcher Processing & Traceability**: Harvest lot tracking, animal counts, live/hot/cold weights, yield calculations, butcher document attachments, and full parent-cut lineage.
 - **Automated Custom Lists & Notifications**: Inventory-controlled lists (min/max thresholds based on on-site counts, off-site counts, or off-site weights) with Home Assistant notifications, SMTP emails, or webhook alerts.
 - **Real-Time Collaboration & Presence Lifecycle**: Two operating modes (Smart Auto Mode and Exclusive Single-User Lock) with Server-Sent Events (SSE), instant `sendBeacon` leave notifications on tab close/unload, immediate collaborative sync when multiple users work in the same zone, atomic action queuing, and sub-second delta synchronization.
@@ -57,16 +58,16 @@ The backend uses a normalized SQLite relational architecture to eliminate data d
 
 #### 1. Core On-Site Entities
 - **`Freezer`**: Physical cold storage unit (e.g., Chest Freezer, Walk-In, Display Case). Attributes: `id`, `name`, `isSpecial`, `isLooseOnly`.
-- **`Container`**: Storage bins, boxes, shelves, or dividers inside or outside a freezer. Attributes: `id`, `name`, `freezerId`, `templateId`, `imageUrl`, `deleteOnEmpty`, `icon`, `isBox`, `color`, `isArchived`.
+- **`Container`**: Storage bins, boxes, shelves, or dividers inside a freezer or placed on the Staging Area / Sorting Table (`freezerId: undefined`). Attributes: `id`, `name`, `freezerId`, `templateId`, `imageUrl`, `deleteOnEmpty`, `icon`, `isBox`, `color`, `isArchived`. Staging containers holding meat cuts remain safely unassigned to any physical freezer. If a container's physical freezer is deleted or missing, it is automatically relocated to the Staging Area (`freezerId: undefined`) so inventory is never lost. When retiring a container with active items, operators can choose between relocating contents to the Sorting Table (`emptyCuts: true`) or permanently deleting all items with the container (`deleteCuts: true`).
 - **`ContainerTemplate`**: Reusable container blueprint definitions (`id`, `name`, `icon`, `imageUrl`).
 - **`Product`**: Canonical item definition. Attributes: `id`, `name`, `primaryCategory`, `subCategory`, `productNumbers[]`, `barcode`, `salePrice`, `salePriceUnit`, `listThresholds`, `listControlSources`, `defaultTagIds`, `isArchived`.
-- **`MeatCut`**: Actual on-site physical package inventory record. Attributes: `id`, `productId`, `containerId`, `quantity`, `notes`, `tagIds`, `originalCutName`, `wrongLabel`, `isWrongLabel`, `serial`, `lot`, `packDate`, `weight`.
+- **`MeatCut`**: Actual on-site physical package inventory record. Attributes: `id`, `productId`, `containerId`, `quantity`, `notes`, `tagIds`, `originalCutName`, `wrongLabel`, `isWrongLabel`, `serial`, `lot`, `packDate`, `weight`. If a cut's container is deleted, archived, or lost, it is automatically recovered and moved to the Sorting Table (`staging_loose`).
 
 #### 2. Off-Site Storage & Freight Entities
 - **`AppLocation`**: Physical facilities or destinations (`id`, `name`, `address`, `contact`, `isHome`, `type: 'storage' | 'delivery_pickup'`, `hasPallets`).
 - **`AppPallet`**: Pallet identifier (`id`, `storageLocationId`, `tagIds`, `notes`, `isArchived`).
 - **`AppBox`**: Box identifier (`id`, `palletId`, `tagIds`, `notes`, `isArchived`).
-- **`OffSiteEntry`**: Individual package or bulk record located in off-site storage. Attributes: `id`, `serial`, `originalCutName`, `productId`, `packDate`, `lot`, `pieces`, `netWeight`, `box`, `pallet`, `currentLocation`, `storageLocationId`, `tagIds`, `archived`, `staged`, `wrongLabel`.
+- **`OffSiteEntry`**: Individual package or bulk record located in off-site storage. Attributes: `id`, `serial`, `originalCutName`, `productId`, `packDate`, `lot`, `pieces`, `netWeight`, `box`, `pallet`, `currentLocation`, `storageLocationId`, `tagIds`, `archived`, `staged`, `wrongLabel`. Tags are fully mutable and can be cleared (`tagIds: []`) with one-click direct removal buttons (`✕`) on badges, via `OffSiteTagPopover` ("Clear All Tags"), in the item edit modal, or bulk edit modal. The server normalization routine preserves empty `tagIds: []` arrays without forcibly re-injecting product `defaultTagIds`.
 - **`MovementOrder`**: Planned or completed stock transfer. Attributes: `id`, `name`, `date`, `status: 'planning' | 'finalized' | 'completed'`, `palletsInPlay[]`, `locationsInPlay[]`, `moves: MovementItem[]`, `pickedBoxIds[]`, `deliveredBoxIds[]`, `pickedItemIds[]`, `deliveredItemIds[]`.
 
 #### 3. Butcher Processing & Lineage
@@ -129,6 +130,12 @@ The application features a hybrid synchronization architecture designed for zero
 - **Structural Sharing (`reconcileStateReferences`)**: When a server response returns, unaffected entity collections (`offSiteEntries`, `products`, `freezers`, `customLists`, etc.) retain their exact JavaScript memory references. This eliminates unnecessary React re-renders and skips heavy computation passes.
 - **Client Metadata Tracking**: Every action captures client environment headers (`X-Client-Device`, `X-Client-Info`, `X-Client-Id`, `X-User-Name`) for granular audit attribution.
 
+### Browser History & Back Navigation Lifecycle
+- **HTML5 History (`pushState` / `popstate`) Integration**: Every primary view change (`product`, `freezer`, `offsite`, `library`, `history`, `traceability`, `reconcile`, etc.) and major sub-tab switch pushes structured state entries into `window.history`.
+- **Hardware & Swipe-Back Gesture Support**: Swiping from the screen edge on mobile devices (iOS Safari, Android Chrome, and Home Assistant Companion App) or pressing hardware/mouse/browser back buttons returns to the previous screen rather than kicking the user out of the application.
+- **Deep-Linking & Safe Hash Routing**: Screen locations synchronize with URL hashes (`#product`, `#freezer`, `#offsite/hierarchy`, etc.) ensuring compatibility with Home Assistant Ingress reverse-proxied paths without causing page reloads.
+- **Hierarchical Modal Back-Dismissal**: Opening an interactive modal dialog, item inspector, photo preview, or confirmation popup pushes a lightweight modal history state. Pressing back or swiping back while a modal is open safely dismisses the modal while keeping the operator on their active screen.
+
 ---
 
 ## 5. Key Design Decisions & Performance Optimizations
@@ -148,10 +155,24 @@ The application features a hybrid synchronization architecture designed for zero
 
 ## 6. Backup, Restore & Disaster Recovery
 
+- **Complete Multi-Table Coverage (20 Database Tables)**: All backups (SQLite `.db`, full `.zip` capsules, and `.json` files) capture the entire relational database state across all 20 system tables: `freezers`, `container_templates`, `containers`, `categories`, `products`, `meat_cuts`, `locations`, `pallets`, `boxes`, `off_site_entries`, `movement_orders`, `butcher_orders`, `custom_lists`, `tags`, `app_config`, `notification_settings`, `notification_logs`, `history`, `pwa_devices`, and `undo_sql_journal`.
+- **Selective Table-by-Table & Broad Section Restoration**: Interactive preview inspector (`/api/backups/preview/:filename`) allows previewing active database vs. snapshot record counts, net differences, sample items, and restoring either the entire database or an exact subset of tables.
+- **Foreign Key Dependency Validation**: Pre-flight dependency checking (`/api/backups/check-dependencies/:filename`) flags missing parent relationships and offers 1-click auto-selection of prerequisite tables before restoration.
 - **Full JSON Backups (`/api/backups/create`)**: Generates complete database snapshots with timestamped filenames.
-- **ZIP Package Backups (`/api/backups/export-zip`)**: Packages the entire database, configuration, and image uploads directory (`/data/uploads`) into a single portable `.zip` archive.
-- **Automated Periodic Snapshots**: Configurable daily/weekly auto-snapshots with automated retention pruning.
+- **ZIP Package Backups (`/api/backups/export-zip` & `/api/backups/import-zip`)**: Packages the entire database, configuration, and image uploads directory (`/data/uploads`) into a single portable `.zip` archive.
+- **Automated Periodic Snapshots**: Configurable dual-schedule daily database backups and weekly full ZIP archives with automated retention pruning.
 - **Database Undo Subsystem (`/api/inventory/undo`)**: Reconstructs previous entity states from transactional undo snapshots without requiring full database rollbacks.
+
+### Mandatory Future Table Integration Rule
+Whenever any new database table or relational entity is introduced in the future, it **MUST** be integrated across all backup and restore layers:
+1. **Schema & Types**: Add table schema to `TABLE_SCHEMAS` in `/server.ts`, define TypeScript interfaces, and register in `InventoryState` in `/types.ts`.
+2. **State Synchronization**: Include the new table in `loadStateSync` and `saveStateSync` in `/server.ts` with delta-checking.
+3. **Metadata & Aliasing**: Register the new table in `DATABASE_TABLE_DEFINITIONS` and `TABLE_ALIAS_MAP` in `/server.ts` with label, category, icon, description, and foreign key dependencies (`dependsOn` / `dependents`).
+4. **All Backup Formats**: Ensure complete capture and restoration in `.db` snapshots, `.zip` capsules (`/api/backups/export-zip` & `/api/backups/import-zip`), and `.json` exports (`/api/backups/create`).
+5. **Preview & Inspection**: Add the table to table count parsing in `/api/backups/preview/:filename` for `.db`, `.json`, and `.zip` archives.
+6. **Dependency Engine**: Add foreign key validation rules in `checkDatabaseDependencies` and `checkJsonDependencies` in `/server.ts`.
+7. **Selective Restore UI**: Add the table to the Table-by-Table comparison matrix and quick-selection filters in `/views/DataImportView.tsx`.
+8. **Documentation**: Update `/FREEZER_MAPPING_AI_GUIDE.md` and `/APP_CONTEXT.md` with the new table schema and relations.
 
 ---
 

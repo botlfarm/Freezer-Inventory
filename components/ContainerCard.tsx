@@ -4,7 +4,7 @@ import { Container, MeatCut, ModalType, Action, InventoryState } from '../types'
 import { PlusIcon, HistoryIcon, MoveIcon, RetireIcon, EditIcon } from './icons';
 import { getContainerIcon } from './ContainerIconsMap';
 import MeatCutRow from './MeatCutRow';
-import { Move, MoreVertical } from 'lucide-react';
+import { Move, MoreVertical, Trash2 } from 'lucide-react';
 
 const ContainerCard: React.FC<ContainerCardProps> = ({ container, meatCuts, dispatch, openModal, state, isDimmed, highlightedMeatCutIds, isHighlighted, onFindProduct }) => {
   const Icon = getContainerIcon(container?.icon || 'generic');
@@ -343,28 +343,59 @@ const ContainerCard: React.FC<ContainerCardProps> = ({ container, meatCuts, disp
 
         {showRetireConfirm && createPortal(
             <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs text-left">
-                <div className="w-full max-w-sm p-5 bg-cool-gray-800 border border-cool-gray-750 rounded-lg shadow-xl animate-scale-up">
+                <div className="w-full max-w-md p-5 bg-cool-gray-800 border border-cool-gray-750 rounded-lg shadow-xl animate-scale-up">
                     <h4 className="text-md font-bold text-cyan-400 mb-2">Retire Container</h4>
-                    <p className="text-sm text-cool-gray-300">
+                    <div className="text-sm text-cool-gray-300">
                       {meatCuts.length > 0 ? (
-                        <span>Are you sure you want to retire the container <span className="font-semibold text-white">"{container.name}"</span>? It currently contains <span className="font-semibold text-yellow-400">{meatCuts.length} different item(s)</span>. <span className="text-amber-400 font-semibold block mt-1.5">Retiring will empty this container and safely relocate all its contents to the Sorting Table (Staging Area).</span></span>
+                        <>
+                          <p>
+                            Are you sure you want to retire the container <span className="font-semibold text-white">"{container.name}"</span>? It currently contains <span className="font-semibold text-yellow-400">{meatCuts.length} different item(s)</span> ({meatCuts.reduce((acc, mc) => acc + (mc.quantity || 0), 0)} total pieces).
+                          </p>
+                          <p className="text-amber-400 font-semibold mt-2 text-xs">
+                            • Click <span className="text-cyan-300 font-bold">"Yes, Retire"</span> to empty the container and move all contents to the Sorting Table (Staging Area).
+                          </p>
+                          <p className="text-rose-400 font-semibold mt-1 text-xs">
+                            • Click <span className="text-rose-300 font-bold">"Retire & Delete All Items"</span> to retire the container and permanently remove all its contents from inventory.
+                          </p>
+                        </>
                       ) : (
-                        <span>Are you sure you want to retire the container <span className="font-semibold text-white">"{container.name}"</span>? It will be removed from the freezer but can be used again later.</span>
+                        <p>
+                          Are you sure you want to retire the container <span className="font-semibold text-white">"{container.name}"</span>? It will be removed from the freezer but can be used again later.
+                        </p>
                       )}
-                    </p>
-                    <div className="flex justify-end gap-2.5 mt-5">
+                    </div>
+                    <div className="flex flex-col-reverse sm:flex-row justify-end gap-2.5 mt-5">
                         <button 
+                            type="button"
                             onClick={() => setShowRetireConfirm(false)} 
-                            className="px-3 py-1.5 bg-cool-gray-700 hover:bg-cool-gray-650 text-white text-xs font-semibold rounded transition"
+                            className="px-3 py-1.5 bg-cool-gray-700 hover:bg-cool-gray-650 text-white text-xs font-semibold rounded transition cursor-pointer text-center"
                         >
                             Cancel
                         </button>
+                        {meatCuts.length > 0 && (
+                            <button 
+                                type="button"
+                                id={`btn-retire-delete-all-${container.id}`}
+                                onClick={() => {
+                                    dispatch({ type: 'MOVE_CONTAINER', payload: { containerId: container.id, newFreezerId: undefined, deleteCuts: true } });
+                                    setShowRetireConfirm(false);
+                                }} 
+                                className="px-3 py-1.5 bg-rose-700 hover:bg-rose-600 text-white text-xs font-semibold rounded transition cursor-pointer flex items-center justify-center gap-1.5 text-center shadow-xs"
+                                title="Retire container and permanently delete all items inside"
+                            >
+                                <Trash2 className="w-3.5 h-3.5 shrink-0" />
+                                <span>Retire & Delete All Items</span>
+                            </button>
+                        )}
                         <button 
+                            type="button"
+                            id={`btn-retire-keep-${container.id}`}
                             onClick={() => {
                                 dispatch({ type: 'MOVE_CONTAINER', payload: { containerId: container.id, newFreezerId: undefined, emptyCuts: true } });
                                 setShowRetireConfirm(false);
                             }} 
-                            className="px-3 py-1.5 bg-cyan-650 hover:bg-cyan-550 text-white text-xs font-semibold rounded transition"
+                            className="px-3 py-1.5 bg-cyan-650 hover:bg-cyan-550 text-white text-xs font-semibold rounded transition cursor-pointer text-center shadow-xs"
+                            title={meatCuts.length > 0 ? "Retire container and move items to Sorting Table (Staging Area)" : "Retire container"}
                         >
                             Yes, Retire
                         </button>

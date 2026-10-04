@@ -1,22 +1,25 @@
 // Select tags modal content component
 import React, { useState } from 'react';
 import { InventoryState, Action } from '../types';
-import { Tag, CheckSquare, Square } from 'lucide-react';
+import { Tag, CheckSquare, Square, Trash2 } from 'lucide-react';
 
 interface SelectTagsModalContentProps {
   dispatch: React.Dispatch<Action>;
   state: InventoryState;
-  meatCutId: string;
+  meatCutId?: string;
+  offSiteEntryId?: string;
   onClose: () => void;
 }
 
-export const SelectTagsModalContent: React.FC<SelectTagsModalContentProps> = ({ dispatch, state, meatCutId, onClose }) => {
-  const meatCut = state.meatCuts.find(mc => mc.id === meatCutId);
+export const SelectTagsModalContent: React.FC<SelectTagsModalContentProps> = ({ dispatch, state, meatCutId, offSiteEntryId, onClose }) => {
+  const meatCut = meatCutId ? state.meatCuts.find(mc => mc.id === meatCutId) : null;
+  const offSiteEntry = offSiteEntryId ? (state.offSiteEntries || []).find(e => e.id === offSiteEntryId) : null;
   const tags = state.tags || [];
 
-  const [selectedTagIds, setSelectedTagIds] = useState<string[]>(() => [...(meatCut?.tagIds || [])]);
+  const initialTagIds = meatCut?.tagIds || offSiteEntry?.tagIds || [];
+  const [selectedTagIds, setSelectedTagIds] = useState<string[]>(() => [...initialTagIds]);
 
-  if (!meatCut) {
+  if (!meatCut && !offSiteEntry) {
     return (
       <div className="p-4 text-center text-red-400">
         Inventory item not found.
@@ -24,8 +27,16 @@ export const SelectTagsModalContent: React.FC<SelectTagsModalContentProps> = ({ 
     );
   }
 
-  const product = state.products.find(p => p.id === meatCut.productId);
-  const container = state.containers.find(c => c.id === meatCut.containerId);
+  const product = meatCut ? state.products.find(p => p.id === meatCut.productId) : null;
+  const container = meatCut ? state.containers.find(c => c.id === meatCut.containerId) : null;
+
+  const itemName = meatCut 
+    ? (product?.name || 'Unknown Product')
+    : (offSiteEntry?.cuts || offSiteEntry?.originalCutName || 'Off-Site Item');
+
+  const locationInfo = meatCut
+    ? (container?.name || 'Unknown Container')
+    : (`${offSiteEntry?.location || 'Off-Site'}${offSiteEntry?.currentLocation ? ` • Pallet: ${offSiteEntry.currentLocation}` : ''}${offSiteEntry?.box ? ` • Box: ${offSiteEntry.box}` : ''}`);
 
   const handleToggleTag = (tagId: string) => {
     setSelectedTagIds(prev => 
@@ -33,40 +44,70 @@ export const SelectTagsModalContent: React.FC<SelectTagsModalContentProps> = ({ 
     );
   };
 
-  const handleSave = () => {
-    const initialTags = meatCut.tagIds || [];
-    const tagsToAdd = selectedTagIds.filter(id => !initialTags.includes(id));
-    const tagsToRemove = initialTags.filter(id => !selectedTagIds.includes(id));
+  const handleClearAll = () => {
+    setSelectedTagIds([]);
+  };
 
-    tagsToAdd.forEach(tagId => {
-      dispatch({
-        type: 'TOGGLE_MEAT_TAG',
-        payload: { meatCutId, tagId }
+  const handleSave = async () => {
+    if (offSiteEntryId) {
+      await dispatch({
+        type: 'UPDATE_OFFSITE_ENTRY',
+        payload: {
+          id: offSiteEntryId,
+          updates: { tagIds: selectedTagIds }
+        }
       });
-    });
+      onClose();
+      return;
+    }
 
-    tagsToRemove.forEach(tagId => {
-      dispatch({
-        type: 'TOGGLE_MEAT_TAG',
-        payload: { meatCutId, tagId }
-      });
-    });
+    if (meatCutId && meatCut) {
+      const initialTags = meatCut.tagIds || [];
+      const tagsToAdd = selectedTagIds.filter(id => !initialTags.includes(id));
+      const tagsToRemove = initialTags.filter(id => !selectedTagIds.includes(id));
 
-    onClose();
+      for (const tagId of tagsToAdd) {
+        await dispatch({
+          type: 'TOGGLE_MEAT_TAG',
+          payload: { meatCutId, tagId }
+        });
+      }
+
+      for (const tagId of tagsToRemove) {
+        await dispatch({
+          type: 'TOGGLE_MEAT_TAG',
+          payload: { meatCutId, tagId }
+        });
+      }
+
+      onClose();
+    }
   };
 
   return (
     <div className="flex flex-col gap-4 p-2 text-sm">
       <div className="bg-cool-gray-850 p-3 rounded-lg border border-cool-gray-750">
         <label className="text-[11px] font-bold text-cool-gray-400 uppercase tracking-wider block mb-0.5">Item Info</label>
-        <span className="text-base font-extrabold text-cool-gray-100">{product?.name || 'Unknown Product'}</span>
+        <span className="text-base font-extrabold text-cool-gray-100">{itemName}</span>
         <span className="text-xs text-cool-gray-400 block mt-0.5">
-          Located in: <span className="text-amber-400 font-semibold">{container?.name || 'Unknown Container'}</span>
+          Located in: <span className="text-amber-400 font-semibold">{locationInfo}</span>
         </span>
       </div>
 
-      <div className="text-xs font-bold text-cool-gray-400 uppercase tracking-wider mt-2 flex items-center gap-1.5">
-        <Tag className="w-3.5 h-3.5 text-cyan-400" /> Select Tags for this Item:
+      <div className="flex items-center justify-between mt-2">
+        <div className="text-xs font-bold text-cool-gray-400 uppercase tracking-wider flex items-center gap-1.5">
+          <Tag className="w-3.5 h-3.5 text-cyan-400" /> Select Tags for this Item:
+        </div>
+        {selectedTagIds.length > 0 && (
+          <button
+            type="button"
+            onClick={handleClearAll}
+            className="text-[11px] text-red-400 hover:text-red-300 font-bold px-2 py-0.5 rounded bg-red-950/40 border border-red-800/40 hover:bg-red-900/60 transition cursor-pointer flex items-center gap-1 shrink-0"
+            title="Remove all tags from item"
+          >
+            <Trash2 size={12} /> Clear All
+          </button>
+        )}
       </div>
 
       {tags.length === 0 ? (

@@ -183,6 +183,7 @@ const FreezerView: React.FC<FreezerViewProps> = ({
             if (c.isArchived || c.freezerId) return false;
             if (c.id.endsWith('_loose') && c.id !== 'staging_loose') return false;
             if (hideZeroQuantity) {
+                if (c.id === 'staging_loose') return true;
                 return filteredMeatCuts.some(mc => mc.containerId === c.id && mc.quantity > 0);
             }
             return true;

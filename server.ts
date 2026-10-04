@@ -88,21 +88,21 @@ function getDynamicManifest() {
 
   const iconVersion = iconUpdatedAt ? `?v=${iconUpdatedAt}` : '';
 
-  const icons = hasCustomIcon ? [
+  const icons = [
     {
-      src: `api/pwa/icon-192.png${iconVersion}`,
+      src: `pwa-192x192.png${iconVersion}`,
       sizes: "192x192",
       type: "image/png",
       purpose: "any"
     },
     {
-      src: `api/pwa/icon-512.png${iconVersion}`,
+      src: `pwa-512x512.png${iconVersion}`,
       sizes: "512x512",
       type: "image/png",
       purpose: "any"
     },
     {
-      src: `api/pwa/icon-512.png${iconVersion}`,
+      src: `pwa-maskable-512x512.png${iconVersion}`,
       sizes: "512x512",
       type: "image/png",
       purpose: "maskable"
@@ -112,40 +112,15 @@ function getDynamicManifest() {
       sizes: "192x192",
       type: "image/png",
       purpose: "any"
-    }
-  ] : [
+    },
     {
-      src: "pwa-192x192.png",
+      src: `favicon.ico${iconVersion}`,
       sizes: "192x192",
       type: "image/png",
       purpose: "any"
     },
     {
-      src: "pwa-512x512.png",
-      sizes: "512x512",
-      type: "image/png",
-      purpose: "any"
-    },
-    {
-      src: "pwa-maskable-512x512.png",
-      sizes: "512x512",
-      type: "image/png",
-      purpose: "maskable"
-    },
-    {
-      src: "apple-touch-icon.png",
-      sizes: "192x192",
-      type: "image/png",
-      purpose: "any"
-    },
-    {
-      src: "favicon.ico",
-      sizes: "192x192",
-      type: "image/png",
-      purpose: "any"
-    },
-    {
-      src: "icon.svg",
+      src: `icon.svg${iconVersion}`,
       sizes: "any",
       type: "image/svg+xml",
       purpose: "any"
@@ -419,6 +394,8 @@ interface AppInventoryState {
   notificationSettings?: any[];
   notificationLogs?: any[];
   appConfig?: any[];
+  pwaDevices?: any[];
+  undoJournal?: any[];
 }
 
 /**
@@ -837,7 +814,7 @@ const TABLE_SCHEMAS: Record<string, {
         netWeight: row.netWeight || 0,
         box: row.box || undefined,
         notes: row.notes || undefined,
-        tagIds: row.tagIds ? JSON.parse(row.tagIds) : undefined,
+        tagIds: row.tagIds ? JSON.parse(row.tagIds) : [],
         orderId: row.orderId || undefined,
         archived: row.archived === 1,
         staged: row.staged === 1
@@ -855,7 +832,7 @@ const TABLE_SCHEMAS: Record<string, {
       netWeight: item.netWeight || 0,
       box: item.box || null,
       notes: item.notes || null,
-      tagIds: item.tagIds ? JSON.stringify(item.tagIds) : null,
+      tagIds: Array.isArray(item.tagIds) ? JSON.stringify(item.tagIds) : null,
       orderId: item.orderId || null,
       archived: item.archived ? 1 : 0,
       staged: item.staged ? 1 : 0
@@ -1265,6 +1242,33 @@ const TABLE_SCHEMAS: Record<string, {
       status: item.status || 'authorized',
       notes: item.notes || null
     })
+  },
+  undo_sql_journal: {
+    primaryKey: 'id',
+    createSql: `
+      CREATE TABLE IF NOT EXISTS undo_sql_journal (
+        id TEXT PRIMARY KEY,
+        historyId TEXT NOT NULL,
+        description TEXT,
+        inverseOps TEXT NOT NULL,
+        createdAt TEXT NOT NULL
+      )
+    `,
+    columns: ['id', 'historyId', 'description', 'inverseOps', 'createdAt'],
+    fromDb: (row: any) => ({
+      id: row.id,
+      historyId: row.historyId,
+      description: row.description || '',
+      inverseOps: row.inverseOps,
+      createdAt: row.createdAt
+    }),
+    toDb: (item: any) => ({
+      id: item.id,
+      historyId: item.historyId,
+      description: item.description || null,
+      inverseOps: typeof item.inverseOps === 'string' ? item.inverseOps : JSON.stringify(item.inverseOps),
+      createdAt: item.createdAt || new Date().toISOString()
+    })
   }
 };
 
@@ -1283,6 +1287,7 @@ function initDatabase() {
     }
     dbPath = getDatabasePath();
     db = new Database(dbPath);
+    (global as any).__FREEZER_SQLITE_DB__ = db;
     db.pragma('journal_mode = WAL');
     db.pragma('synchronous = NORMAL');
     
@@ -1314,6 +1319,10 @@ function initDatabase() {
 
     try {
       const offSiteCols = db.prepare("PRAGMA table_info(off_site_entries)").all() as any[];
+      if (!offSiteCols.some(c => c.name === 'tagIds')) {
+        console.log("Adding 'tagIds' column to off_site_entries table...");
+        db.prepare("ALTER TABLE off_site_entries ADD COLUMN tagIds TEXT").run();
+      }
       if (!offSiteCols.some(c => c.name === 'staged')) {
         db.prepare("ALTER TABLE off_site_entries ADD COLUMN staged INTEGER DEFAULT 0").run();
       }
@@ -2018,7 +2027,9 @@ function loadStateSync(): AppInventoryState {
       movementOrders: loadTableData('movement_orders'),
       notificationSettings: notificationSettings,
       notificationLogs: loadTableData('notification_logs') || [],
-      appConfig: loadTableData('app_config') || []
+      appConfig: loadTableData('app_config') || [],
+      pwaDevices: loadTableData('pwa_devices') || [],
+      undoJournal: loadTableData('undo_sql_journal') || []
     };
   } catch (err) {
     console.error('Error loading state from SQLite:', err);
@@ -2148,6 +2159,12 @@ function saveStateSync(state: AppInventoryState, affectedTables?: string[], hist
       if (shouldSync('app_config') && state.appConfig) {
         syncTableData('app_config', state.appConfig);
       }
+      if (shouldSync('pwa_devices') && (state as any).pwaDevices) {
+        syncTableData('pwa_devices', (state as any).pwaDevices);
+      }
+      if (shouldSync('undo_sql_journal') && (state as any).undoJournal) {
+        syncTableData('undo_sql_journal', (state as any).undoJournal);
+      }
 
       // Record inverse SQL operations for instantaneous row-delta undo
       if (collectInverse && inverseCollector.length > 0 && historyEntry && historyEntry.id) {
@@ -2249,6 +2266,18 @@ function normalizeState(state: AppInventoryState): AppInventoryState {
   // Active freezer IDs set
   const activeFreezerIds = new Set<string>((state.freezers || []).map((f: any) => f.id));
 
+  // If any non-loose container has lost its freezer (freezerId is set but does not exist in activeFreezerIds),
+  // relocate the container to the Staging Area / Sorting Table (freezerId: undefined) so it can be found.
+  let recoveredContainersCount = 0;
+  containers = containers.map(c => {
+    if (c.freezerId && !activeFreezerIds.has(c.freezerId) && !c.id.endsWith('_loose')) {
+      changed = true;
+      recoveredContainersCount++;
+      return { ...c, freezerId: undefined };
+    }
+    return c;
+  });
+
   // Clean up any obsolete freezer loose containers for freezers that no longer exist
   containers = containers.filter(c => {
     if (c.id.endsWith('_loose') && c.id !== 'staging_loose') {
@@ -2284,6 +2313,18 @@ function normalizeState(state: AppInventoryState): AppInventoryState {
 
   if (changed) {
     state.containers = containers;
+    if (recoveredContainersCount > 0 && state.history) {
+      state.history = [
+        {
+          id: crypto.randomUUID(),
+          timestamp: new Date().toISOString(),
+          description: `Automatically relocated ${recoveredContainersCount} container(s) with missing or lost freezers to the Staging Area.`,
+          targetId: 'staging_loose',
+          user: 'System Safety'
+        },
+        ...state.history
+      ].slice(0, 500);
+    }
   }
 
   // Ensure categories strip deprecated color properties
@@ -2377,17 +2418,7 @@ function normalizeState(state: AppInventoryState): AppInventoryState {
 
       let shouldBeArchived = e.archived === true || e.archived === 1 || String(e.archived) === 'true';
 
-      let tagIds = e.tagIds;
-      if (!tagIds || tagIds.length === 0) {
-        const prod = (e.productId ? productsMap.get(e.productId) : undefined) ||
-          (e.cuts ? productsByName.get(e.cuts.trim().toLowerCase()) : undefined) ||
-          (e.originalCutName ? productsByName.get(e.originalCutName.trim().toLowerCase()) : undefined);
-        if (prod?.defaultTagIds && prod.defaultTagIds.length > 0) {
-          tagIds = [...prod.defaultTagIds];
-        } else {
-          tagIds = tagIds || [];
-        }
-      }
+      const tagIds = Array.isArray(e.tagIds) ? e.tagIds : [];
       
       return { 
         ...e, 
@@ -2699,8 +2730,6 @@ function normalizeState(state: AppInventoryState): AppInventoryState {
       const containerIdsWithCuts = new Set(
         (state.meatCuts || []).filter((mc: any) => mc.quantity > 0).map((mc: any) => mc.containerId)
       );
-      const firstValidFreezerId = (state.freezers || []).find((f: any) => !f.isPallet && !f.id?.startsWith('pallet-'))?.id || (state.freezers && state.freezers[0]?.id);
-
       state.containers = (state.containers || [])
         // Filter out legacy empty offsite box mirrors and pallet containers that have no on-site cuts
         .filter((c: any) => {
@@ -2711,14 +2740,11 @@ function normalizeState(state: AppInventoryState): AppInventoryState {
           return true;
         })
         .map((c: any) => {
-          // Containers actively holding on-site meat cuts must NEVER be archived
+          // Containers actively holding on-site meat cuts must NEVER be archived.
+          // Note: containers without a freezerId are intentionally placed in the on-site Staging Area / Sorting Table
+          // and must NEVER be forcibly reassigned to a freezer.
           if (containerIdsWithCuts.has(c.id)) {
-            const nextC = { ...c, isArchived: false };
-            // If container has cuts but lost its freezerId due to past archiving, restore to a valid freezer
-            if (!nextC.freezerId && nextC.id !== 'staging_loose' && !nextC.id.endsWith('_loose') && firstValidFreezerId) {
-              nextC.freezerId = firstValidFreezerId;
-            }
-            return nextC;
+            return { ...c, isArchived: false };
           }
           return c;
         });
@@ -3751,6 +3777,31 @@ app.get('/api/app-config/:key', (req, res) => {
   }
 });
 
+app.delete('/api/app-config/:key', async (req, res) => {
+  try {
+    if (!db) initDatabase();
+    const key = req.params.key;
+    if (key && typeof key === 'string' && key.trim()) {
+      db.prepare('DELETE FROM app_config WHERE key = ?').run(key.trim());
+      try {
+        const updatedState = await loadState();
+        broadcastSSE({ type: 'sync', state: updatedState });
+      } catch (sseErr) {
+        console.error('Failed to broadcast state update on config delete:', sseErr);
+      }
+    }
+    const rows = db.prepare('SELECT key, value, updatedAt FROM app_config').all() as any[];
+    const resultConfigs: Record<string, string> = {};
+    rows.forEach(r => {
+      resultConfigs[r.key] = r.value;
+    });
+    res.json({ success: true, deletedKey: key, configs: resultConfigs });
+  } catch (err: any) {
+    console.error(`Error deleting app_config key "${req.params.key}":`, err);
+    res.status(500).json({ error: 'Failed to delete app config key.', details: err.message });
+  }
+});
+
 app.post('/api/app-config', async (req, res) => {
   try {
     if (!db) initDatabase();
@@ -3763,23 +3814,38 @@ app.post('/api/app-config', async (req, res) => {
       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updatedAt = excluded.updatedAt
     `);
 
+    const deleteStmt = db.prepare('DELETE FROM app_config WHERE key = ?');
     const updatedKeys: string[] = [];
 
     const tx = db.transaction(() => {
       if (configs && typeof configs === 'object') {
         for (const [k, v] of Object.entries(configs)) {
           if (typeof k === 'string' && k.trim()) {
-            const valStr = typeof v === 'string' ? v : JSON.stringify(v);
-            upsertStmt.run(k.trim(), valStr, nowIso);
-            updatedKeys.push(k.trim());
+            const cleanK = k.trim();
+            if (cleanK === 'pwa_custom_url' && (!v || (typeof v === 'string' && !v.trim()))) {
+              deleteStmt.run(cleanK);
+              updatedKeys.push(cleanK);
+            } else {
+              const valStr = typeof v === 'string' ? v : JSON.stringify(v);
+              upsertStmt.run(cleanK, valStr, nowIso);
+              updatedKeys.push(cleanK);
+            }
           }
         }
       }
       if (key && typeof key === 'string' && key.trim()) {
-        const valStr = typeof value === 'string' ? value : JSON.stringify(value ?? '');
-        upsertStmt.run(key.trim(), valStr, nowIso);
-        if (!updatedKeys.includes(key.trim())) {
-          updatedKeys.push(key.trim());
+        const cleanKey = key.trim();
+        if (cleanKey === 'pwa_custom_url' && (!value || (typeof value === 'string' && !value.trim()))) {
+          deleteStmt.run(cleanKey);
+          if (!updatedKeys.includes(cleanKey)) {
+            updatedKeys.push(cleanKey);
+          }
+        } else {
+          const valStr = typeof value === 'string' ? value : JSON.stringify(value ?? '');
+          upsertStmt.run(cleanKey, valStr, nowIso);
+          if (!updatedKeys.includes(cleanKey)) {
+            updatedKeys.push(cleanKey);
+          }
         }
       }
     });
@@ -4110,6 +4176,7 @@ app.post('/api/backups/create', async (req: any, res) => {
   try {
     const { name, type, formats } = req.body;
     const isZip = type === 'zip' || (formats && formats.includes('zip'));
+    const isJson = type === 'json' || (formats && formats.includes('json'));
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
     const customName = name ? `_${name.replace(/[^a-zA-Z0-9_-]/g, '')}` : '';
     const createdFiles: string[] = [];
@@ -4126,11 +4193,38 @@ app.post('/api/backups/create', async (req: any, res) => {
       db.prepare('VACUUM INTO ?').run(tempDbPath);
       zip.addLocalFile(tempDbPath, '', 'inventory.db');
 
-      // 2. Add Config
+      // 2. Add complete JSON state with all 19 tables
+      const fullState = await loadState();
+      zip.addFile('inventory-on-site.json', Buffer.from(JSON.stringify(fullState, null, 2), 'utf-8'));
+
+      // 3. Add Off-Site CSV
+      const entries = fullState.offSiteEntries || [];
+      const headers = 'Serial,cuts,Pack Date,Lot,# Pieces,Net Weight, Order Number,Box,location,Pallet,Notes';
+      const rows = entries.map((e: any) => {
+        const cleanCut = (e.cuts || '').includes(',') ? `"${e.cuts}"` : (e.cuts || '');
+        const cleanNotes = (e.notes || '').includes(',') ? `"${e.notes}"` : (e.notes || '');
+        return [
+          e.serial || '',
+          cleanCut,
+          e.packDate || '',
+          e.lot || '',
+          e.pieces || '0',
+          e.netWeight || '0',
+          e.mwOrderNumber || '',
+          e.box || '',
+          e.location || '',
+          e.currentLocation || e.pallet || '',
+          cleanNotes
+        ].join(',');
+      });
+      const csvContent = [headers, ...rows].join('\r\n');
+      zip.addFile('inventory-off-site.csv', Buffer.from(csvContent, 'utf-8'));
+
+      // 4. Add Config
       const currentConfig = getFullBackupConfigObject();
       zip.addFile('config.json', Buffer.from(JSON.stringify(currentConfig, null, 2), 'utf-8'));
 
-      // 3. Add Photos
+      // 5. Add Photos
       if (fs.existsSync(UPLOADS_DIR)) {
         const imgFiles = fs.readdirSync(UPLOADS_DIR);
         imgFiles.forEach(img => {
@@ -4144,6 +4238,17 @@ app.post('/api/backups/create', async (req: any, res) => {
       fs.writeFileSync(zipFilepath, zip.toBuffer());
       if (fs.existsSync(tempDbPath)) fs.unlinkSync(tempDbPath);
       createdFiles.push(zipFilename);
+    } else if (isJson) {
+      const filename = `backup${customName}_${timestamp}.json`;
+      const filepath = path.join(BACKUPS_DIR, filename);
+      const fullState = await loadState();
+      const currentConfig = getFullBackupConfigObject();
+      const exportJson = {
+        ...fullState,
+        config: currentConfig
+      };
+      fs.writeFileSync(filepath, JSON.stringify(exportJson, null, 2), 'utf-8');
+      createdFiles.push(filename);
     } else {
       // Default SQLite DB snapshot
       const filename = `backup${customName}_${timestamp}.db`;
@@ -4451,27 +4556,101 @@ export const DATABASE_TABLE_DEFINITIONS = [
     categoryLabel: 'System & Preferences',
     iconName: 'Clock',
     description: 'Audit trail of all add, move, consume, and edit events with undo state'
+  },
+  {
+    name: 'pwa_devices',
+    label: 'Registered PWA Client Devices',
+    category: 'system',
+    categoryLabel: 'System & Preferences',
+    iconName: 'Smartphone',
+    description: 'Authorized standalone PWA client devices, operators, and active session tokens'
+  },
+  {
+    name: 'undo_sql_journal',
+    label: 'Undo Transaction SQL Journal',
+    category: 'system',
+    categoryLabel: 'System & Preferences',
+    iconName: 'RotateCcw',
+    description: 'Microsecond inverse SQL rollback operations for granular transaction undo',
+    dependsOn: [
+      { table: 'history', foreignKey: 'historyId', label: 'Activity History' }
+    ]
   }
 ];
+
+export const TABLE_ALIAS_MAP: Record<string, string[]> = {
+  freezers: ['freezers'],
+  container_templates: ['container_templates'],
+  containers: ['containers'],
+  categories: ['categories'],
+  products: ['products'],
+  meat_cuts: ['meat_cuts'],
+  locations: ['locations'],
+  pallets: ['pallets'],
+  boxes: ['boxes'],
+  off_site_entries: ['off_site_entries'],
+  movement_orders: ['movement_orders'],
+  butcher_orders: ['butcher_orders'],
+  custom_lists: ['custom_lists'],
+  tags: ['tags'],
+  app_config: ['app_config'],
+  notification_settings: ['notification_settings'],
+  notification_logs: ['notification_logs'],
+  history: ['history'],
+  pwa_devices: ['pwa_devices'],
+  undo_sql_journal: ['undo_sql_journal'],
+
+  // CamelCase aliases
+  containerTemplates: ['container_templates'],
+  meatCuts: ['meat_cuts'],
+  offSiteEntries: ['off_site_entries'],
+  movementOrders: ['movement_orders'],
+  butcherOrders: ['butcher_orders'],
+  customLists: ['custom_lists'],
+  appConfig: ['app_config'],
+  notificationSettings: ['notification_settings'],
+  notificationLogs: ['notification_logs'],
+  pwaDevices: ['pwa_devices'],
+  undoJournal: ['undo_sql_journal'],
+  undoSqlJournal: ['undo_sql_journal'],
+
+  // Broad Section aliases
+  layout: ['freezers', 'containers', 'container_templates'],
+  catalog: ['products', 'categories', 'butcher_orders'],
+  inventory: ['meat_cuts'],
+  stock: ['meat_cuts'],
+  items: ['products', 'categories'],
+  offsite: ['locations', 'pallets', 'boxes', 'off_site_entries', 'movement_orders'],
+  lists: ['custom_lists', 'tags'],
+  system: ['app_config', 'notification_settings', 'notification_logs', 'history', 'pwa_devices', 'undo_sql_journal'],
+  settings: ['app_config', 'notification_settings', 'notification_logs', 'pwa_devices', 'undo_sql_journal'],
+  audit: ['history', 'undo_sql_journal'],
+  logs: ['history', 'notification_logs', 'undo_sql_journal'],
+  devices: ['pwa_devices']
+};
+
+export function resolveTablesToRestore(targetSectionsOrTables: string[]): Set<string> {
+  const result = new Set<string>();
+  if (!targetSectionsOrTables || targetSectionsOrTables.length === 0 || targetSectionsOrTables.includes('full')) {
+    Object.keys(TABLE_SCHEMAS).forEach(tbl => result.add(tbl));
+    return result;
+  }
+  for (const item of targetSectionsOrTables) {
+    if (TABLE_ALIAS_MAP[item]) {
+      TABLE_ALIAS_MAP[item].forEach(t => result.add(t));
+    } else if (TABLE_SCHEMAS[item]) {
+      result.add(item);
+    }
+  }
+  return result;
+}
 
 function checkDatabaseDependencies(srcDb: any, selectedTables: string[]) {
   const issues: any[] = [];
   const suggestedTables = new Set<string>();
+  const resolvedTables = resolveTablesToRestore(selectedTables);
 
-  const isTableSelected = (tbl: string) => {
-    return selectedTables.includes(tbl) || 
-      (tbl === 'freezers' && selectedTables.includes('freezers')) ||
-      (tbl === 'containers' && selectedTables.includes('containers')) ||
-      (tbl === 'container_templates' && selectedTables.includes('containers')) ||
-      (tbl === 'products' && (selectedTables.includes('products') || selectedTables.includes('catalog'))) ||
-      (tbl === 'categories' && (selectedTables.includes('categories') || selectedTables.includes('catalog'))) ||
-      (tbl === 'meat_cuts' && (selectedTables.includes('meat_cuts') || selectedTables.includes('inventory'))) ||
-      (tbl === 'off_site_entries' && (selectedTables.includes('off_site_entries') || selectedTables.includes('offsite'))) ||
-      (tbl === 'pallets' && (selectedTables.includes('pallets') || selectedTables.includes('offsite'))) ||
-      (tbl === 'boxes' && (selectedTables.includes('boxes') || selectedTables.includes('offsite'))) ||
-      (tbl === 'locations' && (selectedTables.includes('locations') || selectedTables.includes('offsite'))) ||
-      (tbl === 'butcher_orders' && (selectedTables.includes('butcher_orders') || selectedTables.includes('offsite')));
-  };
+  const isTableSelected = (tbl: string) => resolvedTables.has(tbl);
 
   const getExistingIds = (targetDb: any, table: string, col = 'id') => {
     try {
@@ -4742,21 +4921,9 @@ function checkDatabaseDependencies(srcDb: any, selectedTables: string[]) {
 function checkJsonDependencies(data: any, selectedTables: string[]) {
   const issues: any[] = [];
   const suggestedTables = new Set<string>();
+  const resolvedTables = resolveTablesToRestore(selectedTables);
 
-  const isTableSelected = (tbl: string) => {
-    return selectedTables.includes(tbl) || 
-      (tbl === 'freezers' && selectedTables.includes('freezers')) ||
-      (tbl === 'containers' && selectedTables.includes('containers')) ||
-      (tbl === 'container_templates' && selectedTables.includes('containers')) ||
-      (tbl === 'products' && (selectedTables.includes('products') || selectedTables.includes('catalog'))) ||
-      (tbl === 'categories' && (selectedTables.includes('categories') || selectedTables.includes('catalog'))) ||
-      (tbl === 'meat_cuts' && (selectedTables.includes('meat_cuts') || selectedTables.includes('inventory'))) ||
-      (tbl === 'off_site_entries' && (selectedTables.includes('off_site_entries') || selectedTables.includes('offsite'))) ||
-      (tbl === 'pallets' && (selectedTables.includes('pallets') || selectedTables.includes('offsite'))) ||
-      (tbl === 'boxes' && (selectedTables.includes('boxes') || selectedTables.includes('offsite'))) ||
-      (tbl === 'locations' && (selectedTables.includes('locations') || selectedTables.includes('offsite'))) ||
-      (tbl === 'butcher_orders' && (selectedTables.includes('butcher_orders') || selectedTables.includes('offsite')));
-  };
+  const isTableSelected = (tbl: string) => resolvedTables.has(tbl);
 
   const getExistingIds = (targetDb: any, table: string, col = 'id') => {
     try {
@@ -4888,39 +5055,7 @@ function selectiveRestoreFromDb(srcDbPath: string, targetSections: string[]) {
       }
     };
 
-    const tablesToRestore = new Set<string>();
-    for (const sec of targetSections) {
-      if (sec === 'freezers') {
-        tablesToRestore.add('freezers');
-      } else if (sec === 'containers') {
-        tablesToRestore.add('containers');
-        tablesToRestore.add('container_templates');
-      } else if (sec === 'catalog' || sec === 'products' || sec === 'items') {
-        tablesToRestore.add('products');
-        tablesToRestore.add('categories');
-      } else if (sec === 'inventory' || sec === 'meatCuts' || sec === 'stock') {
-        tablesToRestore.add('meat_cuts');
-      } else if (sec === 'offsite' || sec === 'offSiteEntries') {
-        tablesToRestore.add('off_site_entries');
-        tablesToRestore.add('pallets');
-        tablesToRestore.add('boxes');
-        tablesToRestore.add('butcher_orders');
-      } else if (sec === 'locations') {
-        tablesToRestore.add('locations');
-      } else if (sec === 'customLists') {
-        tablesToRestore.add('custom_lists');
-      } else if (sec === 'tags') {
-        tablesToRestore.add('tags');
-      } else if (sec === 'history' || sec === 'logs' || sec === 'audit') {
-        tablesToRestore.add('history');
-      } else if (sec === 'settings') {
-        tablesToRestore.add('app_config');
-        tablesToRestore.add('notification_settings');
-      } else {
-        // Direct table name (e.g. meat_cuts, containers, freezers, app_config, etc.)
-        tablesToRestore.add(sec);
-      }
-    }
+    const tablesToRestore = resolveTablesToRestore(targetSections);
 
     db.transaction(() => {
       for (const tbl of tablesToRestore) {
@@ -4928,12 +5063,152 @@ function selectiveRestoreFromDb(srcDbPath: string, targetSections: string[]) {
       }
     })();
 
-    if (tablesToRestore.has('app_config') || tablesToRestore.has('settings')) {
+    if (tablesToRestore.has('app_config') || tablesToRestore.has('notification_settings')) {
       loadAutoSnapshotConfig();
     }
   } finally {
     srcDb.close();
   }
+}
+
+function restoreFromJsonData(backupData: any, targetSections?: string[]): AppInventoryState {
+  const isFull = !targetSections || targetSections.length === 0 || targetSections.includes('full');
+  const tablesToRestore = resolveTablesToRestore(targetSections || ['full']);
+  const currentState = loadStateSync();
+
+  const srcFreezers = backupData.freezers || backupData.cabinets;
+  const srcContainerTemplates = backupData.containerTemplates || backupData.container_templates || backupData.templates;
+  const srcContainers = backupData.containers || backupData.bins || backupData.boxes;
+  const srcCategories = backupData.categories;
+  const srcProducts = backupData.products || backupData.catalog || backupData.items;
+  const srcMeatCuts = backupData.meatCuts || backupData.meat_cuts || backupData.inventory || backupData.stock || backupData.stockCounts || backupData.counts;
+  const srcLocations = backupData.locations || backupData.hubs || backupData.offSiteLocations;
+  const srcPallets = backupData.pallets || backupData.appPallets;
+  const srcBoxes = backupData.boxes || backupData.appBoxes;
+  const srcOffSite = backupData.offSiteEntries || backupData.off_site_entries || backupData.offsiteEntries || backupData.offsite || backupData.offSite;
+  const srcMovementOrders = backupData.movementOrders || backupData.movement_orders;
+  const srcButcherOrders = backupData.butcherOrders || backupData.butcher_orders;
+  const srcCustomLists = backupData.customLists || backupData.custom_lists || backupData.lists;
+  const srcTags = backupData.tags;
+  const srcAppConfig = backupData.appConfig || backupData.app_config || backupData.config || backupData.configs;
+  const srcNotificationSettings = backupData.notificationSettings || backupData.notification_settings;
+  const srcNotificationLogs = backupData.notificationLogs || backupData.notification_logs;
+  const srcHistory = backupData.history || backupData.logs || backupData.audit;
+  const srcPwaDevices = backupData.pwaDevices || backupData.pwa_devices || backupData.devices;
+  const srcUndoJournal = backupData.undoJournal || backupData.undo_sql_journal || backupData.undo_journal || backupData.undoSqlJournal;
+
+  if (isFull) {
+    const nextState: any = {
+      freezers: srcFreezers || [],
+      containerTemplates: srcContainerTemplates || [],
+      containers: srcContainers || [],
+      categories: srcCategories || [],
+      products: srcProducts || [],
+      meatCuts: srcMeatCuts || [],
+      locations: srcLocations || [],
+      pallets: srcPallets || [],
+      boxes: srcBoxes || [],
+      offSiteEntries: srcOffSite || [],
+      movementOrders: srcMovementOrders || [],
+      butcherOrders: srcButcherOrders || [],
+      customLists: srcCustomLists || [],
+      tags: srcTags || [],
+      history: srcHistory || [],
+      notificationSettings: srcNotificationSettings || currentState.notificationSettings || [],
+      notificationLogs: srcNotificationLogs || [],
+      appConfig: Array.isArray(srcAppConfig) ? srcAppConfig : (srcAppConfig && typeof srcAppConfig === 'object' ? Object.entries(srcAppConfig).map(([key, value]) => ({ key, value: typeof value === 'string' ? value : JSON.stringify(value) })) : (currentState.appConfig || [])),
+      pwaDevices: srcPwaDevices || currentState.pwaDevices || [],
+      undoJournal: srcUndoJournal || currentState.undoJournal || []
+    };
+    saveStateSync(nextState);
+    return nextState;
+  }
+
+  const affectedTablesList: string[] = [];
+
+  if (tablesToRestore.has('freezers') && srcFreezers) {
+    currentState.freezers = srcFreezers;
+    affectedTablesList.push('freezers');
+  }
+  if (tablesToRestore.has('container_templates') && srcContainerTemplates) {
+    currentState.containerTemplates = srcContainerTemplates;
+    affectedTablesList.push('container_templates');
+  }
+  if (tablesToRestore.has('containers') && srcContainers) {
+    currentState.containers = srcContainers;
+    affectedTablesList.push('containers');
+  }
+  if (tablesToRestore.has('categories') && srcCategories) {
+    currentState.categories = srcCategories;
+    affectedTablesList.push('categories');
+  }
+  if (tablesToRestore.has('products') && srcProducts) {
+    currentState.products = srcProducts;
+    affectedTablesList.push('products');
+  }
+  if (tablesToRestore.has('meat_cuts') && srcMeatCuts) {
+    currentState.meatCuts = srcMeatCuts;
+    affectedTablesList.push('meat_cuts');
+  }
+  if (tablesToRestore.has('locations') && srcLocations) {
+    currentState.locations = srcLocations;
+    affectedTablesList.push('locations');
+  }
+  if (tablesToRestore.has('pallets') && srcPallets) {
+    currentState.pallets = srcPallets;
+    affectedTablesList.push('pallets');
+  }
+  if (tablesToRestore.has('boxes') && srcBoxes) {
+    currentState.boxes = srcBoxes;
+    affectedTablesList.push('boxes');
+  }
+  if (tablesToRestore.has('off_site_entries') && srcOffSite) {
+    currentState.offSiteEntries = srcOffSite;
+    affectedTablesList.push('off_site_entries');
+  }
+  if (tablesToRestore.has('movement_orders') && srcMovementOrders) {
+    currentState.movementOrders = srcMovementOrders;
+    affectedTablesList.push('movement_orders');
+  }
+  if (tablesToRestore.has('butcher_orders') && srcButcherOrders) {
+    currentState.butcherOrders = srcButcherOrders;
+    affectedTablesList.push('butcher_orders');
+  }
+  if (tablesToRestore.has('custom_lists') && srcCustomLists) {
+    currentState.customLists = srcCustomLists;
+    affectedTablesList.push('custom_lists');
+  }
+  if (tablesToRestore.has('tags') && srcTags) {
+    currentState.tags = srcTags;
+    affectedTablesList.push('tags');
+  }
+  if (tablesToRestore.has('app_config') && srcAppConfig) {
+    currentState.appConfig = Array.isArray(srcAppConfig) ? srcAppConfig : (srcAppConfig && typeof srcAppConfig === 'object' ? Object.entries(srcAppConfig).map(([key, value]) => ({ key, value: typeof value === 'string' ? value : JSON.stringify(value) })) : (currentState.appConfig || []));
+    affectedTablesList.push('app_config');
+  }
+  if (tablesToRestore.has('notification_settings') && srcNotificationSettings) {
+    currentState.notificationSettings = srcNotificationSettings;
+    affectedTablesList.push('notification_settings');
+  }
+  if (tablesToRestore.has('notification_logs') && srcNotificationLogs) {
+    currentState.notificationLogs = srcNotificationLogs;
+    affectedTablesList.push('notification_logs');
+  }
+  if (tablesToRestore.has('history') && srcHistory) {
+    currentState.history = srcHistory;
+    affectedTablesList.push('history');
+  }
+  if (tablesToRestore.has('pwa_devices') && srcPwaDevices) {
+    currentState.pwaDevices = srcPwaDevices;
+    affectedTablesList.push('pwa_devices');
+  }
+  if (tablesToRestore.has('undo_sql_journal') && srcUndoJournal) {
+    currentState.undoJournal = srcUndoJournal;
+    affectedTablesList.push('undo_sql_journal');
+  }
+
+  saveStateSync(currentState, affectedTablesList);
+  return currentState;
 }
 
 
@@ -5003,55 +5278,7 @@ app.post('/api/backups/restore/:filename', async (req: any, res) => {
             const text = onSiteEntry.getData().toString('utf8');
             const backupData = JSON.parse(text);
             if (backupData) {
-              const srcFreezers = backupData.freezers || backupData.locations || backupData.cabinets;
-              const srcContainers = backupData.containers || backupData.bins || backupData.boxes;
-              const srcProducts = backupData.products || backupData.catalog || backupData.items;
-              const srcCategories = backupData.categories;
-              const srcMeatCuts = backupData.meatCuts || backupData.meatcuts || backupData.inventory || backupData.stock || backupData.stockCounts || backupData.counts;
-              const srcOffSite = backupData.offSiteEntries || backupData.offsiteEntries || backupData.offsite || backupData.offSite;
-              const srcHistory = backupData.history || backupData.logs;
-              const srcCustomLists = backupData.customLists || backupData.customlists || backupData.lists;
-              const srcTags = backupData.tags;
-
-              const doFreezers = isFullRestore || sections?.includes('freezers') || sections?.includes('locations');
-              const doContainers = isFullRestore || sections?.includes('containers');
-              const doProducts = isFullRestore || sections?.includes('products') || sections?.includes('catalog') || sections?.includes('items');
-              const doMeatCuts = isFullRestore || sections?.includes('meatCuts') || sections?.includes('inventory');
-              const doOffSite = isFullRestore || sections?.includes('offSiteEntries') || sections?.includes('offsite');
-              const doCustomLists = isFullRestore || sections?.includes('customLists');
-              const doTags = isFullRestore || sections?.includes('tags');
-              const doHistory = isFullRestore || sections?.includes('history') || sections?.includes('audit') || sections?.includes('logs');
-
-              if (isFullRestore) {
-                currentState = {
-                  ...defaultInitialState,
-                  freezers: srcFreezers || defaultInitialState.freezers,
-                  containers: srcContainers || defaultInitialState.containers,
-                  products: srcProducts || defaultInitialState.products,
-                  categories: srcCategories || defaultInitialState.categories || [],
-                  meatCuts: srcMeatCuts || defaultInitialState.meatCuts,
-                  offSiteEntries: srcOffSite || defaultInitialState.offSiteEntries,
-                  history: srcHistory || defaultInitialState.history,
-                  customLists: srcCustomLists || defaultInitialState.customLists || [],
-                  tags: srcTags || defaultInitialState.tags || [],
-                  locations: backupData.locations || defaultInitialState.locations || [],
-                  movementOrders: backupData.movementOrders || defaultInitialState.movementOrders || [],
-                  notificationSettings: backupData.notificationSettings || currentState.notificationSettings || [],
-                  notificationLogs: backupData.notificationLogs || currentState.notificationLogs || [],
-                };
-              } else {
-                if (doFreezers && srcFreezers) currentState.freezers = srcFreezers;
-                if (doContainers && srcContainers) currentState.containers = srcContainers;
-                if (doProducts && srcProducts) {
-                  currentState.products = srcProducts;
-                  if (srcCategories) currentState.categories = srcCategories;
-                }
-                if (doMeatCuts && srcMeatCuts) currentState.meatCuts = srcMeatCuts;
-                if (doOffSite && srcOffSite) currentState.offSiteEntries = srcOffSite;
-                if (doCustomLists && srcCustomLists) currentState.customLists = srcCustomLists;
-                if (doTags && srcTags) currentState.tags = srcTags;
-                if (doHistory && srcHistory) currentState.history = srcHistory;
-              }
+              restoreFromJsonData(backupData, isFullRestore ? ['full'] : sections);
               restoredAny = true;
             }
           } catch (err) {
@@ -5059,7 +5286,7 @@ app.post('/api/backups/restore/:filename', async (req: any, res) => {
           }
         }
 
-        if (offSiteEntry && (isFullRestore || sections?.includes('offSiteEntries') || sections?.includes('offsite'))) {
+        if (offSiteEntry && (isFullRestore || sections?.includes('offSiteEntries') || sections?.includes('offsite') || sections?.includes('off_site_entries'))) {
           try {
             const csvText = offSiteEntry.getData().toString('utf8');
             const lines = csvText.split(/\r?\n/).filter(line => line.trim());
@@ -5223,59 +5450,7 @@ app.post('/api/backups/restore/:filename', async (req: any, res) => {
     }
 
     const backupData = JSON.parse(fs.readFileSync(filepath, 'utf-8'));
-    let currentState = await loadState();
-
-    const srcFreezers = backupData.freezers || backupData.locations || backupData.cabinets;
-    const srcContainers = backupData.containers || backupData.bins || backupData.boxes;
-    const srcProducts = backupData.products || backupData.catalog || backupData.items;
-    const srcCategories = backupData.categories;
-    const srcMeatCuts = backupData.meatCuts || backupData.meatcuts || backupData.inventory || backupData.stock || backupData.stockCounts || backupData.counts;
-    const srcOffSite = backupData.offSiteEntries || backupData.offsiteEntries || backupData.offsite || backupData.offSite;
-    const srcHistory = backupData.history || backupData.logs;
-    const srcCustomLists = backupData.customLists || backupData.customlists || backupData.lists;
-    const srcTags = backupData.tags;
-
-    if (isFullRestore) {
-      currentState = {
-        ...defaultInitialState,
-        freezers: srcFreezers || defaultInitialState.freezers,
-        containers: srcContainers || defaultInitialState.containers,
-        products: srcProducts || defaultInitialState.products,
-        categories: srcCategories || defaultInitialState.categories || [],
-        meatCuts: srcMeatCuts || defaultInitialState.meatCuts,
-        offSiteEntries: srcOffSite || defaultInitialState.offSiteEntries,
-        history: srcHistory || defaultInitialState.history,
-        customLists: srcCustomLists || defaultInitialState.customLists || [],
-        tags: srcTags || defaultInitialState.tags || [],
-        locations: backupData.locations || defaultInitialState.locations || [],
-        movementOrders: backupData.movementOrders || defaultInitialState.movementOrders || [],
-        notificationSettings: backupData.notificationSettings || currentState.notificationSettings || [],
-        notificationLogs: backupData.notificationLogs || currentState.notificationLogs || [],
-      };
-    } else {
-      if (sections.includes('locations')) {
-        if (srcFreezers) currentState.freezers = srcFreezers;
-        if (srcContainers) currentState.containers = srcContainers;
-      } else {
-        if (sections.includes('freezers') && srcFreezers) currentState.freezers = srcFreezers;
-        if (sections.includes('containers') && srcContainers) currentState.containers = srcContainers;
-      }
-      if ((sections.includes('catalog') || sections.includes('products') || sections.includes('items')) && srcProducts) {
-        currentState.products = srcProducts;
-        if (srcCategories) currentState.categories = srcCategories;
-      }
-      if ((sections.includes('inventory') || sections.includes('meatCuts')) && srcMeatCuts) {
-        currentState.meatCuts = srcMeatCuts;
-      }
-      if ((sections.includes('offsite') || sections.includes('offSiteEntries')) && srcOffSite) {
-        currentState.offSiteEntries = srcOffSite;
-      }
-      if (sections.includes('customLists') && srcCustomLists) currentState.customLists = srcCustomLists;
-      if (sections.includes('tags') && srcTags) currentState.tags = srcTags;
-      if (sections.includes('history') && srcHistory) currentState.history = srcHistory;
-    }
-
-    await saveState(currentState);
+    restoreFromJsonData(backupData, isFullRestore ? ['full'] : sections);
     notifyInventoryUpdate();
     res.json({ success: true, message: 'Restore completed.' });
   } catch (err: any) {
@@ -5533,7 +5708,9 @@ app.get('/api/backups/preview/:filename', async (req, res) => {
           app_config: data.config ? Object.keys(data.config).length : (data.appConfig ? Object.keys(data.appConfig).length : 0),
           notification_settings: getArrayLength(data.notificationSettings),
           notification_logs: getArrayLength(data.notificationLogs),
-          history: getArrayLength(data.history || data.logs)
+          history: getArrayLength(data.history || data.logs),
+          pwa_devices: getArrayLength(data.pwaDevices || data.pwa_devices || data.devices),
+          undo_sql_journal: getArrayLength(data.undoJournal || data.undo_sql_journal || data.undo_journal || data.undoSqlJournal)
         };
 
         summary.counts.freezers = summary.tableCounts.freezers;
@@ -5642,7 +5819,9 @@ app.get('/api/backups/preview/:filename', async (req, res) => {
               app_config: parsed.config ? Object.keys(parsed.config).length : 0,
               notification_settings: getArrayLength(parsed.notificationSettings),
               notification_logs: getArrayLength(parsed.notificationLogs),
-              history: getArrayLength(parsed.history || parsed.logs)
+              history: getArrayLength(parsed.history || parsed.logs),
+              pwa_devices: getArrayLength(parsed.pwaDevices || parsed.pwa_devices),
+              undo_sql_journal: getArrayLength(parsed.undoJournal || parsed.undo_sql_journal)
             };
           }
         }
@@ -5911,7 +6090,9 @@ app.post('/api/backups/import-zip', async (req: any, res) => {
       restoreMeatCuts,
       restoreCustomLists,
       restoreTags,
-      restoreHistory
+      restoreHistory,
+      selectedTables,
+      sections
     } = req.body;
     if (!base64) {
       return res.status(400).json({ error: 'No backup ZIP file provided.' });
@@ -5933,13 +6114,24 @@ app.post('/api/backups/import-zip', async (req: any, res) => {
     let state = await loadState();
     let actionsDesc: string[] = [];
 
-    const doFreezers = restoreFreezers !== undefined ? restoreFreezers : restoreOnSite;
-    const doContainers = restoreContainers !== undefined ? restoreContainers : restoreOnSite;
-    const doProducts = restoreProducts !== undefined ? restoreProducts : restoreOnSite;
-    const doMeatCuts = restoreMeatCuts !== undefined ? restoreMeatCuts : restoreOnSite;
-    const doCustomLists = restoreCustomLists !== undefined ? restoreCustomLists : restoreOnSite;
-    const doTags = restoreTags !== undefined ? restoreTags : restoreOnSite;
-    const doHistory = restoreHistory !== undefined ? restoreHistory : (restoreOnSite !== undefined ? restoreOnSite : true);
+    // Resolve target tables to restore
+    const explicitTables: string[] = [];
+    if (Array.isArray(selectedTables) && selectedTables.length > 0) {
+      explicitTables.push(...selectedTables);
+    } else if (Array.isArray(sections) && sections.length > 0) {
+      explicitTables.push(...sections);
+    } else {
+      if (restoreFreezers || (restoreOnSite && restoreFreezers !== false)) explicitTables.push('freezers');
+      if (restoreContainers || (restoreOnSite && restoreContainers !== false)) explicitTables.push('containers', 'container_templates');
+      if (restoreProducts || (restoreOnSite && restoreProducts !== false)) explicitTables.push('products', 'categories');
+      if (restoreMeatCuts || (restoreOnSite && restoreMeatCuts !== false)) explicitTables.push('meat_cuts');
+      if (restoreOffSite) explicitTables.push('off_site_entries', 'locations', 'pallets', 'boxes', 'movement_orders', 'butcher_orders');
+      if (restoreCustomLists || (restoreOnSite && restoreCustomLists !== false)) explicitTables.push('custom_lists');
+      if (restoreTags || (restoreOnSite && restoreTags !== false)) explicitTables.push('tags');
+      if (restoreHistory || (restoreOnSite && restoreHistory !== false)) explicitTables.push('history');
+    }
+
+    const isFullZipRestore = explicitTables.length === 0 || explicitTables.includes('full') || explicitTables.length >= 15;
 
     // Parse database entries from ZIP
     const dbEntry = zipEntries.find(e => !e.isDirectory && (e.entryName === 'inventory.db' || e.entryName.toLowerCase().endsWith('/inventory.db') || e.entryName.toLowerCase().endsWith('.db')));
@@ -5950,17 +6142,7 @@ app.post('/api/backups/import-zip', async (req: any, res) => {
       const tempDbPath = path.join(BACKUPS_DIR, `temp_import_zip_${Date.now()}.db`);
       fs.writeFileSync(tempDbPath, dbEntry.getData());
       try {
-        const targetSections: string[] = [];
-        if (doFreezers) targetSections.push('freezers');
-        if (doContainers) targetSections.push('containers');
-        if (doProducts) targetSections.push('products');
-        if (doMeatCuts) targetSections.push('meatCuts');
-        if (restoreOffSite) targetSections.push('offSiteEntries');
-        if (doCustomLists) targetSections.push('customLists');
-        if (doTags) targetSections.push('tags');
-        if (doHistory) targetSections.push('history');
-
-        if (targetSections.length === 0 || targetSections.length >= 7) {
+        if (isFullZipRestore) {
           db.close();
           const dbPath = getDatabasePath();
           const walPath = `${dbPath}-wal`;
@@ -5970,66 +6152,27 @@ app.post('/api/backups/import-zip', async (req: any, res) => {
           fs.copyFileSync(tempDbPath, dbPath);
           initDatabase();
           state = await loadState();
-          actionsDesc.push('SQLite Database');
+          actionsDesc.push('All SQLite Database Tables');
         } else {
-          selectiveRestoreFromDb(tempDbPath, targetSections);
+          selectiveRestoreFromDb(tempDbPath, explicitTables);
           state = await loadState();
-          actionsDesc.push('Selective Database Tables');
+          actionsDesc.push('Selected Database Tables');
         }
       } catch (err) {
         console.error('Failed to restore SQLite DB from ZIP in import-zip:', err);
       } finally {
         if (fs.existsSync(tempDbPath)) fs.unlinkSync(tempDbPath);
       }
-    } else if (onSiteEntry && (doFreezers || doContainers || doProducts || doMeatCuts || doCustomLists || doTags || doHistory)) {
+    } else if (onSiteEntry) {
       const text = onSiteEntry.getData().toString('utf8');
-      const parsed = JSON.parse(text);
-      if (parsed) {
-        const zFreezers = parsed.freezers || parsed.locations || parsed.cabinets;
-        const zContainers = parsed.containers || parsed.bins || parsed.boxes;
-        const zProducts = parsed.products || parsed.catalog || parsed.items;
-        const zCategories = parsed.categories;
-        const zMeatCuts = parsed.meatCuts || parsed.meatcuts || parsed.inventory || parsed.stock || parsed.stockCounts || parsed.counts;
-        const zCustomLists = parsed.customLists || parsed.customlists || parsed.lists;
-        const zTags = parsed.tags;
-        const zHistory = parsed.history || parsed.logs;
-
-        if (doFreezers && zFreezers) {
-          state.freezers = zFreezers;
-          if (parsed.locations) state.locations = parsed.locations;
-          if (parsed.pallets) state.pallets = parsed.pallets;
-          if (parsed.boxes) state.boxes = parsed.boxes;
-          actionsDesc.push('Cabinet Structures & Locations');
+      try {
+        const parsed = JSON.parse(text);
+        if (parsed) {
+          restoreFromJsonData(parsed, isFullZipRestore ? ['full'] : explicitTables);
+          actionsDesc.push('JSON Inventory Tables');
         }
-        if (doContainers && zContainers) {
-          state.containers = zContainers;
-          if (parsed.containerTemplates) state.containerTemplates = parsed.containerTemplates;
-          actionsDesc.push('Containers & Templates');
-        }
-        if (doProducts && zProducts) {
-          state.products = zProducts;
-          if (zCategories) state.categories = zCategories;
-          actionsDesc.push('Products Catalog');
-        }
-        if (doMeatCuts && zMeatCuts) {
-          state.meatCuts = zMeatCuts;
-          actionsDesc.push('Stock Counts');
-        }
-        if (doCustomLists && zCustomLists) {
-          state.customLists = zCustomLists;
-          if (parsed.movementOrders) state.movementOrders = parsed.movementOrders;
-          if (parsed.notificationSettings) state.notificationSettings = parsed.notificationSettings;
-          if (parsed.notificationLogs) state.notificationLogs = parsed.notificationLogs;
-          actionsDesc.push('Custom Lists, Movement Orders & Notification Settings');
-        }
-        if (doTags && zTags) {
-          state.tags = zTags;
-          actionsDesc.push('Tags');
-        }
-        if (doHistory && zHistory) {
-          state.history = zHistory;
-          actionsDesc.push('Activity History');
-        }
+      } catch (e) {
+        console.error('Failed to parse on-site JSON in ZIP import-zip:', e);
       }
     }
 
@@ -7737,6 +7880,131 @@ app.delete('/api/devices/:id', (req, res) => {
   }
 });
 
+// Revoke all devices belonging to a specific operator/user
+app.post('/api/devices/user/:operator/revoke', (req, res) => {
+  if (!db) initDatabase();
+  const rawOperator = decodeURIComponent(req.params.operator || '').trim();
+  const isUnassigned = rawOperator === '__unassigned__' || rawOperator === '' || rawOperator.toLowerCase() === 'unassigned';
+  try {
+    let affectedDevices: any[] = [];
+    if (isUnassigned) {
+      affectedDevices = db.prepare("SELECT id FROM pwa_devices WHERE operator IS NULL OR TRIM(operator) = ''").all() as any[];
+      db.prepare("UPDATE pwa_devices SET status = 'revoked' WHERE operator IS NULL OR TRIM(operator) = ''").run();
+    } else {
+      affectedDevices = db.prepare("SELECT id FROM pwa_devices WHERE LOWER(TRIM(operator)) = LOWER(TRIM(?))").all(rawOperator) as any[];
+      db.prepare("UPDATE pwa_devices SET status = 'revoked' WHERE LOWER(TRIM(operator)) = LOWER(TRIM(?))").run(rawOperator);
+    }
+    const affectedIds = new Set(affectedDevices.map(d => d.id));
+
+    // Instantly terminate any live SSE streams for affected devices or matching user
+    for (const [clientId, client] of activeClients.entries()) {
+      const matchDevice = client.deviceId && affectedIds.has(client.deviceId);
+      const matchUser = !isUnassigned && client.userName && client.userName.toLowerCase().trim() === rawOperator.toLowerCase();
+      if (matchDevice || matchUser) {
+        try {
+          if (client.res) {
+            client.res.write(`data: ${JSON.stringify({ type: 'device_revoked', operator: rawOperator, error: 'USER_REVOKED' })}\n\n`);
+            client.res.end();
+          }
+        } catch (e) {}
+        activeClients.delete(clientId);
+      }
+    }
+    broadcastSSE({ type: 'clients_changed', count: getActiveClientCount(), clients: getConnectedClientsSummary() });
+    res.json({ success: true, count: affectedDevices.length, status: 'revoked' });
+  } catch (err: any) {
+    console.error('Failed to revoke user devices:', err);
+    res.status(500).json({ error: 'Failed to revoke user devices', details: err.message });
+  }
+});
+
+// Authorize / restore all devices belonging to a specific operator/user
+app.post('/api/devices/user/:operator/authorize', (req, res) => {
+  if (!db) initDatabase();
+  const rawOperator = decodeURIComponent(req.params.operator || '').trim();
+  const isUnassigned = rawOperator === '__unassigned__' || rawOperator === '' || rawOperator.toLowerCase() === 'unassigned';
+  try {
+    let count = 0;
+    if (isUnassigned) {
+      const result = db.prepare("UPDATE pwa_devices SET status = 'authorized' WHERE operator IS NULL OR TRIM(operator) = ''").run();
+      count = result.changes;
+    } else {
+      const result = db.prepare("UPDATE pwa_devices SET status = 'authorized' WHERE LOWER(TRIM(operator)) = LOWER(TRIM(?))").run(rawOperator);
+      count = result.changes;
+    }
+    res.json({ success: true, count, status: 'authorized' });
+  } catch (err: any) {
+    console.error('Failed to authorize user devices:', err);
+    res.status(500).json({ error: 'Failed to authorize user devices', details: err.message });
+  }
+});
+
+// Delete all devices belonging to a specific operator/user
+app.delete('/api/devices/user/:operator', (req, res) => {
+  if (!db) initDatabase();
+  const rawOperator = decodeURIComponent(req.params.operator || '').trim();
+  const isUnassigned = rawOperator === '__unassigned__' || rawOperator === '' || rawOperator.toLowerCase() === 'unassigned';
+  try {
+    let count = 0;
+    if (isUnassigned) {
+      const result = db.prepare("DELETE FROM pwa_devices WHERE operator IS NULL OR TRIM(operator) = ''").run();
+      count = result.changes;
+    } else {
+      const result = db.prepare("DELETE FROM pwa_devices WHERE LOWER(TRIM(operator)) = LOWER(TRIM(?))").run(rawOperator);
+      count = result.changes;
+    }
+    res.json({ success: true, count });
+  } catch (err: any) {
+    console.error('Failed to delete user devices:', err);
+    res.status(500).json({ error: 'Failed to delete user devices', details: err.message });
+  }
+});
+
+// Batch revoke devices by IDs
+app.post('/api/devices/batch-revoke', (req, res) => {
+  if (!db) initDatabase();
+  const { deviceIds } = req.body;
+  if (!Array.isArray(deviceIds) || deviceIds.length === 0) {
+    return res.status(400).json({ error: 'deviceIds array is required' });
+  }
+  try {
+    const placeholders = deviceIds.map(() => '?').join(',');
+    db.prepare(`UPDATE pwa_devices SET status = 'revoked' WHERE id IN (${placeholders})`).run(...deviceIds);
+    const affectedSet = new Set(deviceIds);
+    for (const [clientId, client] of activeClients.entries()) {
+      if (client.deviceId && affectedSet.has(client.deviceId)) {
+        try {
+          if (client.res) {
+            client.res.write(`data: ${JSON.stringify({ type: 'device_revoked', error: 'DEVICE_REVOKED' })}\n\n`);
+            client.res.end();
+          }
+        } catch (e) {}
+        activeClients.delete(clientId);
+      }
+    }
+    broadcastSSE({ type: 'clients_changed', count: getActiveClientCount(), clients: getConnectedClientsSummary() });
+    res.json({ success: true, count: deviceIds.length, status: 'revoked' });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to batch revoke devices', details: err.message });
+  }
+});
+
+// Batch authorize devices by IDs
+app.post('/api/devices/batch-authorize', (req, res) => {
+  if (!db) initDatabase();
+  const { deviceIds } = req.body;
+  if (!Array.isArray(deviceIds) || deviceIds.length === 0) {
+    return res.status(400).json({ error: 'deviceIds array is required' });
+  }
+  try {
+    const placeholders = deviceIds.map(() => '?').join(',');
+    const result = db.prepare(`UPDATE pwa_devices SET status = 'authorized' WHERE id IN (${placeholders})`).run(...deviceIds);
+    res.json({ success: true, count: result.changes, status: 'authorized' });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to batch authorize devices', details: err.message });
+  }
+});
+
 // Fetch entire visual freezer states
 app.get('/api/inventory', async (req, res) => {
   try {
@@ -8181,10 +8449,21 @@ function reconstructUndoFromAuditLog(entry: any, state: AppInventoryState): { su
       }
 
       case 'RESTORE_MOVE_CONTAINER': {
-        const { containerId, previousFreezerId } = undoData;
-        const cont = (state.containers || []).find((c: any) => c.id === containerId);
+        const { containerId, previousFreezerId, deletedCuts, restoredContainer } = undoData;
+        let cont = (state.containers || []).find((c: any) => c.id === containerId);
+        if (!cont && restoredContainer) {
+          state.containers = [...(state.containers || []), restoredContainer];
+          cont = restoredContainer;
+        }
         if (cont) {
           cont.freezerId = previousFreezerId;
+          cont.isArchived = false;
+        }
+        if (deletedCuts && Array.isArray(deletedCuts) && deletedCuts.length > 0) {
+          const existingCutIds = new Set((state.meatCuts || []).map((mc: any) => mc.id));
+          const cutsToRestore = deletedCuts.filter((c: any) => !existingCutIds.has(c.id));
+          state.meatCuts = [...(state.meatCuts || []), ...cutsToRestore];
+          affectedTables.add('meat_cuts');
         }
         affectedTables.add('containers');
         return { success: true, affectedTables: Array.from(affectedTables) };
@@ -8628,6 +8907,7 @@ function getAffectedTablesForAction(actionType: string): string[] | undefined {
     case 'UPDATE_OFFSITE_ENTRY':
     case 'UPDATE_OFFSITE_BOX_COLORS':
     case 'TOGGLE_OFFSITE_ENTRY_TAG':
+    case 'CLEAR_OFFSITE_ENTRY_TAGS':
     case 'DELETE_OFFSITE_ENTRY':
     case 'BULK_DELETE_OFFSITE_ENTRIES':
     case 'BULK_EDIT_OFFSITE_ENTRIES':
@@ -8727,6 +9007,7 @@ app.post('/api/inventory/action', async (req: any, res) => {
     'BULK_REVERT_OFFSITE_LABEL',
     'UPDATE_OFFSITE_BOX_COLORS',
     'TOGGLE_OFFSITE_ENTRY_TAG',
+    'CLEAR_OFFSITE_ENTRY_TAGS',
     'RENAME_PALLET',
     'ASSIGN_PALLET_LOCATION',
     'UPDATE_PALLET_NOTES',
@@ -8763,10 +9044,10 @@ app.post('/api/inventory/action', async (req: any, res) => {
 
   const scopesList: Array<'all' | 'onsite' | 'offsite'> = ['all', 'onsite', 'offsite'];
   for (const s of scopesList) {
-    if (singleUserLocks[s]?.clientId === clientId) {
+    if (clientId && singleUserLocks[s] && singleUserLocks[s]?.clientId === clientId) {
       singleUserLocks[s]!.lastActiveAt = Date.now();
     }
-    if (forcedMultiStates[s]?.setByClientId === clientId) {
+    if (clientId && forcedMultiStates[s] && forcedMultiStates[s]?.setByClientId === clientId) {
       forcedMultiStates[s]!.lastActiveAt = Date.now();
     }
   }
@@ -10088,12 +10369,35 @@ app.post('/api/inventory/action', async (req: any, res) => {
         break;
       }
       case 'MOVE_CONTAINER': {
-        const { containerId, newFreezerId, emptyCuts } = action.payload;
+        const { containerId, newFreezerId, emptyCuts, deleteCuts } = action.payload;
         const container = nextState.containers.find(c => c.id === containerId);
         if (!container) return res.status(400).json({ error: 'Container not found.' });
 
         if (newFreezerId === undefined) {
-          if (emptyCuts) {
+          if (deleteCuts) {
+            // Permanently delete all meat cuts inside this container from inventory
+            const cutsInContainer = nextState.meatCuts.filter(mc => mc.containerId === containerId);
+            const cutsCount = cutsInContainer.length;
+            const piecesCount = cutsInContainer.reduce((acc, mc) => acc + (mc.quantity || 0), 0);
+            nextState.meatCuts = nextState.meatCuts.filter(mc => mc.containerId !== containerId);
+
+            const isDeleteType = !!container.deleteOnEmpty;
+            if (isDeleteType) {
+              const history = newHistoryEntry(`Container "${container.name}" was retired and deleted along with all its contents (${cutsCount} item(s), ${piecesCount} total piece(s)).`, containerId);
+              const lowerName = container.name.toLowerCase().trim();
+              nextState.containers = nextState.containers.filter(c => 
+                c.id !== containerId &&
+                !( !c.freezerId && c.name.toLowerCase().trim() === lowerName )
+              );
+              nextState.history = addHistory(nextState, history);
+            } else {
+              const oldFreezer = nextState.freezers.find(f => f.id === container.freezerId);
+              const description = `Container "${container.name}" was retired and kept in the unused container list (moved from "${oldFreezer?.name || 'Unassigned'}"), and all its contents (${cutsCount} item(s), ${piecesCount} total piece(s)) were deleted.`;
+              const history = newHistoryEntry(description, containerId);
+              nextState.containers = nextState.containers.map(c => c.id === containerId ? { ...c, freezerId: undefined } : c);
+              nextState.history = addHistory(nextState, history);
+            }
+          } else if (emptyCuts) {
             // Automatically empty all meat cuts inside this container to the Sorting Table (staging_loose)
             const cutsInContainer = nextState.meatCuts.filter(mc => mc.containerId === containerId);
             if (cutsInContainer.length > 0) {
@@ -10628,6 +10932,20 @@ app.post('/api/inventory/action', async (req: any, res) => {
         });
         break;
       }
+      case 'CLEAR_OFFSITE_ENTRY_TAGS': {
+        const { entryId } = action.payload;
+        const entries = nextState.offSiteEntries || [];
+        nextState.offSiteEntries = entries.map(e => {
+          if (e.id === entryId) {
+            return {
+              ...e,
+              tagIds: []
+            };
+          }
+          return e;
+        });
+        break;
+      }
       case 'RENAME_PALLET': {
         const { oldName, newName } = action.payload;
         if (!oldName || !newName || oldName === newName) break;
@@ -10991,11 +11309,6 @@ app.post('/api/inventory/action', async (req: any, res) => {
               if (!existing.tagIds || existing.tagIds.length === 0) {
                 if (incoming.tagIds && incoming.tagIds.length > 0) {
                   existing.tagIds = incoming.tagIds;
-                } else {
-                  const matchedP = existing.productId ? nextState.products?.find((p: any) => p.id === existing.productId) : null;
-                  if (matchedP?.defaultTagIds && matchedP.defaultTagIds.length > 0) {
-                    existing.tagIds = [...matchedP.defaultTagIds];
-                  }
                 }
               }
               continue;
@@ -11470,7 +11783,7 @@ app.post('/api/inventory/action', async (req: any, res) => {
               
               const isRemoved = !!(dest && removeFromInventoryDestIds.includes(dest.id));
               const loc = dest ? nextState.locations?.find((l: any) => l.id === dest.locationId) : null;
-              const isStaged = !!(moveToStaging && loc && loc.isHome);
+              const isStaged = !!((stagingDestIds && dest ? stagingDestIds.includes(dest.id) : moveToStaging) && loc && loc.isHome);
 
               if (!isRemoved && !isStaged) {
                 e.archived = false;
@@ -12176,10 +12489,15 @@ app.post('/api/inventory/action', async (req: any, res) => {
         } else if (action.type === 'MOVE_CONTAINER') {
           const priorContainer = (state.containers || []).find((c: any) => c.id === action.payload?.containerId);
           if (priorContainer) {
+            const priorCuts = action.payload?.deleteCuts 
+              ? (state.meatCuts || []).filter((mc: any) => mc.containerId === priorContainer.id) 
+              : undefined;
             newHistory.undoData = {
               type: 'RESTORE_MOVE_CONTAINER',
               containerId: priorContainer.id,
-              previousFreezerId: priorContainer.freezerId
+              previousFreezerId: priorContainer.freezerId,
+              deletedCuts: priorCuts,
+              restoredContainer: priorContainer
             };
           }
         } else if (action.type === 'EDIT_CONTAINER') {
