@@ -1,3 +1,20 @@
+### [2.53.6] - 2026-10-21
+
+### Fixed
+- **Multi-Architecture Native Host Build Stage (`--platform=$BUILDPLATFORM`)**:
+  - Resolved `ERROR: process "/bin/ash -o pipefail -c npm run build" did not complete successfully: exit code: 1` during the `aarch64` container build step in GitHub Actions.
+  - Decoupled the JavaScript/Vite bundle compilation stage from QEMU ARM64 software emulation by targeting `--platform=$BUILDPLATFORM node:22-alpine` in Stage 1 (`builder`). This eliminates QEMU-induced memory limits and `mimalloc`/`esbuild` illegal instruction (`SIGILL`) faults on GitHub Actions runners while compiling at native host speed.
+  - Re-architected Stage 2 (`runner`) on target `$BUILD_FROM` to install only production dependencies (`npm install --omit=dev`), compiling native C++ `better-sqlite3` bindings directly on target hardware/architecture while copying pre-compiled, architecture-agnostic `dist/` web and server bundles from Stage 1.
+
+### Files Modified
+- `/Dockerfile`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/version.ts`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
 ### [2.53.5] - 2026-10-21
 
 ### Fixed

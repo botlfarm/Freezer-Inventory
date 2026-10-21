@@ -1,11 +1,26 @@
 ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:3.21
 
 # ==========================================
-# Stage 1: Build & Compile
+# Stage 1: Build JavaScript & Frontend Bundles on Native Host ($BUILDPLATFORM)
 # ==========================================
-FROM $BUILD_FROM AS builder
+FROM --platform=$BUILDPLATFORM node:22-alpine AS builder
 
-# Install build dependencies for Node.js and C++ native addons (better-sqlite3)
+WORKDIR /app
+
+# Copy dependency manifests and install all packages natively on the builder host
+COPY package*.json ./
+RUN npm install
+
+# Copy source files and build production bundles (Vite + esbuild run natively with zero QEMU emulation crashes)
+COPY . .
+RUN npm run build
+
+# ==========================================
+# Stage 2: Lean Production Runtime on Target Architecture ($BUILD_FROM)
+# ==========================================
+FROM $BUILD_FROM AS runner
+
+# Install Node.js runtime and build tools for compiling native better-sqlite3 on target architecture
 RUN apk add --no-cache \
     nodejs \
     npm \
@@ -16,31 +31,14 @@ RUN apk add --no-cache \
 
 WORKDIR /app
 
-# Copy dependency manifests and install all packages
+# Install only production dependencies (compiles native better-sqlite3 addon for target architecture)
 COPY package*.json ./
-RUN npm install
+RUN npm install --omit=dev
 
-# Copy source files and build the production bundles (Vite frontend + esbuild server)
-COPY . .
-RUN npm run build
+# Strip compilation build tools to keep the production image lean
+RUN apk del python3 make g++ musl-dev
 
-# Remove development dependencies and rebuild native modules for production only
-RUN npm prune --omit=dev && npm rebuild better-sqlite3
-
-# ==========================================
-# Stage 2: Lean Production Runtime
-# ==========================================
-FROM $BUILD_FROM AS runner
-
-# Install only runtime Node.js (no compilers, python, or build tools)
-RUN apk add --no-cache \
-    nodejs \
-    npm
-
-WORKDIR /app
-
-# Copy production node_modules and compiled output from builder stage
-COPY --from=builder /app/node_modules ./node_modules
+# Copy compiled frontend and bundled server from builder stage
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/package.json ./package.json
