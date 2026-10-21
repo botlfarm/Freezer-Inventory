@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -51,7 +51,7 @@ jobs:
         arch: [aarch64, amd64]
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
 
       - name: Set up QEMU for multi-architecture builds
         uses: docker/setup-qemu-action@v4
@@ -68,6 +68,6 @@ jobs:
         with:
           args: |
             --${{ matrix.arch }}
-            --target .
+            --target /data
             --image "freezer-inventory-tracker-{arch}"
             --docker-hub "ghcr.io/${{ github.repository_owner }}"

@@ -1,3 +1,19 @@
+### [2.53.3] - 2026-10-21
+
+### Fixed
+- **Home Assistant Builder Workspace Mount Target (`--target /data`)**:
+  - Resolved `jq: error: Could not open file /tmp/build_config/config.json: No such file or directory` during the `home-assistant/builder` action step in GitHub Actions.
+  - Corrected the target parameter from `--target .` to `--target /data`, aligning with how the `home-assistant/builder` Docker action maps the repository workspace into `/data`, enabling the builder to locate `config.yaml`, generate build configurations, and compile the add-on container.
+  - Pinned repository checkout steps across `test` and `build` jobs to `actions/checkout@v4` for stable credential and volume handling inside Docker container actions.
+
+### Files Modified
+- `/.github/workflows/build-addon.yml`
+- `/package.json`
+- `/config.yaml`
+- `/version.ts`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
 ### [2.53.2] - 2026-10-21
 
 ### Fixed
