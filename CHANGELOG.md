@@ -1,3 +1,21 @@
+### [2.53.4] - 2026-10-21
+
+### Fixed
+- **Root `config.json` & `build.json` Artifacts for Builder Compatibility**:
+  - Resolved `jq: error: Could not open file /tmp/build_config/config.json: No such file or directory` and `No build information or from not provided` by generating synchronized `config.json` and `build.json` manifests in the repository root alongside existing `config.yaml` and `build.yaml`.
+  - Satisfied `home-assistant/builder`'s internal JSON parser requirements while preserving standard `config.yaml` compatibility for Home Assistant Supervisor and Add-on Store installations.
+  - Reset `--target` to `.` in `.github/workflows/build-addon.yml` to prevent namespace collisions with the repository's runtime `/data` directory.
+
+### Files Modified
+- `/config.json`
+- `/build.json`
+- `/.github/workflows/build-addon.yml`
+- `/package.json`
+- `/config.yaml`
+- `/version.ts`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
 ### [2.53.3] - 2026-10-21
 
 ### Fixed
