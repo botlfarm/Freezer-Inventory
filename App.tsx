@@ -4,7 +4,8 @@ import { getApiUrl } from './hooks/apiUrl';
 import { getClientDeviceInfo, getDeviceId, getDeviceName, getOperatorName, FREEZER_DEVICE_PROMPTED_KEY, getClientAuditHeaders } from './utils/clientDevice';
 import { DeviceSetupModal } from './components/DeviceSetupModal';
 import { ModalType, View } from './types';
-import { Tag, PackagePlus, History, Sparkles, Table, Package, ClipboardList, Sun, Moon, Filter, Plus, Download, ChevronDown, ChevronUp, Eye, AlertTriangle, RefreshCw, Database, RotateCcw, Users, User, Zap, ArrowUpDown, SlidersHorizontal, Smartphone } from 'lucide-react';
+import { APP_VERSION } from './version';
+import { Tag, PackagePlus, History, Sparkles, Table, Package, ClipboardList, Sun, Moon, Filter, Plus, Download, ChevronDown, ChevronUp, Eye, AlertTriangle, RefreshCw, Database, RotateCcw, Users, User, Zap, ArrowUpDown, SlidersHorizontal, Smartphone, Rocket } from 'lucide-react';
 import { FreezerIcon, SearchIcon, GridViewIcon, ListViewIcon } from './components/icons';
 import Modal from './components/Modal';
 import AddForms from './components/AddForms';
@@ -404,6 +405,96 @@ export default function App() {
     }).catch(() => {});
   }, []);
 
+  // Automated PWA Service Worker & Version Push Update Management
+  const [pwaUpdateAvailable, setPwaUpdateAvailable] = useState<{
+    newVersion: string;
+    source: 'server' | 'sw';
+  } | null>(null);
+  const [pwaCountdown, setPwaCountdown] = useState<number | null>(null);
+  const pwaUpdateDismissedRef = React.useRef<boolean>(false);
+
+  const isAutoUpdateEnabled = useMemo(() => {
+    const cfg = (state.appConfig || []).find(i => i.key === 'pwa_auto_update');
+    if (cfg?.value === 'false') return false;
+    return localStorage.getItem('pwa_auto_update') !== 'false';
+  }, [state.appConfig]);
+
+  // Execute immediate cache purge and clean reload
+  const handleExecuteUpdate = React.useCallback(async () => {
+    try {
+      if ('serviceWorker' in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        for (const reg of regs) {
+          if (reg.waiting) {
+            reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+          }
+          await reg.update().catch(() => {});
+        }
+      }
+      if ('caches' in window) {
+        const keys = await caches.keys();
+        for (const key of keys) {
+          if (key !== 'freezer-tracker-images') {
+            await caches.delete(key).catch(() => {});
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Update purge error:', e);
+    }
+    window.location.reload();
+  }, []);
+
+  // Periodic version checks and PWA update listener
+  React.useEffect(() => {
+    const checkServerVersion = async () => {
+      if (pwaUpdateDismissedRef.current) return;
+      try {
+        const res = await fetch(getApiUrl(`api/version?_t=${Date.now()}`), {
+          headers: { 'Cache-Control': 'no-cache, no-store' },
+          signal: AbortSignal.timeout(4000)
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.version && data.version !== APP_VERSION) {
+            console.log(`[PWA Auto-Update] Version mismatch: server is ${data.version}, installed is ${APP_VERSION}`);
+            setPwaUpdateAvailable({ newVersion: data.version, source: 'server' });
+          }
+        }
+      } catch (e) {}
+    };
+
+    const initialTimer = setTimeout(checkServerVersion, 3500);
+    const interval = setInterval(checkServerVersion, 10 * 60 * 1000);
+
+    const handleFocus = () => { checkServerVersion(); };
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') checkServerVersion();
+    };
+
+    const handlePwaUpdateEvent = (e: any) => {
+      if (!pwaUpdateDismissedRef.current) {
+        const targetVer = e.detail?.version || 'Latest';
+        console.log('[PWA Auto-Update] Service worker update event received.');
+        setPwaUpdateAvailable(prev => prev || { newVersion: targetVer, source: 'sw' });
+      }
+    };
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('pwa-update-available', handlePwaUpdateEvent);
+    window.addEventListener('pwa-sw-activated', handlePwaUpdateEvent);
+
+    return () => {
+      clearTimeout(initialTimer);
+      clearInterval(interval);
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('pwa-update-available', handlePwaUpdateEvent);
+      window.removeEventListener('pwa-sw-activated', handlePwaUpdateEvent);
+    };
+  }, []);
+
   const [undoModalConfig, setUndoModalConfig] = useState<{
     isOpen: boolean;
     snapshotId?: string | null;
@@ -637,6 +728,40 @@ export default function App() {
   const [isMovementPopdownOpen, setIsMovementPopdownOpen] = useState(false);
   const [tempName, setTempName] = useState('');
   const [tempDate, setTempDate] = useState('');
+
+  // Countdown timer for automatic PWA update when user is idle
+  React.useEffect(() => {
+    if (!pwaUpdateAvailable || !isAutoUpdateEnabled) {
+      setPwaCountdown(null);
+      return;
+    }
+
+    // Only start auto-update countdown if user is not in an active modal or editing state
+    const isUserActiveInModal = activeModal !== null || 
+                                Boolean(expandedImage) || 
+                                showDeviceSetupModal || 
+                                isMovementPopdownOpen;
+
+    if (isUserActiveInModal) {
+      setPwaCountdown(null);
+      return;
+    }
+
+    setPwaCountdown(6);
+    const countdownInterval = setInterval(() => {
+      setPwaCountdown(prev => {
+        if (prev === null) return null;
+        if (prev <= 1) {
+          clearInterval(countdownInterval);
+          handleExecuteUpdate();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(countdownInterval);
+  }, [pwaUpdateAvailable, isAutoUpdateEnabled, activeModal, expandedImage, showDeviceSetupModal, isMovementPopdownOpen, handleExecuteUpdate]);
 
   const [selectedMovementOrderId, setSelectedMovementOrderId] = useState<string | null>(() => {
     return localStorage.getItem('selected-movement-order-id') || null;
@@ -1214,6 +1339,9 @@ export default function App() {
     eventSource.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
+        if (data.appVersion && data.appVersion !== APP_VERSION && !pwaUpdateDismissedRef.current) {
+          setPwaUpdateAvailable(prev => prev?.newVersion === data.appVersion ? prev : { newVersion: data.appVersion, source: 'server' });
+        }
         if (data.type === 'device_revoked') {
           setIsDeviceRevoked(true);
           try { eventSource.close(); } catch (e) {}
@@ -2382,6 +2510,54 @@ export default function App() {
               {isDemoTransitioning ? 'Exiting...' : 'Exit & Discard'}
             </button>
           </div>
+        )}
+
+        {pwaUpdateAvailable && (
+          <aside
+            aria-label="Application Update Notice"
+            className="bg-gradient-to-r from-sky-950 via-slate-900 to-indigo-950 border border-sky-400/50 text-white p-3 sm:px-4 sm:py-3 rounded-xl mb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-sm animate-scale-up shadow-xl backdrop-blur w-full max-w-full box-border"
+          >
+            <div className="flex items-center gap-3 min-w-0 flex-1">
+              <span className="p-2 bg-sky-500/20 text-sky-400 border border-sky-500/30 rounded-xl flex items-center justify-center shrink-0">
+                <Rocket className="w-4 h-4 animate-pulse text-sky-400" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="text-xs sm:text-sm font-bold flex items-center gap-2 flex-wrap">
+                  <span>🚀 New Version Available ({pwaUpdateAvailable.newVersion !== 'Latest' && pwaUpdateAvailable.newVersion !== 'latest' ? `v${pwaUpdateAvailable.newVersion}` : 'Latest Release'})</span>
+                  {pwaCountdown !== null && (
+                    <span className="bg-sky-500/25 text-sky-300 border border-sky-400/30 text-[10px] px-2 py-0.5 rounded-full font-mono font-bold animate-pulse">
+                      Auto-updating in {pwaCountdown}s
+                    </span>
+                  )}
+                </div>
+                <p className="text-[11px] text-sky-200/80 mt-0.5 leading-snug">
+                  Service worker is pushing updates and refreshing cache automatically for high performance and offline safety.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto justify-end">
+              <button
+                type="button"
+                onClick={handleExecuteUpdate}
+                className="bg-sky-500 hover:bg-sky-400 text-cool-gray-950 font-extrabold px-3.5 py-1.5 rounded-lg text-xs transition duration-150 shadow focus:outline-none cursor-pointer flex items-center justify-center gap-1.5 flex-1 sm:flex-initial"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Update Now</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  pwaUpdateDismissedRef.current = true;
+                  setPwaUpdateAvailable(null);
+                  setPwaCountdown(null);
+                  setTimeout(() => { pwaUpdateDismissedRef.current = false; }, 60 * 60 * 1000);
+                }}
+                className="bg-cool-gray-800 hover:bg-cool-gray-700 text-cool-gray-300 px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer"
+              >
+                Later
+              </button>
+            </div>
+          </aside>
         )}
 
         <header ref={headerRef} id="main-app-header" className="sticky top-0 z-40 bg-cool-gray-900/95 backdrop-blur-sm -mx-3 px-3 sm:-mx-5 sm:px-5 lg:-mx-6 lg:px-6 pt-3 pb-3 border-b border-cool-gray-800 transition-all mb-4">

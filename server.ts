@@ -173,7 +173,9 @@ app.use((req, res, next) => {
       res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
       res.setHeader('Service-Worker-Allowed', '/');
       res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-      return res.sendFile(swFile);
+      let content = fs.readFileSync(swFile, 'utf8');
+      content = content.replace(/const CACHE_NAME = ['"][^'"]+['"];/, `const CACHE_NAME = 'freezer-tracker-v${APP_VERSION}';`);
+      return res.send(content);
     }
   }
   next();
@@ -332,9 +334,13 @@ app.get('/sw.js', (req, res) => {
   ];
   for (const swPath of swPaths) {
     if (fs.existsSync(swPath)) {
-      res.setHeader('Content-Type', 'application/javascript');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+      res.setHeader('Service-Worker-Allowed', '/');
       res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-      return res.sendFile(swPath);
+      let content = fs.readFileSync(swPath, 'utf8');
+      content = content.replace(/const CACHE_NAME = ['"][^'"]+['"];/, `const CACHE_NAME = 'freezer-tracker-v${APP_VERSION}';`);
+      return res.send(content);
     }
   }
   res.setHeader('Content-Type', 'application/javascript');
@@ -7005,7 +7011,10 @@ function checkForcedMultiStaleness(): boolean {
 
 function broadcastSSE(data: any, excludeClientId?: string) {
   cleanStaleClients();
-  const message = JSON.stringify(data);
+  const payload = (typeof data === 'object' && data !== null)
+    ? { appVersion: APP_VERSION, ...data }
+    : data;
+  const message = JSON.stringify(payload);
   for (const client of activeClients.values()) {
     if (!excludeClientId || client.id !== excludeClientId) {
       if (client.res && !client.res.writableEnded && !client.res.destroyed && !client.res.socket?.destroyed) {
@@ -7505,6 +7514,7 @@ app.get('/api/inventory/stream', (req: any, res: any) => {
   res.write(`data: ${JSON.stringify({ 
     type: 'init', 
     version: currentVersion, 
+    appVersion: APP_VERSION,
     authenticatedUser: userName,
     lock: targetLock,
     locks: { ...singleUserLocks },
@@ -12808,7 +12818,24 @@ app.post('/api/photos/assign', async (req, res) => {
 });
 
 
+// Global error-handling middleware for Express
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  console.error('[Express Global Error]:', err);
+  if (!res.headersSent) {
+    res.status(500).json({ error: 'Internal Server Error', message: err?.message || 'Unknown error' });
+  }
+});
+
 // ---------------- HOSTING SETUP & SERVER START ----------------
+
+// Process-level resilience against unhandled rejections and async disconnects
+process.on('uncaughtException', (err) => {
+  console.error('[Process Uncaught Exception]:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.warn('[Process Unhandled Rejection]:', reason);
+});
 
 async function startServer() {
   // Proactively query Home Assistant system configuration to detect host timezone
@@ -12853,11 +12880,16 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  const server = app.listen(PORT, "0.0.0.0", () => {
     const tz = getUserTimezone();
     const nowInfo = getDateAndMinutesInTz(new Date(), tz);
     console.log(`Inventory tracker server is booted on port http://localhost:${PORT} (Timezone: ${tz}, Local Time: ${nowInfo.dateStr} ${nowInfo.hour}:${nowInfo.minute.toString().padStart(2, '0')})`);
   });
+
+  server.on('error', (err: any) => {
+    console.error('[Server Listen Error]:', err);
+  });
 }
 
 startServer();
+

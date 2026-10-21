@@ -362,6 +362,23 @@ const LibraryView: React.FC<{
   const [pwaBrandingMessage, setPwaBrandingMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   // Application Version & Update state management
+  const [autoPwaUpdate, setAutoPwaUpdate] = useState<boolean>(() => {
+    return localStorage.getItem("pwa_auto_update") !== "false";
+  });
+
+  React.useEffect(() => {
+    const cfg = (state.appConfig || []).find(i => i.key === 'pwa_auto_update');
+    if (cfg?.value !== undefined) {
+      setAutoPwaUpdate(cfg.value !== 'false');
+    }
+  }, [state.appConfig]);
+
+  const handleToggleAutoPwaUpdate = (enabled: boolean) => {
+    setAutoPwaUpdate(enabled);
+    localStorage.setItem("pwa_auto_update", String(enabled));
+    saveAppConfigKey("pwa_auto_update", String(enabled));
+  };
+
   const [serverVersion, setServerVersion] = useState<string | null>(null);
   const [serverVersionStatus, setServerVersionStatus] = useState<'checking' | 'connected' | 'mismatch' | 'offline'>('checking');
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
@@ -4127,6 +4144,30 @@ const LibraryView: React.FC<{
                           {updateMessage}
                         </div>
                       )}
+
+                      {/* Automatic PWA Updates & Push Cache Invalidation Toggle */}
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2.5 border-t border-cool-gray-800">
+                        <div className="space-y-0.5">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-bold text-cool-gray-200">Automatic PWA Updates & Cache Refresh</span>
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-500/15 text-sky-300 border border-sky-500/30">
+                              SW Push Active
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-cool-gray-400 leading-relaxed font-medium">
+                            Automatically detects server releases on launch, window focus, network reconnection, and SSE stream. Seamlessly refreshes local caches and reloads when idle.
+                          </p>
+                        </div>
+                        <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                          <input
+                            type="checkbox"
+                            checked={autoPwaUpdate}
+                            onChange={(e) => handleToggleAutoPwaUpdate(e.target.checked)}
+                            className="sr-only peer"
+                          />
+                          <div className="w-9 h-5 bg-cool-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-cool-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-cyan-600"></div>
+                        </label>
+                      </div>
 
                       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2 border-t border-cool-gray-800 text-[11px] text-cool-gray-450">
                         <span>Query the server to verify your installed PWA shell is current and trigger background update checks.</span>

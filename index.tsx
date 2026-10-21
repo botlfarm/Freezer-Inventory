@@ -30,6 +30,44 @@ if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
         navigator.serviceWorker.register('./sw.js', { scope: './' }).then((registration) => {
           console.log('[PWA] ServiceWorker registered with scope:', registration.scope);
 
+          // Force an immediate update check against the server on launch
+          registration.update().catch(() => {});
+
+          // Track service worker lifecycle for automatic updates
+          registration.onupdatefound = () => {
+            const installingWorker = registration.installing;
+            if (installingWorker) {
+              installingWorker.onstatechange = () => {
+                if (installingWorker.state === 'installed') {
+                  if (navigator.serviceWorker.controller) {
+                    console.log('[PWA] New service worker version installed and ready. Dispatching update event.');
+                    window.dispatchEvent(new CustomEvent('pwa-update-available', {
+                      detail: { registration, immediate: true }
+                    }));
+                  }
+                }
+              };
+            }
+          };
+
+          // Periodic update check every 10 minutes to guarantee timely updates
+          setInterval(() => {
+            registration.update().catch(() => {});
+          }, 10 * 60 * 1000);
+
+          // Trigger update check when user focuses or returns to the PWA app
+          document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') {
+              registration.update().catch(() => {});
+            }
+          });
+          window.addEventListener('focus', () => {
+            registration.update().catch(() => {});
+          });
+          window.addEventListener('online', () => {
+            registration.update().catch(() => {});
+          });
+
           // Register periodic background sync for automatic database updates
           if ('periodicSync' in registration) {
             const reg = registration as any;
@@ -69,6 +107,14 @@ if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
           try {
             registerSW({ immediate: true });
           } catch (_) {}
+        });
+
+        // Listen for messages from Service Worker (e.g. SW_ACTIVATED, CACHE_PURGED)
+        navigator.serviceWorker.addEventListener('message', (event) => {
+          if (event.data?.type === 'SW_ACTIVATED') {
+            console.log('[PWA] ServiceWorker activated with fresh cache:', event.data.version);
+            window.dispatchEvent(new CustomEvent('pwa-sw-activated', { detail: event.data }));
+          }
         });
       }
     } catch (e) {

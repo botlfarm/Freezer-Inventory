@@ -7,6 +7,10 @@ on:
       - master
     tags:
       - "v*"
+  pull_request:
+    branches:
+      - main
+      - master
   workflow_dispatch:
 
 permissions:
@@ -14,8 +18,32 @@ permissions:
   packages: write
 
 jobs:
+  test:
+    name: Run Automated Tests & Quality Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript type check
+        run: npm run lint
+
+      - name: Run automated test suite
+        run: npm test
+
   build:
     name: Build and Push Add-on Image
+    needs: test
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository

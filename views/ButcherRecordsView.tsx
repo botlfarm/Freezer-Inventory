@@ -7,6 +7,7 @@ import { SearchableProductSelect } from './OffSiteStorageView';
 import { ManagementForms } from '../components/ManagementForms';
 import { ButcherSpreadsheetView } from './ButcherSpreadsheetView';
 import { ManualButcherEntryModal, ManualCutItem } from '../components/ManualButcherEntryModal';
+import { computeOrderStats, calculateDaysAlive } from '../utils/butcherStats';
 
 const MultiSelectDropdown = ({ 
   options, 
@@ -366,15 +367,6 @@ const PalletCreatableSelect = ({
   );
 };
 
-const calculateDaysAlive = (birthDate?: string, killDate?: string) => {
-  if (!birthDate || !killDate) return null;
-  const birth = new Date(birthDate);
-  const kill = new Date(killDate);
-  if (isNaN(birth.getTime()) || isNaN(kill.getTime())) return null;
-  const diffTime = kill.getTime() - birth.getTime();
-  const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
-  return diffDays >= 0 ? diffDays : null;
-};
 
 export const ButcherRecordsView = ({ state, dispatch }) => {
   const [activeTab, setActiveTab] = useState<'orders' | 'spreadsheet' | 'import' | 'reports'>('orders');
@@ -405,54 +397,6 @@ export const ButcherRecordsView = ({ state, dispatch }) => {
   const [hoveredWeightPointIdx, setHoveredWeightPointIdx] = useState<number | null>(null);
   const [hoveredCutTrendIdx, setHoveredCutTrendIdx] = useState<number | null>(null);
 
-  // Advanced Yield Calculator
-  const computeOrderStats = (order: ButcherOrder, matchingRecords: ButcherRecord[]) => {
-    let totalPieces = 0;
-    let totalWeight = 0;
-    matchingRecords.forEach(r => {
-      totalPieces += r.pieces;
-      totalWeight += r.netWeight;
-    });
-
-    const count = matchingRecords.length;
-    const live = order.liveWeight || 0;
-    const hot = order.hotWeight || 0;
-    const cold = order.coldWeight || 0;
-    const animalCount = Math.max(1, order.animalCount || 1);
-
-    return {
-      count,
-      totalPieces,
-      packagedWeight: totalWeight,
-      avgPackageWeight: count > 0 ? totalWeight / count : 0,
-      avgPiecesPerPackage: count > 0 ? totalPieces / count : 0,
-      
-      // Original Weights
-      liveWeight: live,
-      hotWeight: hot,
-      coldWeight: cold,
-
-      // Per Animal Weights
-      liveWeightPerAnimal: live / animalCount,
-      hotWeightPerAnimal: hot / animalCount,
-      coldWeightPerAnimal: cold / animalCount,
-      packagedWeightPerAnimal: totalWeight / animalCount,
-
-      // Yield percentages
-      hotWeightYield: live > 0 ? (hot / live) * 100 : 0,
-      coolerShrinkage: hot > 0 ? ((hot - cold) / hot) * 100 : 0,
-      cuttingYield: cold > 0 ? (totalWeight / cold) * 100 : 0,
-      finishToLiveYield: live > 0 ? (totalWeight / live) * 100 : 0,
-      finishToHotYield: hot > 0 ? (totalWeight / hot) * 100 : 0,
-      finishToColdYield: cold > 0 ? (totalWeight / cold) * 100 : 0,
-
-      // Loss weights in lbs
-      totalLoss: Math.max(0, live - totalWeight),
-      dressingLoss: Math.max(0, live - hot),
-      coolerLoss: Math.max(0, hot - cold),
-      cuttingLoss: Math.max(0, cold - totalWeight),
-    };
-  };
   
   // Form for import
   const [csvContent, setCsvContent] = useState<string | null>(null);

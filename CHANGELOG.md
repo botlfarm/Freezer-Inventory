@@ -1,3 +1,72 @@
+### [2.53.0] - 2026-10-20
+
+### Added
+- **Automated Regression Testing & Quality Assurance Suite**:
+  - Integrated `vitest` into the repository and configured `"test": "vitest run"` and `"test:watch": "vitest"` scripts in `package.json`.
+  - Created pure, testable inventory workflow operations engine in `utils/inventoryOperations.ts` supporting inbounding, outbounding, item splits, variant consolidation, and container lifecycle events.
+  - Extracted modular butcher yield calculation, loss statistics, and cut aggregation logic into `utils/butcherStats.ts`, unifying formulas between frontend components and test suites.
+  - Implemented 3 dedicated automated regression test suites covering 22 comprehensive assertions:
+    - `tests/inventory-movement.test.ts`: Validates moving products across containers, splitting partial quantities, preserving total stock counts, merging identical variants while keeping distinct variants separate, retiring temporary containers (`deleteOnEmpty`), archiving standard containers, and moving containers across freezers.
+    - `tests/inbound-outbound.test.ts`: Validates inbounding new cuts with full lot/pack-date/weight traceability, incrementing matching variant counts, preventing non-positive or missing product entries, outbounding partial quantities, deleting zero-quantity cuts, auto-emptying containers, and strictly preventing negative stock depletions.
+    - `tests/butcher-reports.test.ts`: Validates commercial meat yields (hot yield, cooler shrinkage, cutting yield, finish-to-live), per-animal averages across multi-head batches, full loss breakdowns in pounds, zero-weight safety guards, animal age calculations, and cut weight aggregations.
+  - Updated GitHub Actions workflow in `.github/workflows/build-addon.yml` with a blocking `test` job running `npm ci`, `npm run lint`, and `npm test` prior to building and publishing multi-architecture Docker container images to GitHub Container Registry.
+
+### Files Modified
+- `/package.json`
+- `/config.yaml`
+- `/version.ts`
+- `/utils/butcherStats.ts`
+- `/utils/inventoryOperations.ts`
+- `/views/ButcherRecordsView.tsx`
+- `/tests/inventory-movement.test.ts`
+- `/tests/inbound-outbound.test.ts`
+- `/tests/butcher-reports.test.ts`
+- `/.github/workflows/build-addon.yml`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.52.1] - 2026-10-13
+
+### Fixed
+- **Development Server Resilience & Global Process Error Handling**:
+  - Attached process-level safety handlers (`uncaughtException`, `unhandledRejection`) in `server.ts` to prevent unexpected asynchronous promise rejections, background supervisor pings, or client disconnection events from terminating the Node.js server process.
+  - Added centralized Express error-handling middleware (`app.use((err, req, res, next) => ...)`) before server start to guarantee graceful 500 error responses and prevent socket stalls or dropped connections.
+  - Added explicit server listen error listening (`server.on('error', ...)`) for immediate diagnostic logging.
+  - Successfully restarted dev server on port 3000 and verified root route and query-authenticated requests respond with HTTP 200 OK.
+
+### Files Modified
+- `/server.ts`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.52.0] - 2026-10-04
+
+### Added
+- **Automated PWA Push Updates & Background Cache Invalidation**:
+  - Engineered proactive update delivery for Progressive Web Apps (PWAs) and standalone mobile home-screen clients without requiring users to navigate to Settings or click manual update buttons.
+  - Implemented dynamic version injection in `server.ts` for `/sw.js` routes, ensuring any version bump immediately modifies the served script byte stream (`const CACHE_NAME = 'freezer-tracker-v' + APP_VERSION`) to trigger instant browser Service Worker updates.
+  - Upgraded Service Worker lifecycle in `public/sw.js` with immediate `self.skipWaiting()`, client claiming (`self.clients.claim()`), automatic purging of obsolete version caches while preserving user image caches, and `broadcastToClients({ type: 'SW_ACTIVATED', version: CACHE_NAME })`.
+  - Upgraded PWA navigation caching strategy from stale cache-fallback to **Network-First with dynamic cache update**, guaranteeing that whenever connected to Home Assistant or the network, the latest `index.html` and assets load immediately.
+  - Added multi-trigger proactive update polling in `index.tsx`: checks on launch, window focus, visibility change (switching back to app on phone/tablet), network reconnection (`online`), and every 10 minutes in the background.
+  - Added real-time version propagation via Server-Sent Events (SSE): `server.ts` transmits `appVersion` across connection initialization (`init`) and broadcast events (`broadcastSSE`), instantly notifying connected clients when the server updates.
+  - Added automated floating update notification banner in `App.tsx` with a non-disruptive countdown (auto-refreshing cache and reloading after 6 seconds when idle), plus 1-click immediate "Update Now" and "Later" options.
+  - Added "Automatic PWA Updates & Cache Refresh" configuration toggle in Application Preferences / Settings in `LibraryView.tsx` with active Service Worker push status indicator.
+
+### Files Modified
+- `/public/sw.js`
+- `/server.ts`
+- `/index.tsx`
+- `/App.tsx`
+- `/views/LibraryView.tsx`
+- `/APP_CONTEXT.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/CHANGELOG.md`
+
 ### [2.51.4] - 2026-10-04
 
 ### Fixed

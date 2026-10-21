@@ -1,24 +1,52 @@
 // Service Worker for Freezer Inventory Tracker PWA
-const CACHE_NAME = 'freezer-tracker-v2.46.0';
+const CACHE_NAME = 'freezer-tracker-v2.52.0';
 
-// Install event - caching basic shell
+// Install event - caching basic shell and skipping waiting immediately
 self.addEventListener('install', (event) => {
   self.skipWaiting();
 });
 
-// Activate event - cleanup old caches
+// Activate event - cleanup old caches, claim clients, and broadcast update
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
       Promise.all(
         keys.map((key) => {
-          if (key !== CACHE_NAME) {
+          if (key !== CACHE_NAME && key !== 'freezer-tracker-images') {
+            console.log('[PWA sw.js] Purging obsolete cache:', key);
             return caches.delete(key);
           }
         })
       )
-    ).then(() => self.clients.claim())
+    ).then(() => {
+      return self.clients.claim();
+    }).then(() => {
+      return broadcastToClients({ type: 'SW_ACTIVATED', version: CACHE_NAME });
+    })
   );
+});
+
+// Message listener for runtime commands from PWA clients
+self.addEventListener('message', (event) => {
+  if (!event.data) return;
+  const msgType = typeof event.data === 'string' ? event.data : event.data.type;
+  if (msgType === 'SKIP_WAITING') {
+    self.skipWaiting();
+  } else if (msgType === 'FORCE_PURGE_CACHE') {
+    caches.keys().then((keys) => {
+      return Promise.all(
+        keys.map((key) => {
+          if (key !== 'freezer-tracker-images') {
+            return caches.delete(key);
+          }
+        })
+      );
+    }).then(() => {
+      broadcastToClients({ type: 'CACHE_PURGED' });
+    });
+  } else if (msgType === 'CHECK_FOR_UPDATE') {
+    checkAndTriggerSyncThrottled();
+  }
 });
 
 // Helper: Open IndexedDB and read an offline image
@@ -249,17 +277,43 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Case C: Standard static assets and documents - standard cache fallback
+  // Case C: HTML Navigation requests (App Launch / Refresh) - Network First with Cache Fallback
+  if (event.request.mode === 'navigate') {
+    event.respondWith(
+      fetch(event.request)
+        .then((networkResponse) => {
+          if (networkResponse && networkResponse.status === 200) {
+            const responseClone = networkResponse.clone();
+            caches.open(CACHE_NAME).then((cache) => {
+              cache.put(event.request, responseClone);
+            }).catch(() => {});
+          }
+          return networkResponse;
+        })
+        .catch(() => {
+          return caches.match(event.request).then((cachedResponse) => {
+            if (cachedResponse) return cachedResponse;
+            return caches.match('/') || caches.match('/index.html');
+          });
+        })
+    );
+    return;
+  }
+
+  // Case D: Static assets, scripts, stylesheets - Network first with cache update and offline fallback
   event.respondWith(
-    fetch(event.request).catch(() => {
-      return caches.match(event.request).then((cachedResponse) => {
-        if (cachedResponse) {
-          return cachedResponse;
+    fetch(event.request)
+      .then((networkResponse) => {
+        if (networkResponse && networkResponse.status === 200) {
+          const responseClone = networkResponse.clone();
+          caches.open(CACHE_NAME).then((cache) => {
+            cache.put(event.request, responseClone);
+          }).catch(() => {});
         }
-        if (event.request.mode === 'navigate') {
-          return caches.match('/') || caches.match('/index.html');
-        }
-      });
-    })
+        return networkResponse;
+      })
+      .catch(() => {
+        return caches.match(event.request);
+      })
   );
 });

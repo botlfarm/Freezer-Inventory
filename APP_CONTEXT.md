@@ -1,6 +1,6 @@
 # Technical Architecture & Context Reference Document
 **Project:** Freezer Inventory Tracker  
-**Current Version:** `2.51.4`  
+**Current Version:** `2.53.0`  
 **Target Environment:** Standalone Web Application & Live Home Assistant Add-On (Ingress Compatible)
 
 ---
@@ -9,8 +9,10 @@
 The **Freezer Inventory Tracker** is a full-stack, real-time inventory and cold-chain traceability management platform designed for farms, butcheries, commercial kitchens, and household storage. It manages physical meat cuts and general food inventory across on-site physical freezers, display cases, storage containers/boxes, off-site commercial cold storage facilities, palletized bulk freight, and custom butcher processing orders.
 
 ### Key Functional Capabilities
+- **Automated Regression Testing & CI Quality Gates**: Integrated `vitest` test suites verifying mission-critical inventory operations before release: moving products across containers/freezers, splitting cuts, inbounding/outbounding, preventing negative stock, and calculating butcher yields and loss breakdowns. Wired into GitHub Actions (`.github/workflows/build-addon.yml`) to block Docker builds if tests or type checks fail.
 - **Live Inventory Item & Container Matching**: Real-time live search across active and archived catalog items and containers during product intake and container creation. Automatically detects duplicate names, highlights archived items (`📁 Archived`), provides 1-click unarchive & restore workflows, and allows placing existing spare containers into target freezers with 1-click.
 - **Progressive Web App (PWA) & Offline Resiliency**: Service Worker asset caching for 0-network boot, client-side IndexedDB database caching (`freezer_inventory_offline_db`) for 0ms loads, custom PWA app name/icon branding, dedicated PWA & Devices main-level settings tab, and persistent offline mutation queue with automatic FIFO background replay upon reconnect.
+- **Automated PWA Push Updates & Background Cache Invalidation**: Automatic background detection of new add-on releases through dynamic version injection into `/sw.js`, Server-Sent Events (`appVersion`), window focus/visibility listeners, and 10-minute periodic worker checks. Implements Network-First navigation with cache fallback, automatic cache invalidation (`skipWaiting` and `clients.claim()`), and an automated floating update banner with auto-refresh countdown when idle, eliminating the need for PWA users to manually check or click update buttons.
 - **PWA Device Registry, User Grouping & Access Control**: Persistent hardware device identification (`deviceId` UUID) per device, initial operator & device setup prompts, relational SQLite `pwa_devices` registry, PWA Device Manager dashboard in Settings. Features user-centric grouping (viewing all devices organized by operator handle), multi-criteria filtering (status, online presence, standalone PWA vs. browser, search), individual device killswitch, and user-level bulk revocation (`/api/devices/user/:operator/revoke`) which severs real-time SSE streams and blocks all of a user's registered devices with `403 DEVICE_REVOKED` regardless of persistent cookies.
 - **On-Site & Display Case Inventory**: Real-time bin, shelf, and container tracking with instant quantity adjustments, math expression evaluation (`+5`, `-2`, `3*4`), split cuts, tag filtering, customizable hierarchy sorting (alphabetical or user-defined category/sub/cut sequence), and restock alerts.
 - **Off-Site Cold Storage & Movement Planning**: Multi-facility tracking, pallet and box hierarchies, drag-and-drop staging worksheets, unified worksheet spreadsheet with synchronized sticky multi-select toolbar and column headers, barcoded QR scanning, pick/delivery order execution, and movement history.
@@ -27,7 +29,7 @@ The **Freezer Inventory Tracker** is a full-stack, real-time inventory and cold-
 | :--- | :--- | :--- |
 | **Frontend Framework** | React 18 / 19, TypeScript | Strict typing, functional components, custom hooks, React portals. |
 | **Styling & UI** | Tailwind CSS (Tailwind v4 `@import "tailwindcss";`) | Mobile-first responsive design, dark/cool-gray neutral palettes, custom SVG icon system, Lucide icons. |
-| **Build & Tooling** | Vite, `tsx`, `esbuild` | Node.js native ESM/CJS bundling, TypeScript type checking (`tsc --noEmit`). |
+| **Build & Tooling** | Vite, `tsx`, `esbuild`, Vitest | Node.js native ESM/CJS bundling, TypeScript type checking (`tsc --noEmit`), Vitest automated unit & workflow tests (`npm test`). |
 | **Backend Server** | Node.js, Express | RESTful API routes (`/api/*`), SSE streaming (`/api/inventory/stream`), multipart image uploads, ZIP archive compression. |
 | **Database Engine** | SQLite via `better-sqlite3` | Local persistent database (`/data/inventory.db` or `./data/inventory.db`) with WAL mode, transactions, and automated schema migrations. |
 | **Integrations** | Home Assistant API & Ingress | Reverse proxy ingress compatibility, HA persistent notifications, companion app client detection. |
