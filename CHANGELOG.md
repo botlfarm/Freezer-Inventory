@@ -1,3 +1,20 @@
+### [2.53.5] - 2026-10-21
+
+### Fixed
+- **Modernized CI/CD Container Pipeline to Native Docker BuildKit (`docker/build-push-action@v6`)**:
+  - Fully replaced the deprecated, retired `home-assistant/builder` wrapper action with the official `docker/setup-buildx-action@v3` and `docker/build-push-action@v6` workflow.
+  - Eliminated internal `/tmp/build_config/config.json` staging and `jq` failures by building the add-on directly using BuildKit across parallel matrix runners for `aarch64` (`linux/arm64`) and `amd64` (`linux/amd64`).
+  - Automatically extracts dynamic add-on versioning from `config.yaml` to stamp Home Assistant container labels (`io.hass.type=addon`, `io.hass.arch`, `io.hass.version`, `io.hass.name`, `io.hass.description`) and publish multi-architecture tags to GitHub Container Registry (`ghcr.io/botlfarm/freezer-inventory-tracker-aarch64` and `ghcr.io/botlfarm/freezer-inventory-tracker-amd64`).
+
+### Files Modified
+- `/.github/workflows/build-addon.yml`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/version.ts`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
 ### [2.53.4] - 2026-10-21
 
 ### Fixed
