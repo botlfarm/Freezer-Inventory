@@ -1,3 +1,21 @@
+### [2.53.1] - 2026-10-21
+
+### Fixed
+- **CI Lockfile Synchronization & Dependency Installation Resilience**:
+  - Resolved `npm ci` lockfile mismatch error (`EUSAGE`) in GitHub Actions caused by an out-of-sync `package-lock.json`.
+  - Regenerated a pristine `package-lock.json` lockfile matching all root dependencies and dev dependencies (including `vitest` and runtime packages).
+  - Updated the CI workflow installation step in `.github/workflows/build-addon.yml` to `npm install --no-audit --no-fund` to mirror the add-on Dockerfile build process and provide permanent protection against strict lockfile drift in CI pipelines.
+  - Verified `npm test` and `npm run lint` execute cleanly with 22/22 passing tests.
+
+### Files Modified
+- `/.github/workflows/build-addon.yml`
+- `/package-lock.json`
+- `/package.json`
+- `/config.yaml`
+- `/version.ts`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
 ### [2.53.0] - 2026-10-20
 
 ### Added

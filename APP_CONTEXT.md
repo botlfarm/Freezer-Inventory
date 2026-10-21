@@ -1,6 +1,6 @@
 # Technical Architecture & Context Reference Document
 **Project:** Freezer Inventory Tracker  
-**Current Version:** `2.53.0`  
+**Current Version:** `2.53.1`  
 **Target Environment:** Standalone Web Application & Live Home Assistant Add-On (Ingress Compatible)
 
 ---
