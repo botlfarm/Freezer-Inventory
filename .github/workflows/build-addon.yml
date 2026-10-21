@@ -41,10 +41,14 @@ jobs:
         run: npm test
 
   build:
-    name: Build and Push Add-on Image
+    name: Build Add-on (${{ matrix.arch }})
     needs: test
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [aarch64, amd64]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -63,8 +67,7 @@ jobs:
         uses: home-assistant/builder@2024.08.2
         with:
           args: |
-            --aarch64 \
-            --amd64 \
-            --target . \
-            --image "freezer-inventory-tracker-{arch}" \
+            --${{ matrix.arch }}
+            --target .
+            --image "freezer-inventory-tracker-{arch}"
             --docker-hub "ghcr.io/${{ github.repository_owner }}"

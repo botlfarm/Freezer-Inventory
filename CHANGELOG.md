@@ -1,3 +1,19 @@
+### [2.53.2] - 2026-10-21
+
+### Fixed
+- **Multi-Architecture Add-on Matrix CI Build Pipeline (`aarch64` & `amd64`)**:
+  - Resolved an issue in `.github/workflows/build-addon.yml` where combining `--aarch64` and `--amd64` in a single job step with literal line continuations prevented `aarch64` container images from building and publishing to GitHub Container Registry (GHCR), leaving the `aarch64` image frozen at version 2.51.4 while `amd64` progressed.
+  - Migrated the build workflow to Home Assistant's official parallel matrix build strategy (`matrix: arch: [aarch64, amd64]`, `fail-fast: false`), executing dedicated, isolated build runners for `aarch64` and `amd64`.
+  - Cleaned builder argument syntax (`--${{ matrix.arch }}` without YAML trailing backslash artifacts) to ensure deterministic argument parsing, independent QEMU resources, and concurrent publishing of both `ghcr.io/botlfarm/freezer-inventory-tracker-aarch64` and `ghcr.io/botlfarm/freezer-inventory-tracker-amd64`.
+
+### Files Modified
+- `/.github/workflows/build-addon.yml`
+- `/package.json`
+- `/config.yaml`
+- `/version.ts`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
 ### [2.53.1] - 2026-10-21
 
 ### Fixed
