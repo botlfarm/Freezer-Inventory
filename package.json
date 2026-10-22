@@ -1,7 +1,7 @@
 {
   "name": "freezer-inventory-tracker",
   "private": true,
-  "version": "2.53.6",
+  "version": "2.54.0",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",

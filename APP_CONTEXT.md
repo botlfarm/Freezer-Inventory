@@ -1,6 +1,6 @@
 # Technical Architecture & Context Reference Document
 **Project:** Freezer Inventory Tracker  
-**Current Version:** `2.53.6`  
+**Current Version:** `2.54.0`  
 **Target Environment:** Standalone Web Application & Live Home Assistant Add-On (Ingress Compatible)
 
 ---
@@ -9,7 +9,13 @@
 The **Freezer Inventory Tracker** is a full-stack, real-time inventory and cold-chain traceability management platform designed for farms, butcheries, commercial kitchens, and household storage. It manages physical meat cuts and general food inventory across on-site physical freezers, display cases, storage containers/boxes, off-site commercial cold storage facilities, palletized bulk freight, and custom butcher processing orders.
 
 ### Key Functional Capabilities
-- **Automated Regression Testing & CI Quality Gates**: Integrated `vitest` test suites verifying mission-critical inventory operations before release: moving products across containers/freezers, splitting cuts, inbounding/outbounding, preventing negative stock, and calculating butcher yields and loss breakdowns. Wired into GitHub Actions (`.github/workflows/build-addon.yml`) to block Docker builds if tests or type checks fail.
+- **Automated Regression Testing & CI Quality Gates**: Integrated `vitest` test suites verifying the entire farm-to-freezer lifecycle:
+  1. *Database Restore & Backup Roundtrip*: Restoring sample SQLite `.db` databases across all 20 tables, taking on-disk snapshots (`VACUUM INTO`), simulating catastrophic data wipes, and restoring identically.
+  2. *Butcher Intake & CSV Deduplication*: Uploading butcher CSV cutsheets, parsing item numbers and weights, assigning cuts to the butcher location on pallets, and importing updated CSVs with deduplication guarantees.
+  3. *Multi-Facility Off-Site Logistics*: Movement orders routing cuts between processor, cold storage on pallets, and home staging intake.
+  4. *Home Freezer Operations*: Allocating from staging into freezers, restocking display freezers based on inventory deficits, sales deductions with automatic empty container retirement, container templates, container combining with variant consolidation, and physical reconciliation audits.
+  5. *Reverse Movement*: Staging home inventory, packing into off-site boxes with tare/gross weights, and dispatching to cold storage.
+  Wired into GitHub Actions (`.github/workflows/build-addon.yml`) to block Docker builds if tests or type checks fail.
 - **Live Inventory Item & Container Matching**: Real-time live search across active and archived catalog items and containers during product intake and container creation. Automatically detects duplicate names, highlights archived items (`📁 Archived`), provides 1-click unarchive & restore workflows, and allows placing existing spare containers into target freezers with 1-click.
 - **Progressive Web App (PWA) & Offline Resiliency**: Service Worker asset caching for 0-network boot, client-side IndexedDB database caching (`freezer_inventory_offline_db`) for 0ms loads, custom PWA app name/icon branding, dedicated PWA & Devices main-level settings tab, and persistent offline mutation queue with automatic FIFO background replay upon reconnect.
 - **Automated PWA Push Updates & Background Cache Invalidation**: Automatic background detection of new add-on releases through dynamic version injection into `/sw.js`, Server-Sent Events (`appVersion`), window focus/visibility listeners, and 10-minute periodic worker checks. Implements Network-First navigation with cache fallback, automatic cache invalidation (`skipWaiting` and `clients.claim()`), and an automated floating update banner with auto-refresh countdown when idle, eliminating the need for PWA users to manually check or click update buttons.

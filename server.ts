@@ -1283,10 +1283,19 @@ function initDatabase() {
   let dbPath = getDatabasePath();
 
   const tryInit = () => {
+    // Safety check: On server boot/restart/upgrade, sandbox demo mode must NEVER persist.
+    // Always default to false and clean up any persisted demo flags so live database is accessed.
+    isDemoMode = false;
     if (fs.existsSync(CONFIG_FILE)) {
       try {
         const configData = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
-        isDemoMode = !!configData.isDemoMode;
+        if (configData && configData.isDemoMode) {
+          console.warn('[Safety] Resetting persisted isDemoMode flag on server startup to guarantee live database access.');
+          configData.isDemoMode = false;
+          try {
+            fs.writeFileSync(CONFIG_FILE, JSON.stringify(configData, null, 2), 'utf-8');
+          } catch (writeErr) {}
+        }
       } catch (e) {
         // ignore
       }
@@ -1303,6 +1312,18 @@ function initDatabase() {
     for (const table of Object.keys(TABLE_SCHEMAS)) {
       db.prepare(TABLE_SCHEMAS[table].createSql).run();
     }
+
+    // Ensure persisted auto_snapshot_config in database does not keep isDemoMode enabled across server restart
+    try {
+      const autoCfg = db.prepare("SELECT value FROM app_config WHERE key = 'auto_snapshot_config'").get() as any;
+      if (autoCfg && autoCfg.value) {
+        const parsed = JSON.parse(autoCfg.value);
+        if (parsed && parsed.isDemoMode) {
+          parsed.isDemoMode = false;
+          db.prepare("UPDATE app_config SET value = ? WHERE key = 'auto_snapshot_config'").run(JSON.stringify(parsed));
+        }
+      }
+    } catch (e) {}
 
     // 2. Ensure boxes and pallets tables have the isArchived column
     try {
@@ -3974,8 +3995,7 @@ app.post('/api/config', (req, res) => {
 
 app.get('/api/demo/status', (req, res) => {
   try {
-    const config = loadAutoSnapshotConfig();
-    res.json({ isDemoMode: !!config.isDemoMode });
+    res.json({ isDemoMode: !!isDemoMode });
   } catch (err: any) {
     res.status(500).json({ error: `Failed to get demo mode status: ${err.message}` });
   }

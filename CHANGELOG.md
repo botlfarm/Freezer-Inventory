@@ -1,3 +1,49 @@
+### [2.54.0] - 2026-10-22
+
+### Added
+- **Comprehensive Automated End-to-End Workflow Test Harness & Full Lifecycle Validation**:
+  - Implemented a complete, automated integration test suite in Vitest testing the entire farm-to-freezer lifecycle across 8 test suites and 34 assertions.
+  - **Sample SQLite Database Restore & Snapshot Roundtrip (`tests/workflow-restore-and-backup.test.ts`)**: Tests restoring an initial sample SQLite `.db` database, verifies population across all 20 schema tables, takes an on-disk SQLite backup snapshot (`VACUUM INTO`), executes catastrophic data loss simulations (wiping products, freezers, and containers), and restores from the snapshot with bit-for-bit parity.
+  - **Butcher Intake, CSV Parsing & Deduplication Engine (`tests/workflow-butcher-csv-dedup.test.ts`)**: Tests creating a new butcher order, ingesting `initial_butcher_cutsheet.csv` (12 cuts), mapping cuts to product catalog items, and assigning them to the butcher location on a pallet. Ingests an updated/appended CSV (`appended_butcher_cutsheet.csv`) containing 18 cuts and verifies zero duplicate entries, updating existing records while appending new cuts cleanly.
+  - **Multi-Facility Off-Site Logistics & Pallet Staging (`tests/workflow-offsite-and-home-logistics.test.ts`)**: Validates movement orders splitting butcher cuts between off-site bulk cold storage (`Cold Storage Express` on pallet `PALLET-CS-1`) and on-site retail prep (`Home Farm Freezers` in staging), verifying off-site entries remain active on pallet at cold storage while home items are received into staging containers.
+  - **Home Freezer Operations & Lifecycle (`tests/workflow-home-inventory.test.ts`)**: Tests moving cuts from staging into individual freezers, restocking display freezers based on inventory threshold deficits, retail sales reductions with automatic container retirement/archiving when emptied, container template instantiation, combining containers with variant consolidation, and freezer physical reconciliations with variance auditing.
+  - **Reverse Movement: Staging to Off-Site Transfer (`tests/workflow-reverse-staging-offsite.test.ts`)**: Tests staging home cuts for transfer, packing into off-site boxes with tare, gross, and net weights, and dispatching to cold storage with movement order generation.
+  - **Bundled Realistic Test Fixtures**: Added `tests/fixtures/initial_butcher_cutsheet.csv` and `tests/fixtures/appended_butcher_cutsheet.csv` reflecting real external butcher packing formats.
+
+### Files Modified
+- `/tests/test-harness.ts`
+- `/tests/fixtures/initial_butcher_cutsheet.csv`
+- `/tests/fixtures/appended_butcher_cutsheet.csv`
+- `/tests/workflow-restore-and-backup.test.ts`
+- `/tests/workflow-butcher-csv-dedup.test.ts`
+- `/tests/workflow-offsite-and-home-logistics.test.ts`
+- `/tests/workflow-home-inventory.test.ts`
+- `/tests/workflow-reverse-staging-offsite.test.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/version.ts`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.53.7] - 2026-10-22
+
+### Fixed
+- **Sandbox Mode Ephemeral Isolation & Server Startup Safety Guard**:
+  - Resolved an issue where container restarts or live add-on upgrades could inadvertently open in the empty "Demo Sandbox Playground" if `isDemoMode: true` was previously written to disk or database configuration.
+  - Added an automated startup guard in `server.ts` (`initDatabase`): on cold boot or container initialization, `isDemoMode` is unconditionally reset to `false`, sanitizing both disk config (`CONFIG_FILE`) and the SQLite `app_config` table.
+  - Updated `/api/demo/status` endpoint to report the live in-memory execution state (`isDemoMode`) rather than reading stale disk config.
+  - Guarantees that the add-on always opens the canonical live production database (`inventory.db`) upon boot or upgrade, preventing temporary sandbox databases from obscuring active inventory.
+
+### Files Modified
+- `/server.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/version.ts`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
 ### [2.53.6] - 2026-10-21
 
 ### Fixed

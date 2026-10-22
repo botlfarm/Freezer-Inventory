@@ -1,0 +1,6 @@
+{
+  "summary":  "Comprehensive end-to-end automated testing plan covering full lifecycle workflows: database restore, butcher record creation, CSV upload, deduplication, off-site movements, pallet staging, home freezer operations, restocking, display freezer, sales, container merging and templating, freezer reconciliations, reverse movement back to offsite, and backup/restore roundtrips.",
+  "updatedAt":  "2026-10-22T14:22:25.181476425Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}
