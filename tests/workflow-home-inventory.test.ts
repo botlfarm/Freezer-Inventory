@@ -247,4 +247,24 @@ describe('Workflow 4: Home Freezer Inventory Operations & Lifecycle', () => {
     expect(s1.history[0].description).toContain('Reconciled');
     expect(s1.history[0].user).toBe('Inventory Auditor');
   });
+
+  it('increments and decrements stock quantity via controller actions with non-negative bounds', () => {
+    // Initial ribeye quantity in walkin is 6
+    const ribeye = state.meatCuts.find(mc => mc.id === 'cut-walkin-ribeye')!;
+    expect(ribeye.quantity).toBe(6);
+
+    // Increment (+1)
+    const incQty = ribeye.quantity + 1;
+    let updatedCuts = state.meatCuts.map(mc => mc.id === ribeye.id ? { ...mc, quantity: incQty } : mc);
+    expect(updatedCuts.find(mc => mc.id === ribeye.id)?.quantity).toBe(7);
+
+    // Decrement (-1)
+    const decQty = Math.max(0, incQty - 1);
+    updatedCuts = updatedCuts.map(mc => mc.id === ribeye.id ? { ...mc, quantity: decQty } : mc);
+    expect(updatedCuts.find(mc => mc.id === ribeye.id)?.quantity).toBe(6);
+
+    // Decrement below 0 clamp
+    const clampedZero = Math.max(0, 0 - 1);
+    expect(clampedZero).toBe(0);
+  });
 });

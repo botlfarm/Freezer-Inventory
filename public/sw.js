@@ -1,5 +1,5 @@
 // Service Worker for Freezer Inventory Tracker PWA
-const CACHE_NAME = 'freezer-tracker-v2.52.0';
+const CACHE_NAME = 'freezer-tracker-v2.55.6';
 
 // Install event - caching basic shell and skipping waiting immediately
 self.addEventListener('install', (event) => {
@@ -211,6 +211,12 @@ self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
   
   const url = new URL(event.request.url);
+
+  // Bypass Service Worker completely for Cloudflare auth & security token refresh requests.
+  // This allows the browser's native network navigation to follow Cloudflare Access redirects to the login screen.
+  if (url.searchParams.has('cf_token_refresh') || url.searchParams.has('refresh_auth')) {
+    return;
+  }
 
   // Trigger throttled background update check on navigating to any HTML page (app launch/refresh)
   if (event.request.mode === 'navigate') {

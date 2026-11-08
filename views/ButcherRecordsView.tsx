@@ -3,6 +3,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { Upload, Search, List, Trash2, ArrowRight, Edit3, X, ChevronDown, Check, CheckCircle2, FileSpreadsheet, PlusCircle, Plus, Link, ExternalLink, AlertTriangle, AlertCircle } from 'lucide-react';
 import Papa from 'papaparse';
 import { ButcherOrder, ButcherRecord, AppLocation, Product, ButcherOrderDocument } from '../types';
+import { getApiUrl } from '../hooks/apiUrl';
 import { SearchableProductSelect } from './OffSiteStorageView';
 import { ManagementForms } from '../components/ManagementForms';
 import { ButcherSpreadsheetView } from './ButcherSpreadsheetView';
@@ -785,6 +786,78 @@ export const ButcherRecordsView = ({ state, dispatch }) => {
     return result;
   }, [records]);
 
+  const processCutsheetCsvText = (text: string) => {
+    setCsvContent(text);
+    
+    Papa.parse(text, {
+      header: false,
+      skipEmptyLines: true,
+      complete: (results) => {
+        // Find the header row
+        let headerIdx = -1;
+        for (let i = 0; i < results.data.length; i++) {
+          const row = results.data[i] as string[];
+          if (row.length > 3 && row.some(cell => cell.toLowerCase().includes('serial'))) {
+            headerIdx = i;
+            break;
+          }
+        }
+        
+        if (headerIdx === -1) {
+          alert("Could not find header row containing 'Serial' in CSV.");
+          return;
+        }
+
+        const rawData = results.data.slice(headerIdx + 1);
+        const headerRow = results.data[headerIdx] as string[];
+        const palletColIdx = headerRow ? headerRow.findIndex(c => String(c).toLowerCase().includes('pallet')) : -1;
+        const locColIdx = headerRow ? headerRow.findIndex(c => String(c).toLowerCase().includes('location') || String(c).toLowerCase().includes('site')) : -1;
+        const newRecords: any[] = [];
+        
+        for (const row of rawData) {
+          const rowData = row as string[];
+          if (rowData.length < 7) continue;
+          
+          // Skip summary lines or empty lines that have no cut name
+          if (!rowData[1] || rowData[1].trim() === '') {
+            continue;
+          }
+
+          const rowPallet = palletColIdx !== -1 ? (rowData[palletColIdx] || '') : (rowData[7] || '');
+          const rowLoc = locColIdx !== -1 ? (rowData[locColIdx] || '') : '';
+
+          // Serial,Cut,Pack Date,Lot,# Pieces,Net Weight,Box,[Pallet],[Location]
+          newRecords.push({
+            serial: rowData[0] || '',
+            originalCutName: rowData[1] || '',
+            packDate: rowData[2] || '',
+            lot: rowData[3] || '',
+            pieces: parseInt(rowData[4] || '0', 10) || 0,
+            netWeight: parseFloat(rowData[5] || '0') || 0,
+            box: rowData[6] || '',
+            pallet: rowPallet ? String(rowPallet).trim() : '',
+            location: rowLoc ? String(rowLoc).trim() : ''
+          });
+        }
+        setParsedRecords(newRecords);
+        
+        // Try to guess order number from the top rows only if not appending to an existing log
+        let guessedOrderNumber = '';
+        for (let i = 0; i < headerIdx; i++) {
+          const r = results.data[i] as string[];
+          for (const cell of r) {
+            if (cell && !isNaN(Number(cell.trim()))) {
+              guessedOrderNumber = cell.trim();
+            }
+          }
+        }
+        if (guessedOrderNumber && !importForm.orderNumber && !targetOrderId) {
+          setImportForm(prev => ({ ...prev, orderNumber: guessedOrderNumber }));
+        }
+      }
+    });
+  };
+
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -795,75 +868,7 @@ export const ButcherRecordsView = ({ state, dispatch }) => {
     const reader = new FileReader();
     reader.onload = (event) => {
       const text = event.target?.result as string;
-      setCsvContent(text);
-      
-      Papa.parse(text, {
-        header: false,
-        skipEmptyLines: true,
-        complete: (results) => {
-          // Find the header row
-          let headerIdx = -1;
-          for (let i=0; i<results.data.length; i++) {
-            const row = results.data[i] as string[];
-            if (row.length > 3 && row.some(cell => cell.toLowerCase().includes('serial'))) {
-              headerIdx = i;
-              break;
-            }
-          }
-          
-          if (headerIdx === -1) {
-            alert("Could not find header row in CSV.");
-            return;
-          }
-
-          const rawData = results.data.slice(headerIdx + 1);
-          const headerRow = results.data[headerIdx] as string[];
-          const palletColIdx = headerRow ? headerRow.findIndex(c => String(c).toLowerCase().includes('pallet')) : -1;
-          const locColIdx = headerRow ? headerRow.findIndex(c => String(c).toLowerCase().includes('location') || String(c).toLowerCase().includes('site')) : -1;
-          const newRecords: any[] = [];
-          
-          for (const row of rawData) {
-            const rowData = row as string[];
-            if (rowData.length < 7) continue;
-            
-            // Skip summary lines or empty lines that have no cut name
-            if (!rowData[1] || rowData[1].trim() === '') {
-              continue;
-            }
-
-            const rowPallet = palletColIdx !== -1 ? (rowData[palletColIdx] || '') : (rowData[7] || '');
-            const rowLoc = locColIdx !== -1 ? (rowData[locColIdx] || '') : '';
-
-            // Serial,Cut,Pack Date,Lot,# Pieces,Net Weight,Box,[Pallet],[Location]
-            newRecords.push({
-              serial: rowData[0] || '',
-              originalCutName: rowData[1] || '',
-              packDate: rowData[2] || '',
-              lot: rowData[3] || '',
-              pieces: parseInt(rowData[4] || '0', 10) || 0,
-              netWeight: parseFloat(rowData[5] || '0') || 0,
-              box: rowData[6] || '',
-              pallet: rowPallet ? String(rowPallet).trim() : '',
-              location: rowLoc ? String(rowLoc).trim() : ''
-            });
-          }
-          setParsedRecords(newRecords);
-          
-          // Try to guess order number from the top rows only if not appending to an existing log
-          let guessedOrderNumber = '';
-          for (let i=0; i<headerIdx; i++) {
-            const r = results.data[i] as string[];
-            for (const cell of r) {
-              if (cell && !isNaN(Number(cell.trim()))) {
-                guessedOrderNumber = cell.trim();
-              }
-            }
-          }
-          if (guessedOrderNumber && !importForm.orderNumber && !targetOrderId) {
-            setImportForm(prev => ({...prev, orderNumber: guessedOrderNumber}));
-          }
-        }
-      });
+      processCutsheetCsvText(text);
     };
     reader.readAsText(file);
   };
@@ -2305,7 +2310,7 @@ export const ButcherRecordsView = ({ state, dispatch }) => {
                           onChange={e => setImportNewDocUrl(e.target.value)}
                         />
                       </div>
-                      <div className="flex justify-end">
+                      <div className="flex flex-wrap items-center justify-end gap-2 pt-1 border-t border-cool-gray-800">
                         <button
                           type="button"
                           onClick={() => {
@@ -3975,7 +3980,7 @@ export const ButcherRecordsView = ({ state, dispatch }) => {
                         onChange={e => setNewDocUrl(e.target.value)}
                       />
                     </div>
-                    <div className="flex justify-end">
+                    <div className="flex flex-wrap items-center justify-end gap-2 pt-1 border-t border-cool-gray-800">
                       <button
                         type="button"
                         onClick={() => {
@@ -4091,6 +4096,7 @@ export const ButcherRecordsView = ({ state, dispatch }) => {
             onAddToImportForm={handleAddManualCutsToImportForm}
           />
         )}
+
       </div>
     </div>
   );

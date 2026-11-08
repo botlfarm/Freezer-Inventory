@@ -838,8 +838,10 @@ export const UnifiedInboundMoveForm: React.FC<UnifiedInboundMoveFormProps> = ({
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
+                    data-action="decrement"
                     onClick={() => handleModifyQuantity(-1)}
-                    className="p-2 bg-cool-gray-700 hover:bg-cool-gray-600 rounded-lg text-white transition w-10 h-10 flex items-center justify-center cursor-pointer shrink-0 font-bold"
+                    className="btn-qty-minus p-2 bg-cool-gray-700 hover:bg-red-500 active:bg-red-600 focus:bg-red-500 text-cool-gray-200 hover:text-white active:text-white rounded-lg transition w-10 h-10 flex items-center justify-center cursor-pointer shrink-0 font-bold active:scale-90"
+                    title="Decrease quantity by 1"
                   >
                     <MinusIcon className="w-4 h-4"/>
                   </button>
@@ -852,8 +854,10 @@ export const UnifiedInboundMoveForm: React.FC<UnifiedInboundMoveFormProps> = ({
                   />
                   <button
                     type="button"
+                    data-action="increment"
                     onClick={() => handleModifyQuantity(1)}
-                    className="p-2 bg-cool-gray-700 hover:bg-cool-gray-600 rounded-lg text-white transition w-10 h-10 flex items-center justify-center cursor-pointer shrink-0 font-bold"
+                    className="btn-qty-plus p-2 bg-cool-gray-700 hover:bg-green-500 active:bg-green-600 focus:bg-green-500 text-cool-gray-200 hover:text-white active:text-white rounded-lg transition w-10 h-10 flex items-center justify-center cursor-pointer shrink-0 font-bold active:scale-90"
+                    title="Increase quantity by 1"
                   >
                     <PlusIcon className="w-4 h-4"/>
                   </button>

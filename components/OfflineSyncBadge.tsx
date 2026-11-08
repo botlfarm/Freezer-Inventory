@@ -1,6 +1,6 @@
 // Offline sync badge component
 import React, { useState, useEffect } from 'react';
-import { WifiOff, RefreshCw, CheckCircle2, CloudUpload } from 'lucide-react';
+import { WifiOff, RefreshCw, CheckCircle2, CloudUpload, KeyRound } from 'lucide-react';
 
 interface OfflineSyncBadgeProps {
   isOnline: boolean;
@@ -8,6 +8,7 @@ interface OfflineSyncBadgeProps {
   isSyncingQueue: boolean;
   lastSyncTime?: number | null;
   onManualSync?: () => void;
+  onRefreshToken?: () => void;
   className?: string;
 }
 
@@ -17,6 +18,7 @@ export const OfflineSyncBadge: React.FC<OfflineSyncBadgeProps> = ({
   isSyncingQueue,
   lastSyncTime,
   onManualSync,
+  onRefreshToken,
   className = ''
 }) => {
   const [tick, setTick] = useState(0);
@@ -61,7 +63,7 @@ export const OfflineSyncBadge: React.FC<OfflineSyncBadgeProps> = ({
 
   if (!isOnline) {
     return (
-      <div className="flex items-center gap-2 shrink-0">
+      <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
         <div
           onClick={onManualSync}
           className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-300 text-xs font-medium cursor-pointer hover:bg-amber-500/25 transition shadow-sm ${className}`}
@@ -72,7 +74,24 @@ export const OfflineSyncBadge: React.FC<OfflineSyncBadgeProps> = ({
             Offline {offlineQueueCount > 0 && <span className="font-semibold text-amber-200">({offlineQueueCount} unsynced)</span>}
           </span>
         </div>
-        <span className="text-[10px] text-cool-gray-400 font-semibold select-none whitespace-nowrap" title={tooltipText}>
+
+        {onRefreshToken && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onRefreshToken();
+            }}
+            className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 text-[10px] font-bold transition shadow-sm cursor-pointer"
+            title="Cloudflare security token expired? Click to refresh token without clearing device identity"
+          >
+            <KeyRound className="w-2.5 h-2.5 text-rose-300" />
+            <span className="hidden sm:inline">Refresh Token</span>
+            <span className="sm:hidden">Token</span>
+          </button>
+        )}
+
+        <span className="hidden md:inline text-[10px] text-cool-gray-400 font-semibold select-none whitespace-nowrap" title={tooltipText}>
           Synced {formattedTime}
         </span>
       </div>

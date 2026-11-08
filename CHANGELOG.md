@@ -1,3 +1,208 @@
+### [2.55.7] - 2026-11-01
+
+### Fixed
+- **Restored Plus & Minus Quantity Controller Push & Hover Color Changes**: Resolved an issue where increment (+) and decrement (-) buttons stopped changing color when clicked or pushed. A legacy CSS cascade override in `index.css` targeting `button.bg-cool-gray-700:hover` and `[class*="rounded-full"]` with `!important` was inadvertently suppressing red/green hover and active states across the stock controllers in freezer containers and product catalog views.
+- **Dedicated Stock Controller High-Specificity CSS Engine**: Introduced explicit high-priority `.btn-qty-minus` (`[data-action="decrement"]`) and `.btn-qty-plus` (`[data-action="increment"]`) styles in `index.css`, guaranteeing vivid Red (`#ef4444` / `#dc2626`) for decrements and Green (`#22c55e` / `#16a34a`) for increments across `:hover`, `:focus`, and `:active` (push/click/tap) states, accompanied by a subtle tactile press-scale transform (`scale(0.9)`) and color glow.
+- **Immediate Push Feedback on Mobile & Touchscreens**: Added reactive active feedback states with `.is-pushed` classes across `MeatCutRow.tsx`, `ProductView.tsx`, `DisplayCaseView.tsx`, `AddForms.tsx`, `MoveModalContent.tsx`, `UnifiedInboundMoveForm.tsx`, and `ReconciliationView.tsx`, ensuring that even rapid 20ms taps on mobile devices and Home Assistant companion apps provide instantaneous, unmistakable visual color feedback.
+- **Theme Exclusion Guardrails**: Refined Home Assistant theme override selectors (`button.bg-cool-gray-700`, `button.bg-cool-gray-800`, and `[class*="rounded-full"]`) in `index.css` using `:not(.btn-qty-minus):not(.btn-qty-plus):not([data-action])` so global chip/card rules never stomp on interactive quantity buttons.
+
+### Added
+- **Automated Test Coverage**: Extended `/tests/workflow-home-inventory.test.ts` to test stock increment and decrement controller actions, non-negative boundary clamps, and delta math evaluations.
+
+### Files Modified
+- `/index.css`
+- `/components/MeatCutRow.tsx`
+- `/views/ProductView.tsx`
+- `/views/DisplayCaseView.tsx`
+- `/components/AddForms.tsx`
+- `/components/MoveModalContent.tsx`
+- `/components/UnifiedInboundMoveForm.tsx`
+- `/views/ReconciliationView.tsx`
+- `/tests/workflow-home-inventory.test.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/version.ts`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.55.6] - 2026-10-31
+
+### Added
+- **Configurable Cloudflare Security Token Toggle in Settings**: Added an enable/disable option in the Settings menu (`views/LibraryView.tsx`) allowing users to choose whether the Cloudflare Security Token Refresh helper is active. When disabled (default for non-Cloudflare environments like local LAN, Home Assistant Nabu Casa, or WireGuard/Tailscale VPN), the status menu and header badge remain clean and uncluttered by Cloudflare-specific prompts. When enabled, the status menu displays the prominent "Security Token Expired? Refresh Security Token" card and header shortcut whenever the app is disconnected.
+- **Dedicated Cloudflare Token Card in Settings**: Added interactive configuration card under both General Settings and PWA & Devices settings, with direct access to open the Security Token Diagnostics & Setup modal to run probes, test connection headers, or manage machine Service Tokens.
+- **Centralized Persistence & Synchronization**: Synced the preference key `cf_token_refresh_enabled` across SQLite database (`app_config` table via `POST /api/app-config`) and client-side `localStorage`, automatically auto-enabling if the client already has Cloudflare service credentials stored, and propagating changes instantly without requiring a page reload.
+- **Automated Test Coverage**: Added automated test coverage in `/tests/auth-security-token-refresh.test.ts` verifying default disabled state, explicit enabling and disabling via `appConfig` and `localStorage`, auto-enable fallback for service tokens, and dispatch event handling.
+
+### Changed
+- **Conditional Cloudflare UI in Status Menu & Header**: Updated `App.tsx` and `components/OfflineSyncBadge.tsx` so the Cloudflare refresh button and status dropdown warning card are only rendered when `cf_token_refresh_enabled` is active.
+
+### Files Modified
+- `/utils/authSecurity.ts`
+- `/views/LibraryView.tsx`
+- `/App.tsx`
+- `/public/sw.js`
+- `/APP_CONTEXT.md`
+- `/tests/auth-security-token-refresh.test.ts`
+- `/package.json`
+- `/config.yaml`
+- `/version.ts`
+- `/CHANGELOG.md`
+
+### [2.55.5] - 2026-10-31
+
+### Added
+- **Cloudflare Security Token Refresh in Status Menu**: Added a dedicated, prominent "Refresh Security Token" card and action button in the status dropdown menu whenever the app is showing offline (`syncStatus === 'error'` or `!isOnline`). Allows users whose monthly Cloudflare Access / Zero Trust security token has expired to quickly re-authenticate without force-clearing browser storage.
+- **Zero-Data-Loss Device Identity Preservation**: Integrated automatic redundant backups of device credentials (`deviceId`, `deviceName`, `operatorName`) into both `localStorage` and `sessionStorage`. When refreshing the security token, HTTP web app shell caches are safely purged while `localStorage` and `IndexedDB` remain untouched, eliminating the issue where re-authenticating required setting up a new device identity or username.
+- **Interactive Security Token Modal & Diagnostic Connection Tester**: Added `components/SecurityTokenModal.tsx` featuring live connection diagnostics that probe the backend and accurately detect HTTP 401, HTTP 403, and Cloudflare HTML login challenge redirects. Provides 1-click Cloudflare Access re-authentication, direct `/cdn-cgi/access/login` navigation, and visual verification of preserved device identities.
+- **Optional Cloudflare Service Token Headers**: Added support for configuring persistent machine Service Tokens (`CF-Access-Client-Id` and `CF-Access-Client-Secret`), automatically attaching them to outgoing API and audit headers for deployments utilizing non-expiring service credentials.
+- **Comprehensive Automated Test Coverage**: Added `/tests/auth-security-token-refresh.test.ts` verifying identity preservation, automatic backup restoration on cleared storage, Cloudflare Service Token header injection, URL query parameter cleanup, and connection probe diagnostics.
+
+### Changed
+- **Service Worker Cloudflare Bypass**: Updated `/public/sw.js` to completely bypass cache interception when `cf_token_refresh` or `refresh_auth` query parameters are present, allowing the native browser navigation engine to follow Cloudflare Access 302 redirects to the team login screen.
+- **Header Offline Badge Quick Action**: Enhanced `components/OfflineSyncBadge.tsx` with a direct "Refresh Token" shortcut when the app is disconnected.
+
+### Files Modified
+- `/utils/authSecurity.ts`
+- `/utils/clientDevice.ts`
+- `/components/SecurityTokenModal.tsx`
+- `/components/OfflineSyncBadge.tsx`
+- `/public/sw.js`
+- `/App.tsx`
+- `/APP_CONTEXT.md`
+- `/tests/auth-security-token-refresh.test.ts`
+- `/package.json`
+- `/config.yaml`
+- `/version.ts`
+- `/CHANGELOG.md`
+
+### [2.55.4] - 2026-10-29
+
+### Fixed
+- **Resolved Broken Demo Sandbox Launch**: Fixed an issue where launching the Demo Sandbox playground immediately reverted back to the live database. Previously, a cold-boot startup guard inside `initDatabase()` in `server.ts` was unconditionally resetting `isDemoMode` to `false` on every call, preventing the system from pointing to `inventory_demo.db`.
+- **Decoupled Cold Boot Sanitization from Runtime Database Reinitialization**: Extracted cold startup safety sanitization into a dedicated `sanitizeStartupDemoState()` routine that runs once on initial server boot, allowing subsequent runtime database switches (`/api/demo/start`) to maintain demo mode correctly.
+- **WAL Flush & Safe Sandbox Database Cloning**: Enhanced `/api/demo/start` to run `wal_checkpoint(TRUNCATE)` prior to cloning `inventory.db` into `inventory_demo.db`, ensuring all pending write-ahead log pages are fully synced into the sandbox clone.
+- **Protected Production Disk Config from Demo Flags**: Removed logic in `/api/demo/start` and `/api/demo/end` that wrote ephemeral demo mode state to persistent `config.json` and the production SQLite `app_config` table, ensuring demo state is strictly managed in runtime execution memory.
+- **Iframe-Safe Modal Error Handling for Demo Mode**: Replaced browser `alert()` popups in `App.tsx` (`handleStartDemo` and `handleEndDemo`) with non-blocking `setActionErrorModal` dialogs, ensuring full compatibility within Home Assistant iframe sandboxes.
+
+### Added
+- **Automated Demo Sandbox Test Suite**: Added `/tests/workflow-demo-sandbox.test.ts` covering the complete demo sandbox lifecycle, verifying database cloning, sandboxed mutations, live database isolation and protection, clean sandbox teardown, and cold-boot recovery.
+
+### Files Modified
+- `/server.ts`
+- `/App.tsx`
+- `/APP_CONTEXT.md`
+- `/tests/workflow-demo-sandbox.test.ts`
+- `/package.json`
+- `/config.yaml`
+- `/version.ts`
+- `/CHANGELOG.md`
+
+### [2.55.3] - 2026-10-28
+
+### Removed
+- **Scrapped Cloud Connectors Subsystem**: Completely removed the experimental Nextcloud and Google Sheets connectors (`/api/connectors/*`, `ConnectorsSettingsPanel`, `NextcloudFileModal`, and `GoogleSheetImportModal`) in response to user security concerns regarding multi-user environments sharing global cloud credentials.
+- **Removed Cloud Connector Endpoints from Server**: Cleaned up WebDAV and Google Sheets fetch proxies and parsers from `server.ts`.
+- **Reverted Settings Subtabs**: Reverted Settings sub-tab navigation in `views/LibraryView.tsx` to `General` and `PWA & Devices`, removing the `Connectors` subtab and `freezer-switch-settings-subtab` connector switching logic.
+- **Reverted Cutsheet Intake**: Restored clean, distraction-free cutsheet intake in `views/ButcherRecordsView.tsx` to native local drag-and-drop / file browser CSV upload and standard document link attachments, eliminating external cloud dependency risks.
+
+### Files Modified
+- `/package.json`
+- `/config.yaml`
+- `/version.ts`
+- `/server.ts`
+- `/views/LibraryView.tsx`
+- `/views/ButcherRecordsView.tsx`
+- `/App.tsx`
+- `/CHANGELOG.md`
+
+### [2.55.2] - 2026-10-25
+
+### Changed
+- **Removed Connectors from Hamburger Menu**: Reverted the hamburger navigation menu in `App.tsx` back to the clean, uncluttered standard layout featuring "Catalog & Settings", removing the standalone "Connectors" menu item as requested.
+- **Connectors Exclusively Located Within Settings Tab**: Housed the Connectors configuration interface cleanly inside the **Settings** tab in `LibraryView.tsx` under the dedicated **Connectors** sub-tab (`General` | `Connectors` | `PWA & Devices`), keeping the top tab row tidy and free of redundant tab buttons.
+- **Enhanced Settings Sub-Tab Navigation Sync**: Added a reactive `freezer-switch-settings-subtab` event listener in `LibraryView.tsx` and updated global helpers so deep links and modal shortcuts navigate directly to the Settings tab with the Connectors sub-tab active.
+
+### Files Modified
+- `/package.json`
+- `/config.yaml`
+- `/version.ts`
+- `/App.tsx`
+- `/views/LibraryView.tsx`
+- `/CHANGELOG.md`
+
+### [2.55.1] - 2026-10-25
+
+### Added
+- **Prominent First-Class "Connectors" Navigation Tab & Direct Deep Links**:
+  - **Top-Level Navigation Tab in Catalog & Settings**: Added a prominent "Connectors" tab with `Link2` icon directly into the main horizontal tab navigation bar in `LibraryView.tsx`, placed alongside PWA & Devices and Settings.
+  - **Dedicated User Dropdown / Hamburger Menu Entry**: Added direct "Connectors (Nextcloud & Google)" and "Settings & PWA" navigation buttons to the main hamburger menu in `App.tsx`, enabling one-click navigation to cloud connector setup from any view across the app.
+  - **Interactive "Open Connector Settings" Modal Shortcuts**: Added actionable deep-link buttons in `NextcloudFileModal.tsx` and `GoogleSheetImportModal.tsx` error/notice banners so operators can immediately jump into Connectors configuration with zero confusion when credentials are required.
+  - **Butcher Intake Contextual Settings Link**: Embedded a quick "Connector Settings ➔" shortcut directly below the Nextcloud and Google Sheets fast intake buttons in `views/ButcherRecordsView.tsx`.
+  - **Global Navigation Hook (`window.__navigateToConnectors`)**: Registered safe client-side navigation helper function to trigger the Connectors view directly from any dialog or context.
+
+### Changed
+- Refactored `LibraryTab` export in `views/LibraryView.tsx` and imported it in `App.tsx` to provide strict type safety across all navigation states and hash history.
+- Cleaned up user hamburger dropdown menu labels to clearly delineate "Products & Catalog", "Lists & Thresholds", "Connectors", and "Settings & PWA".
+
+### Files Modified
+- `/package.json`
+- `/config.yaml`
+- `/version.ts`
+- `/views/LibraryView.tsx`
+- `/App.tsx`
+- `/components/connectors/NextcloudFileModal.tsx`
+- `/components/connectors/GoogleSheetImportModal.tsx`
+- `/views/ButcherRecordsView.tsx`
+- `/tests/connectors-service.test.ts`
+- `/CHANGELOG.md`
+
+### [2.55.0] - 2026-10-25
+
+### Added
+- **Optional External Connectors Hub in Settings**:
+  - Added a dedicated "Optional Connectors" sub-view inside Settings, allowing operators to link personal cloud storage services completely independently with zero reliance on centralized platform projects.
+  - **Self-Hosted Nextcloud Connector**: Full WebDAV integration with Server URL, Username, and App Password stored securely in SQLite `app_config`. Features real-time connection testing with latency detection and folder accessibility verification.
+  - **Nextcloud File Browser Modal (`NextcloudFileModal.tsx`)**: Reusable interactive file browser supporting directory navigation, search filtering, and single-click CSV cutsheet selection and document attachments.
+  - **Google Docs & Sheets Connector (`GoogleSheetImportModal.tsx`)**: Direct self-service Google Sheets and Docs CSV importer supporting shared/published Google Sheet links with automated CSV format transformation, as well as optional personal Google API Key / Client ID configuration.
+  - **Butcher Intake Cloud Integrations (`ButcherRecordsView.tsx`)**: Operators can directly click "Select from Nextcloud" or "Import from Google Sheet" within the cutsheet intake dropzone, immediately fetching and parsing cuts into the interactive mapping worksheet.
+  - **Order Document Cloud Attachments**: Direct one-click document attachment from Nextcloud files and Google Docs/Sheets links into butcher order audit logs.
+  - **Server-Side WebDAV Proxy (`server.ts`)**: Built-in `/api/connectors/*` endpoints handling Nextcloud WebDAV `PROPFIND` XML parsing and authenticated file streaming, completely avoiding browser CORS restrictions.
+  - **Comprehensive Automated Test Coverage (`tests/connectors-service.test.ts`)**: Validates WebDAV XML multistatus parsing, directory hierarchies, Google Sheet URL conversion, and fallback states.
+
+### Files Modified
+- `/package.json`
+- `/config.yaml`
+- `/version.ts`
+- `/types.ts`
+- `/server.ts`
+- `/components/connectors/ConnectorsSettingsPanel.tsx`
+- `/components/connectors/NextcloudFileModal.tsx`
+- `/components/connectors/GoogleSheetImportModal.tsx`
+- `/views/LibraryView.tsx`
+- `/views/ButcherRecordsView.tsx`
+- `/tests/connectors-service.test.ts`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.54.1] - 2026-10-23
+
+### Added
+- **Enforced Mandatory Automated Test Coverage Policy for All Future Features & Workflows**:
+  - Codified permanent AI Developer Agent guidelines in `/AGENTS.md` and `/GEMINI.md` (Section 7: *Mandatory Automated Test Coverage for Future Features & Workflows*).
+  - Explicitly mandates that every single new feature, database entity, workflow, calculation, or endpoint modification must include an accompanying automated test suite in `/tests/` to prevent regressions.
+  - Formally documented the automated testing CI quality gate in `/APP_CONTEXT.md` (Section 8), linking local test execution (`npm test`) with the blocking GitHub Actions workflow (`.github/workflows/build-addon.yml`) to guarantee no untested or failing builds can ever be published.
+
+### Files Modified
+- `/AGENTS.md`
+- `/GEMINI.md`
+- `/APP_CONTEXT.md`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/version.ts`
+- `/CHANGELOG.md`
+
 ### [2.54.0] - 2026-10-22
 
 ### Added

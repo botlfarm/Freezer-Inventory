@@ -56,3 +56,12 @@ Whenever new features, database entities, synchronization changes, or architectu
 - Keep `/APP_CONTEXT.md` updated to reflect the latest state, data models, and architectural decisions.
 - This ensures that modular chat windows focusing on specific subsystems (e.g., multi-user sync, off-site freight, butcher tracking) maintain complete, accurate, and up-to-date context across the entire lifecycle of the project.
 
+---
+
+## 7. Mandatory Automated Test Coverage for Future Features & Workflows
+Whenever a new feature, capability, workflow, endpoint, calculation, or database entity is introduced or modified:
+- **Test Implementation**: You **MUST** write or extend automated test suites in `/tests/` covering the new functionality (happy path, edge cases, and regression boundaries).
+- **Execution in CI**: All tests run as a mandatory blocking quality gate in `npm test` on every GitHub Actions CI build (`.github/workflows/build-addon.yml`). A build will never deploy or publish if any test fails.
+- **Verification Rule**: Never complete a turn without verifying that `npm test` and `npm run lint` execute with 100% pass rate.
+
+

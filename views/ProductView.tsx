@@ -36,6 +36,7 @@ const ProductLocationRow: React.FC<ProductLocationRowProps> = ({
     const [isEditing, setIsEditing] = useState(false);
     const [isMenuOpen, setIsMenuOpen] = useState(false);
     const [openUpwards, setOpenUpwards] = useState(false);
+    const [actionFeedback, setActionFeedback] = useState<'plus' | 'minus' | null>(null);
 
     const menuRef = useRef<HTMLDivElement>(null);
 
@@ -110,6 +111,8 @@ const ProductLocationRow: React.FC<ProductLocationRowProps> = ({
     }, [isMenuOpen]);
 
     const handleQuantityChange = (amount: number) => {
+        setActionFeedback(amount > 0 ? 'plus' : 'minus');
+        setTimeout(() => setActionFeedback(null), 250);
         const currentQty = isEditing ? (parseInt(localQuantity, 10) || 0) : meatCut.quantity;
         const newQuantity = Math.max(0, currentQty + amount);
         setLocalQuantity(newQuantity.toString());
@@ -254,8 +257,14 @@ const ProductLocationRow: React.FC<ProductLocationRowProps> = ({
             <div className="flex items-center gap-1 sm:gap-1.5 justify-end relative flex-shrink-0 select-none">
                 {/* Decrement */}
                 <button 
+                    type="button"
+                    data-action="decrement"
                     onClick={() => handleQuantityChange(-1)} 
-                    className="p-1 rounded-full bg-cool-gray-700 hover:bg-red-500 focus:bg-red-500 text-cool-gray-200 hover:text-white focus:text-white transition shadow-sm cursor-pointer outline-none"
+                    className={`btn-qty-minus p-1 rounded-full transition shadow-sm cursor-pointer outline-none active:scale-90 ${
+                        actionFeedback === 'minus'
+                            ? 'is-pushed bg-red-500 text-white shadow-red-500/50'
+                            : 'bg-cool-gray-700 hover:bg-red-500 active:bg-red-600 focus:bg-red-500 text-cool-gray-200 hover:text-white active:text-white focus:text-white'
+                    }`}
                     title="Decrease by 1"
                 >
                     <MinusIcon className="w-3 h-3 sm:w-3.5 sm:h-3.5"/>
@@ -282,8 +291,14 @@ const ProductLocationRow: React.FC<ProductLocationRowProps> = ({
 
                 {/* Increment */}
                 <button 
+                    type="button"
+                    data-action="increment"
                     onClick={() => handleQuantityChange(1)} 
-                    className="p-1 rounded-full bg-cool-gray-700 hover:bg-green-500 focus:bg-green-500 text-cool-gray-200 hover:text-white focus:text-white transition shadow-sm cursor-pointer outline-none"
+                    className={`btn-qty-plus p-1 rounded-full transition shadow-sm cursor-pointer outline-none active:scale-90 ${
+                        actionFeedback === 'plus'
+                            ? 'is-pushed bg-green-500 text-white shadow-green-500/50'
+                            : 'bg-cool-gray-700 hover:bg-green-500 active:bg-green-600 focus:bg-green-500 text-cool-gray-200 hover:text-white active:text-white focus:text-white'
+                    }`}
                     title="Increase by 1"
                 >
                     <PlusIcon className="w-3 h-3 sm:w-3.5 sm:h-3.5"/>

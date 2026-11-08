@@ -321,8 +321,10 @@ const ReconciliationView: React.FC<ReconciliationViewProps> = ({ state, dispatch
                                                     <div className="flex items-center gap-1.5 bg-cool-gray-950/80 border border-cool-gray-700 rounded-lg p-1">
                                                         <button 
                                                             type="button"
+                                                            data-action="decrement"
                                                             onClick={() => handleCountChange(cut.id, String(Math.max(0, activeQty - 1)))}
-                                                            className="w-7 h-7 flex items-center justify-center text-cool-gray-400 hover:text-white focus:text-white hover:bg-red-500 focus:bg-red-500 rounded-md transition font-bold outline-none cursor-pointer"
+                                                            className="btn-qty-minus w-7 h-7 flex items-center justify-center text-cool-gray-400 hover:text-white focus:text-white active:text-white hover:bg-red-500 focus:bg-red-500 active:bg-red-600 rounded-md transition font-bold outline-none cursor-pointer active:scale-90"
+                                                            title="Decrease count by 1"
                                                         >
                                                             -
                                                         </button>
@@ -336,8 +338,10 @@ const ReconciliationView: React.FC<ReconciliationViewProps> = ({ state, dispatch
                                                         />
                                                         <button 
                                                             type="button"
+                                                            data-action="increment"
                                                             onClick={() => handleCountChange(cut.id, String(activeQty + 1))}
-                                                            className="w-7 h-7 flex items-center justify-center text-cool-gray-400 hover:text-white focus:text-white hover:bg-green-500 focus:bg-green-500 rounded-md transition font-bold outline-none cursor-pointer"
+                                                            className="btn-qty-plus w-7 h-7 flex items-center justify-center text-cool-gray-400 hover:text-white focus:text-white active:text-white hover:bg-green-500 focus:bg-green-500 active:bg-green-600 rounded-md transition font-bold outline-none cursor-pointer active:scale-90"
+                                                            title="Increase count by 1"
                                                         >
                                                             +
                                                         </button>

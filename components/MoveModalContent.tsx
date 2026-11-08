@@ -391,8 +391,9 @@ const MoveMeat: React.FC<CommonMoveProps & { meatCutId: string }> = ({ dispatch,
           <div className="flex items-center gap-2">
               <button
                 type="button"
+                data-action="decrement"
                 onClick={() => handleModifyQuantity(-1)}
-                className="p-2.5 rounded-lg bg-cool-gray-750 hover:bg-cool-gray-650 text-cool-gray-200 border border-cool-gray-650 hover:text-white transition shadow-sm w-10 h-10 flex items-center justify-center cursor-pointer shrink-0"
+                className="btn-qty-minus p-2.5 rounded-lg bg-cool-gray-750 hover:bg-red-500 active:bg-red-600 focus:bg-red-500 text-cool-gray-200 border border-cool-gray-650 hover:text-white active:text-white transition shadow-sm w-10 h-10 flex items-center justify-center cursor-pointer shrink-0 active:scale-90"
                 title="Decrease quantity by 1"
               >
                 <MinusIcon className="w-5 h-5"/>
@@ -408,8 +409,9 @@ const MoveMeat: React.FC<CommonMoveProps & { meatCutId: string }> = ({ dispatch,
               
               <button
                 type="button"
+                data-action="increment"
                 onClick={() => handleModifyQuantity(1)}
-                className="p-2.5 rounded-lg bg-cool-gray-750 hover:bg-cool-gray-650 text-cool-gray-200 border border-cool-gray-650 hover:text-white transition shadow-sm w-10 h-10 flex items-center justify-center cursor-pointer shrink-0"
+                className="btn-qty-plus p-2.5 rounded-lg bg-cool-gray-750 hover:bg-green-500 active:bg-green-600 focus:bg-green-500 text-cool-gray-200 border border-cool-gray-650 hover:text-white active:text-white transition shadow-sm w-10 h-10 flex items-center justify-center cursor-pointer shrink-0 active:scale-90"
                 title="Increase quantity by 1"
               >
                 <PlusIcon className="w-5 h-5"/>
@@ -948,9 +950,10 @@ const ChangeContainerFlow: React.FC<CommonMoveProps & { containerId: string }> =
                     <div className="flex items-center gap-1.5 shrink-0">
                       <button
                         type="button"
+                        data-action="decrement"
                         onClick={() => handleModifyQuantity(mc.id, -1, mc.quantity)}
                         disabled={currentVal <= 1}
-                        className="p-1 rounded bg-cool-gray-700 hover:bg-cool-gray-600 text-cool-gray-200 hover:text-white transition w-6 h-6 flex items-center justify-center cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed text-xs font-bold"
+                        className="btn-qty-minus p-1 rounded bg-cool-gray-700 hover:bg-red-500 active:bg-red-600 focus:bg-red-500 text-cool-gray-200 hover:text-white active:text-white transition w-6 h-6 flex items-center justify-center cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed text-xs font-bold active:scale-90"
                       >
                         -
                       </button>
@@ -962,9 +965,10 @@ const ChangeContainerFlow: React.FC<CommonMoveProps & { containerId: string }> =
                       />
                       <button
                         type="button"
+                        data-action="increment"
                         onClick={() => handleModifyQuantity(mc.id, 1, mc.quantity)}
                         disabled={currentVal >= mc.quantity}
-                        className="p-1 rounded bg-cool-gray-700 hover:bg-cool-gray-600 text-cool-gray-200 hover:text-white transition w-6 h-6 flex items-center justify-center cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed text-xs font-bold"
+                        className="btn-qty-plus p-1 rounded bg-cool-gray-700 hover:bg-green-500 active:bg-green-600 focus:bg-green-500 text-cool-gray-200 hover:text-white active:text-white transition w-6 h-6 flex items-center justify-center cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed text-xs font-bold active:scale-90"
                       >
                         +
                       </button>

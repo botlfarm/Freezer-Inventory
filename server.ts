@@ -1279,51 +1279,67 @@ const TABLE_SCHEMAS: Record<string, {
 };
 
 
+let hasServerBooted = false;
+
+function sanitizeStartupDemoState() {
+  if (hasServerBooted) return;
+  hasServerBooted = true;
+  isDemoMode = false;
+  if (fs.existsSync(CONFIG_FILE)) {
+    try {
+      const configData = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
+      if (configData && configData.isDemoMode) {
+        console.warn('[Safety] Resetting persisted isDemoMode flag on server startup to guarantee live database access.');
+        configData.isDemoMode = false;
+        try {
+          fs.writeFileSync(CONFIG_FILE, JSON.stringify(configData, null, 2), 'utf-8');
+        } catch (writeErr) {}
+      }
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  // Also clean up any abandoned demo database files from a previous ungraceful shutdown
+  const demoPath = path.join(DATA_DIR, 'inventory_demo.db');
+  const demoWal = `${demoPath}-wal`;
+  const demoShm = `${demoPath}-shm`;
+  try {
+    if (fs.existsSync(demoPath)) fs.unlinkSync(demoPath);
+    if (fs.existsSync(demoWal)) fs.unlinkSync(demoWal);
+    if (fs.existsSync(demoShm)) fs.unlinkSync(demoShm);
+  } catch (e) {}
+}
+
 function initDatabase() {
+  sanitizeStartupDemoState();
   let dbPath = getDatabasePath();
 
   const tryInit = () => {
-    // Safety check: On server boot/restart/upgrade, sandbox demo mode must NEVER persist.
-    // Always default to false and clean up any persisted demo flags so live database is accessed.
-    isDemoMode = false;
-    if (fs.existsSync(CONFIG_FILE)) {
-      try {
-        const configData = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
-        if (configData && configData.isDemoMode) {
-          console.warn('[Safety] Resetting persisted isDemoMode flag on server startup to guarantee live database access.');
-          configData.isDemoMode = false;
-          try {
-            fs.writeFileSync(CONFIG_FILE, JSON.stringify(configData, null, 2), 'utf-8');
-          } catch (writeErr) {}
-        }
-      } catch (e) {
-        // ignore
-      }
-    }
     dbPath = getDatabasePath();
     db = new Database(dbPath);
     (global as any).__FREEZER_SQLITE_DB__ = db;
     db.pragma('journal_mode = WAL');
     db.pragma('synchronous = NORMAL');
     
-    
-    
     // 1. Ensure all relational tables exist according to TABLE_SCHEMAS
     for (const table of Object.keys(TABLE_SCHEMAS)) {
       db.prepare(TABLE_SCHEMAS[table].createSql).run();
     }
 
-    // Ensure persisted auto_snapshot_config in database does not keep isDemoMode enabled across server restart
-    try {
-      const autoCfg = db.prepare("SELECT value FROM app_config WHERE key = 'auto_snapshot_config'").get() as any;
-      if (autoCfg && autoCfg.value) {
-        const parsed = JSON.parse(autoCfg.value);
-        if (parsed && parsed.isDemoMode) {
-          parsed.isDemoMode = false;
-          db.prepare("UPDATE app_config SET value = ? WHERE key = 'auto_snapshot_config'").run(JSON.stringify(parsed));
+    // Ensure persisted auto_snapshot_config in live database does not keep isDemoMode enabled across server restart
+    if (!isDemoMode) {
+      try {
+        const autoCfg = db.prepare("SELECT value FROM app_config WHERE key = 'auto_snapshot_config'").get() as any;
+        if (autoCfg && autoCfg.value) {
+          const parsed = JSON.parse(autoCfg.value);
+          if (parsed && parsed.isDemoMode) {
+            parsed.isDemoMode = false;
+            db.prepare("UPDATE app_config SET value = ? WHERE key = 'auto_snapshot_config'").run(JSON.stringify(parsed));
+          }
         }
-      }
-    } catch (e) {}
+      } catch (e) {}
+    }
 
     // 2. Ensure boxes and pallets tables have the isArchived column
     try {
@@ -3991,6 +4007,9 @@ app.post('/api/config', (req, res) => {
 });
 
 
+
+
+
 // ---------------- DEMO MODE ENDPOINTS ----------------
 
 app.get('/api/demo/status', (req, res) => {
@@ -4004,35 +4023,40 @@ app.get('/api/demo/status', (req, res) => {
 app.post('/api/demo/start', async (req, res) => {
   try {
     console.log('Initiating demo mode...');
-    const config = loadAutoSnapshotConfig();
-    config.isDemoMode = true;
-    saveAutoSnapshotConfig(config);
+    if (isDemoMode && db) {
+      return res.json({ success: true, isDemoMode: true, message: 'Already inside demo mode.' });
+    }
 
     if (db) {
       try {
+        db.pragma('wal_checkpoint(TRUNCATE)');
         db.close();
       } catch (e) {
-        // ignore
+        console.warn('Warning closing active database for demo clone:', e);
       }
+      db = null;
     }
 
     const demoPath = path.join(DATA_DIR, 'inventory_demo.db');
-    
+    const demoWal = `${demoPath}-wal`;
+    const demoShm = `${demoPath}-shm`;
+
+    if (fs.existsSync(demoPath)) {
+      try { fs.unlinkSync(demoPath); } catch (e) {}
+    }
+    if (fs.existsSync(demoWal)) {
+      try { fs.unlinkSync(demoWal); } catch (e) {}
+    }
+    if (fs.existsSync(demoShm)) {
+      try { fs.unlinkSync(demoShm); } catch (e) {}
+    }
+
     // Copy the current active database to be the starting point of the demo playground
     if (fs.existsSync(SQLITE_DB_PATH)) {
       fs.copyFileSync(SQLITE_DB_PATH, demoPath);
-      // Clean up wal/shm of previous demo db
-      const demoWal = `${demoPath}-wal`;
-      const demoShm = `${demoPath}-shm`;
-      if (fs.existsSync(demoWal)) {
-        try { fs.unlinkSync(demoWal); } catch (e) {}
-      }
-      if (fs.existsSync(demoShm)) {
-        try { fs.unlinkSync(demoShm); } catch (e) {}
-      }
     }
 
-    // Update global flag and re-init
+    // Update global flag and re-init with demo database
     isDemoMode = true;
     initDatabase();
     
@@ -4042,6 +4066,12 @@ app.post('/api/demo/start', async (req, res) => {
     res.json({ success: true, isDemoMode: true, message: 'Entered demo mode. All changes are temporary.' });
   } catch (err: any) {
     console.error('Failed to start demo mode:', err);
+    isDemoMode = false;
+    try {
+      initDatabase();
+    } catch (revertErr) {
+      console.error('Failed to revert to live database after demo error:', revertErr);
+    }
     res.status(500).json({ error: `Failed to start demo: ${err.message}` });
   }
 });
@@ -4049,9 +4079,6 @@ app.post('/api/demo/start', async (req, res) => {
 app.post('/api/demo/end', async (req, res) => {
   try {
     console.log('Exiting demo mode...');
-    const config = loadAutoSnapshotConfig();
-    config.isDemoMode = false;
-    saveAutoSnapshotConfig(config);
 
     if (db) {
       try {
@@ -4059,6 +4086,7 @@ app.post('/api/demo/end', async (req, res) => {
       } catch (e) {
         // ignore
       }
+      db = null;
     }
 
     const demoPath = path.join(DATA_DIR, 'inventory_demo.db');
@@ -4074,7 +4102,7 @@ app.post('/api/demo/end', async (req, res) => {
       console.warn('Failed to completely delete demo db files:', e);
     }
 
-    // Update global flag and re-init
+    // Update global flag and re-init live database
     isDemoMode = false;
     initDatabase();
 
@@ -4084,6 +4112,10 @@ app.post('/api/demo/end', async (req, res) => {
     res.json({ success: true, isDemoMode: false, message: 'Exited demo mode. Restored live database.' });
   } catch (err: any) {
     console.error('Failed to end demo mode:', err);
+    isDemoMode = false;
+    try {
+      initDatabase();
+    } catch (revertErr) {}
     res.status(500).json({ error: `Failed to end demo: ${err.message}` });
   }
 });

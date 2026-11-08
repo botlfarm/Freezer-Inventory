@@ -1,6 +1,6 @@
 # Technical Architecture & Context Reference Document
 **Project:** Freezer Inventory Tracker  
-**Current Version:** `2.54.0`  
+**Current Version:** `2.55.7`  
 **Target Environment:** Standalone Web Application & Live Home Assistant Add-On (Ingress Compatible)
 
 ---
@@ -18,6 +18,7 @@ The **Freezer Inventory Tracker** is a full-stack, real-time inventory and cold-
   Wired into GitHub Actions (`.github/workflows/build-addon.yml`) to block Docker builds if tests or type checks fail.
 - **Live Inventory Item & Container Matching**: Real-time live search across active and archived catalog items and containers during product intake and container creation. Automatically detects duplicate names, highlights archived items (`📁 Archived`), provides 1-click unarchive & restore workflows, and allows placing existing spare containers into target freezers with 1-click.
 - **Progressive Web App (PWA) & Offline Resiliency**: Service Worker asset caching for 0-network boot, client-side IndexedDB database caching (`freezer_inventory_offline_db`) for 0ms loads, custom PWA app name/icon branding, dedicated PWA & Devices main-level settings tab, and persistent offline mutation queue with automatic FIFO background replay upon reconnect.
+- **Cloudflare Access & Security Token Re-Authentication (Toggleable)**: Built-in zero-data-loss security token renewal designed for Cloudflare Access / Zero Trust deployments where session tokens expire periodically (typically every 30 days). Configurable via an enable/disable toggle in the Settings menu (`cf_token_refresh_enabled` persisted in SQLite `app_config` and `localStorage`). When enabled, if token expiration causes requests to fail and the status menu displays "Offline", a prominent "Refresh Security Token" card and header badge shortcut appear, preserving device credentials (`deviceId`, `deviceName`, `operatorName`) and bypassing service worker cache interception to follow Cloudflare redirects. When disabled (default for non-Cloudflare environments like local LAN, Tailscale/WireGuard VPN, or Home Assistant Nabu Casa), the status menu and header badge remain clean and uncluttered by Cloudflare-specific prompts.
 - **Automated PWA Push Updates & Background Cache Invalidation**: Automatic background detection of new add-on releases through dynamic version injection into `/sw.js`, Server-Sent Events (`appVersion`), window focus/visibility listeners, and 10-minute periodic worker checks. Implements Network-First navigation with cache fallback, automatic cache invalidation (`skipWaiting` and `clients.claim()`), and an automated floating update banner with auto-refresh countdown when idle, eliminating the need for PWA users to manually check or click update buttons.
 - **PWA Device Registry, User Grouping & Access Control**: Persistent hardware device identification (`deviceId` UUID) per device, initial operator & device setup prompts, relational SQLite `pwa_devices` registry, PWA Device Manager dashboard in Settings. Features user-centric grouping (viewing all devices organized by operator handle), multi-criteria filtering (status, online presence, standalone PWA vs. browser, search), individual device killswitch, and user-level bulk revocation (`/api/devices/user/:operator/revoke`) which severs real-time SSE streams and blocks all of a user's registered devices with `403 DEVICE_REVOKED` regardless of persistent cookies.
 - **On-Site & Display Case Inventory**: Real-time bin, shelf, and container tracking with instant quantity adjustments, math expression evaluation (`+5`, `-2`, `3*4`), split cuts, tag filtering, customizable hierarchy sorting (alphabetical or user-defined category/sub/cut sequence), and restock alerts.
@@ -25,6 +26,7 @@ The **Freezer Inventory Tracker** is a full-stack, real-time inventory and cold-
 - **Butcher Processing & Traceability**: Harvest lot tracking, animal counts, live/hot/cold weights, yield calculations, butcher document attachments, and full parent-cut lineage.
 - **Automated Custom Lists & Notifications**: Inventory-controlled lists (min/max thresholds based on on-site counts, off-site counts, or off-site weights) with Home Assistant notifications, SMTP emails, or webhook alerts.
 - **Real-Time Collaboration & Presence Lifecycle**: Two operating modes (Smart Auto Mode and Exclusive Single-User Lock) with Server-Sent Events (SSE), instant `sendBeacon` leave notifications on tab close/unload, immediate collaborative sync when multiple users work in the same zone, atomic action queuing, and sub-second delta synchronization.
+- **Stock Controller & Quantity Plus / Minus Interaction Engine**: High-specificity CSS and state engine in `index.css` and row components (`MeatCutRow.tsx`, `ProductView.tsx`, `DisplayCaseView.tsx`, `AddForms.tsx`, `MoveModalContent.tsx`, `UnifiedInboundMoveForm.tsx`, `ReconciliationView.tsx`). Guarantees vivid Red (`#ef4444` / `#dc2626`) for decrements (-) and Green (`#22c55e` / `#16a34a`) for increments (+) on hover, focus, and active push across all native Home Assistant themes and custom CSS overrides. Uses explicit `.btn-qty-minus` / `.btn-qty-plus` classes with negative selector guards (`:not(.btn-qty-minus):not(.btn-qty-plus):not([data-action])`) protecting interactive controls from general pill/card overrides, accompanied by tactile press scaling (`scale(0.9)`) and a 250ms reactive feedback state (`.is-pushed`) for instant color changes on fast mobile taps.
 - **Enterprise Audit Trail & Undo**: Full mutation history tracking client devices, companion app signatures, and instant reversible undo snapshots.
 
 ---
@@ -202,3 +204,58 @@ Every modification to the codebase must strictly follow the repository's version
    - **Major (`1.0.0`)**: Breaking schema changes or major architectural redesigns.
 4. **Changelog Formatting**:
    - Must include release version, date, categorized bullet points (`### Added`, `### Changed`, `### Fixed`), and an explicit `### Files Modified` section.
+
+---
+
+## 8. Continuous Integration & Mandatory Automated Testing Policy
+
+Every new feature, database entity, business logic enhancement, or endpoint must include accompanying automated test coverage in `/tests/` to guarantee zero regressions.
+- **CI Test Runner**: The test suite runs via `npm test` (`vitest run`) in GitHub Actions (`.github/workflows/build-addon.yml`) prior to the Docker build step. If any test fails, image building and publishing are halted immediately.
+  - `tests/workflow-demo-sandbox.test.ts`: Demo sandbox playground lifecycle, ephemeral database cloning, isolation integrity, and cold-boot safety.
+  - `tests/workflow-restore-and-backup.test.ts`: Database restore, snapshotting, and disaster recovery roundtrips.
+  - `tests/workflow-butcher-csv-dedup.test.ts`: Butcher order creation, cutsheet parsing, and deduplication.
+  - `tests/workflow-offsite-and-home-logistics.test.ts`: Multi-facility logistics, cold storage pallets, and staging intake.
+  - `tests/workflow-home-inventory.test.ts`: Home operations, restocking, sales reductions, container templates, merging, and reconciliations.
+  - `tests/workflow-reverse-staging-offsite.test.ts`: Staging packaging, weights, and off-site transfer.
+  - `tests/inbound-outbound.test.ts`: Traceability, lot tracking, and inventory bounds.
+  - `tests/inventory-movement.test.ts`: Product and container relocations.
+  - `tests/butcher-reports.test.ts`: Yield, dressing percentages, and cooler shrinkage calculations.
+
+---
+
+## 9. Demo Sandbox Playground Architecture
+
+The application includes an isolated **Demo Sandbox Playground** mode accessible via **Settings**:
+
+1. **Database Isolation (`inventory_demo.db`)**:
+   - When entering demo mode (`/api/demo/start`), the server runs a `wal_checkpoint(TRUNCATE)` on the active database, duplicates `inventory.db` into `inventory_demo.db`, and repoints the SQLite connection (`db`) to the cloned sandbox file.
+   - All mutations, bulk imports, deletions, and moves executed by the user operate strictly on `inventory_demo.db`.
+   - The production database (`inventory.db`) remains completely untouched and pristine.
+   - Automatic rolling snapshots are bypassed (`isDemoMode || isPreviewMode`) to avoid polluting backup archives.
+
+2. **Ephemeral Lifecycle & Cold Boot Safety**:
+   - Sandbox status is managed via in-memory execution state (`isDemoMode`).
+   - When exiting demo mode (`/api/demo/end`), the server closes the sandbox database connection, completely deletes `inventory_demo.db` (including `-wal` and `-shm`), sets `isDemoMode = false`, and restores connection to the live `inventory.db`.
+   - On server startup or container initialization, `sanitizeStartupDemoState()` executes once to guarantee that any legacy persisted flags or abandoned demo files from ungraceful shutdowns are wiped, ensuring the live database is always accessed.
+
+The application provides an optional, self-hosted and client-configured connectors architecture located under **Settings > Connectors**:
+
+1. **Zero Centralized Project Lock-in**:
+   - Built specifically for open-source self-hosting and Home Assistant installations without requiring a shared Google Cloud project or centralized OAuth consent screen.
+   - All credentials and configuration values are stored securely within the local SQLite `app_config` table and included in standard SQLite/JSON backups.
+
+2. **Nextcloud Connector**:
+   - **Protocol**: Standards-compliant WebDAV over HTTP/HTTPS with Basic Authentication using a personal Nextcloud username and App Password/Token.
+   - **Backend Proxy**: `/api/connectors/nextcloud/*` proxies `PROPFIND` and file `GET` requests to avoid cross-origin (CORS) blocking by browsers when contacting external or internal local subnets.
+   - **Capabilities**: Interactive multi-level directory traversal, folder creation inspection, file size formatting, live latency ping testing, cutsheet CSV selection, and order document linking.
+
+3. **Google Docs & Sheets Connector**:
+   - **Direct Sheet CSV Converter**: Converts public or shared Google Sheets URLs (`https://docs.google.com/spreadsheets/d/{id}/edit#gid={gid}`) into direct CSV export endpoints (`https://docs.google.com/spreadsheets/d/{id}/export?format=csv&gid={gid}`) for zero-API instant cut intake.
+   - **Personal API Credentials**: Allows individual users to optionally provide their own Google API Key and Client ID for self-service integrations.
+   - **Capabilities**: Live sheet row count inspection, preview grid rendering, cutsheet CSV parsing, and document link attachments with provider attribution.
+
+4. **Configuration Keys (`app_config`)**:
+   - `nextcloud_enabled`, `nextcloud_url`, `nextcloud_username`, `nextcloud_password`, `nextcloud_folder`, `nextcloud_test_status`, `nextcloud_test_message`, `nextcloud_last_tested`
+   - `google_connector_enabled`, `google_api_key`, `google_client_id`, `google_default_sheet_url`, `google_connector_status`
+
+

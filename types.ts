@@ -249,6 +249,45 @@ export interface ButcherOrderDocument {
   id: string;
   name: string;
   url: string;
+  provider?: 'nextcloud' | 'google_docs' | 'link' | string;
+  size?: number;
+  mimeType?: string;
+  updatedAt?: string;
+}
+
+export interface NextcloudFileItem {
+  name: string;
+  path: string;
+  href: string;
+  isDirectory: boolean;
+  size: number;
+  lastModified?: string;
+  contentType?: string;
+}
+
+export interface NextcloudConnectorStatus {
+  enabled: boolean;
+  configured: boolean;
+  url?: string;
+  username?: string;
+  defaultFolder?: string;
+  lastTested?: string;
+  testStatus?: 'success' | 'failed' | 'idle';
+  testMessage?: string;
+  quota?: string;
+}
+
+export interface GoogleConnectorStatus {
+  enabled: boolean;
+  configured: boolean;
+  apiKey?: string;
+  clientId?: string;
+  defaultSheetUrl?: string;
+}
+
+export interface ConnectorsConfigStatus {
+  nextcloud: NextcloudConnectorStatus;
+  google: GoogleConnectorStatus;
 }
 
 export interface ButcherOrder {

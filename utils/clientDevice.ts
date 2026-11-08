@@ -20,19 +20,34 @@ export function isStandalonePWA(): boolean {
   if (typeof window === 'undefined') return false;
   const isMatchMedia = window.matchMedia && window.matchMedia('(display-mode: standalone)').matches;
   const isNavigatorStandalone = (window.navigator as any)?.standalone === true;
-  const isAndroidReferrer = Boolean(document?.referrer && document.referrer.includes('android-app://'));
+  const isAndroidReferrer = typeof document !== 'undefined' && Boolean(document?.referrer && document.referrer.includes('android-app://'));
   return Boolean(isMatchMedia || isNavigatorStandalone || isAndroidReferrer);
 }
 
 /**
  * Gets or initializes a persistent device identifier stored in localStorage.
+ * Checks backup storage before generating any new ID to prevent losing identity.
  */
 export function getDeviceId(): string {
-  if (typeof window === 'undefined' || typeof localStorage === 'undefined') {
+  if (typeof localStorage === 'undefined') {
     return 'server_or_unknown';
   }
   let id = localStorage.getItem(FREEZER_DEVICE_ID_KEY);
   if (!id || !id.trim()) {
+    // Check redundant backup storage before creating a new device ID
+    try {
+      const backupRaw = localStorage.getItem('freezer_device_identity_backup_v1') ||
+        (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('freezer_device_identity_backup_v1') : null);
+      if (backupRaw) {
+        const backup = JSON.parse(backupRaw);
+        if (backup?.deviceId && backup.deviceId.trim()) {
+          id = backup.deviceId.trim();
+          localStorage.setItem(FREEZER_DEVICE_ID_KEY, id);
+          return id;
+        }
+      }
+    } catch (e) {}
+
     try {
       if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
         id = crypto.randomUUID();
@@ -70,16 +85,33 @@ export function getDefaultDeviceName(): string {
 
 /**
  * Gets the configured or default device name.
+ * Checks redundant backup before falling back to default.
  */
 export function getDeviceName(): string {
   if (typeof localStorage === 'undefined') return getDefaultDeviceName();
   const stored = localStorage.getItem(FREEZER_DEVICE_NAME_KEY);
   if (stored && stored.trim()) return stored.trim();
+
+  // Check redundant backup storage
+  try {
+    const backupRaw = localStorage.getItem('freezer_device_identity_backup_v1') ||
+      (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('freezer_device_identity_backup_v1') : null);
+    if (backupRaw) {
+      const backup = JSON.parse(backupRaw);
+      if (backup?.deviceName && backup.deviceName.trim()) {
+        const restored = backup.deviceName.trim();
+        localStorage.setItem(FREEZER_DEVICE_NAME_KEY, restored);
+        return restored;
+      }
+    }
+  } catch (e) {}
+
   return getDefaultDeviceName();
 }
 
 /**
  * Gets the configured operator name for this specific device.
+ * Checks redundant backup before returning empty.
  */
 export function getOperatorName(): string {
   if (typeof localStorage === 'undefined') return '';
@@ -91,6 +123,23 @@ export function getOperatorName(): string {
   if (op.trim() && op.trim() !== 'User') {
     return op.trim();
   }
+
+  // Check redundant backup storage
+  try {
+    const backupRaw = localStorage.getItem('freezer_device_identity_backup_v1') ||
+      (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('freezer_device_identity_backup_v1') : null);
+    if (backupRaw) {
+      const backup = JSON.parse(backupRaw);
+      if (backup?.operatorName && backup.operatorName.trim() && backup.operatorName.trim() !== 'User') {
+        const restored = backup.operatorName.trim();
+        localStorage.setItem(FREEZER_OPERATOR_NAME_KEY, restored);
+        localStorage.setItem('freezerUserName', restored);
+        localStorage.setItem('freezer_user', restored);
+        return restored;
+      }
+    }
+  } catch (e) {}
+
   return '';
 }
 
@@ -251,6 +300,18 @@ export function getClientAuditHeaders(): Record<string, string> {
   if (info.operatorName && info.operatorName.trim() && info.operatorName.trim() !== 'User') {
     headers['X-User-Name'] = info.operatorName.trim();
     headers['X-Operator-Name'] = info.operatorName.trim();
+  }
+
+  // Attach optional Cloudflare Access Service Token headers if configured
+  if (typeof localStorage !== 'undefined') {
+    try {
+      const cfId = localStorage.getItem('freezer_cf_access_client_id');
+      const cfSecret = localStorage.getItem('freezer_cf_access_client_secret');
+      if (cfId && cfSecret) {
+        headers['CF-Access-Client-Id'] = cfId;
+        headers['CF-Access-Client-Secret'] = cfSecret;
+      }
+    } catch (e) {}
   }
 
   return headers;

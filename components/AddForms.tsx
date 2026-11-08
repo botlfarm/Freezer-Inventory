@@ -696,9 +696,25 @@ const BulkMeatForm: React.FC<BulkMeatFormProps> = ({ dispatch, onClose, state })
                                     <div key={item.meatCut.id} className="flex items-center justify-between bg-cool-gray-700/50 p-2 rounded-md">
                                         <span className="text-cool-gray-200 text-sm truncate animate-fade-in" title={item.product.name}>{item.product.name}</span>
                                         <div className="flex items-center gap-1">
-                                            <button type="button" onClick={() => handleExistingItemQuantityChange(item.meatCut.id, -1)} className="p-1 rounded-full bg-cool-gray-600 hover:bg-red-500 focus:bg-red-500 hover:text-white focus:text-white transition cursor-pointer outline-none"><MinusIcon className="w-4 h-4"/></button>
+                                            <button 
+                                                type="button" 
+                                                data-action="decrement"
+                                                onClick={() => handleExistingItemQuantityChange(item.meatCut.id, -1)} 
+                                                className="btn-qty-minus p-1 rounded-full bg-cool-gray-600 hover:bg-red-500 active:bg-red-600 focus:bg-red-500 text-cool-gray-200 hover:text-white active:text-white focus:text-white transition cursor-pointer outline-none active:scale-90"
+                                                title="Decrease by 1"
+                                            >
+                                                <MinusIcon className="w-4 h-4"/>
+                                            </button>
                                             <span className="font-mono w-8 text-center text-md">{item.currentQuantity}</span>
-                                            <button type="button" onClick={() => handleExistingItemQuantityChange(item.meatCut.id, 1)} className="p-1 rounded-full bg-cool-gray-600 hover:bg-green-500 focus:bg-green-500 hover:text-white focus:text-white transition cursor-pointer outline-none"><PlusIcon className="w-4 h-4"/></button>
+                                            <button 
+                                                type="button" 
+                                                data-action="increment"
+                                                onClick={() => handleExistingItemQuantityChange(item.meatCut.id, 1)} 
+                                                className="btn-qty-plus p-1 rounded-full bg-cool-gray-600 hover:bg-green-500 active:bg-green-600 focus:bg-green-500 text-cool-gray-200 hover:text-white active:text-white focus:text-white transition cursor-pointer outline-none active:scale-90"
+                                                title="Increase by 1"
+                                            >
+                                                <PlusIcon className="w-4 h-4"/>
+                                            </button>
                                         </div>
                                     </div>
                                 ))}

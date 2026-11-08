@@ -222,7 +222,7 @@ tr:hover {
 .badge,
 .chip,
 .tag,
-[class*="rounded-full"],
+[class*="rounded-full"]:not(.btn-qty-minus):not(.btn-qty-plus):not([data-action]),
 [class*="rounded-md"][class*="px-2"],
 [class*="rounded-lg"][class*="px-2"],
 [class*="rounded-xl"][class*="px-2"] {
@@ -298,22 +298,87 @@ button.bg-cyan-500:hover,
   background-color: var(--ha-dark-primary-color) !important;
 }
 
-/* Secondary & Faint Buttons */
-button.bg-cool-gray-800,
-button.bg-cool-gray-700,
-button.bg-slate-800,
-button.bg-zinc-800,
+/* Secondary & Faint Buttons (excluding quantity controllers) */
+button.bg-cool-gray-800:not(.btn-qty-minus):not(.btn-qty-plus):not([data-action]),
+button.bg-cool-gray-700:not(.btn-qty-minus):not(.btn-qty-plus):not([data-action]),
+button.bg-slate-800:not(.btn-qty-minus):not(.btn-qty-plus):not([data-action]),
+button.bg-zinc-800:not(.btn-qty-minus):not(.btn-qty-plus):not([data-action]),
 .btn-secondary {
   background-color: var(--ha-bg-chip) !important;
   color: var(--ha-text-primary) !important;
   border: 1px solid var(--ha-border) !important;
 }
 
-button.bg-cool-gray-800:hover,
-button.bg-cool-gray-700:hover,
+button.bg-cool-gray-800:not(.btn-qty-minus):not(.btn-qty-plus):not([data-action]):hover,
+button.bg-cool-gray-700:not(.btn-qty-minus):not(.btn-qty-plus):not([data-action]):hover,
 .btn-secondary:hover {
   background-color: var(--ha-bg-input) !important;
 }
+
+/* ==========================================================================
+   STOCK CONTROLLER & QUANTITY PLUS / MINUS ACTION BUTTONS
+   Guarantees vivid Red for Decrement (-) and Green for Increment (+)
+   on hover, focus, and active (push/click/tap) across all views & themes.
+   ========================================================================== */
+
+.btn-qty-minus,
+button[data-action="decrement"] {
+  background-color: var(--ha-bg-chip, #374151) !important;
+  color: var(--ha-text-primary, #f3f4f6) !important;
+  border: 1px solid var(--ha-border, rgba(255, 255, 255, 0.12)) !important;
+  transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+.btn-qty-minus:hover,
+.btn-qty-minus:focus,
+.btn-qty-minus.is-pushed,
+button[data-action="decrement"]:hover,
+button[data-action="decrement"]:focus,
+button[data-action="decrement"].is-pushed {
+  background-color: #ef4444 !important; /* Vivid red-500 */
+  color: #ffffff !important;
+  border-color: #dc2626 !important;
+  box-shadow: 0 0 8px rgba(239, 68, 68, 0.45) !important;
+}
+
+.btn-qty-minus:active,
+button[data-action="decrement"]:active {
+  background-color: #dc2626 !important; /* Deep red-600 when pushed down */
+  color: #ffffff !important;
+  border-color: #b91c1c !important;
+  transform: scale(0.9) !important;
+  box-shadow: 0 0 10px rgba(239, 68, 68, 0.65) !important;
+}
+
+.btn-qty-plus,
+button[data-action="increment"] {
+  background-color: var(--ha-bg-chip, #374151) !important;
+  color: var(--ha-text-primary, #f3f4f6) !important;
+  border: 1px solid var(--ha-border, rgba(255, 255, 255, 0.12)) !important;
+  transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+.btn-qty-plus:hover,
+.btn-qty-plus:focus,
+.btn-qty-plus.is-pushed,
+button[data-action="increment"]:hover,
+button[data-action="increment"]:focus,
+button[data-action="increment"].is-pushed {
+  background-color: #22c55e !important; /* Vivid green-500 */
+  color: #ffffff !important;
+  border-color: #16a34a !important;
+  box-shadow: 0 0 8px rgba(34, 197, 94, 0.45) !important;
+}
+
+.btn-qty-plus:active,
+button[data-action="increment"]:active {
+  background-color: #16a34a !important; /* Deep green-600 when pushed down */
+  color: #ffffff !important;
+  border-color: #15803d !important;
+  transform: scale(0.9) !important;
+  box-shadow: 0 0 10px rgba(34, 197, 94, 0.65) !important;
+}
+
 
 /* ==========================================================================
    TYPOGRAPHY & TEXT COLOR OVERRIDES

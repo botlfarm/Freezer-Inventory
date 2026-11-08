@@ -31,6 +31,7 @@ const MeatCutRow: React.FC<MeatCutRowProps> = ({
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
   const [openUpwards, setOpenUpwards] = useState(false);
+  const [actionFeedback, setActionFeedback] = useState<'plus' | 'minus' | null>(null);
 
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -106,6 +107,8 @@ const MeatCutRow: React.FC<MeatCutRowProps> = ({
   }, [isMenuExpanded]);
 
   const handleQuantityChange = (amount: number) => {
+    setActionFeedback(amount > 0 ? 'plus' : 'minus');
+    setTimeout(() => setActionFeedback(null), 250);
     const currentQty = isEditing ? (parseInt(localQuantity, 10) || 0) : meatCut.quantity;
     const newQuantity = Math.max(0, currentQty + amount);
     setLocalQuantity(newQuantity.toString());
@@ -267,8 +270,14 @@ const MeatCutRow: React.FC<MeatCutRowProps> = ({
         
         {/* Decrement Button */}
         <button 
+          type="button"
+          data-action="decrement"
           onClick={() => handleQuantityChange(-1)} 
-          className="p-0.5 sm:p-1 rounded-full bg-cool-gray-600 hover:bg-red-500 focus:bg-red-500 text-cool-gray-200 hover:text-white focus:text-white transition shadow-sm outline-none"
+          className={`btn-qty-minus p-0.5 sm:p-1 rounded-full transition shadow-sm outline-none cursor-pointer active:scale-90 ${
+            actionFeedback === 'minus'
+              ? 'is-pushed bg-red-500 text-white shadow-red-500/50'
+              : 'bg-cool-gray-600 hover:bg-red-500 active:bg-red-600 focus:bg-red-500 text-cool-gray-200 hover:text-white active:text-white focus:text-white'
+          }`}
           title="Decrease by 1"
         >
           <MinusIcon className="w-3 h-3 sm:w-3.5 sm:h-3.5"/>
@@ -295,8 +304,14 @@ const MeatCutRow: React.FC<MeatCutRowProps> = ({
 
         {/* Increment Button */}
         <button 
+          type="button"
+          data-action="increment"
           onClick={() => handleQuantityChange(1)} 
-          className="p-0.5 sm:p-1 rounded-full bg-cool-gray-600 hover:bg-green-500 focus:bg-green-500 text-cool-gray-200 hover:text-white focus:text-white transition shadow-sm outline-none"
+          className={`btn-qty-plus p-0.5 sm:p-1 rounded-full transition shadow-sm outline-none cursor-pointer active:scale-90 ${
+            actionFeedback === 'plus'
+              ? 'is-pushed bg-green-500 text-white shadow-green-500/50'
+              : 'bg-cool-gray-600 hover:bg-green-500 active:bg-green-600 focus:bg-green-500 text-cool-gray-200 hover:text-white active:text-white focus:text-white'
+          }`}
           title="Increase by 1"
         >
           <PlusIcon className="w-3 h-3 sm:w-3.5 sm:h-3.5"/>

@@ -5,7 +5,7 @@ import { getClientDeviceInfo, getDeviceId, getDeviceName, getOperatorName, FREEZ
 import { DeviceSetupModal } from './components/DeviceSetupModal';
 import { ModalType, View } from './types';
 import { APP_VERSION } from './version';
-import { Tag, PackagePlus, History, Sparkles, Table, Package, ClipboardList, Sun, Moon, Filter, Plus, Download, ChevronDown, ChevronUp, Eye, AlertTriangle, RefreshCw, Database, RotateCcw, Users, User, Zap, ArrowUpDown, SlidersHorizontal, Smartphone, Rocket } from 'lucide-react';
+import { Tag, PackagePlus, History, Sparkles, Table, Package, ClipboardList, Sun, Moon, Filter, Plus, Download, ChevronDown, ChevronUp, Eye, AlertTriangle, RefreshCw, Database, RotateCcw, Users, User, Zap, ArrowUpDown, SlidersHorizontal, Smartphone, Rocket, Settings, FolderTree, KeyRound, ShieldAlert } from 'lucide-react';
 import { FreezerIcon, SearchIcon, GridViewIcon, ListViewIcon } from './components/icons';
 import Modal from './components/Modal';
 import AddForms from './components/AddForms';
@@ -18,7 +18,7 @@ import { UnifiedInboundMoveForm } from './components/UnifiedInboundMoveForm';
 import FreezerView from './views/FreezerView';
 import ProductView from './views/ProductView';
 import { DisplayCaseView } from './views/DisplayCaseView';
-import LibraryView, { ManageLists } from './views/LibraryView';
+import LibraryView, { ManageLists, LibraryTab } from './views/LibraryView';
 import HistoryView from './views/HistoryView';
 import ReconciliationView from './views/ReconciliationView';
 import { DataImportView } from './views/DataImportView';
@@ -38,6 +38,8 @@ import { SortOrderModal } from './components/SortOrderModal';
 import { loadSortOrderConfig, saveSortOrderConfig, sortPrimaryCategories, sortSubCategories, SortMode } from './utils/sortOrder';
 import { useHomeAssistantTheme } from './hooks/useHomeAssistantTheme';
 import { OfflineSyncBadge } from './components/OfflineSyncBadge';
+import { SecurityTokenModal } from './components/SecurityTokenModal';
+import { cleanTokenRefreshUrlParams, executeSecurityTokenRefresh, isCloudflareTokenRefreshEnabled } from './utils/authSecurity';
 
 const VALID_VIEWS: Set<View> = new Set([
   'freezer', 'product', 'library', 'history', 'reconcile', 'import', 
@@ -183,13 +185,13 @@ export default function App() {
   const [reconcileFreezerId, setReconcileFreezerId] = useState<string | null>(null);
   const [highlightContainerId, setHighlightContainerId] = useState<string | null>(null);
   const [selectedProductId, setSelectedProductId] = useState<string | null>(null);
-  const [initialLibraryTab, setInitialLibraryTab] = useState<"products" | "containers" | "freezers" | "pallets" | "lists" | "settings" | "import" | "tags" | "locations" | "photos" | "pwa">("products");
+  const [initialLibraryTab, setInitialLibraryTab] = useState<LibraryTab>("products");
   const [offsiteSubTab, setOffsiteSubTab] = useState<'sheet' | 'import' | 'hierarchy' | 'history' | 'active-movement' | 'staging-worksheet'>('sheet');
 
   const setCurrentView = React.useCallback((
     newView: View,
     options?: {
-      libraryTab?: "products" | "containers" | "freezers" | "pallets" | "lists" | "settings" | "import" | "tags" | "locations" | "photos" | "pwa";
+      libraryTab?: LibraryTab;
       subTab?: 'sheet' | 'import' | 'hierarchy' | 'history' | 'active-movement' | 'staging-worksheet';
       highlightContainerId?: string | null;
       selectedProductId?: string | null;
@@ -373,7 +375,21 @@ export default function App() {
   const showPwaBanner = !isCurrentlyStandalone && isMobileDevice && customPwaUrl && !pwaBannerDismissed;
 
   const [showDeviceSetupModal, setShowDeviceSetupModal] = useState<boolean>(false);
+  const [showSecurityTokenModal, setShowSecurityTokenModal] = useState<boolean>(false);
   const [isDeviceRevoked, setIsDeviceRevoked] = useState<boolean>(false);
+
+  // Cloudflare Security Token Refresh preference
+  const isCfTokenRefreshEnabled = useMemo(() => {
+    return isCloudflareTokenRefreshEnabled(state.appConfig);
+  }, [state.appConfig]);
+
+  // Clean up any token refresh query parameters after re-authentication
+  React.useEffect(() => {
+    cleanTokenRefreshUrlParams();
+    const handleOpenSecurityModal = () => setShowSecurityTokenModal(true);
+    window.addEventListener('freezer-open-security-token-modal', handleOpenSecurityModal);
+    return () => window.removeEventListener('freezer-open-security-token-modal', handleOpenSecurityModal);
+  }, []);
 
   // Initial device operator identification check and automatic SQLite hardware registration
   React.useEffect(() => {
@@ -523,11 +539,19 @@ export default function App() {
       if (res.ok) {
         await refreshState();
       } else {
-        const errData = await res.json();
-        alert(`Failed to start demo: ${errData.error || res.statusText}`);
+        const errData = await res.json().catch(() => ({}));
+        setActionErrorModal({
+          isOpen: true,
+          message: `Failed to start demo sandbox: ${errData.error || res.statusText}`,
+          actionType: 'DEMO_SANDBOX'
+        });
       }
     } catch (err: any) {
-      alert(`Network error starting demo: ${err.message}`);
+      setActionErrorModal({
+        isOpen: true,
+        message: `Network error starting demo sandbox: ${err.message}`,
+        actionType: 'DEMO_SANDBOX'
+      });
     } finally {
       setIsDemoTransitioning(false);
     }
@@ -545,11 +569,19 @@ export default function App() {
       if (res.ok) {
         await refreshState();
       } else {
-        const errData = await res.json();
-        alert(`Failed to end demo: ${errData.error || res.statusText}`);
+        const errData = await res.json().catch(() => ({}));
+        setActionErrorModal({
+          isOpen: true,
+          message: `Failed to exit demo sandbox: ${errData.error || res.statusText}`,
+          actionType: 'DEMO_SANDBOX'
+        });
       }
     } catch (err: any) {
-      alert(`Network error ending demo: ${err.message}`);
+      setActionErrorModal({
+        isOpen: true,
+        message: `Network error exiting demo sandbox: ${err.message}`,
+        actionType: 'DEMO_SANDBOX'
+      });
     } finally {
       setIsDemoTransitioning(false);
     }
@@ -606,6 +638,10 @@ export default function App() {
     (window as any).__endDemoMode = handleEndDemo;
     (window as any).__startPreviewMode = handleStartPreviewMode;
     (window as any).__endPreviewMode = handleEndPreviewMode;
+    (window as any).__navigateToSettings = () => {
+      setInitialLibraryTab('settings');
+      setCurrentView('library', { libraryTab: 'settings' });
+    };
 
     const handleReadOnlyAttempt = (e: any) => {
       setReadOnlyNoticeModal({
@@ -629,10 +665,11 @@ export default function App() {
       delete (window as any).__endDemoMode;
       delete (window as any).__startPreviewMode;
       delete (window as any).__endPreviewMode;
+      delete (window as any).__navigateToSettings;
       window.removeEventListener('read-only-preview-attempt', handleReadOnlyAttempt);
       window.removeEventListener('action-error-occurred', handleActionError);
     };
-  }, [refreshState]);
+  }, [refreshState, setCurrentView]);
 
   const [activeModal, setActiveModal] = useState<ModalType>(null);
   const [promptQueue, setPromptQueue] = useState<any[]>([]);
@@ -847,7 +884,7 @@ export default function App() {
     setOffsiteSubTab(tab);
   }, [offsiteSubTab]);
 
-  const handleLibraryTabChange = React.useCallback((tab: "products" | "containers" | "freezers" | "pallets" | "lists" | "settings" | "import" | "tags" | "locations" | "photos" | "pwa") => {
+  const handleLibraryTabChange = React.useCallback((tab: LibraryTab) => {
     if (tab === initialLibraryTab) return;
     if (typeof window !== 'undefined' && !isPopNavigatingRef.current) {
       navStepRef.current += 1;
@@ -998,11 +1035,23 @@ export default function App() {
     (window as any).__showProductQuickInfo = (item: any) => {
       openQuickInfo(item);
     };
+    (window as any).__navigateToConnectors = () => {
+      try {
+        localStorage.setItem("freezer-settings-subtab", "connectors");
+      } catch {}
+      setCurrentView('library', { libraryTab: 'settings' });
+      window.dispatchEvent(new CustomEvent('freezer-switch-settings-subtab', { detail: 'connectors' }));
+    };
+    (window as any).__navigateToSettings = () => {
+      setCurrentView('library', { libraryTab: 'settings' });
+    };
     return () => {
       delete (window as any).__showImagePreview;
       delete (window as any).__showProductQuickInfo;
+      delete (window as any).__navigateToConnectors;
+      delete (window as any).__navigateToSettings;
     };
-  }, [showExpandedImage, openQuickInfo]);
+  }, [showExpandedImage, openQuickInfo, setCurrentView]);
 
   // Global keyboard shortcut for Undo (Ctrl+Z / Cmd+Z)
   React.useEffect(() => {
@@ -2762,6 +2811,7 @@ export default function App() {
                   isSyncingQueue={isSyncingOfflineQueue}
                   lastSyncTime={lastSyncTime}
                   onManualSync={syncOfflineQueue}
+                  onRefreshToken={isCfTokenRefreshEnabled ? () => setShowSecurityTokenModal(true) : undefined}
                 />
 
                 {/* Combined Sync, Operating Mode, and History Dropdown Menu */}
@@ -3032,6 +3082,53 @@ export default function App() {
                           </div>
                         </div>
 
+                        {/* Dedicated Cloudflare Security Token Refresh Card when Offline / Error (only if Cloudflare helper is enabled) */}
+                        {isCfTokenRefreshEnabled && (!isOnline || syncStatus === 'error') && (
+                          <div className="p-2.5 rounded-lg bg-gradient-to-br from-rose-950/70 via-rose-900/40 to-amber-950/50 border border-rose-500/60 mb-2.5 shadow-lg animate-scale-up">
+                            <div className="flex items-start gap-2 mb-1.5">
+                              <div className="w-6 h-6 rounded-md bg-rose-500/20 border border-rose-400/40 flex items-center justify-center shrink-0 mt-0.5">
+                                <KeyRound className="w-3.5 h-3.5 text-rose-300 animate-pulse" />
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center justify-between gap-1">
+                                  <span className="font-extrabold text-white text-[11px]">Security Token Expired?</span>
+                                  <span className="text-[9px] bg-rose-500/30 text-rose-200 border border-rose-500/50 px-1 py-0.2 rounded font-mono font-bold uppercase tracking-wider">
+                                    Cloudflare
+                                  </span>
+                                </div>
+                                <p className="text-[10px] text-rose-200/90 leading-snug mt-0.5">
+                                  Re-authenticate session without losing your device name or identity.
+                                </p>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1.5 pt-1">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setIsSyncMenuOpen(false);
+                                  setShowSecurityTokenModal(true);
+                                }}
+                                className="flex-1 py-1.5 px-2 bg-gradient-to-r from-rose-600 to-amber-600 hover:from-rose-500 hover:to-amber-500 text-white font-black rounded-md text-xs transition cursor-pointer flex items-center justify-center gap-1.5 shadow-md active:scale-95"
+                                title="Refresh Cloudflare security token while preserving device identity"
+                              >
+                                <KeyRound className="w-3 h-3 shrink-0" />
+                                <span>Refresh Security Token</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  setIsSyncMenuOpen(false);
+                                  await executeSecurityTokenRefresh();
+                                }}
+                                className="py-1.5 px-2 bg-cool-gray-800 hover:bg-cool-gray-700 text-cool-gray-200 border border-cool-gray-650 rounded-md text-[11px] font-bold transition cursor-pointer flex items-center justify-center shrink-0"
+                                title="Instant 1-Click Re-authentication"
+                              >
+                                <span>Instant ➔</span>
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
                         <button
                           onClick={async () => {
                             await flushAllPendingSyncs();
@@ -3090,6 +3187,25 @@ export default function App() {
                             {activeClientCount} {activeClientCount === 1 ? 'Device' : 'Devices'}
                           </span>
                         </button>
+
+                        {isCfTokenRefreshEnabled && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setIsSyncMenuOpen(false);
+                              setShowSecurityTokenModal(true);
+                            }}
+                            className="flex w-full items-center justify-between gap-2 px-3 py-2 rounded-lg text-left text-cool-gray-300 hover:bg-cool-gray-700 hover:text-white transition font-medium cursor-pointer"
+                          >
+                            <span className="flex items-center gap-2">
+                              <KeyRound className="w-3.5 h-3.5 text-amber-400" />
+                              <span>Security & Auth Token</span>
+                            </span>
+                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-cool-gray-800 border border-cool-gray-700 text-cool-gray-300">
+                              Cloudflare
+                            </span>
+                          </button>
+                        )}
 
                         <div className="h-px bg-cool-gray-700/60 my-1" />
 
@@ -3291,22 +3407,23 @@ export default function App() {
                           <button
                             onClick={() => {
                               setIsUserDropdownOpen(false);
-                              setInitialLibraryTab('products');
                               setCurrentView('library');
                             }}
-                            className={`flex w-full items-center gap-2 px-4 py-2 text-left transition font-normal cursor-pointer ${currentView === 'library' && initialLibraryTab !== 'lists' && initialLibraryTab !== 'pwa' ? 'bg-cyan-600 text-white' : 'text-cool-gray-300 hover:bg-cool-gray-750 hover:text-white'}`}
+                            className={`flex w-full items-center justify-between px-4 py-2 text-left transition font-normal cursor-pointer ${
+                              currentView === 'library' 
+                                ? 'bg-cyan-600/15 text-cyan-400' 
+                                : 'text-cool-gray-300 hover:bg-cool-gray-750 hover:text-white'
+                            }`}
                           >
-                              <Tag className="w-3.5 h-3.5 text-cyan-500" /> Catalog & Settings
-                          </button>
-                          <button
-                            onClick={() => {
-                              setIsUserDropdownOpen(false);
-                              setInitialLibraryTab('lists');
-                              setCurrentView('library');
-                            }}
-                            className={`flex w-full items-center gap-2 px-4 py-2 text-left transition font-normal cursor-pointer ${currentView === 'library' && initialLibraryTab === 'lists' ? 'bg-cyan-600 text-white shadow' : 'text-cool-gray-300 hover:bg-cool-gray-750 hover:text-white'}`}
-                          >
-                              <ClipboardList className="w-3.5 h-3.5 text-cyan-400" /> Lists
+                            <span className="flex items-center gap-2">
+                              <FolderTree className="w-3.5 h-3.5" />
+                              Catalog &amp; Settings
+                            </span>
+                            {currentView === 'library' && (
+                              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-3 h-3 text-cyan-400 shrink-0">
+                                <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                              </svg>
+                            )}
                           </button>
                         </div>
                       </div>
@@ -4108,6 +4225,12 @@ export default function App() {
         onSaved={(_op, _dev) => {
           fetchConnectedClients();
         }}
+      />
+
+      {/* Cloudflare Security & Auth Token Refresh Modal */}
+      <SecurityTokenModal
+        isOpen={showSecurityTokenModal}
+        onClose={() => setShowSecurityTokenModal(false)}
       />
 
       {/* Revoked Device Blocking Screen */}
