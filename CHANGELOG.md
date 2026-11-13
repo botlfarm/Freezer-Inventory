@@ -1,3 +1,280 @@
+### [2.60.0] - 2026-11-13
+
+### Added
+- **Container Location Lookup & Freezer-Scoped Container Count/List Queries (`utils/voiceCommandParser.ts`, `views/VoiceControlView.tsx`, `components/VoiceDictionaryManager.tsx`)**:
+  - **Where Is Container (`where is red bag`, `where are orange`, `locate container blue tote`)**: Locates active on-site containers matching the spoken name/alias, displays clear freezer/Staging Area badges alongside contained item counts, and provides direct navigation links without altering inventory.
+  - **Container Counts & Freezer Listings (`how many green bags are in freezer 1`, `what containers are in freezer 1`, `how many containers are in freezer 1`)**: Counts and lists matching named containers optionally scoped to a specific freezer (preserving unit words like `bag`/`box`/`pack` during container scoring, canonicalizing spoken number words like `"freezer one"` → `"Freezer 1"`, and returning a clean `0` count readout when a valid freezer has zero matches).
+  - **Voice Dictionary Presets**: Added quick command presets for `Where Is Container` and `List Freezer Containers`.
+- **Categorized Sample Phrases & Full Command Guide (`views/VoiceControlView.tsx`)**: Replaced the compact 8-chip sample list with a comprehensive, filterable 6-section reference guide (`Removing & Selling Items`, `Moving Items`, `Adding Items & New Containers`, `Container Moves, Emptying & Combining`, `Inventory Checks & Container Lookups`, and `Chaining, Dictation & Shortcuts`) showcasing 31 tap-to-try interactive examples covering all supported command capabilities.
+- **Automated Tests (`tests/voice-command-parser.test.ts`)**: Added test coverage for container location lookups, multi-freezer ambiguous container lookups, freezer-scoped container counting (`freezer 1` & spoken `freezer one`), zero-match scoped container counts, general freezer container listing/counting, and product `where are` regression preservation.
+
+### Files Modified
+- `/utils/voiceCommandParser.ts`
+- `/views/VoiceControlView.tsx`
+- `/components/VoiceDictionaryManager.tsx`
+- `/tests/voice-command-parser.test.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/version.ts`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.59.0] - 2026-11-13
+
+### Added
+- **Flexible Container-Level Voice Commands (`utils/voiceCommandParser.ts`, `views/VoiceControlView.tsx`)**: Added deterministic local parsing, interactive disambiguation, preview chips, and atomic dispatch for container-level workflows:
+  - **Empty Container (`empty_container`)**: `"empty container X"`, `"empty out X"`, `"clear out X"`, `"unload X [to <dest>]"`, `"unpack X"` — moves every cut inside `X` safely to Staging Area (`staging_loose`) or an optional destination via `MOVE_MEAT_QUANTITY` so `_loose` containers remain protected and emptied named containers retire automatically.
+  - **Move All Contents (`move_all`)**: `"move all of container Y to Z"`, `"move everything in Y to Z"`, `"transfer all items from Y to Z"` — transfers every cut inside `Y` into container/freezer `Z` via `MOVE_MEAT_QUANTITY`.
+  - **Move Whole Container (`move_container`)**: `"move/relocate container Y to freezer Z"`, `"put container Y in staging"` — relocates a non-loose container intact via `MOVE_CONTAINER`, prevents same-freezer no-ops, and automatically falls back to `move_all` if `Z` resolves to another named container.
+  - **Combine / Merge Containers (`combine_containers`)**: `"combine containers X and Y [into Z]"`, `"merge X into Y"`, `"consolidate X, Y into Z"` — preserves container names containing `"and"`, provides per-slot disambiguation (`combineSlotSelections`), auto-selects directional targets (`into Y`), prompts explicit 1-tap surviving-container selection on symmetric `combine X and Y` commands (displaying piece counts), and moves all cuts from absorbed containers into the surviving container via `MOVE_MEAT_QUANTITY`.
+  - **Container Contents Inspection (`container_query`)**: `"what's in X"`, `"list X"`, `"inspect X"`, `"show container X"` — displays read-only on-site cut breakdowns and total piece counts without dispatching mutations.
+- **All / Remaining Quantity Shortcuts & Conversational Lead-In Normalization (`utils/voiceCommandParser.ts`, `views/VoiceControlView.tsx`)**: Added support for `"remove all brats from display"`, `"zero out ground pork from display"`, `"sell the rest of belly fresh from display"`, `"move all hotdogs from orange in canada to display"`, plus automatic stripping of polite conversational lead-ins (`"can you"`, `"please"`, `"let's"`, `"just"`, etc.) and `"container"`/`"the ... freezer"` filler words.
+- **Voice Dictionary Presets (`components/VoiceDictionaryManager.tsx`)**: Added quick command-preset chips for `Empty Container`, `Move All From Container`, `Combine Containers`, `Move Container to Freezer`, and `Container Contents Query`.
+- **Automated Tests (`tests/voice-command-parser.test.ts`)**: Added unit and workflow test suites covering `empty_container`, `move_all`, `move_container` + `move_all` fallback, symmetric/directional/multi-slot `combine_containers`, `isAllQuantity` / `zero out`, `container_query`, conversational lead-ins, and custom Voice Dictionary command macros.
+
+### Files Modified
+- `/utils/voiceCommandParser.ts`
+- `/views/VoiceControlView.tsx`
+- `/components/VoiceDictionaryManager.tsx`
+- `/tests/voice-command-parser.test.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/version.ts`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.58.2] - 2026-11-13
+
+### Added
+- **Command Action Rules in Voice Dictionary (`components/VoiceDictionaryManager.tsx`, `types.ts`, `server.ts`, `utils/voiceCommandParser.ts`)**: Added a dedicated **Command** (`command`) target type in the **Voice Dictionary** with one-click built-in command presets (`Remove / Sell`, `Add / Inbound`, `Move / Transfer`, `New Container + Items`, `Container from Template`, `Stock Check / Query`), customizable multi-word command shortcuts (e.g. `"market pull"` → `"remove from display"`, `"start new bag"` → `"add container"`), a **Commands** list filter, and bounded 2-pass rewrite composition so command shortcuts combine cleanly with phrase aliases across single-line and bulleted lists while keeping all existing **Phrase / Word** rules 100% compatible.
+- **Automated Tests (`tests/voice-command-parser.test.ts`)**: Added tests for custom `command` dictionary triggers, multi-line command headers, stock-check command shortcuts, and composed command + phrase expansion.
+
+### Files Modified
+- `/types.ts`
+- `/server.ts`
+- `/utils/voiceCommandParser.ts`
+- `/components/VoiceDictionaryManager.tsx`
+- `/tests/voice-command-parser.test.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/version.ts`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.58.1] - 2026-11-12
+
+### Added
+- **Optional Full New Container Form in Voice Control (`components/AddForms.tsx`, `views/VoiceControlView.tsx`, `utils/voiceCommandParser.ts`)**: Added a **Container Form** button on new-container command cards that opens the full standard `ContainerForm` modal pre-populated with the parsed container name, freezer, and template so operators can attach a container photo (`MediaSelector`), pick an existing **Container Template**, check **Save as reusable Container Template**, or choose/place an existing spare container without prematurely dispatching an empty container. Changes apply atomically when **Confirm & Apply** is pressed (emitting `ADD_CONTAINER_TEMPLATE`, `ADD_CONTAINER` / `MOVE_CONTAINER`, and `ADD_MEAT_CUT` together).
+
+### Changed
+- **Empty Container Prevention (`utils/voiceCommandParser.ts`, `views/VoiceControlView.tsx`)**: Blocked standalone empty-container creation (`add container yellow bag in canada` with no items) at both parser validation and dispatch generation (`buildVoiceDispatchActions` guarantees zero `ADD_CONTAINER` actions unless at least one active, valid item is present in the same container group), and added a 1-tap **+ Add items** button to quickly append items when forgotten.
+- **Automated Tests (`tests/voice-command-parser.test.ts`)**: Updated empty-container test to assert rejection and zero dispatched actions, and added tests for zero-item exclusion guard, `ContainerForm` draft options (photo + save-as-template + atomic container creation), and spare pool container placement.
+
+### Files Modified
+- `/components/AddForms.tsx`
+- `/utils/voiceCommandParser.ts`
+- `/views/VoiceControlView.tsx`
+- `/tests/voice-command-parser.test.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/version.ts`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.58.0] - 2026-11-12
+
+### Added
+- **Strict-Keyword New Container Creation & Inbounding (`utils/voiceCommandParser.ts`, `views/VoiceControlView.tsx`)**: Added deterministic local voice/dictation support for creating new containers (with optional **Container Template** linking or custom containers) and inbounding one or multiple items into them in one confirmation step—strictly gated behind explicit keywords (`add/create/make [a] [new] container ...`, `new container ...`, `from template ...`, or `inbound/add <items> into new container ...`) so standard `add <items> to <location>` commands never accidentally create containers or match templates. Supports variations including container-first with `in <freezer>` (`add container yellow bag in freezer canada with 4 liverwurst`), trailing freezer (`add container yellow bag with 4 ribeye in chest freezer`), multi-item inline or multi-line bullet lists, `"Red Tote w/ Lid"` shorthand preservation, empty containers, and omitted freezer defaulting to Staging Area.
+- **Template, Freezer, & Duplicate Disambiguation (`views/VoiceControlView.tsx`, `utils/voiceCommandParser.ts`)**: Auto-links exact `ContainerTemplate` matches, prompts explicit user choice between matching templates and a custom container on partial matches, resolves freezers via built-in and Voice Dictionary aliases with picker fallback, warns non-blockingly when a container of the same name already exists in the target freezer, and emits sequential `ADD_CONTAINER` + `ADD_MEAT_CUT` actions sharing the generated `containerId`.
+- **Automated Tests (`tests/voice-command-parser.test.ts`)**: Added comprehensive test coverage for container-first, items-first, multi-item inline/multi-line, shorthand preservation (`w/`), template exact/partial/explicit modes, Staging fallback, duplicate name warning, and regression guard ensuring normal `add` commands never auto-create containers.
+
+### Files Modified
+- `/utils/voiceCommandParser.ts`
+- `/views/VoiceControlView.tsx`
+- `/tests/voice-command-parser.test.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/version.ts`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.57.2] - 2026-11-12
+
+### Changed
+- **Removed Redundant PWA Sub-Tab from Settings (`views/LibraryView.tsx`)**: Removed the nested **General | PWA & Devices** sub-tab switcher and sub-tab state inside **Settings** since **PWA & Devices** already has its own top-level tab in the Settings/Catalog menu. **Settings** now displays Application & System Settings directly, and **PWA & Devices** displays PWA & Connected Devices directly.
+
+### Files Modified
+- `/views/LibraryView.tsx`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/version.ts`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.57.1] - 2026-11-12
+
+### Changed
+- **Top-Level Voice Dictionary Tab (`views/LibraryView.tsx`, `App.tsx`, `views/VoiceControlView.tsx`)**: Promoted **Voice Dictionary** out of the nested Settings sub-tabs into its own standalone top-level tab (`voice_dictionary` / `#library/voice_dictionary`) directly in the Settings/Catalog tab bar, and updated the Voice Control **Dictionary** button to open the top-level tab directly.
+
+### Files Modified
+- `/views/LibraryView.tsx`
+- `/App.tsx`
+- `/views/VoiceControlView.tsx`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/version.ts`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.57.0] - 2026-11-12
+
+### Added
+- **Custom Voice Dictionary Settings Tab (`components/VoiceDictionaryManager.tsx`, `views/LibraryView.tsx`)**: Added a dedicated **Voice Dictionary** sub-tab inside Settings (`Settings → Voice Dictionary`, with a direct **Dictionary** shortcut button in `VoiceControlView` header) where operators can define custom spoken words or phrases and map them to on-site **Products**, **Containers**, **Freezers**, or **Phrase / Word Rewrites**, complete with searchable target pickers, duplicate/conflict alerts, inactive-target badges, and inline delete confirmation.
+- **Database Persistence & Full Backup Coverage (`types.ts`, `server.ts`, `hooks/useInventory.ts`, `views/DataImportView.tsx`)**: Added normalized SQLite table `voice_dictionary`, TypeScript `VoiceDictionaryEntry` model, CRUD dispatch actions (`ADD_VOICE_DICTIONARY_ENTRY`, `EDIT_VOICE_DICTIONARY_ENTRY`, `DELETE_VOICE_DICTIONARY_ENTRY`) with orphan cleanup on freezer/product deletion, and full integration across `.db`, `.json`, `.zip`, selective restore comparison matrices, and preview endpoints.
+- **Deterministic Local Dictionary Matching (`utils/voiceCommandParser.ts`)**: Added single-pass `applyCustomPhraseDictionary` preprocessing and custom alias scoring (`scoreNameWithAliases`) across on-site products, standalone containers, freezers, and hierarchical `<container> in <freezer>` commands while respecting active non-archived filtering and multi-match ambiguity selection rules.
+- **Automated Tests (`tests/voice-command-parser.test.ts`, `tests/test-harness.ts`, `tests/workflow-restore-and-backup.test.ts`)**: Added unit tests for custom product/container/freezer/phrase dictionary rules, archived target exclusion, and shared alias ambiguity, plus roundtrip SQLite backup/restore verification for `voice_dictionary`.
+
+### Files Modified
+- `/types.ts`
+- `/hooks/useInventory.ts`
+- `/server.ts`
+- `/utils/voiceCommandParser.ts`
+- `/components/VoiceDictionaryManager.tsx`
+- `/views/LibraryView.tsx`
+- `/views/VoiceControlView.tsx`
+- `/views/DataImportView.tsx`
+- `/App.tsx`
+- `/tests/test-harness.ts`
+- `/tests/workflow-restore-and-backup.test.ts`
+- `/tests/voice-command-parser.test.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/version.ts`
+- `/APP_CONTEXT.md`
+- `/FREEZER_MAPPING_AI_GUIDE.md`
+- `/CHANGELOG.md`
+
+### [2.56.5] - 2026-11-12
+
+### Added
+- **Shorthand & Abbreviation Matching (`utils/voiceCommandParser.ts`)**: Added deterministic local expansion in `normalizeText` and token canonicalization/aliases in `scoreNameMatch` so abbreviated container and product labels (`w/` for `with`, `w/o` for `without`, `b/i` for `bone in`, `b/l` for `boneless`, `&`/`+` for `and`, `sm`/`md`/`lg`/`xl`, `blk`/`blu`/`grn`/`ylw`/`wht`/`brn`/`gry`, `org`, `cntr`, `bkt`, `bx`, `frzr`, `bnls`, `sknls`, `grnd`, `smkd`, `chkn`, `brst`, etc.) match full spoken words in either direction.
+- **Shorthand Matching Tests (`tests/voice-command-parser.test.ts`)**: Added test cases covering `Red Tote w/ Lid`, `Red Tote w/o Lid`, `Blk Bin w/ Ribs`, `Pork Chops w/ Bone`, `Bnls Chkn Brst`, and `Mac & Cheese`.
+
+### Files Modified
+- `/utils/voiceCommandParser.ts`
+- `/tests/voice-command-parser.test.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/version.ts`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.56.4] - 2026-11-12
+
+### Fixed
+- **Microphone Frame Permission (`metadata.json`)**: Added `"microphone"` to `requestFramePermissions` alongside `"camera"` so embedded browser previews and host frames delegate microphone access when clicking the **Speak** button instead of immediately denying `SpeechRecognition` with `not-allowed`.
+- **Mic Permission Diagnostics & Keyboard Fallback Focus (`views/VoiceControlView.tsx`)**: Enhanced `not-allowed` / `service-not-allowed` error messaging to distinguish insecure HTTP contexts vs. blocked browser/frame permissions and automatically focus the command text box so mobile keyboard dictation is immediately usable.
+
+### Files Modified
+- `/metadata.json`
+- `/views/VoiceControlView.tsx`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/version.ts`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.56.3] - 2026-11-12
+
+### Fixed
+- **Multi-Line Colon-Header & Bulleted List Parsing (`utils/voiceCommandParser.ts`)**: Added line-by-line header inheritance and bullet stripping in `splitTopLevelCommands` so pasted or dictated notes such as `"Remove from display:\n- Three belly bacon\n- Two crispy ears..."` and plain multi-line variants without bullets inherit the leading action verb and location (`from display`, `to chest freezer`, etc.) across subsequent items until a blank separator or new command/query.
+- **Same-Line Colon Headers & Location-First Phrasing (`utils/voiceCommandParser.ts`)**: Added support for inline colon headers (e.g., `"Remove from display: 2 brats, 1 belly"`) and location-first phrasing without a colon (e.g., `"remove from display 2 brats and 1 chicken broth"`, `"add to chest freezer 3 ribeye"`) via `tryExtractLeadingLocation`.
+
+### Added
+- **Multi-Line & Location-First Parser Tests (`tests/voice-command-parser.test.ts`)**: Added unit tests verifying bulleted and unbulleted multi-line colon-header blocks, same-line colon headers, location-first spoken phrasings, and blank-line boundary resets followed by queries.
+
+### Files Modified
+- `/utils/voiceCommandParser.ts`
+- `/tests/voice-command-parser.test.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/version.ts`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.56.2] - 2026-11-12
+
+### Fixed
+- **Natural Stock & Location Query Parsing (`utils/voiceCommandParser.ts`)**: Fixed local query matching for natural question phrasings such as `"How many pork liver do I have?"`, `"How many pork liver are on site?"`, `"Where are pork liver"`, and `"Find me pork liver"`. Added `cleanQueryProductPhrase` normalization to strip auxiliary pronouns/verbs (`do I have`, `are`, `is`, `on site`, `me`, `located`) and expanded `QUERY_TRIGGERS` (`where's`, `where can I find`, `find me`, `show me`, `locate`, `search for`, `look up`) as well as multi-sentence `?` splitting.
+
+### Added
+- **Automated Query Regression Tests (`tests/voice-command-parser.test.ts`)**: Added test cases verifying `"How many pork liver do I have?"`, `"How many pork liver are on site?"`, `"Where are pork liver"`, `"Find me pork liver"`, and `"How many pork liver are in display?"`.
+
+### Files Modified
+- `/utils/voiceCommandParser.ts`
+- `/tests/voice-command-parser.test.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/version.ts`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.56.1] - 2026-11-12
+
+### Changed
+- **Compact One-Screen Mobile & Desktop Voice Control Layout (`views/VoiceControlView.tsx`)**: Streamlined the header and command input into a compact two-row dictation box with an inline Speak/Mic button beside it so both the active transcript and all proposed inventory changes (or stock check cards) fit on one screen, especially on mobile devices using keyboard voice dictation (e.g., Gboard).
+- **Moved & Condensed Sample Phrases**: Relocated sample phrases and recent commands to a compact, collapsible section at the bottom of the Voice Control view so they stay out of the way during active use while remaining available for first-time users.
+
+### Files Modified
+- `/views/VoiceControlView.tsx`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/version.ts`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.56.0] - 2026-11-12
+
+### Added
+- **Dedicated On-Site Local Voice Control View (`views/VoiceControlView.tsx`)**: Added a new **Voice** tab in the On-Site header switcher (`#voice`) strictly scoped to on-site inventory (Products, Freezers, Display Cases, Containers, and On-Site Staging). Off-site cold storage and butcher records are excluded and cannot be modified via voice.
+- **100% Local Zero-AI Deterministic Command Parser (`utils/voiceCommandParser.ts`)**: Interprets spoken or typed commands locally in the browser without connecting to any external AI/LLM service:
+  - **Post-Sale Multi-Item Removals**: Supports comma/`and`-separated lists sharing a trailing location (e.g., `"remove 2 brats, 1 belly, 3 ground pork and 1 chicken broth from display"`), without breaking product names containing `"and"` (such as `"Mac and Cheese"`).
+  - **Hierarchical Location Moves**: Resolves `<container> in <freezer>` qualifiers and special display/staging shortcuts (e.g., `"Move 4 hotdogs from orange in canada to display"`).
+  - **Adds & Number Word Normalization**: Supports `add`/`restock`/`pack` commands and spoken English number words (`"one"` through `"ninety-nine"`, `"dozen"`, `"half dozen"`, `"couple"`).
+  - **Immediate On-Site Stock Queries**: Questions like `"How many belly fresh do we have"` run immediately as read-only visual breakdown cards showing total on-site stock and per-container quantities without voice readout.
+- **Browser Speech API + Mobile Keyboard Dictation Input**: Combines a live `SpeechRecognition` mic button with an always-editable command text area tailored for Android Gboard / iOS on-device keyboard dictation and manual touch-ups.
+- **Mandatory Ambiguity Disambiguation & Pre-Execution Confirmation**: Whenever spoken product, container, or package stack fragments partially match multiple candidates, all matching options are displayed and explicit operator selection is required before **Confirm & Apply** can dispatch `BATCH_UPDATE_MEAT_QUANTITY`, `MOVE_MEAT_QUANTITY`, or `ADD_MEAT_CUT`.
+- **Automated Test Coverage**: Added `/tests/voice-command-parser.test.ts` testing single and multi-item removals, hierarchical moves, spoken number words, stock queries, partial-match ambiguity blocking, insufficient stock guards, and strict off-site/butcher isolation.
+
+### Changed
+- **On-Site View Types & Header Navigation (`types.ts`, `App.tsx`)**: Registered `'voice'` in `View` and `VALID_VIEWS`, mapped it to the `'onsite'` operational zone, added the Voice switcher tab alongside Products, Freezer, and Display, and wired navigation back to Products, Freezers, and Undo History.
+
+### Files Modified
+- `/utils/voiceCommandParser.ts`
+- `/views/VoiceControlView.tsx`
+- `/types.ts`
+- `/App.tsx`
+- `/tests/voice-command-parser.test.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/version.ts`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
 ### [2.55.7] - 2026-11-01
 
 ### Fixed

@@ -394,6 +394,7 @@ interface AppInventoryState {
   tags?: any[];
   locations?: any[];
   movementOrders?: any[];
+  voiceDictionary?: any[];
   isDemoMode?: boolean;
   isPreviewMode?: boolean;
   previewBackupFilename?: string;
@@ -448,7 +449,8 @@ const defaultInitialState: AppInventoryState = {
   offSiteEntries: [],
   butcherOrders: [],
   tags: [],
-  locations: []
+  locations: [],
+  voiceDictionary: []
 };
 
 // Local Database storage
@@ -1275,6 +1277,39 @@ const TABLE_SCHEMAS: Record<string, {
       inverseOps: typeof item.inverseOps === 'string' ? item.inverseOps : JSON.stringify(item.inverseOps),
       createdAt: item.createdAt || new Date().toISOString()
     })
+  },
+  voice_dictionary: {
+    primaryKey: 'id',
+    createSql: `
+      CREATE TABLE IF NOT EXISTS voice_dictionary (
+        id TEXT PRIMARY KEY,
+        spokenPhrase TEXT NOT NULL,
+        targetType TEXT NOT NULL,
+        targetId TEXT,
+        replacementText TEXT,
+        notes TEXT,
+        createdAt TEXT
+      )
+    `,
+    columns: ['id', 'spokenPhrase', 'targetType', 'targetId', 'replacementText', 'notes', 'createdAt'],
+    fromDb: (row: any) => ({
+      id: row.id,
+      spokenPhrase: row.spokenPhrase,
+      targetType: row.targetType || 'phrase',
+      targetId: row.targetId || undefined,
+      replacementText: row.replacementText || undefined,
+      notes: row.notes || '',
+      createdAt: row.createdAt || undefined
+    }),
+    toDb: (item: any) => ({
+      id: item.id,
+      spokenPhrase: String(item.spokenPhrase || '').trim(),
+      targetType: item.targetType || 'phrase',
+      targetId: item.targetId || null,
+      replacementText: item.replacementText !== undefined && item.replacementText !== null ? String(item.replacementText) : null,
+      notes: item.notes || null,
+      createdAt: item.createdAt || new Date().toISOString()
+    })
   }
 };
 
@@ -1964,6 +1999,7 @@ function loadStateSync(): AppInventoryState {
         saveTableData('tags', defaultInitialState.tags || []);
         saveTableData('locations', defaultInitialState.locations || []);
         saveTableData('movement_orders', defaultInitialState.movementOrders || []);
+        saveTableData('voice_dictionary', defaultInitialState.voiceDictionary || []);
       });
       transaction();
       
@@ -2068,6 +2104,7 @@ function loadStateSync(): AppInventoryState {
       tags: loadTableData('tags'),
       locations: loadTableData('locations'),
       movementOrders: loadTableData('movement_orders'),
+      voiceDictionary: loadTableData('voice_dictionary') || [],
       notificationSettings: notificationSettings,
       notificationLogs: loadTableData('notification_logs') || [],
       appConfig: loadTableData('app_config') || [],
@@ -2192,6 +2229,9 @@ function saveStateSync(state: AppInventoryState, affectedTables?: string[], hist
       }
       if (shouldSync('movement_orders')) {
         syncTableData('movement_orders', state.movementOrders || [], collectInverse ? inverseCollector : undefined);
+      }
+      if (shouldSync('voice_dictionary')) {
+        syncTableData('voice_dictionary', state.voiceDictionary || [], collectInverse ? inverseCollector : undefined);
       }
       if (shouldSync('notification_settings') && state.notificationSettings) {
         syncTableData('notification_settings', state.notificationSettings);
@@ -2405,6 +2445,10 @@ function normalizeState(state: AppInventoryState): AppInventoryState {
       }
       return t;
     });
+  }
+
+  if (!Array.isArray(state.voiceDictionary)) {
+    state.voiceDictionary = [];
   }
 
   // Ensure products have defaultTagIds and default UPC-A barcode
@@ -4633,6 +4677,14 @@ export const DATABASE_TABLE_DEFINITIONS = [
     dependsOn: [
       { table: 'history', foreignKey: 'historyId', label: 'Activity History' }
     ]
+  },
+  {
+    name: 'voice_dictionary',
+    label: 'Voice Control Custom Dictionary',
+    category: 'system',
+    categoryLabel: 'System & Preferences',
+    iconName: 'BookOpen',
+    description: 'Custom spoken aliases and phrase rewrites mapping words to products, containers, freezers, or phrases'
   }
 ];
 
@@ -4651,6 +4703,7 @@ export const TABLE_ALIAS_MAP: Record<string, string[]> = {
   butcher_orders: ['butcher_orders'],
   custom_lists: ['custom_lists'],
   tags: ['tags'],
+  voice_dictionary: ['voice_dictionary'],
   app_config: ['app_config'],
   notification_settings: ['notification_settings'],
   notification_logs: ['notification_logs'],
@@ -4665,6 +4718,8 @@ export const TABLE_ALIAS_MAP: Record<string, string[]> = {
   movementOrders: ['movement_orders'],
   butcherOrders: ['butcher_orders'],
   customLists: ['custom_lists'],
+  voiceDictionary: ['voice_dictionary'],
+  dictionary: ['voice_dictionary'],
   appConfig: ['app_config'],
   notificationSettings: ['notification_settings'],
   notificationLogs: ['notification_logs'],
@@ -4680,8 +4735,8 @@ export const TABLE_ALIAS_MAP: Record<string, string[]> = {
   items: ['products', 'categories'],
   offsite: ['locations', 'pallets', 'boxes', 'off_site_entries', 'movement_orders'],
   lists: ['custom_lists', 'tags'],
-  system: ['app_config', 'notification_settings', 'notification_logs', 'history', 'pwa_devices', 'undo_sql_journal'],
-  settings: ['app_config', 'notification_settings', 'notification_logs', 'pwa_devices', 'undo_sql_journal'],
+  system: ['app_config', 'notification_settings', 'notification_logs', 'history', 'pwa_devices', 'undo_sql_journal', 'voice_dictionary'],
+  settings: ['app_config', 'notification_settings', 'notification_logs', 'pwa_devices', 'undo_sql_journal', 'voice_dictionary'],
   audit: ['history', 'undo_sql_journal'],
   logs: ['history', 'notification_logs', 'undo_sql_journal'],
   devices: ['pwa_devices']
@@ -5154,6 +5209,7 @@ function restoreFromJsonData(backupData: any, targetSections?: string[]): AppInv
   const srcHistory = backupData.history || backupData.logs || backupData.audit;
   const srcPwaDevices = backupData.pwaDevices || backupData.pwa_devices || backupData.devices;
   const srcUndoJournal = backupData.undoJournal || backupData.undo_sql_journal || backupData.undo_journal || backupData.undoSqlJournal;
+  const srcVoiceDictionary = backupData.voiceDictionary || backupData.voice_dictionary || backupData.customDictionary;
 
   if (isFull) {
     const nextState: any = {
@@ -5171,6 +5227,7 @@ function restoreFromJsonData(backupData: any, targetSections?: string[]): AppInv
       butcherOrders: srcButcherOrders || [],
       customLists: srcCustomLists || [],
       tags: srcTags || [],
+      voiceDictionary: srcVoiceDictionary || [],
       history: srcHistory || [],
       notificationSettings: srcNotificationSettings || currentState.notificationSettings || [],
       notificationLogs: srcNotificationLogs || [],
@@ -5239,6 +5296,10 @@ function restoreFromJsonData(backupData: any, targetSections?: string[]): AppInv
   if (tablesToRestore.has('tags') && srcTags) {
     currentState.tags = srcTags;
     affectedTablesList.push('tags');
+  }
+  if (tablesToRestore.has('voice_dictionary') && srcVoiceDictionary) {
+    currentState.voiceDictionary = srcVoiceDictionary;
+    affectedTablesList.push('voice_dictionary');
   }
   if (tablesToRestore.has('app_config') && srcAppConfig) {
     currentState.appConfig = Array.isArray(srcAppConfig) ? srcAppConfig : (srcAppConfig && typeof srcAppConfig === 'object' ? Object.entries(srcAppConfig).map(([key, value]) => ({ key, value: typeof value === 'string' ? value : JSON.stringify(value) })) : (currentState.appConfig || []));
@@ -5677,6 +5738,7 @@ app.get('/api/backups/preview/:filename', async (req, res) => {
         targetSummary.counts.history = targetSummary.tableCounts.history;
         targetSummary.counts.butcherOrders = targetSummary.tableCounts.butcher_orders;
         targetSummary.counts.settings = targetSummary.tableCounts.app_config;
+        targetSummary.counts.voiceDictionary = targetSummary.tableCounts.voice_dictionary;
 
         let tempButcherRecordsCount = 0;
         try {
@@ -5763,6 +5825,7 @@ app.get('/api/backups/preview/:filename', async (req, res) => {
           butcher_orders: getArrayLength(data.butcherOrders),
           custom_lists: getArrayLength(data.customLists || data.customlists || data.lists),
           tags: getArrayLength(data.tags),
+          voice_dictionary: getArrayLength(data.voiceDictionary || data.voice_dictionary || data.customDictionary),
           app_config: data.config ? Object.keys(data.config).length : (data.appConfig ? Object.keys(data.appConfig).length : 0),
           notification_settings: getArrayLength(data.notificationSettings),
           notification_logs: getArrayLength(data.notificationLogs),
@@ -5778,6 +5841,7 @@ app.get('/api/backups/preview/:filename', async (req, res) => {
         summary.counts.offSiteEntries = summary.tableCounts.off_site_entries;
         summary.counts.customLists = summary.tableCounts.custom_lists;
         summary.counts.tags = summary.tableCounts.tags;
+        summary.counts.voiceDictionary = summary.tableCounts.voice_dictionary;
         summary.counts.history = summary.tableCounts.history;
         summary.counts.butcherOrders = summary.tableCounts.butcher_orders;
         summary.counts.butcherRecords = getArrayLength(data.butcherRecords);
@@ -5874,6 +5938,7 @@ app.get('/api/backups/preview/:filename', async (req, res) => {
               butcher_orders: getArrayLength(parsed.butcherOrders),
               custom_lists: getArrayLength(parsed.customLists || parsed.lists),
               tags: getArrayLength(parsed.tags),
+              voice_dictionary: getArrayLength(parsed.voiceDictionary || parsed.voice_dictionary || parsed.customDictionary),
               app_config: parsed.config ? Object.keys(parsed.config).length : 0,
               notification_settings: getArrayLength(parsed.notificationSettings),
               notification_logs: getArrayLength(parsed.notificationLogs),
@@ -5928,6 +5993,7 @@ app.get('/api/backups/preview/:filename', async (req, res) => {
       currentCounts.offSiteEntries = currentTableCounts.off_site_entries;
       currentCounts.customLists = currentTableCounts.custom_lists;
       currentCounts.tags = currentTableCounts.tags;
+      currentCounts.voiceDictionary = currentTableCounts.voice_dictionary;
       currentCounts.history = currentTableCounts.history;
       currentCounts.settings = currentTableCounts.app_config;
       currentCounts.images = currentTableCounts.images;
@@ -6186,6 +6252,7 @@ app.post('/api/backups/import-zip', async (req: any, res) => {
       if (restoreOffSite) explicitTables.push('off_site_entries', 'locations', 'pallets', 'boxes', 'movement_orders', 'butcher_orders');
       if (restoreCustomLists || (restoreOnSite && restoreCustomLists !== false)) explicitTables.push('custom_lists');
       if (restoreTags || (restoreOnSite && restoreTags !== false)) explicitTables.push('tags');
+      if (restoreOnSite) explicitTables.push('voice_dictionary');
       if (restoreHistory || (restoreOnSite && restoreHistory !== false)) explicitTables.push('history');
     }
 
@@ -8942,14 +9009,14 @@ function getAffectedTablesForAction(actionType: string): string[] | undefined {
     case 'ADD_FREEZER':
     case 'EDIT_FREEZER':
     case 'DELETE_FREEZER':
-      return ['freezers', 'containers', 'history'];
+      return ['freezers', 'containers', 'voice_dictionary', 'history'];
 
     case 'ADD_PRODUCT':
     case 'EDIT_PRODUCT':
     case 'DELETE_PRODUCT':
     case 'BULK_DELETE_PRODUCTS':
     case 'BULK_EDIT_PRODUCTS':
-      return ['products', 'history'];
+      return ['products', 'voice_dictionary', 'history'];
 
     case 'DELETE_CATEGORY':
     case 'RENAME_CATEGORY':
@@ -8960,6 +9027,11 @@ function getAffectedTablesForAction(actionType: string): string[] | undefined {
     case 'EDIT_TAG':
     case 'DELETE_TAG':
       return ['tags', 'meat_cuts', 'history'];
+
+    case 'ADD_VOICE_DICTIONARY_ENTRY':
+    case 'EDIT_VOICE_DICTIONARY_ENTRY':
+    case 'DELETE_VOICE_DICTIONARY_ENTRY':
+      return ['voice_dictionary', 'history'];
 
     case 'CORRECT_OFFSITE_LABEL':
     case 'BULK_CORRECT_OFFSITE_LABEL':
@@ -9354,6 +9426,10 @@ app.post('/api/inventory/action', async (req: any, res) => {
           .map(c => c.freezerId === freezerId ? { ...c, freezerId: undefined } : c);
 
         nextState.freezers = nextState.freezers.filter(f => f.id !== freezerId);
+        nextState.voiceDictionary = (nextState.voiceDictionary || []).filter(
+          (e: any) => !(e.targetType === 'freezer' && e.targetId === freezerId) &&
+                      !(e.targetType === 'container' && e.targetId === looseContId)
+        );
         const looseDesc = looseCuts.length > 0 ? ` (${looseCuts.length} loose item(s) moved to the Sorting Table)` : '';
         const history = newHistoryEntry(`Freezer "${freezerName}" was permanently deleted. All containers inside were category-retired as unassigned${looseDesc}.`, freezerId);
         nextState.history = addHistory(nextState, history);
@@ -9684,6 +9760,9 @@ app.post('/api/inventory/action', async (req: any, res) => {
         ));
         nextState.products = nextState.products.filter(p => p.id !== productId);
         nextState.meatCuts = nextState.meatCuts.filter(mc => mc.productId !== productId);
+        nextState.voiceDictionary = (nextState.voiceDictionary || []).filter(
+          (e: any) => !(e.targetType === 'product' && e.targetId === productId)
+        );
         const history = newHistoryEntry(`Product "${productName}" was permanently deleted along with its inventory cuts.`, productId);
         nextState.history = addHistory(nextState, history);
 
@@ -9711,6 +9790,11 @@ app.post('/api/inventory/action', async (req: any, res) => {
           nextState.products = nextState.products.filter(p => p.id !== productId);
           nextState.meatCuts = nextState.meatCuts.filter(mc => mc.productId !== productId);
         }
+
+        const deletedIdSet = new Set(productIds);
+        nextState.voiceDictionary = (nextState.voiceDictionary || []).filter(
+          (e: any) => !(e.targetType === 'product' && deletedIdSet.has(e.targetId))
+        );
         
         const historyMessage = deletedNames.length > 2 
           ? `Bulk deleted ${deletedNames.length} products: ${deletedNames.slice(0, 2).join(', ')} and ${deletedNames.length - 2} other(s) along with their inventory cuts.`
@@ -10307,6 +10391,84 @@ app.post('/api/inventory/action', async (req: any, res) => {
           return mc;
         });
         const history = newHistoryEntry(`Tag "${tag?.name || 'Tag'}" was permanently deleted.`, tagId);
+        nextState.history = addHistory(nextState, history);
+        break;
+      }
+      case 'ADD_VOICE_DICTIONARY_ENTRY': {
+        const rawEntry = action.payload?.entry;
+        const spokenPhrase = String(rawEntry?.spokenPhrase || '').trim();
+        const targetType = rawEntry?.targetType;
+        if (!spokenPhrase) {
+          return res.status(400).json({ error: 'Spoken word or phrase cannot be empty.' });
+        }
+        const isRewriteType = targetType === 'phrase' || targetType === 'command';
+        if (!['product', 'container', 'freezer', 'command', 'phrase'].includes(targetType)) {
+          return res.status(400).json({ error: 'Invalid voice dictionary target type.' });
+        }
+        if (isRewriteType && !String(rawEntry?.replacementText || '').trim()) {
+          return res.status(400).json({ error: 'Replacement command or phrase text is required.' });
+        }
+        if (!isRewriteType && !String(rawEntry?.targetId || '').trim()) {
+          return res.status(400).json({ error: 'Target entity selection is required.' });
+        }
+        const entry = {
+          id: rawEntry.id || crypto.randomUUID(),
+          spokenPhrase,
+          targetType,
+          targetId: isRewriteType ? undefined : String(rawEntry.targetId).trim(),
+          replacementText: isRewriteType ? String(rawEntry.replacementText).trim() : undefined,
+          notes: rawEntry.notes ? String(rawEntry.notes).trim() : '',
+          createdAt: rawEntry.createdAt || new Date().toISOString()
+        };
+        nextState.voiceDictionary = [...(nextState.voiceDictionary || []), entry];
+        const history = newHistoryEntry(`Added voice dictionary rule "${spokenPhrase}" (${targetType}).`, entry.id);
+        nextState.history = addHistory(nextState, history);
+        break;
+      }
+      case 'EDIT_VOICE_DICTIONARY_ENTRY': {
+        const { id, updates } = action.payload || {};
+        const list = nextState.voiceDictionary || [];
+        const existing = list.find((e: any) => e.id === id);
+        if (!existing) {
+          return res.status(404).json({ error: 'Voice dictionary entry not found.' });
+        }
+        const nextPhrase = updates?.spokenPhrase !== undefined ? String(updates.spokenPhrase).trim() : existing.spokenPhrase;
+        const nextType = updates?.targetType || existing.targetType;
+        if (!nextPhrase) {
+          return res.status(400).json({ error: 'Spoken word or phrase cannot be empty.' });
+        }
+        const nextIsRewrite = nextType === 'phrase' || nextType === 'command';
+        if (!['product', 'container', 'freezer', 'command', 'phrase'].includes(nextType)) {
+          return res.status(400).json({ error: 'Invalid voice dictionary target type.' });
+        }
+        const updatedEntry = {
+          ...existing,
+          ...updates,
+          spokenPhrase: nextPhrase,
+          targetType: nextType,
+          targetId: nextIsRewrite ? undefined : (updates?.targetId !== undefined ? updates.targetId : existing.targetId),
+          replacementText: nextIsRewrite
+            ? String(updates?.replacementText !== undefined ? updates.replacementText : (existing.replacementText || '')).trim()
+            : undefined,
+          notes: updates?.notes !== undefined ? String(updates.notes).trim() : existing.notes
+        };
+        if (nextIsRewrite && !updatedEntry.replacementText) {
+          return res.status(400).json({ error: 'Replacement command or phrase text is required.' });
+        }
+        if (!nextIsRewrite && !updatedEntry.targetId) {
+          return res.status(400).json({ error: 'Target entity selection is required.' });
+        }
+        nextState.voiceDictionary = list.map((e: any) => e.id === id ? updatedEntry : e);
+        const history = newHistoryEntry(`Updated voice dictionary rule "${updatedEntry.spokenPhrase}".`, id);
+        nextState.history = addHistory(nextState, history);
+        break;
+      }
+      case 'DELETE_VOICE_DICTIONARY_ENTRY': {
+        const { id } = action.payload || {};
+        const list = nextState.voiceDictionary || [];
+        const existing = list.find((e: any) => e.id === id);
+        nextState.voiceDictionary = list.filter((e: any) => e.id !== id);
+        const history = newHistoryEntry(`Deleted voice dictionary rule "${existing?.spokenPhrase || id}".`, id);
         nextState.history = addHistory(nextState, history);
         break;
       }

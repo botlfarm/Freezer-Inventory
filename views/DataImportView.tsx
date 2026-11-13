@@ -1934,7 +1934,7 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
                       <button
                         type="button"
                         onClick={() => {
-                          const onSiteOnly = ['freezers', 'containers', 'container_templates', 'products', 'categories', 'meat_cuts', 'custom_lists', 'tags', 'butcher_orders', 'notification_settings', 'notification_logs', 'app_config', 'history', 'pwa_devices', 'undo_sql_journal'];
+                          const onSiteOnly = ['freezers', 'containers', 'container_templates', 'products', 'categories', 'meat_cuts', 'custom_lists', 'tags', 'butcher_orders', 'notification_settings', 'notification_logs', 'app_config', 'history', 'pwa_devices', 'undo_sql_journal', 'voice_dictionary'];
                           selectAllTables(onSiteOnly);
                         }}
                         className="px-2.5 py-1 text-[11px] font-bold bg-cool-gray-850 hover:bg-cool-gray-800 text-indigo-300 rounded-lg border border-cool-gray-750 transition cursor-pointer"
@@ -1990,7 +1990,8 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
                             { name: 'notification_logs', label: 'Notification Audit Logs', category: 'system', description: 'Historical record of sent alerts and system notifications' },
                             { name: 'history', label: 'Activity Audit Log', category: 'system', description: 'Comprehensive transaction history and user audit trails' },
                             { name: 'pwa_devices', label: 'PWA Device Registry', category: 'system', description: 'Connected mobile scanner devices and client sync endpoints' },
-                            { name: 'undo_sql_journal', label: 'Undo Transaction SQL Journal', category: 'system', description: 'Microsecond inverse SQL rollback operations for transaction undo' }
+                            { name: 'undo_sql_journal', label: 'Undo Transaction SQL Journal', category: 'system', description: 'Microsecond inverse SQL rollback operations for transaction undo' },
+                            { name: 'voice_dictionary', label: 'Voice Control Custom Dictionary', category: 'system', description: 'Custom spoken aliases and phrase rewrites for local voice commands' }
                           ])
                             .filter((def: any) => tableFilterCategory === 'all' || def.category === tableFilterCategory)
                             .map((def: any) => {

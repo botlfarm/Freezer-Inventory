@@ -326,6 +326,18 @@ export interface AppConfigItem {
   updatedAt?: string;
 }
 
+export interface VoiceDictionaryEntry {
+  id: string;
+  spokenPhrase: string;
+  targetType: VoiceDictionaryTargetType;
+  targetId?: string;
+  replacementText?: string;
+  notes?: string;
+  createdAt?: string;
+}
+
+export type VoiceDictionaryTargetType = 'product' | 'container' | 'freezer' | 'command' | 'phrase';
+
 export type InventoryState = {
   freezers: Freezer[];
   containers: Container[];
@@ -343,6 +355,7 @@ export type InventoryState = {
   tags?: Tag[];
   locations?: AppLocation[];
   movementOrders?: MovementOrder[];
+  voiceDictionary?: VoiceDictionaryEntry[];
   previousState?: InventoryState; // For undo functionality
   isDemoMode?: boolean;
   isPreviewMode?: boolean;
@@ -354,7 +367,7 @@ export type InventoryState = {
   undoJournal?: UndoSqlJournalEntry[];
 };
 
-export type View = 'freezer' | 'product' | 'library' | 'history' | 'reconcile' | 'import' | 'display_case' | 'restock' | 'offsite' | 'butcher_records' | 'traceability';
+export type View = 'freezer' | 'product' | 'library' | 'history' | 'reconcile' | 'import' | 'display_case' | 'restock' | 'offsite' | 'butcher_records' | 'traceability' | 'voice';
 
 export type Action =
   | { type: 'ADD_FREEZER'; payload: { name: string; isSpecial?: boolean; isLooseOnly?: boolean; isPallet?: boolean } }
@@ -438,6 +451,9 @@ export type Action =
   | { type: 'REVERT_OFFSITE_LABEL'; payload: { entryId: string } }
   | { type: 'BULK_REVERT_OFFSITE_LABEL'; payload: { entryIds: string[] } }
   | { type: 'SPLIT_MEAT_CUT'; payload: { meatCutId: string; splitQuantity: number; notes?: string; tagIds?: string[] } }
+  | { type: 'ADD_VOICE_DICTIONARY_ENTRY'; payload: { entry: VoiceDictionaryEntry } }
+  | { type: 'EDIT_VOICE_DICTIONARY_ENTRY'; payload: { id: string; updates: Partial<Omit<VoiceDictionaryEntry, 'id'>> } }
+  | { type: 'DELETE_VOICE_DICTIONARY_ENTRY'; payload: { id: string } }
   | { type: 'PURGE_HISTORY'; payload: { olderThanDays?: number; keepMax?: number; clearAll?: boolean } };
 
 

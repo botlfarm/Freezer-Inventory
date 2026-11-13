@@ -5,7 +5,7 @@ import { getClientDeviceInfo, getDeviceId, getDeviceName, getOperatorName, FREEZ
 import { DeviceSetupModal } from './components/DeviceSetupModal';
 import { ModalType, View } from './types';
 import { APP_VERSION } from './version';
-import { Tag, PackagePlus, History, Sparkles, Table, Package, ClipboardList, Sun, Moon, Filter, Plus, Download, ChevronDown, ChevronUp, Eye, AlertTriangle, RefreshCw, Database, RotateCcw, Users, User, Zap, ArrowUpDown, SlidersHorizontal, Smartphone, Rocket, Settings, FolderTree, KeyRound, ShieldAlert } from 'lucide-react';
+import { Tag, PackagePlus, History, Sparkles, Table, Package, ClipboardList, Sun, Moon, Filter, Plus, Download, ChevronDown, ChevronUp, Eye, AlertTriangle, RefreshCw, Database, RotateCcw, Users, User, Zap, ArrowUpDown, SlidersHorizontal, Smartphone, Rocket, Settings, FolderTree, KeyRound, ShieldAlert, Mic } from 'lucide-react';
 import { FreezerIcon, SearchIcon, GridViewIcon, ListViewIcon } from './components/icons';
 import Modal from './components/Modal';
 import AddForms from './components/AddForms';
@@ -18,6 +18,7 @@ import { UnifiedInboundMoveForm } from './components/UnifiedInboundMoveForm';
 import FreezerView from './views/FreezerView';
 import ProductView from './views/ProductView';
 import { DisplayCaseView } from './views/DisplayCaseView';
+import { VoiceControlView } from './views/VoiceControlView';
 import LibraryView, { ManageLists, LibraryTab } from './views/LibraryView';
 import HistoryView from './views/HistoryView';
 import ReconciliationView from './views/ReconciliationView';
@@ -43,7 +44,7 @@ import { cleanTokenRefreshUrlParams, executeSecurityTokenRefresh, isCloudflareTo
 
 const VALID_VIEWS: Set<View> = new Set([
   'freezer', 'product', 'library', 'history', 'reconcile', 'import', 
-  'display_case', 'restock', 'offsite', 'butcher_records', 'traceability'
+  'display_case', 'restock', 'offsite', 'butcher_records', 'traceability', 'voice'
 ]);
 
 function parseViewFromHash(hashString?: string): View | null {
@@ -2260,6 +2261,28 @@ export default function App() {
             initialSearch={traceabilityInitialSearch}
           />
         );
+      case 'voice':
+        return (
+          <VoiceControlView
+            state={state}
+            dispatch={dispatch}
+            onNavigateToProduct={(productId) => {
+              setSelectedProductId(productId);
+              setCurrentView('product');
+            }}
+            onNavigateToFreezer={handleNavigateToFreezer}
+            onTriggerUndo={() =>
+              openUndoModal({
+                isOpen: true,
+                historyId: null,
+                snapshotId: null,
+              })
+            }
+            onOpenVoiceDictionary={() => {
+              setCurrentView('library', { libraryTab: 'voice_dictionary' });
+            }}
+          />
+        );
       default:
         return null;
     }
@@ -2646,9 +2669,18 @@ export default function App() {
                             <Sparkles className="w-3.5 h-3.5 shrink-0" />
                             <span className="hidden sm:inline">Display</span>
                         </button>
+                        <button 
+                            onClick={() => setCurrentView('voice')}
+                            className={`rounded-md font-bold transition cursor-pointer flex items-center justify-center px-2 py-1 gap-1 text-[11px] sm:text-xs ${currentView === 'voice' ? 'bg-cyan-600 text-white font-extrabold shadow' : 'text-cool-gray-400 hover:text-white hover:bg-cool-gray-750'}`}
+                            title="On-Site Voice Control"
+                        >
+                            <Mic className="w-3.5 h-3.5 shrink-0" />
+                            <span className="hidden sm:inline">Voice</span>
+                        </button>
                     </div>
 
                     {/* Combined Search & Filters Toggle Button */}
+                    {currentView !== 'voice' && (
                     <button
                       onClick={() => {
                         const nextState = !isSearchFilterOpen;
@@ -2672,6 +2704,7 @@ export default function App() {
                         </span>
                       )}
                     </button>
+                    )}
                   </div>
                 )}
 
@@ -3331,12 +3364,12 @@ export default function App() {
                           <button
                             onClick={() => {
                               setIsUserDropdownOpen(false);
-                              if (!['product', 'freezer', 'display_case'].includes(currentView)) {
+                              if (!['product', 'freezer', 'display_case', 'voice'].includes(currentView)) {
                                 setCurrentView('product');
                               }
                             }}
                             className={`flex w-full items-center justify-between px-4 py-2 text-left transition font-normal cursor-pointer ${
-                              ['product', 'freezer', 'display_case'].includes(currentView)
+                              ['product', 'freezer', 'display_case', 'voice'].includes(currentView)
                                 ? 'bg-cyan-600/10 text-cyan-455'
                                 : 'text-cool-gray-300 hover:bg-cool-gray-750 hover:text-white'
                             }`}
@@ -3347,7 +3380,7 @@ export default function App() {
                               </svg>
                               On-Site Warehouses
                             </span>
-                            {['product', 'freezer', 'display_case'].includes(currentView) && (
+                            {['product', 'freezer', 'display_case', 'voice'].includes(currentView) && (
                               <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-3 h-3 text-cyan-400 shrink-0">
                                 <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
                               </svg>
@@ -3434,7 +3467,7 @@ export default function App() {
             </div>
 
             {/* Expanded Search & Filters Row */}
-            {currentView !== 'library' && currentView !== 'history' && currentView !== 'reconcile' && currentView !== 'users' && currentView !== 'offsite' && currentView !== 'butcher_records' && currentView !== 'traceability' && isSearchFilterOpen && (
+            {currentView !== 'library' && currentView !== 'history' && currentView !== 'reconcile' && currentView !== 'users' && currentView !== 'offsite' && currentView !== 'butcher_records' && currentView !== 'traceability' && currentView !== 'voice' && isSearchFilterOpen && (
               <div className="mt-3 p-3 sm:p-4 bg-cool-gray-900/95 border border-cool-gray-750/90 rounded-xl shadow-xl shadow-black/30 backdrop-blur-md animate-fade-in text-xs space-y-3">
                 {/* Top Row: Search & Quick Visibility Toggles */}
                 <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 pb-3 border-b border-cool-gray-800/80">

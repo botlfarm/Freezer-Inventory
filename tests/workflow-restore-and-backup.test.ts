@@ -118,5 +118,10 @@ describe('Workflow 1: SQLite Database Restore, Backup Snapshot & Roundtrip Integ
 
     const restoredHome = db.prepare('SELECT name FROM locations WHERE isHome = 1').get() as any;
     expect(restoredHome.name).toBe('Home Farm Freezers');
+
+    const restoredDict = db.prepare('SELECT spokenPhrase, targetType, targetId FROM voice_dictionary WHERE id = ?').get('vd-seed-ribeye') as any;
+    expect(restoredDict.spokenPhrase).toBe('prime rib');
+    expect(restoredDict.targetType).toBe('product');
+    expect(restoredDict.targetId).toBe('prod-ribeye');
   });
 });

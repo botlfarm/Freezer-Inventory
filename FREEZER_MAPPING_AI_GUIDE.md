@@ -67,6 +67,16 @@ interface Tag {
   excludeFromDisplayRestock?: boolean; // When true, items with this tag won't count towards Display Case restock backstock
 }
 
+interface VoiceDictionaryEntry {
+  id: string;          // UUID
+  spokenPhrase: string; // Custom spoken word or phrase (e.g., "rampler", "big orange", "front")
+  targetType: 'product' | 'container' | 'freezer' | 'phrase';
+  targetId?: string;   // Canonical product, container, or freezer ID (when targetType !== 'phrase')
+  replacementText?: string; // Replacement phrase (when targetType === 'phrase')
+  notes?: string;
+  createdAt?: string;
+}
+
 // Complete Unified Root Application State
 interface InventoryState {
   freezers: Freezer[];
@@ -83,6 +93,7 @@ interface InventoryState {
   butcherOrders?: ButcherOrder[];
   customLists?: CustomList[];
   tags?: Tag[];
+  voiceDictionary?: VoiceDictionaryEntry[];
   history: HistoryEntry[];
   containerTypes: ContainerType[];
   appConfig?: AppConfigItem[];

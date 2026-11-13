@@ -23,6 +23,7 @@ import { MediaSelector } from "../components/MediaSelector";
 import { SearchableProductSelect } from "../components/SearchableProductSelect";
 import { PWAInstallButton } from "../components/PWAInstallButton";
 import { PwaDeviceManagerCard } from "../components/PwaDeviceManagerCard";
+import { VoiceDictionaryManager } from "../components/VoiceDictionaryManager";
 import { ManagementForms, ManageFreezers } from "../components/ManagementForms";
 import {
   getContainerIcon,
@@ -94,7 +95,7 @@ export const FreezerAppLogoIcon: React.FC<{ className?: string }> = ({ className
   </svg>
 );
 
-export type LibraryTab = "products" | "containers" | "freezers" | "pallets" | "lists" | "settings" | "import" | "tags" | "locations" | "photos" | "pwa";
+export type LibraryTab = "products" | "containers" | "freezers" | "pallets" | "lists" | "settings" | "import" | "tags" | "locations" | "photos" | "pwa" | "voice_dictionary";
 
 const InlineEdit: React.FC<{
   value: string;
@@ -387,25 +388,13 @@ const LibraryView: React.FC<{
     const val = localStorage.getItem("offsite-theoretical-box-weight");
     return val ? parseFloat(val) : 40;
   });
-  const [settingsSubTab, setSettingsSubTab] = useState<"general" | "pwa">(() => {
-    try {
-      return (localStorage.getItem("freezer-settings-subtab") as "general" | "pwa") || "general";
-    } catch {
-      return "general";
-    }
-  });
-
-  const handleSelectSettingsSubTab = (subTab: "general" | "pwa") => {
-    setSettingsSubTab(subTab);
-    try {
-      localStorage.setItem("freezer-settings-subtab", subTab);
-    } catch {}
-  };
-
   React.useEffect(() => {
     const handleSubTabEvent = (e: any) => {
-      if (e?.detail && (e.detail === "general" || e.detail === "pwa")) {
-        setSettingsSubTab(e.detail);
+      if (e?.detail === "voice_dictionary") {
+        setActiveTab("voice_dictionary");
+      } else if (e?.detail === "pwa") {
+        setActiveTab("pwa");
+      } else if (e?.detail === "general") {
         setActiveTab("settings");
       }
     };
@@ -3426,7 +3415,7 @@ const LibraryView: React.FC<{
         return <ManageLists state={state} dispatch={dispatch} offSiteQuantityMap={offSiteQuantityMap} offSiteWeightMap={offSiteWeightMap} />;
       case "pwa":
       case "settings": {
-        const activeSub = activeTab === "pwa" ? "pwa" : settingsSubTab;
+        const isPwaTab = activeTab === "pwa";
         return (
           <div className="space-y-6 mt-4 max-w-4xl font-sans">
             {/* Page Header */}
@@ -3434,7 +3423,7 @@ const LibraryView: React.FC<{
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div>
                   <h3 className="text-sm sm:text-base font-bold text-cool-gray-100 flex items-center gap-2">
-                    {activeSub === "pwa" ? (
+                    {isPwaTab ? (
                       <>
                         <Smartphone className="w-4.5 h-4.5 text-cyan-400" />
                         PWA & Connected Devices
@@ -3447,49 +3436,15 @@ const LibraryView: React.FC<{
                     )}
                   </h3>
                   <p className="text-xs text-cool-gray-400 mt-0.5 font-medium">
-                    {activeSub === "pwa" 
+                    {isPwaTab
                       ? "Configure standalone mobile application parameters, customize icons, and manage connected clients."
                       : "Configure general application preferences and manage sandbox duplicates."}
                   </p>
                 </div>
-
-                {/* Sub-tab Navigation Header */}
-                <div className="flex items-center gap-1 p-1 bg-cool-gray-900/90 border border-cool-gray-750 rounded-lg self-start sm:self-auto shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      handleSelectSettingsSubTab("general");
-                      if (activeTab !== "settings") handleSwitchTab("settings");
-                    }}
-                    className={`px-3 py-1.5 rounded-md text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
-                      activeSub === "general"
-                        ? "bg-cyan-600 text-white shadow-xs"
-                        : "text-cool-gray-400 hover:text-cool-gray-200 hover:bg-cool-gray-800"
-                    }`}
-                  >
-                    <Settings className="w-3.5 h-3.5" />
-                    <span>General</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      handleSelectSettingsSubTab("pwa");
-                      if (activeTab !== "pwa") handleSwitchTab("pwa");
-                    }}
-                    className={`px-3 py-1.5 rounded-md text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
-                      activeSub === "pwa"
-                        ? "bg-cyan-600 text-white shadow-xs"
-                        : "text-cool-gray-400 hover:text-cool-gray-200 hover:bg-cool-gray-800"
-                    }`}
-                  >
-                    <Smartphone className="w-3.5 h-3.5" />
-                    <span>PWA & Devices</span>
-                  </button>
-                </div>
               </div>
             </div>
 
-            {activeSub === "pwa" ? (
+            {isPwaTab ? (
               <div className="space-y-6 animate-fade-in">
                 {/* Standalone PWA / Open in Chrome Card */}
                 <div className="bg-gradient-to-br from-cool-gray-850 to-cool-gray-900 rounded-xl border border-cyan-500/30 p-5 shadow-sm space-y-4">
@@ -4369,6 +4324,12 @@ const LibraryView: React.FC<{
             />
           </div>
         );
+      case "voice_dictionary":
+        return (
+          <div className="mt-4 max-w-4xl font-sans">
+            <VoiceDictionaryManager state={state} dispatch={dispatch} />
+          </div>
+        );
       default:
         return null;
     }
@@ -4441,6 +4402,14 @@ const LibraryView: React.FC<{
             className={`px-3 py-2 text-sm font-semibold rounded-t-md transition-all whitespace-nowrap ${activeTab === "import" ? "border-b-2 border-cyan-500 bg-cool-gray-800 text-cyan-300" : "text-cool-gray-400 hover:text-white hover:bg-cool-gray-800/40"}`}
           >
             Import / Manage Data
+          </button>
+          <button
+            onClick={() => {
+              handleSwitchTab("voice_dictionary");
+            }}
+            className={`px-3 py-2 text-sm font-semibold rounded-t-md transition-all whitespace-nowrap ${activeTab === "voice_dictionary" ? "border-b-2 border-cyan-500 bg-cool-gray-800 text-cyan-300" : "text-cool-gray-400 hover:text-white hover:bg-cool-gray-800/40"}`}
+          >
+            Voice Dictionary
           </button>
           <button
             onClick={() => {

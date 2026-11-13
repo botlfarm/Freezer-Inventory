@@ -2,7 +2,8 @@
   "name": "Freezer Inventory Tracker built for Home Assistant",
   "description": "An application to track the inventory of frozen meat across on-site freezers and off-site cold storage locations. Supports custom storage depots, pickup/delivery outlets, and complete logs history.",
   "requestFramePermissions": [
-    "camera"
+    "camera",
+    "microphone"
   ],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"

@@ -66,6 +66,7 @@ const defaultInitialState: InventoryState = {
   categories: [],
   meatCuts: [],
   history: [],
+  voiceDictionary: [],
 };
 
 export interface SingleUserLock {
@@ -111,6 +112,9 @@ const getActionDescription = (action: Action): string => {
     case 'DELETE_CONTAINER': return 'Deleted container';
     case 'UPDATE_MOVEMENT_ORDER': return 'Updated movement order';
     case 'CREATE_MOVEMENT_ORDER': return 'Created movement order';
+    case 'ADD_VOICE_DICTIONARY_ENTRY': return 'Added voice dictionary rule';
+    case 'EDIT_VOICE_DICTIONARY_ENTRY': return 'Updated voice dictionary rule';
+    case 'DELETE_VOICE_DICTIONARY_ENTRY': return 'Deleted voice dictionary rule';
     default:
       return (action as any).payload?.description || (action as any).description || `Action: ${action.type}`;
   }
@@ -130,6 +134,7 @@ const TABLE_TO_KEY_MAP: Record<string, keyof InventoryState> = {
   'movement_orders': 'movementOrders',
   'off_site_entries': 'offSiteEntries',
   'butcher_orders': 'butcherOrders',
+  'voice_dictionary': 'voiceDictionary',
   'history': 'history',
   'notification_settings': 'notificationSettings',
   'notification_logs': 'notificationLogs'
@@ -149,6 +154,7 @@ const STATE_ARRAY_KEYS: (keyof InventoryState)[] = [
   'movementOrders',
   'offSiteEntries',
   'butcherOrders',
+  'voiceDictionary',
   'history',
   'notificationSettings',
   'notificationLogs',
@@ -216,6 +222,7 @@ export const normalizeClientState = (s: any): InventoryState => {
     tags: Array.isArray(s.tags) ? s.tags : [],
     locations: Array.isArray(s.locations) ? s.locations : [],
     movementOrders: Array.isArray(s.movementOrders) ? s.movementOrders : [],
+    voiceDictionary: Array.isArray(s.voiceDictionary) ? s.voiceDictionary : [],
     notificationSettings: Array.isArray(s.notificationSettings) && s.notificationSettings.length > 0 ? s.notificationSettings : defaultInitialState.notificationSettings,
     notificationLogs: Array.isArray(s.notificationLogs) ? s.notificationLogs : [],
     appConfig: Array.isArray(s.appConfig) ? s.appConfig : []
@@ -454,7 +461,7 @@ export const useInventory = (activeView: View = 'product') => {
       const sliceKeys: (keyof InventoryState)[] = [
         'meatCuts', 'containers', 'freezers', 'products', 'categories',
         'pallets', 'boxes', 'customLists', 'tags', 'locations',
-        'movementOrders', 'offSiteEntries', 'butcherOrders'
+        'movementOrders', 'offSiteEntries', 'butcherOrders', 'voiceDictionary'
       ];
       for (const k of sliceKeys) {
         if (prevState[k] !== nextState[k]) {
@@ -1604,6 +1611,33 @@ export const useInventory = (activeView: View = 'product') => {
       return sendActionToServer(action);
     }
 
+    if (action.type === 'ADD_VOICE_DICTIONARY_ENTRY') {
+      const { entry } = action.payload;
+      setState(prev => ({
+        ...prev,
+        voiceDictionary: [...(prev.voiceDictionary || []), entry]
+      }));
+      return sendActionToServer(action);
+    }
+
+    if (action.type === 'EDIT_VOICE_DICTIONARY_ENTRY') {
+      const { id, updates } = action.payload;
+      setState(prev => ({
+        ...prev,
+        voiceDictionary: (prev.voiceDictionary || []).map(e => e.id === id ? { ...e, ...updates } : e)
+      }));
+      return sendActionToServer(action);
+    }
+
+    if (action.type === 'DELETE_VOICE_DICTIONARY_ENTRY') {
+      const { id } = action.payload;
+      setState(prev => ({
+        ...prev,
+        voiceDictionary: (prev.voiceDictionary || []).filter(e => e.id !== id)
+      }));
+      return sendActionToServer(action);
+    }
+
     if (action.type === 'DELETE_FREEZER') {
       const freezerId = action.payload.id;
       const looseId = freezerId + '_loose';
@@ -1613,7 +1647,11 @@ export const useInventory = (activeView: View = 'product') => {
         containers: prev.containers
           .filter(c => c.id !== looseId)
           .map(c => c.freezerId === freezerId ? { ...c, freezerId: undefined } : c),
-        meatCuts: prev.meatCuts.map(mc => mc.containerId === looseId ? { ...mc, containerId: 'staging_loose' } : mc)
+        meatCuts: prev.meatCuts.map(mc => mc.containerId === looseId ? { ...mc, containerId: 'staging_loose' } : mc),
+        voiceDictionary: (prev.voiceDictionary || []).filter(
+          e => !(e.targetType === 'freezer' && e.targetId === freezerId) &&
+               !(e.targetType === 'container' && e.targetId === looseId)
+        )
       }));
       return sendActionToServer(action);
     }

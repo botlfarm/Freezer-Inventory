@@ -1,6 +1,0 @@
-{
-  "summary":  "Architectural plan to cleanly remove the optional cloud connectors (Nextcloud WebDAV and Google Sheets/Docs), delete connector components and proxy endpoints, restore the standard local file picker/drag-and-drop workflow, and bump version to 2.55.3.",
-  "updatedAt":  "2026-10-28T13:40:26.984144572Z",
-  "requestFeedback":  true,
-  "userFacing":  true
-}

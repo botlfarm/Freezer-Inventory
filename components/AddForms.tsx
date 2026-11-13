@@ -42,19 +42,55 @@ const FreezerForm: React.FC<CommonFormProps> = ({ dispatch, onClose }) => {
   );
 };
 
+export interface ContainerDraftValues {
+  name: string;
+  freezerId?: string;
+  templateId?: string;
+  saveAsTemplate: boolean;
+  icon: string;
+  imageUrl?: string;
+  existingSpareContainerId?: string;
+}
+
 interface ContainerFormProps extends CommonFormProps {
   state: InventoryState;
   freezerId?: string;
+  initialName?: string;
+  initialTemplateId?: string;
+  initialSaveAsTemplate?: boolean;
+  initialImageUrl?: string;
+  initialIcon?: string;
+  draftSubmitLabel?: string;
+  onSubmitDraft?: (draft: ContainerDraftValues) => void;
   onContainerCreated?: (newContainerId: string) => void;
   isNested?: boolean;
 }
 
-const ContainerForm: React.FC<ContainerFormProps> = ({ dispatch, onClose, freezerId, state, onContainerCreated, isNested = false }) => {
-  const [name, setName] = useState('');
-  const [selectedTemplateId, setSelectedTemplateId] = useState('');
-  const [saveAsTemplate, setSaveAsTemplate] = useState(false);
-  const [icon, setIcon] = useState('generic');
-  const [imageUrl, setImageUrl] = useState('');
+const ContainerForm: React.FC<ContainerFormProps> = ({
+  dispatch,
+  onClose,
+  freezerId,
+  initialName,
+  initialTemplateId,
+  initialSaveAsTemplate = false,
+  initialImageUrl,
+  initialIcon,
+  draftSubmitLabel,
+  onSubmitDraft,
+  state,
+  onContainerCreated,
+  isNested = false,
+}) => {
+  const initialTpl = initialTemplateId
+    ? (state.containerTemplates || []).find(t => t.id === initialTemplateId)
+    : undefined;
+  const [name, setName] = useState(initialName || initialTpl?.name || '');
+  const [selectedTemplateId, setSelectedTemplateId] = useState(initialTemplateId || '');
+  const [saveAsTemplate, setSaveAsTemplate] = useState(
+    Boolean(initialSaveAsTemplate && !initialTemplateId)
+  );
+  const [icon, setIcon] = useState(initialIcon || initialTpl?.icon || 'generic');
+  const [imageUrl, setImageUrl] = useState(initialImageUrl || initialTpl?.imageUrl || '');
   const [selectedFreezerId, setSelectedFreezerId] = useState(freezerId || '');
   const [isSubmitting, setIsSubmitting] = useState(false);
   
@@ -162,6 +198,23 @@ const ContainerForm: React.FC<ContainerFormProps> = ({ dispatch, onClose, freeze
   }, [name, finalFreezerId, state.containers]);
 
   const handlePlaceExistingSpare = async (spareContainerId: string) => {
+    if (onSubmitDraft) {
+      const spare = state.containers.find(c => c.id === spareContainerId);
+      if (spare) {
+        onSubmitDraft({
+          name: spare.name,
+          freezerId: finalFreezerId,
+          templateId: spare.templateId,
+          saveAsTemplate: false,
+          icon: spare.icon || 'generic',
+          imageUrl: spare.imageUrl || undefined,
+          existingSpareContainerId: spareContainerId,
+        });
+        onClose();
+      }
+      return;
+    }
+
     setIsSubmitting(true);
     try {
       if (finalFreezerId) {
@@ -187,6 +240,19 @@ const ContainerForm: React.FC<ContainerFormProps> = ({ dispatch, onClose, freeze
       e.preventDefault();
     }
     if (name.trim() && !isSubmitting) {
+      if (onSubmitDraft) {
+        onSubmitDraft({
+          name: name.trim(),
+          freezerId: finalFreezerId,
+          templateId: selectedTemplateId || undefined,
+          saveAsTemplate: !selectedTemplateId && saveAsTemplate,
+          icon: icon || 'generic',
+          imageUrl: imageUrl || undefined,
+        });
+        onClose();
+        return;
+      }
+
       setIsSubmitting(true);
       try {
         let createdTplId = selectedTemplateId || undefined;
@@ -371,7 +437,7 @@ const ContainerForm: React.FC<ContainerFormProps> = ({ dispatch, onClose, freeze
         <MediaSelector imageUrl={imageUrl} onChange={setImageUrl} placeholder="Image URL (optional)" />
       </div>
       <div className="flex gap-2">
-        {onContainerCreated && (
+        {(onContainerCreated || onSubmitDraft) && (
             <button type="button" onClick={onClose} className="w-full py-2 px-4 bg-cool-gray-600 text-white font-semibold rounded-lg hover:bg-cool-gray-500 transition">Cancel</button>
         )}
         <button 
@@ -380,7 +446,7 @@ const ContainerForm: React.FC<ContainerFormProps> = ({ dispatch, onClose, freeze
           disabled={!name.trim() || isSubmitting} 
           className="w-full py-2 px-4 bg-cyan-600 text-white font-semibold rounded-lg hover:bg-cyan-700 transition disabled:bg-cool-gray-600 disabled:cursor-not-allowed"
         >
-            {isSubmitting ? 'Creating...' : onContainerCreated ? 'Create & Select' : 'Add Container'}
+            {isSubmitting ? 'Creating...' : onSubmitDraft ? (draftSubmitLabel || 'Use Container Details') : onContainerCreated ? 'Create & Select' : 'Add Container'}
         </button>
       </div>
     </>

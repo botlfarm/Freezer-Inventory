@@ -24,7 +24,8 @@ export const TABLE_NAMES = [
   'history',
   'app_config',
   'pwa_devices',
-  'undo_sql_journal'
+  'undo_sql_journal',
+  'voice_dictionary'
 ];
 
 export function createTestDatabase(dbPath: string = ':memory:'): Database.Database {
@@ -288,6 +289,16 @@ export function createTestDatabase(dbPath: string = ':memory:'): Database.Databa
       targetId TEXT,
       statements TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS voice_dictionary (
+      id TEXT PRIMARY KEY,
+      spokenPhrase TEXT NOT NULL,
+      targetType TEXT NOT NULL,
+      targetId TEXT,
+      replacementText TEXT,
+      notes TEXT,
+      createdAt TEXT
+    );
   `);
 
   return db;
@@ -391,6 +402,12 @@ export function seedSampleDatabase(db: Database.Database): void {
     VALUES (?, ?, ?, ?, ?, ?)
   `);
   insertHistory.run('hist-seed', new Date().toISOString(), 'Restored baseline farm inventory state', 'system', 'Test Suite', 'Automated Harness');
+
+  const insertDict = db.prepare(`
+    INSERT INTO voice_dictionary (id, spokenPhrase, targetType, targetId, replacementText, notes, createdAt)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+  insertDict.run('vd-seed-ribeye', 'prime rib', 'product', 'prod-ribeye', null, 'Common spoken alias', new Date().toISOString());
 }
 
 export function parseCutsheetCsv(csvContent: string): any[] {
