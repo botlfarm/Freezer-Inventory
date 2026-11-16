@@ -11,6 +11,14 @@ import {
     sortSubCategories, 
     sortProductsHierarchy 
 } from '../utils/sortOrder';
+import {
+    compareBackstockForDisplayRestock,
+    compareCutsForRemoval,
+    getExcludedFromDisplayRestockTagIds,
+    getTagActionIcon,
+    isCutExcludedFromDisplayRestock,
+    isCutPrioritized
+} from '../utils/tagRestockRules';
 
 interface ProductLocationRowProps {
     meatCut: MeatCut;
@@ -276,7 +284,7 @@ const ProductLocationRow: React.FC<ProductLocationRowProps> = ({
                               className="inline-flex items-center gap-0.5 text-[8px] sm:text-[9px] border px-1 sm:px-1.5 py-0.2 rounded font-semibold tracking-wide uppercase select-none"
                               title={tag.description || tag.name}
                             >
-                              {tag.id === 'use-first' ? '🍳 ' : tag.id === 'not-for-sale' ? '🛑 ' : '🏷️ '}{tag.name}
+                              {getTagActionIcon(tag)} {tag.name}
                             </span>
                           );
                         })}
@@ -696,10 +704,18 @@ const StorageLocationRow: React.FC<StorageLocationRowProps> = ({ state, loc, dis
                                 className="inline-flex items-center gap-0.5 text-[8px] sm:text-[9px] border px-1 sm:px-1.5 py-0.2 rounded font-semibold tracking-wide uppercase select-none"
                                 title={tag.description || tag.name}
                             >
-                                {tag.id === 'use-first' ? '🍳 ' : tag.id === 'not-for-sale' ? '🛑 ' : '🏷️ '}{tag.name}
+                                {getTagActionIcon(tag)} {tag.name}
                             </span>
                         );
                     })}
+                    {isCutPrioritized(loc.meatCut, state.tags) && (
+                        <span
+                            className="inline-flex items-center gap-0.5 text-[8px] sm:text-[9px] bg-amber-500/15 border border-amber-500/40 text-amber-300 px-1.5 py-0.2 rounded font-black tracking-wide uppercase select-none"
+                            title="Tag rule: prioritize pulling this stock into Display Case before standard backstock"
+                        >
+                            ⚡ Pull First
+                        </span>
+                    )}
                     
                     {isEditing ? (
                         <div className="flex items-center gap-1 bg-cool-gray-900 p-1 rounded border border-cool-gray-700">
@@ -895,6 +911,8 @@ interface DisplayCaseViewProps {
     searchTerm: string;
     onNavigateToContainer: (containerId: string) => void;
     onNavigateToStaging: () => void;
+    selectedProductId?: string | null;
+    onClearSelectedProduct?: () => void;
     selectedPrimary: string | null;
     selectedSub: string | null;
     selectedFreezerId: string;
@@ -912,6 +930,8 @@ export const DisplayCaseView: React.FC<DisplayCaseViewProps> = ({
     searchTerm,
     onNavigateToContainer,
     onNavigateToStaging,
+    selectedProductId,
+    onClearSelectedProduct,
     selectedPrimary,
     selectedSub,
     selectedFreezerId,
@@ -971,6 +991,30 @@ export const DisplayCaseView: React.FC<DisplayCaseViewProps> = ({
         return () => window.removeEventListener('resize', checkMobile);
     }, []);
 
+    // Handle deep navigation focus & highlights for Display items
+    useEffect(() => {
+        if (selectedProductId) {
+            const matchedProduct = state.products.find(p => p.id === selectedProductId);
+            if (matchedProduct) {
+                setSelectedPrimary(null);
+                setSelectedSub(null);
+
+                setTimeout(() => {
+                    const cardElement = document.getElementById(`prod-card-${matchedProduct.id}`);
+                    if (cardElement) {
+                        cardElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        cardElement.classList.add('ring-2', 'ring-cyan-400', 'ring-offset-2', 'ring-offset-cool-gray-900', 'scale-[1.01]', 'duration-300');
+                        setTimeout(() => {
+                            cardElement.classList.remove('ring-2', 'ring-cyan-400', 'ring-offset-2', 'ring-offset-cool-gray-900', 'scale-[1.01]');
+                        }, 3000);
+                    }
+                }, 150);
+
+                onClearSelectedProduct?.();
+            }
+        }
+    }, [selectedProductId, state.products, setSelectedPrimary, setSelectedSub, onClearSelectedProduct]);
+
     const hasStagedItems = useMemo(() => {
         const stagedContainers = state.containers.filter(c => !c.freezerId);
         const looseStagingCuts = state.meatCuts.filter(mc => mc.containerId === 'staging_loose');
@@ -999,12 +1043,11 @@ export const DisplayCaseView: React.FC<DisplayCaseViewProps> = ({
     }, [displayCuts]);
 
     const excludedTagIds = useMemo(() => {
-        return new Set((state.tags || []).filter(t => t.excludeFromDisplayRestock).map(t => t.id));
+        return getExcludedFromDisplayRestockTagIds(state.tags);
     }, [state.tags]);
 
     const isCutExcludedFromRestock = useCallback((mc: MeatCut) => {
-        if (!mc.tagIds || mc.tagIds.length === 0) return false;
-        return mc.tagIds.some(tagId => excludedTagIds.has(tagId));
+        return isCutExcludedFromDisplayRestock(mc, excludedTagIds);
     }, [excludedTagIds]);
 
     // Find display case locations ONLY (freezer.isSpecial === true)
@@ -1036,10 +1079,19 @@ export const DisplayCaseView: React.FC<DisplayCaseViewProps> = ({
             return existingDisplayLocs;
         }
 
-        // If product is in stock (has quantity in non-display storage) but NOT in display, create a 0-quantity location for display freezers
-        const productHasStockInStorage = state.meatCuts.some(
-            mc => mc.productId === productId && mc.quantity > 0 && !isCutExcludedFromRestock(mc)
-        );
+        // If product is in stock (has quantity in eligible non-display storage) but NOT in display, create a 0-quantity location for display freezers
+        const productHasStockInStorage = state.meatCuts.some(mc => {
+            if (mc.productId !== productId || mc.quantity <= 0 || isCutExcludedFromRestock(mc)) {
+                return false;
+            }
+            const container = state.containers.find(c => c.id === mc.containerId);
+            if (!container || container.isArchived) return false;
+            const freezer = container.freezerId ? state.freezers.find(f => f.id === container.freezerId) : undefined;
+            if (freezer && (freezer.isSpecial || freezer.isPallet || freezer.id.startsWith('pallet-'))) {
+                return false;
+            }
+            return true;
+        });
 
         if (productHasStockInStorage && displayFreezers.length > 0) {
             const targetFreezers = selectedFreezerId !== 'all' 
@@ -1500,7 +1552,8 @@ export const DisplayCaseView: React.FC<DisplayCaseViewProps> = ({
                                                         }
                                                         return { meatCut: mc, container, freezer };
                                                     })
-                                                    .filter(loc => loc.container && loc.freezer && !loc.freezer.isSpecial) as { meatCut: MeatCut, container: Container, freezer: Freezer }[];
+                                                    .filter(loc => loc.container && !loc.container.isArchived && loc.freezer && !loc.freezer.isSpecial) as { meatCut: MeatCut, container: Container, freezer: Freezer }[];
+                                                backStockLocations.sort((a, b) => compareBackstockForDisplayRestock(a, b, state.tags));
                                                 const totalBackStock = backStockLocations.reduce((sum, l) => sum + l.meatCut.quantity, 0);
 
                                                 return (
@@ -1639,7 +1692,11 @@ export const DisplayCaseView: React.FC<DisplayCaseViewProps> = ({
 
                                                             {locations.length > 0 && hasOnlyOneDisplayFreezer && isEverythingLoose && (
                                                                 <ul className="flex-shrink-0 w-full lg:w-auto mt-2 lg:mt-0 pb-1">
-                                                                    {locations.sort((a,b) => a.freezer.name.localeCompare(b.freezer.name, undefined, { numeric: true, sensitivity: 'base' })).map(loc => (
+                                                                    {[...locations].sort((a, b) => {
+                                                                        const prioDiff = compareCutsForRemoval(a, b, state.tags);
+                                                                        if (prioDiff !== 0) return prioDiff;
+                                                                        return a.freezer.name.localeCompare(b.freezer.name, undefined, { numeric: true, sensitivity: 'base' });
+                                                                    }).map(loc => (
                                                                         <ProductLocationRow 
                                                                             key={loc.meatCut.id}
                                                                             meatCut={loc.meatCut}
@@ -1659,7 +1716,11 @@ export const DisplayCaseView: React.FC<DisplayCaseViewProps> = ({
                                                             {!(hasOnlyOneDisplayFreezer && isEverythingLoose) && locations.length > 0 ? (
                                                                 <div className="mt-3.5 pt-3 border-t border-cool-gray-800/60">
                                                                     <ul className="text-cool-gray-300 text-sm space-y-2">
-                                                                        {locations.sort((a,b) => a.freezer.name.localeCompare(b.freezer.name, undefined, { numeric: true, sensitivity: 'base' })).map(loc => (
+                                                                        {[...locations].sort((a, b) => {
+                                                                            const prioDiff = compareCutsForRemoval(a, b, state.tags);
+                                                                            if (prioDiff !== 0) return prioDiff;
+                                                                            return a.freezer.name.localeCompare(b.freezer.name, undefined, { numeric: true, sensitivity: 'base' });
+                                                                        }).map(loc => (
                                                                             <ProductLocationRow 
                                                                                 key={loc.meatCut.id}
                                                                                 meatCut={loc.meatCut}

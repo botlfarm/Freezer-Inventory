@@ -9,6 +9,7 @@ import { PlusIcon, MinusIcon, SearchIcon, XIcon, PackageIcon } from './icons';
 import { ManagementForms } from './ManagementForms';
 import { generateUUID } from './uuidHelper';
 import { MediaSelector } from './MediaSelector';
+import { getTagActionIcon } from '../utils/tagRestockRules';
 
 interface UnifiedInboundMoveFormProps {
   dispatch: React.Dispatch<Action>;
@@ -120,8 +121,8 @@ export const UnifiedInboundMoveForm: React.FC<UnifiedInboundMoveFormProps> = ({
         productId: initialProductId || '', 
         quantity: 1, 
         notes: '', 
-        workingFrom: prod?.defaultTagIds?.includes('use-first') || false, 
-        notForSale: prod?.defaultTagIds?.includes('not-for-sale') || false,
+        workingFrom: false, 
+        notForSale: false,
         tagIds: prod?.defaultTagIds || []
       }
     ];
@@ -138,16 +139,16 @@ export const UnifiedInboundMoveForm: React.FC<UnifiedInboundMoveFormProps> = ({
       if (emptyIndex !== -1) {
         copy[emptyIndex].productId = newProduct.id;
         copy[emptyIndex].tagIds = defaultTagIds;
-        copy[emptyIndex].workingFrom = defaultTagIds.includes('use-first');
-        copy[emptyIndex].notForSale = defaultTagIds.includes('not-for-sale');
+        copy[emptyIndex].workingFrom = false;
+        copy[emptyIndex].notForSale = false;
       } else {
         copy.push({ 
           id: generateUUID(), 
           productId: newProduct.id, 
           quantity: 1, 
           notes: '', 
-          workingFrom: defaultTagIds.includes('use-first'), 
-          notForSale: defaultTagIds.includes('not-for-sale'),
+          workingFrom: false, 
+          notForSale: false,
           tagIds: defaultTagIds
         });
       }
@@ -166,8 +167,8 @@ export const UnifiedInboundMoveForm: React.FC<UnifiedInboundMoveFormProps> = ({
             ...item,
             productId: value,
             tagIds: defaultTagIds,
-            workingFrom: defaultTagIds.includes('use-first'),
-            notForSale: defaultTagIds.includes('not-for-sale')
+            workingFrom: false,
+            notForSale: false
           };
         }
         return { ...item, [field]: value };
@@ -941,14 +942,6 @@ export const UnifiedInboundMoveForm: React.FC<UnifiedInboundMoveFormProps> = ({
                                   ? currentTags.filter(id => id !== tag.id)
                                   : [...currentTags, tag.id];
                                 handleInboundItemChange(item.id, 'tagIds', nextTags);
-                                
-                                // sync backward compatibility fields
-                                if (tag.id === 'use-first') {
-                                  handleInboundItemChange(item.id, 'workingFrom', nextTags.includes('use-first'));
-                                }
-                                if (tag.id === 'not-for-sale') {
-                                  handleInboundItemChange(item.id, 'notForSale', nextTags.includes('not-for-sale'));
-                                }
                               }}
                               style={{ 
                                 borderColor: tag.color || '#3b82f6', 
@@ -957,7 +950,7 @@ export const UnifiedInboundMoveForm: React.FC<UnifiedInboundMoveFormProps> = ({
                               }}
                               className={`px-2 py-0.5 rounded text-[10px] font-extrabold border transition flex items-center gap-1 select-none cursor-pointer hover:brightness-125 ${isSelected ? 'shadow-sm ring-1 ring-white/20' : 'text-cool-gray-200 border-cool-gray-700 hover:bg-cool-gray-800'}`}
                             >
-                              <span>{tag.id === 'use-first' ? '⚡' : tag.id === 'not-for-sale' ? '🛑' : '🏷️'}</span>
+                              <span>{getTagActionIcon(tag)}</span>
                               <span>{tag.name}</span>
                             </button>
                           );

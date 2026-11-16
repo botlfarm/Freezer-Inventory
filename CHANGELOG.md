@@ -1,3 +1,865 @@
+### [2.72.5] - 2026-11-16
+
+### Fixed
+- **Photo Manager Container Template Tracking & Attachment Integrity (`utils/photoManager.ts`, `server.ts`, `views/PhotoManagerView.tsx`, `hooks/useInventory.ts`, `views/LibraryView.tsx`, `App.tsx`)**:
+  - **Container Template Attachment Detection (`GET /api/photos`)**: Included `state.containerTemplates` alongside `products` and `containers` when collecting photo attachments, so images used exclusively by Container Templates (e.g., `Teal w/ white polka dots` referencing `upload-1787863937019-kn1punx5.jpg`) are properly reported as **In Use** with a `Template` badge instead of falsely appearing **Unattached**.
+  - **Bulk Delete, Deduplication & Assignment (`POST /api/photos/delete-bulk`, `/api/photos/deduplicate`, `/api/photos/assign`)**: Updated all Photo Manager mutation endpoints via `utils/photoManager.ts` to clear, rewrite, and assign `imageUrl` references across `products`, `container_templates`, and `containers` (preventing `convertAndNormalizeContainerTemplates` from resurrecting deleted/replaced template image URLs on linked containers).
+  - **Unlinking Images (`PhotoManagerView.tsx`, `server.ts`, `hooks/useInventory.ts`)**: Fixed `handleUnlinkAttachment` sending `imageUrl: undefined` (which `JSON.stringify` stripped before reaching the server) to send `imageUrl: ''`, added `container_template` unlinking via `EDIT_CONTAINER_TEMPLATE`, and normalized empty/null `imageUrl` updates in `EDIT_PRODUCT`, `EDIT_CONTAINER`, and `EDIT_CONTAINER_TEMPLATE`.
+  - **Safe State Refresh & Ingress URLs (`PhotoManagerView.tsx`)**: Replaced all five `dispatch({ type: 'UNDO' }).then(() => dispatch({ type: 'REDO' }))` state-refresh calls—which previously undid the user's most recent inventory action on photo upload, assign, delete, or deduplicate—with `onRefreshState` (`refreshState(false)`) + `fetchPhotos()`, updated Missing Photos to include Container Templates without photos, and routed photo previews through `resolveImageUrl(photo.url)` for Home Assistant Ingress compatibility.
+
+### Files Modified
+- `/utils/photoManager.ts`
+- `/server.ts`
+- `/views/PhotoManagerView.tsx`
+- `/views/LibraryView.tsx`
+- `/App.tsx`
+- `/hooks/useInventory.ts`
+- `/tests/photo-manager.test.ts`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.72.4] - 2026-11-16
+
+### Changed
+- **Smart Default View Routing for Voice Control Links (`views/VoiceControlView.tsx`, `views/DisplayCaseView.tsx`, `App.tsx`)**:
+  - Updated Voice Control query cards, Proposed Changes cards, preview chips, and the post-apply confirmation summary to route based on what the user is inspecting:
+    - **Items** default to **Products View** (`product`) rather than jumping into Freezer View.
+    - **Display Items** (display alerts, `restock_display`, mutations targeting Display shelves, tag/stock/container item rows in Display) default to **Display Case View** (`display_case`) with automatic scroll & highlight on `#prod-card-{id}`.
+    - **Container & Freezer Inquiries / Operations** (`container_query` headers, `empty_container`, `move_all`, `move_container`, `combine_containers`, `swap_containers`, `rename_container`, `archive_container`, `delete_container`, and non-display storage locations) continue to link directly to **Freezer View** (`freezer`).
+  - Added `selectedProductId` and `onClearSelectedProduct` deep-navigation scroll & cyan ring highlight support to `DisplayCaseView.tsx`, and updated `App.tsx` `onNavigateToDisplayCase(productId)` to clear interfering filters and show zero-qty display items automatically when needed.
+
+### Files Modified
+- `/views/VoiceControlView.tsx`
+- `/views/DisplayCaseView.tsx`
+- `/App.tsx`
+- `/tests/voice-card-links.test.ts`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.72.3] - 2026-11-15
+
+### Added
+- **Universal Main-App Links Across All Voice Control Cards (`views/VoiceControlView.tsx`, `App.tsx`)**:
+  - Made every card and card element shown on the Voice Control screen clickable to jump directly back to the main app:
+    - **Query Cards**: Container queries (container headers, staging button, empty-result freezer shortcut, and item rows), Custom List queries (list titles + `Open` button to Catalog Lists and checked product banners), Stock Alert queries (header `Display`/`Products` shortcut, product title + `Open` button, and backstock location chips), Tag queries (tag header to tag-filtered Products view, item product links, and container badge links), Category queries (category/subcategory header + `Open` button to category-filtered Products view), and Stock Check queries (clickable product title block + `Open` button + location rows).
+    - **Proposed Changes Cards & Preview Chips**: Made resolved products, replacement labels, source/destination containers, restock source allocations, target freezers, lists, tags, history undo targets, and container preview item chips clickable to open directly in the main app.
+    - **Applied Summary Card**: Added deep-link navigation on each bullet item in the post-apply confirmation summary card.
+  - Updated `App.tsx` Voice navigation handlers to clear interfering search/tag/freezer filters and disable `hideZeroQuantity` automatically when opening an empty container or out-of-stock product.
+
+### Files Modified
+- `/views/VoiceControlView.tsx`
+- `/App.tsx`
+- `/tests/voice-card-links.test.ts`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.72.2] - 2026-11-15
+
+### Fixed
+- **Voice Screen Bottom Sticky Confirm Bar (`views/VoiceControlView.tsx`, `index.css`)**:
+  - Replaced the transparent `bg-cool-gray-900/95` class on `#voice-mobile-confirm-bar` with a solid opaque theme-aware surface (`bg-gray-900 bg-[var(--ha-bg-card,#1f2937)]`) and explicit `index.css` `#voice-mobile-confirm-bar` rules (`background-color: var(--ha-bg-card, #1f2937) !important; opacity: 1 !important;`) with an upward shadow so scrolling content beneath the bottom confirmation bar no longer bleeds through.
+
+### Files Modified
+- `/views/VoiceControlView.tsx`
+- `/index.css`
+- `/tests/voice-confirm-bar.test.ts`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.72.1] - 2026-11-15
+
+### Changed
+- **Notification Center Cleanup (`components/NotificationCenterPanel.tsx`, `views/LibraryView.tsx`)**:
+  - Removed the unimplemented **System Event Routing** card (`PIN Reset & Account Recovery` and `System & Security Alerts` selectors) from the Notification Center so channels are assigned directly inside future feature settings when those workflows are built, and renamed the sub-tab from **Schedules & Routing** to **Digest & Schedules**.
+
+### Files Modified
+- `/components/NotificationCenterPanel.tsx`
+- `/views/LibraryView.tsx`
+- `/tests/notification-center.test.ts`
+- `/APP_CONTEXT.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.72.0] - 2026-11-15
+
+### Added
+- **Admin Notification Center (`#library/notifications`) & Named Multi-Channel Architecture (`components/NotificationCenterPanel.tsx`, `utils/notifications.ts`, `server.ts`)**:
+  - Moved the **Notification Center** out of **Catalog → Lists** into **System & Admin → Notifications** (`adminOnly: true`), organized into three sub-tabs: **Channels**, **Schedules & Routing**, and **Delivery Logs**.
+  - Added relational **`notification_channels`** SQLite table (`NotificationChannel`) supporting multiple named reusable channels per gateway type (**SMTP Email**, **Webhook POST**, and **In-App Log**), each with independent enable/disable state, connection test status tracking, and modal CRUD (`GET /api/notifications/config`, `POST /api/notifications/channels`, `DELETE /api/notifications/channels/:id`, `POST /api/notifications/test-channel`).
+  - Added **System Notification Routes** (`systemRoutes.pinResetChannelIds`, `systemRoutes.systemAlertChannelIds`) and global **Default Delivery Channels** (`defaultChannelIds`) in `NotificationSettings` so non-list workflows (e.g., future PIN reset emails and system alerts) can route directly to configured channels.
+- **Per-List Multi-Channel & Multi-Frequency Delivery (`views/LibraryView.tsx`, `server.ts`, `utils/notifications.ts`)**:
+  - Lists can now simultaneously combine **Daily Digest** (`Combined` or `Separate Notification`), **Custom Schedules** (`Daily`, `Weekly` by day-of-week, or `Hourly / Custom Interval`), and **Immediate Alerts** (`On Item Added` and/or edge-triggered `On Threshold Breach` across all 6 metric sources).
+  - Supports **multi-select delivery channels per list**, optional **per-trigger channel overrides** (e.g., send immediate item-added alerts via SMTP Email while also bundling into a Daily Digest on App Log or Webhook), optional **SMTP recipient `To` override** (`notificationRecipientOverride`), and a new `threshold_breaches` item report scope (`Breached Items Only`).
+  - Background scheduler checks custom list schedules and global daily digest every 5 minutes in the configured IANA timezone, and logs granular channel/event/list attribution (`channelId`, `channelName`, `eventSource`, `listId`, `listName`) in `notification_logs`.
+- **Full 24-Table Backup, Migration & Automated Tests (`server.ts`, `views/DataImportView.tsx`, `hooks/useInventory.ts`, `tests/notification-center.test.ts`)**:
+  - Added automatic, idempotent startup and JSON-restore migration (`migrateLegacyNotificationData`) converting legacy global SMTP/webhook fields and list alert flags into named `notification_channels` and per-list settings without breaking Home Assistant add-on live databases.
+  - Integrated `notification_channels` across SQLite `.db`, JSON, and ZIP backup/restore/preview/dependency endpoints and `DataImportView.tsx`, alongside Vitest unit and SQLite roundtrip coverage in `tests/notification-center.test.ts`.
+
+### Changed
+- **Catalog → Lists Cleanup (`views/LibraryView.tsx`, `App.tsx`)**:
+  - Streamlined **Lists** header modes to **Lists Overview** and **Bulk Matrix** while adding a deep-link button inside list notification modals to jump straight to **System & Admin → Notifications**.
+
+### Files Modified
+- `/types.ts`
+- `/utils/libraryNavigation.ts`
+- `/utils/notifications.ts`
+- `/hooks/useInventory.ts`
+- `/components/NotificationCenterPanel.tsx`
+- `/server.ts`
+- `/views/LibraryView.tsx`
+- `/views/DataImportView.tsx`
+- `/App.tsx`
+- `/tests/test-harness.ts`
+- `/tests/library-settings-redesign.test.ts`
+- `/tests/user-auth-and-admin.test.ts`
+- `/tests/notification-center.test.ts`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/APP_CONTEXT.md`
+- `/FREEZER_MAPPING_AI_GUIDE.md`
+- `/CHANGELOG.md`
+
+### [2.71.4] - 2026-11-15
+
+### Changed
+- **Compact Horizontal Row-Card Layout & Modal Editor for Locations (`views/LibraryView.tsx`)**:
+  - Redesigned `ManageLocations` cards from tall multi-tier vertical boxes into compact horizontal two-column row cards matching **Lists** and **Tags**—placing the location name, `Home Base` / facility-type badges, inline contact/address/note metadata, and single-line inventory metrics on the left with action buttons (`Set as Home`, `Edit Settings`, `Delete`) aligned cleanly on the right.
+  - Replaced the stretched 3-column metrics strip and bordered footer with concise inline metrics plus an inline `View Manifest` toggle that expands pallet manifests in a responsive two-column grid (`grid-cols-1 md:grid-cols-2`).
+  - Moved the **Add / Edit Location** form into a modal dialog consistent with **Lists** and **Tags**, and replaced undefined `cool-gray-*` shade classes with standard theme surface tokens (`bg-cool-gray-850/75`, `border-cool-gray-750`, `text-cool-gray-300`/`400`).
+
+### Files Modified
+- `/views/LibraryView.tsx`
+- `/tests/library-settings-redesign.test.ts`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.71.3] - 2026-11-15
+
+### Added
+- **Uniform Catalog Search & Condensed Filter Bar (`components/CatalogSearchFilterBar.tsx`)**:
+  - Added a shared `CatalogSearchFilterBar` component featuring a full-width search bar, a collapsed-by-default **Filters** toggle button (`useState(false)`) with active filter count badge, and a Reset control when searching or filtering.
+
+### Changed
+- **Consistent Search & Condensed Filters Across All 7 Catalog Pages (`views/LibraryView.tsx`, `components/ManagementForms.tsx`, `views/PhotoManagerView.tsx`)**:
+  - Standardized **Products & Categories**, **Containers** (`Templates` and `Active Containers`), **Freezers**, **Lists** (`Lists Overview` and `Bulk Matrix`), **Tags**, **Locations**, and **Photo Manager** (`Manage` and `Missing`) to use `CatalogSearchFilterBar` right beneath the section `<header>`, collapsing filter controls by default and providing empty-state Reset Filters buttons.
+  - Removed the legacy top `<header>` search box from `LibraryView` so all Catalog & Settings headers share a uniform structure.
+- **Tightened Locations Spacing & Card Density (`views/LibraryView.tsx`)**:
+  - Reduced excess padding and vertical spacing across `ManageLocations` containers, inline add/edit forms (`p-3.5 rounded-xl`), empty states (`p-8 rounded-xl`), notes/stats strips (`p-2.5`), and action footers (`mt-3 pt-2.5`).
+
+### Files Modified
+- `/components/CatalogSearchFilterBar.tsx`
+- `/components/ManagementForms.tsx`
+- `/views/PhotoManagerView.tsx`
+- `/views/LibraryView.tsx`
+- `/tests/library-settings-redesign.test.ts`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.71.2] - 2026-11-15
+
+### Changed
+- **Consistent Products Header Filter & Single-Column Card Views (`views/LibraryView.tsx`, `tests/library-settings-redesign.test.ts`)**:
+  - Moved the **Products & Categories** archive filter (`Active Catalog`, `Archived`, `Show All`) out of the inner search toolbar up into the unified section `<header>` segmented mode bar to match **Containers**, **Lists**, **Photo Manager**, and **Import / Manage Data**, adding a Reset Filters action on empty filtered states.
+  - Standardized **Lists Overview**, **Tags Overview**, and **Locations** to clean single-column row-card layouts (`grid-cols-1 gap-3`), displaying the Locations inline add/edit form at the top of the single column when active and removing the extra side-column layout.
+
+### Files Modified
+- `/views/LibraryView.tsx`
+- `/tests/library-settings-redesign.test.ts`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.71.1] - 2026-11-15
+
+### Fixed
+- **Duplicate & Unwired Lists Header (`views/LibraryView.tsx`, `tests/library-settings-redesign.test.ts`)**:
+  - Removed a stale duplicate `case "lists":` branch inside `renderContent()` in `LibraryView.tsx` that shadowed the shell-wired `<ManageLists />` render branch.
+  - Restored full binding between the unified Lists section `<header>` controls (**Lists Overview**, **Bulk Matrix**, **Notification Center**, and **+ Create List**) and `ManageLists`, while suppressing `ManageLists`'s internal fallback header via `hideInternalHeader` so only a single interactive header renders in `#library/lists`.
+
+### Files Modified
+- `/views/LibraryView.tsx`
+- `/tests/library-settings-redesign.test.ts`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.71.0] - 2026-11-15
+
+### Added
+- **Unified Catalog & Settings Navigation Shell (`utils/libraryNavigation.ts`, `views/LibraryView.tsx`, `App.tsx`)**:
+  - Replaced the overflowing horizontal scroll tab bar with a **grouped vertical sidebar (`lg+`)** and a **compact active-section header + collapsible grouped drawer (`< lg`)** organized into three clear groups: **Catalog** (`Products & Categories`, `Containers`, `Freezers`, `Lists`, `Tags`, `Locations`, `Photo Manager`), **Operations** (`Off-Site Settings`, `Voice Dictionary`), and **System & Admin** (`Import / Manage Data`, `Users & Devices`, `General Settings`).
+  - Added `normalizeLibraryTab`, `isSectionAdminOnly`, `getLibrarySectionMeta`, and `getVisibleLibraryGroups` while preserving backwards-compatible hash routing (`#library/pwa` -> `users_devices`).
+- **Dedicated Off-Site Settings for All Regular Users (`components/OffSiteSettingsPanel.tsx`, `utils/appConfigPermissions.ts`, `server.ts`, `views/OffSiteSpreadsheet.tsx`)**:
+  - Moved **Default Movement Report Shipper** (`report-from-name`, `report-from-address`) and **Simulated Box Weight Estimation** (`offsite-theoretical-box-weight`, default `40 lbs`) out of admin-only General Settings into **Operations > Off-Site Settings** (`#library/offsite_settings`), accessible to all regular users.
+  - Scoped `POST /api/app-config` authorization via `canNonAdminWriteAppConfig` so non-admin users can persist only allowlisted `OFFSITE_USER_CONFIG_KEYS` (still honoring `require_login_for_edits` PIN checks) while all admin configuration keys remain strictly administrator-protected (`401`/`403`).
+  - Updated `OffSiteSpreadsheet.tsx` to read `offsite-theoretical-box-weight` from shared `state.appConfig` with `localStorage` fallback.
+- **Automated Test Suite (`tests/library-settings-redesign.test.ts`)**:
+  - Added tests verifying grouped Catalog & Settings navigation, hash alias normalization, regular-user vs. admin section gating, scoped `app_config` permission validation, SQLite `app_config` persistence roundtrips, and unified `LibraryView` layout wiring.
+
+### Changed
+- **Two-Step Workflows & Consistent Section Headers (`views/LibraryView.tsx`, `views/PhotoManagerView.tsx`, `views/DataImportView.tsx`, `components/UsersAndDevicesPanel.tsx`)**:
+  - Unified every Catalog & Settings section under a standardized Section Header with consistent segmented sub-mode switchers (`Lists`: `Lists Overview` / `Bulk Matrix` / `Notification Center`; `Containers`: `Templates` / `Instances`; `Photo Manager`: `Manage` / `Unattached` / `Missing` / `Categories`; `Import / Manage Data`: `Backups & Snapshots` / `Import` / `Manage`) and added `hideInternalHeader` support to suppress duplicate inner page banners.
+  - Redesigned **Lists** (`ManageLists`) and **Tags** (`ManageTags`) into dedicated two-step flows separating overview configuration (`Edit Settings` / `+ Create List` or `+ Create Tag` in dedicated configuration modals and in-app delete confirmation modals without browser alerts/confirms) from item/default-product assignment (`Manage Items` / `Manage Products` detail views with `← Back` navigation).
+  - Updated `ManageLocations` with consistent shell header integration and inline validation feedback instead of browser alerts.
+
+### Files Modified
+- `/utils/libraryNavigation.ts`
+- `/utils/appConfigPermissions.ts`
+- `/components/OffSiteSettingsPanel.tsx`
+- `/views/LibraryView.tsx`
+- `/views/OffSiteSpreadsheet.tsx`
+- `/views/PhotoManagerView.tsx`
+- `/views/DataImportView.tsx`
+- `/components/UsersAndDevicesPanel.tsx`
+- `/server.ts`
+- `/App.tsx`
+- `/tests/library-settings-redesign.test.ts`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.70.2] - 2026-11-15
+
+### Changed
+- **Admin-Only Purge / Maintenance in Audit History (`views/HistoryView.tsx`, `App.tsx`, `server.ts`, `tests/history-filters-toggle.test.ts`)**:
+  - Restricted the **Purge / Maintenance** button (`#history-purge-maintenance-btn`), purge estimation/modal, and `PURGE_HISTORY` dispatch in `HistoryView` to administrators via `canPurgeHistory={canAccessAdmin}` passed from `App.tsx` (matching existing admin gating when user accounts are configured).
+  - Enforced administrator authorization on the backend in `POST /api/inventory/action` for `PURGE_HISTORY` actions (`401 AUTH_REQUIRED` when unauthenticated, `403 ADMIN_REQUIRED` when authenticated as a non-admin user).
+
+### Files Modified
+- `/views/HistoryView.tsx`
+- `/App.tsx`
+- `/server.ts`
+- `/tests/history-filters-toggle.test.ts`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.70.1] - 2026-11-15
+
+### Changed
+- **Audit History Collapsible Filters (`views/HistoryView.tsx`, `tests/history-filters-toggle.test.ts`)**:
+  - Hid all timeframe, quick-window, date range, and entity filter controls (`#history-filters-panel`) behind a toggleable **Filters** button (`#history-filters-toggle-btn`) so only the search bar (`#history-search-input`) and **Filters** button are shown by default on the Audit History page.
+  - Added an active filter count badge and clear-search (`✕`) button so active filters remain visible at a glance even when the filter drawer is collapsed.
+
+### Files Modified
+- `/views/HistoryView.tsx`
+- `/tests/history-filters-toggle.test.ts`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.70.0] - 2026-11-15
+
+### Changed
+- **Unified Status-Triggered Header Menu (`App.tsx`, `tests/header-menu-dismiss.test.ts`, `tests/user-auth-and-admin.test.ts`)**:
+  - Consolidated the separate Sync Status dropdown and Hamburger menu (`#user-hamburger-dropdown`) into a single unified menu (`#sync-status-dropdown`) anchored to the color-coded, status-icon header button (showing icon + chevron on phones and full status label on `sm:` and larger screens).
+  - Reordered the unified menu into a compact 2-column grid designed to fit completely on mobile phone screens without scrolling, placing **On-Site**, **Off-Site**, contextual inbound (**Inbound Stock** on-site / **Bulk CSV Intake** off-site), and **Butcher Records** at the top, followed by **Catalog & Settings**, **User / PIN**, **Audit History**, **Traceability**, **Operating Mode / Sync / Devices**, and **Database Freshness & App Version** (`Check Updates` / `Refresh Cache`) at the very bottom.
+  - Removed verbose explanatory paragraphs inside the menu so buttons and icons stand on their own without visual clutter, while keeping contextual On-Site vs. Off-Site visibility rules intact.
+
+### Files Modified
+- `/App.tsx`
+- `/tests/header-menu-dismiss.test.ts`
+- `/tests/user-auth-and-admin.test.ts`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.69.3] - 2026-11-15
+
+### Changed
+- **Auto-Update Cache Defaulted to Auto & Moved to Admin Per-Device Controls (`App.tsx`, `views/LibraryView.tsx`, `components/PwaDeviceManagerCard.tsx`, `server.ts`, `types.ts`)**:
+  - Made automatic PWA update & cache refresh (`autoUpdateCache = true` / SQLite `1`) the default for all registered and new devices, clearing legacy localStorage overrides (`pwa_auto_update_local`, `pwa_auto_update`) on startup.
+  - Removed the `Auto-Update Cache:` toggle from the header Sync Status dropdown (`#sync-status-dropdown`) and removed the global toggle from **Settings -> Application Version & Update Status** (replaced with an **Auto by Default** notice and **Manage Per Device ➔** shortcut to **Users & Devices**).
+  - Added per-device **Auto-Update: Auto / Manual** toggle buttons and an **Edit Device Details** modal switch inside **Users & Devices** (`PwaDeviceManagerCard.tsx`), restricted to Admins via `PUT /api/devices/:id` (`requireAdmin`) and pushed live to connected clients via `/api/devices/register` and SSE (`init` `deviceAutoUpdateCache` + `device_config_changed`).
+  - Added `autoUpdateCache INTEGER DEFAULT 1` to the `pwa_devices` SQLite schema, automatic startup `ALTER TABLE` migration, and backup/restore serialization with graceful `NULL -> true` fallback.
+
+### Files Modified
+- `/types.ts`
+- `/server.ts`
+- `/App.tsx`
+- `/views/LibraryView.tsx`
+- `/components/PwaDeviceManagerCard.tsx`
+- `/tests/test-harness.ts`
+- `/tests/user-auth-and-admin.test.ts`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.69.2] - 2026-11-15
+
+### Fixed
+- **Operating Mode / Status & Hamburger Menu Outside-Click & Mutual Exclusion (`App.tsx`, `utils/headerMenuDismiss.ts`, `tests/header-menu-dismiss.test.ts`)**:
+  - Replaced the sticky-header `fixed inset-0 z-40` backdrop overlays on `#sync-status-dropdown` and `#user-hamburger-dropdown` (which could fail to intercept clicks against higher `z-50`/`z-[60]` siblings and the hamburger button) with capture-phase `pointerdown`/`mousedown` outside-click and `Escape` key listeners (`useHeaderMenuDismiss`).
+  - Added mutual exclusion between header dropdown triggers so opening the hamburger menu, Operating Mode/Status menu, or active movement popdown automatically closes any other open header menu, and elevated `<header>` stacking (`z-[65]`) while a dropdown is open.
+
+### Files Modified
+- `/App.tsx`
+- `/utils/headerMenuDismiss.ts`
+- `/tests/header-menu-dismiss.test.ts`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.69.1] - 2026-11-15
+
+### Changed
+- **Repositioned Temporary Voice Prompt Recorder (`views/VoiceControlView.tsx`, `components/TempVoicePromptRecorder.tsx`)**:
+  - Moved the temporary **Save Prompt** / **Saved Prompts** card out of the primary command input box and placed it cleanly just above the **Sample phrases & full command guide** section so it stays out of the way of the main voice workflow.
+
+### Files Modified
+- `/views/VoiceControlView.tsx`
+- `/components/TempVoicePromptRecorder.tsx`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.69.0] - 2026-11-14
+
+### Added
+- **[TEMP] Temporary Voice Prompt Capture & Optional Notes (`components/TempVoicePromptRecorder.tsx`, `utils/tempVoicePromptLog.ts`, `utils/tempVoicePromptServer.ts`, `views/VoiceControlView.tsx`, `server.ts`, `tests/temp-voice-prompt-log.test.ts`)**:
+  - Added a self-contained **Save Prompt** button directly beneath the Voice Control command box (`VoiceControlView.tsx`) so unrecognized or mis-parsed live voice queries can be captured immediately in the field with parser status context (`unrecognized`, `empty/error query`, `needs selection`), user/device attribution, and timestamp.
+  - Clicking **Save Prompt** immediately persists the current prompt box contents and opens an inline **Optional Notes** input for attaching expected-behavior context (with post-save update support, offline local cache fallback, expandable **Saved Prompts** drawer with inline note editing, reload-into-box testing, **Copy All**, **JSON** export, and delete/clear controls).
+  - Isolated storage in an ephemeral `/data/temp-voice-prompts.json` file via `/api/temp/voice-prompts` (leaving SQLite `InventoryState`, the 23 relational database tables, and backup/restore schemas untouched) so the entire temporary tooling can be removed cleanly once the voice model is finalized.
+
+### Files Modified
+- `/components/TempVoicePromptRecorder.tsx`
+- `/utils/tempVoicePromptLog.ts`
+- `/utils/tempVoicePromptServer.ts`
+- `/views/VoiceControlView.tsx`
+- `/server.ts`
+- `/tests/temp-voice-prompt-log.test.ts`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.68.3] - 2026-11-14
+
+### Fixed
+- **Instant Audit History Log Load & Progressive Timeframe Loading (`views/HistoryView.tsx`, `utils/historyRetention.ts`, `components/UndoConfirmationModal.tsx`, `tests/traceability-performance.test.ts`)**:
+  - **Deferred Purge Retention Calculation**: Gated `purgeEstimation` in `HistoryView.tsx` so `calculateHistoryRetention` only executes when the **Purge / Maintenance** modal is actually opened instead of running on every `HistoryView` mount, and optimized `calculateHistoryRetention` from a double-pass $O(H \times S)$ substring loop into a single-pass $O(H + S)$ token-indexed matcher.
+  - **Recent-First Progressive Loading**: Defaulted `HistoryView` to **⚡ Last 24 Hours (Fast)** (automatically falling back to the latest 25 changes if no actions occurred in the last 24h, and automatically expanding to All Time when typing a search query or selecting entity filters) with 1-click **Quick Window** pills (`Last 24h`, `7 Days`, `30 Days`, `All Time`) and progressive row pagination (`Show Next 100` / `Load Last 7 Days` / `Load Full History`).
+  - **$O(1)$ Location & Undo Lookup Maps + Closed-Modal Guards**: Replaced per-entry `.find()` scans across `meatCuts`, `containers`, `freezers`, `products`, and `locations` with $O(1)$ `Map` lookups and a per-`targetId` location cache, memoized `Date.parse` / `Intl.DateTimeFormat` timestamp formatting, pre-indexed `undoSnapshotIds` into a `Set`, and guarded `UndoConfirmationModal` hooks with `if (!isOpen)` so background state updates do zero unnecessary work while the modal is closed.
+
+### Files Modified
+- `/views/HistoryView.tsx`
+- `/utils/historyRetention.ts`
+- `/components/UndoConfirmationModal.tsx`
+- `/tests/traceability-performance.test.ts`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.68.2] - 2026-11-14
+
+### Fixed
+- **Snappy Item Traceability Load & Search Performance (`views/TraceabilityView.tsx`, `tests/traceability-performance.test.ts`)**:
+  - Replaced nested $O(E \times M \times K^2)$ movement-order `.some()` scans, per-entry `state.meatCuts.find()` loops, and repeated per-entry `state.history` full-table substring scans on mount with an $O(N)$ pre-indexed lookup engine (`buildTraceRecords`) that indexes products/cuts, chronologically sorted movement orders (`moves` and `originalEntries`), active on-site cuts (`productId::serial`), and pre-filtered `offsite-removal` history logs in single linear passes.
+  - Deferred deep audit-log scanning (`intakeLog`, `arrivalLog` fallback, and `onSiteCohortLogs`) to a lazy `enrichTraceRecordWithHistory` pass that executes only for the single currently selected `activeRecord` instead of pre-computing across thousands of packages on initial page open.
+  - Added memoized `Intl.DateTimeFormat` caching in `formatTraceDate`, pre-computed lowercase `_searchIndex` strings per record for instant filtering, and batch table row pagination (`Show Next 100` / `Show All`) when inspecting large lots or butcher orders.
+
+### Files Modified
+- `/views/TraceabilityView.tsx`
+- `/tests/traceability-performance.test.ts`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.68.1] - 2026-11-14
+
+### Added
+- **App Version, Update Settings & Quick Cache Controls in Sync Status Menu (`App.tsx`, `tests/user-auth-and-admin.test.ts`)**:
+  - Added installed **App Version** (`v{APP_VERSION}`) and live server version comparison badge (`Up to date`, `vX.Y.Z Available`, `Cached`) directly inside the **Database Freshness** footer of `#sync-status-dropdown` so standard (non-admin) users and admins alike can view version status without needing access to the admin-gated Settings tab.
+  - Added a per-device **Auto-Update Cache** toggle (`Auto (On)` / `Manual`) and two quick action buttons—**Check Updates** (queries `/api/version` and Service Worker registrations) and **Refresh Cache** (flushes pending syncs, purges browser Cache Storage & Service Workers, and reloads cleanly)—alongside interactive click-to-sync on the **Database Freshness** row.
+
+### Files Modified
+- `/App.tsx`
+- `/tests/user-auth-and-admin.test.ts`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.68.0] - 2026-11-14
+
+### Added
+- **Configurable `prioritizeItem` Tag Action (`types.ts`, `server.ts`, `views/LibraryView.tsx`, `utils/tagRestockRules.ts`)**:
+  - Added a `prioritizeItem` boolean action flag to `Tag` (persisted via SQLite `tags.prioritizeItem INTEGER DEFAULT 0` with automatic startup column migration and full backup/restore compatibility).
+  - Added an **⚡ Prioritize Item** toggle inside the Manage Tags editor in `LibraryView.tsx`, enabling any user-created tag to prioritize tagged items ahead of ordinary stock during **both Display Case restocking and removal from inventory**.
+- **Removal & UI Prioritization (`utils/voiceCommandParser.ts`, `views/VoiceControlView.tsx`, `components/ContainerCard.tsx`, `views/DisplayCaseView.tsx`, `views/ProductView.tsx`)**:
+  - Updated `compareCutsForRemoval` and `compareBackstockForDisplayRestock` to sort `prioritizeItem` items first across Display restocking, Display alert locations, container item lists (`ContainerCard.tsx`), Display Case/Product location pickers, and voice `remove` / Display `move` commands (auto-selecting a uniquely sufficient priority stack or placing priority stacks first with an `⚡` highlight).
+
+### Changed
+- **Flag-Driven Badge Icons Across All Views (`utils/tagRestockRules.ts`, `components/`, `views/`)**:
+  - Replaced hardcoded `'use-first'` / `'not-for-sale'` badge emoji checks across on-site, Display Case, Butcher, and Off-Site views with shared `getTagActionIcon(tag)` derived exclusively from `tag.excludeFromDisplayRestock` (`🚫`) and `tag.prioritizeItem` (`⚡`), falling back to `🏷️`.
+
+### Removed
+- **Eliminated Hardcoded `"not-for-sale"` / `"use-first"` Defaults (`utils/tagRestockRules.ts`, `server.ts`, `views/LibraryView.tsx`, `components/UnifiedInboundMoveForm.tsx`, `tests/`)**:
+  - Removed all hardcoded tag ID/name behavior overrides, automatic `'not-for-sale'` flag injection in `normalizeState`, and delete-button locks in `LibraryView`. All exclusion and priority behavior is now 100% opt-in via explicit user tag flags.
+
+### Files Modified
+- `/types.ts`
+- `/utils/tagRestockRules.ts`
+- `/server.ts`
+- `/views/LibraryView.tsx`
+- `/utils/voiceCommandParser.ts`
+- `/views/VoiceControlView.tsx`
+- `/views/DisplayCaseView.tsx`
+- `/views/ProductView.tsx`
+- `/components/ContainerCard.tsx`
+- `/components/MeatCutRow.tsx`
+- `/components/ManagementForms.tsx`
+- `/components/SelectTagsModalContent.tsx`
+- `/components/UnifiedInboundMoveForm.tsx`
+- `/views/OffSiteMovementScanner.tsx`
+- `/views/OffSiteMovementPlanner.tsx`
+- `/views/OffSiteHierarchy.tsx`
+- `/views/ButcherSpreadsheetView.tsx`
+- `/views/OffSiteSpreadsheet.tsx`
+- `/tests/test-harness.ts`
+- `/tests/tag-restock-rules.test.ts`
+- `/tests/voice-command-parser.test.ts`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.67.0] - 2026-11-14
+
+### Added
+- **Shared Tag-Based Display Restock Rules Engine (`utils/tagRestockRules.ts`, `tests/tag-restock-rules.test.ts`)**:
+  - Centralized single-source-of-truth helpers resolving `excludeFromDisplayRestock` tags (defaulting built-in `"Not For Sale"` / `not-for-sale` to excluded unless explicitly set to `false`, plus any custom tag with `excludeFromDisplayRestock: true`) and `"Use First"` priority tags (`use-first` or matching tag name), along with a deterministic `compareBackstockForDisplayRestock` comparator ordering `"Use First"` stacks ahead of regular backstock, non-special storage before special freezers, and larger stacks first.
+- **UI Priority Badges & Exclusion Warnings (`views/VoiceControlView.tsx`, `views/DisplayCaseView.tsx`, `views/ProductView.tsx`, `components/MoveModalContent.tsx`)**:
+  - Surfaced `⚡ Pull First` / `⚡` priority highlights and tag badges across Display Case Quick Restock, Product Display Focus mode, Voice restock allocations, and Voice alert query location pills, plus amber exclusion warnings when explicitly moving or emptying `excludeFromDisplayRestock` stacks into a Display Case.
+
+### Fixed
+- **Voice Control Display Restock & Alert Tag Enforcement (`utils/voiceCommandParser.ts`, `tests/voice-command-parser.test.ts`)**:
+  - Enforced `excludeFromDisplayRestock` exclusions and `"Use First"` pull prioritization across `restock_display`, `inventory_alert_query` (`"What do I need to restock?"`, `"What's low stock in display?"` while keeping `global_out_of_stock` accurate), Display-targeted `move`, and `empty_container`/`move_all` destination checks, with explicit validation explanations when backstock is excluded by tag rules.
+  - Added routing in `0-restock` for imperative Display phrases such as `"restock 4 hotdogs to display"` and `"restock hotdogs into display"` so they execute as guided backstock restocks rather than creating new stock.
+- **ProductView Display Focus Parity (`views/ProductView.tsx`, `components/MoveModalContent.tsx`)**:
+  - Filtered `excludeFromDisplayRestock` and zero-quantity backstock stacks out of `ProductView` Display Focus (`selectedFreezerId === 'display'`), sorted eligible backstock with `"Use First"` first, tightened Display location search to ignore archived containers, and prevented `MoveModalContent` from auto-defaulting moves of excluded items to a Display Case destination.
+
+### Files Modified
+- `/utils/tagRestockRules.ts`
+- `/utils/voiceCommandParser.ts`
+- `/views/VoiceControlView.tsx`
+- `/views/DisplayCaseView.tsx`
+- `/views/ProductView.tsx`
+- `/components/MoveModalContent.tsx`
+- `/tests/tag-restock-rules.test.ts`
+- `/tests/voice-command-parser.test.ts`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.66.0] - 2026-11-14
+
+### Fixed
+- **Category & Item Emptying Disambiguation (`utils/voiceCommandParser.ts`)**:
+  - Added pre-`empty_container` disambiguation for `empty / clear / wipe out / clean out <item or category> from|out of|in <location>` (e.g., `"Empty Broths from display"` or `"clear chicken broth out of display"`) when `<location>` matches an on-site freezer/container and the phrase does not target an explicit container noun or named container (`"empty orange in canada"` remains `empty_container`), plus category/subcategory expansion under `isAllQuantity` removals so every stocked item in that category within the target location is cleared cleanly.
+- **Restock Prompts & Generic Custom List Checks (`utils/voiceCommandParser.ts`, `views/VoiceControlView.tsx`)**:
+  - Added `restockAlertMatch` for natural restock questions (`"What do I need to restock?"`, `"what needs restocking?"`, `"does anything need restocking?"`) and expanded generic `list_query` matching for `"Check a list"`, `"check my lists for restock"`, and `"what lists do we have?"`, sorting low-threshold list items first and displaying an amber `"below min"` count badge in `VoiceControlView`.
+- **Display Low-Stock Alert Matching (`utils/voiceCommandParser.ts`)**:
+  - Broadened `alertQueryMatch` and `display_low_stock` evaluation so `"What's low stock in display?"`, `"is anything low in display?"`, `"low stock in display"`, and `"what items are fewer than N in display?"` reliably surface stocked Display items at or below threshold even without backstock, while cleanly falling back to global alerts when no Display freezer exists.
+
+### Added
+- **Broadened Natural Phrasing Across All Voice Intents (`utils/voiceCommandParser.ts`, `views/VoiceControlView.tsx`, `tests/voice-command-parser.test.ts`)**:
+  - Expanded conversational lead-in stripping (`hey`, `hi`, `okay`, `well`, `so`, `can you tell me`, `we need to`, `just`, `quickly`) and added natural alternative phrasing patterns across `undo_last` (`take that back`, `undo that`), `list_query` / `manage_list` (`notify/warn me when...`, `silence/resume alerts`), `manage_tag` / `correct_label` (`apply tag`, `is mislabeled`), container lifecycle (`exchange`, `change container X name to Y`, `put X and Y together`), `restock_display` (`top off`, `fill up`, `grab ... from backstock`), `move` (`bring/carry/transport`, `grab/take ... from ... to ...`), `remove` (`grabbed`, `consumed`, `cooked`, `discard`, `write off`, `sold out of`, `ran out of`, `finished`), `set_quantity` (physical count statements like `"there are 4 brats left in display"` and `"recount"`), `add` / `add_container` (`toss/stash/load/stock`, `create a new bag/tote/box ...`), and `query` (`do we still have`, `any ... left`, `how's stock on`, `open container ...`, `sorting table`).
+  - Added comprehensive unit tests covering all three user-reported phrases, multi-item category empty expansion, expanded natural phrasings across every intent, and strict off-site exclusion guarantees (`97/97` tests passing).
+
+### Files Modified
+- `/utils/voiceCommandParser.ts`
+- `/views/VoiceControlView.tsx`
+- `/tests/voice-command-parser.test.ts`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.65.2] - 2026-11-14
+
+### Fixed
+- **Account Modal Focus/Refresh Form Wipe (`components/UserAccountModal.tsx`)**:
+  - Split the modal reset effect from the single-user account prefill effect so background `status` refreshes (such as `window.focus` or SSE `auth_changed` events while switching to look up a PIN) no longer clear entered PINs or visible sign-in error messages.
+- **Preview Admin Recovery (`data/inventory.db`)**:
+  - Reset the `nick` administrator account PIN via `scripts/admin-recovery.ts` to restore immediate sign-in access in the preview environment.
+
+### Files Modified
+- `/components/UserAccountModal.tsx`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/version.ts`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.65.1] - 2026-11-14
+
+### Fixed
+- **Persistent Admin & User Session Retention Across Views, Iframes & Menus (`hooks/useUserAuth.tsx`, `utils/clientDevice.ts`, `utils/userAuthServer.ts`, `server.ts`)**:
+  - Eliminated a race condition in `UserAuthProvider.refreshAuth` where overlapping `/api/auth/status` calls triggered by SSE `auth_changed`, window `focus`, or initial mount could resolve after PIN sign-in or first-admin setup and wipe the newly issued `sessionToken` (`clearSessionToken()`), added monotonic `authEpochRef` + in-flight request deduplication, and applied immediate optimistic auth state updates on login, setup, recovery unlock, logout, and policy changes.
+  - Enabled Express `trust proxy` and HTTPS-aware session cookie attributes (`buildSessionCookieHeader` / `isHttpsRequest` emitting `SameSite=None; Secure` over HTTPS/proxied iframes and `SameSite=Lax` over plain HTTP) alongside `Cache-Control: no-store` headers on `/api/auth/*` endpoints so browsers inside HTTPS iframes retain authentication cookies reliably.
+  - Added 3-tier `sessionToken` persistence in `utils/clientDevice.ts` (`localStorage` + `sessionStorage` + module memory fallback) so `X-User-Session` survives partitioned or restricted iframe storage without prompting re-login across menu changes.
+- **Complete Session Header Coverage Across Retry & Media Requests (`hooks/apiUrl.ts`, `views/PhotoManagerView.tsx`, `components/MediaSelector.tsx`, `views/MovementReportModal.tsx`)**:
+  - Merged `getClientAuditHeaders()` into `fetchWithRetry` (`hooks/apiUrl.ts`) and switched remaining raw `fetch()` calls in photo uploads, bulk photo management, gallery fetches, and report shipper config lookups to `authFetch(...)` with `credentials: 'include'`.
+- **Stray Menu Markup Inside Tag Filter Dropdown (`App.tsx`)**:
+  - Removed an accidental duplicate `User & Access` / `Operations` menu block inside the inventory tag-filter popover.
+
+### Files Modified
+- `/utils/userAuthServer.ts`
+- `/server.ts`
+- `/utils/clientDevice.ts`
+- `/hooks/useUserAuth.tsx`
+- `/hooks/apiUrl.ts`
+- `/views/PhotoManagerView.tsx`
+- `/components/MediaSelector.tsx`
+- `/views/MovementReportModal.tsx`
+- `/App.tsx`
+- `/tests/user-auth-and-admin.test.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/version.ts`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.65.0] - 2026-11-14
+
+### Added
+- **Custom Lists, Thresholds & Alert Queries (`utils/voiceCommandParser.ts`, `views/VoiceControlView.tsx`, `components/VoiceDictionaryManager.tsx`)**:
+  - Added `manage_list` to add/remove items (including multi-item lists and optional `with threshold N`) on custom lists (`BATCH_TOGGLE_PRODUCTS_ON_LIST`), set or update item thresholds (`UPDATE_LIST_ITEM_THRESHOLD` / `alert me when <item> drops below N`), and enable/disable per-item alerts (`TOGGLE_LIST_ITEM_NOTIFICATION`).
+  - Added read-only `list_query` to inspect list contents, check whether a product is on a list, or list all custom lists.
+- **Guided Display Restock & Stock Alert Queries (`utils/voiceCommandParser.ts`, `views/VoiceControlView.tsx`)**:
+  - Added `restock_display` (`restock N <item> [in display]` / `top off display with N <item>`) to allocate requested quantities from non-display on-site backstock into the resolved Display freezer via `MOVE_MEAT_QUANTITY`, with preferred backstock stack disambiguation.
+  - Added read-only `inventory_alert_query` supporting `display_out_of_stock`, `display_low_stock`, `needs_restock`, `global_out_of_stock`, and `global_low_stock`.
+- **Category, Tag, Empty Container & Staging Queries (`utils/voiceCommandParser.ts`, `views/VoiceControlView.tsx`)**:
+  - Expanded `'query'` with category-level stock summaries (`categoryQueryResults`) and tag-filtered item lookups (`tagQueryResults`), and extended `container_query` with `'empty'` (`what empty containers do I have`) and `'staging'` (`what's on staging` / sorting table) modes.
+- **Container Lifecycle Commands & Exclusions (`utils/voiceCommandParser.ts`, `views/VoiceControlView.tsx`)**:
+  - Added `rename_container` (`EDIT_CONTAINER`), `archive_container` (`TOGGLE_CONTAINER_ARCHIVED`), `delete_container` (`DELETE_CONTAINER`), `swap_containers` (paired `MOVE_CONTAINER`), and unplace/stage container (`move_container` to `__staging__`), plus `"except ..."` / `"excluding ..."` product exclusion clauses on `empty_container` and `move_all`.
+- **Item Tags, Wrong-Label Corrections & Quick Undo (`utils/voiceCommandParser.ts`, `views/VoiceControlView.tsx`, `components/VoiceDictionaryManager.tsx`)**:
+  - Added `manage_tag` (`TOGGLE_MEAT_TAG`, idempotent against current stack `tagIds`), `correct_label` (`CORRECT_MEAT_LABEL` with direct or interactive replacement product picker), and `undo_last` (`UNDO` with preview of the latest history entry).
+- **Voice Sample Phrases & Dictionary Presets (`views/VoiceControlView.tsx`, `components/VoiceDictionaryManager.tsx`)**:
+  - Expanded sample phrases with dedicated sections for Display Restock & Stock Alerts, Custom Lists & Thresholds, and Tags, Labels & Quick Undo, and added corresponding `VoiceDictionaryManager` command presets.
+
+### Files Modified
+- `/utils/voiceCommandParser.ts`
+- `/views/VoiceControlView.tsx`
+- `/components/VoiceDictionaryManager.tsx`
+- `/tests/voice-command-parser.test.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/version.ts`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.64.0] - 2026-11-14
+
+### Added
+- **Bulk & Direct Inventory Change Commands (`utils/voiceCommandParser.ts`, `views/VoiceControlView.tsx`, `components/VoiceDictionaryManager.tsx`)**:
+  - Added the `set_quantity` voice intent supporting natural single-item and bulk multi-item inventory updates across flexible action verbs (`adjust`, `reduce`, `decrease`, `lower`, `drop`, `increase`, `raise`, `bump`, `boost`, `change`, `update`, `edit`, `modify`, `reconcile`, `reset`, `correct`, `fix`, `mark`, `set`, `make`, `count`) and optional descriptors (`quantity`, `qty`, `inventory`, `stock`, `count`, `amount`, `level`).
+  - Supports setting exact target counts (`to <qty>` / `down to <qty>` / `up to <qty>` / `= <qty>`, including `0` / `zero` / `none`, spoken number words, `a dozen`, `a couple`, and unit suffixes) via batched `BATCH_UPDATE_MEAT_QUANTITY` actions (or `ADD_MEAT_CUT` when setting positive stock from `0` in a resolved container), as well as relative delta changes (`reduce ... by <N>` -> `remove`, `increase ... by <N>` -> `add`, `adjust ... by +/-<N>`).
+  - Supports multi-item lists separated by commas, `and`, unpunctuated `<item> to <qty>` boundaries, inline colon headers (`"change inventory in display: 2 brats, 0 pork liver"`), and multi-line bullet lists (`"Adjust inventory in display:\n- brats to 2\n- hotdogs to 3"`).
+  - Gracefully guides incomplete commands (such as bare `"change inventory"` or `"adjust quantity of brats in display"` without a number) with clear prompts and interactive `0`-minimum quantity steppers (`current → target` projection) in `VoiceControlView`, plus a new **Bulk & Direct Inventory Changes** sample phrases section and `VoiceDictionaryManager` command presets.
+
+### Files Modified
+- `/utils/voiceCommandParser.ts`
+- `/views/VoiceControlView.tsx`
+- `/components/VoiceDictionaryManager.tsx`
+- `/tests/voice-command-parser.test.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/version.ts`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.63.4] - 2026-11-13
+
+### Changed
+- **Relocated User Menu to Hamburger Dropdown Menu (`App.tsx`)**:
+  - Moved the top-bar User Account / Sign-In pill into the hamburger dropdown menu under a dedicated **User & Access** section (displaying authentication status, role badge, setup prompt, and PIN sign-in), freeing up valuable top-bar real estate.
+
+### Files Modified
+- `/App.tsx`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/version.ts`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.63.3] - 2026-11-13
+
+### Fixed
+- **Device Online Presence False-Positive IP Matching (`server.ts`)**:
+  - Removed IP-address-based online presence fallback (`c.ip === d.lastIp`) inside `/api/devices` which previously caused multiple distinct devices sharing the same home router or local Wi-Fi network/subnet IP to falsely report as "Online Now" whenever any device on that network was active. Device online presence now strictly verifies exact unique `deviceId` matching within the 20-second active heartbeat window.
+
+### Files Modified
+- `/server.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/version.ts`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.63.2] - 2026-11-13
+
+### Fixed
+- **`<freezer> loose` Location Resolution & `"in <source> to <dest>"` Item Move Parsing (`utils/voiceCommandParser.ts`)**:
+  - Added `<freezer> loose` / `loose <freezer>` resolution in `resolveOnSiteLocationCandidates` so phrases such as `"display loose"`, `"chest freezer loose"`, `"canada loose"`, and `"staging loose"` resolve cleanly to each freezer's dedicated loose shelf (`*_loose` / `staging_loose`), plus `"loose in <freezer>"` normalization.
+  - Added `extractInLocationFromBody` and used it inside both item `move` (`onlyToMatch` and per-clause parsing) and `remove` parsing so commands like `"move all hotdogs in display loose to box dogs 4"` or `"move all hotdogs in orange in canada to box dogs 4"` extract the source location cleanly using `"in"`, `"inside"`, `"at"`, or `"out of"` (while guarding `"move all of the <product> in ..."` from misfiring as `move_all`).
+  - Added optional container-type noun prefix fallback (`box`, `bag`, `bin`, `tote`, `bucket`, `crate`, `tray`, `tub`, `shelf`, `drawer`) when matching spoken destinations (allowing `"box dogs 4"` to match `"Box Dogs 4"` exactly or `"Dogs 4"` as fallback without cross-matching conflicting container types).
+- **Natural `"Where do I have..."` & Location-First Query Phrases (`utils/voiceCommandParser.ts`)**:
+  - Expanded `QUERY_TRIGGERS`, `startsWithCommandOrQuery`, `queryRegex`, and `cleanQueryProductPhrase` to support `"where do I/we/you have..."`, `"where do I/we keep/store..."`, `"where have I/we got..."`, `"where did I/we put..."`, `"where can I/we get..."`, and `"where in <freezer> do I have..."`, handling both product stock/location lookups and container location lookups (`mode: 'location'`).
+
+### Added
+- **Sample Phrases & Regression Tests (`views/VoiceControlView.tsx`, `tests/voice-command-parser.test.ts`)**:
+  - Added `"move all hotdogs in display loose to orange in canada"` and `"where do I have pork belly?"` examples in the interactive sample phrases guide.
+  - Added unit tests covering `"move all hotdogs in display loose to box dogs 4"`, container noun prefix fallback, `"in <container> in <freezer>"` moves, `"Where do I have..."` product/container queries, `"where in <freezer> do I have..."`, and chained commands.
+
+### Files Modified
+- `/utils/voiceCommandParser.ts`
+- `/views/VoiceControlView.tsx`
+- `/tests/voice-command-parser.test.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/version.ts`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.63.1] - 2026-11-13
+
+### Fixed
+- **Comma-Free Microphone Dictation Multi-Item List Parsing (`utils/voiceCommandParser.ts`)**:
+  - Updated `splitItemClauses` with quantity-boundary-aware splitting so continuous Web Speech API microphone dictation without commas (e.g. `"remove one hotdog one liver and one belly bacon from display"`) accurately splits into separate item clauses across `remove`, `move`, `add`, and strict `add_container ... with ...` commands.
+  - Preserved compound number expressions (`"twenty four"`, `"a dozen"`, `"half dozen"`, `"a couple [of]"`), product names containing `"and"` (`"mac and cheese"`), and trailing weight units (`"2 ribeye steak 16 oz"`) without false splits.
+  - Added `"a couple [of]"` quantity extraction in `extractLeadingQuantity`.
+
+### Added
+- **Dictation Sample Phrase & Parser Regression Tests (`views/VoiceControlView.tsx`, `tests/voice-command-parser.test.ts`)**:
+  - Added a `Dictated list (no commas)` example under the `Removing & Selling` sample phrase guide in `VoiceControlView.tsx`.
+  - Added comprehensive parser test coverage in `tests/voice-command-parser.test.ts` verifying unpunctuated dictation splitting across removals, adds, new containers, compound numbers, and unit weights.
+
+### Files Modified
+- `/utils/voiceCommandParser.ts`
+- `/views/VoiceControlView.tsx`
+- `/tests/voice-command-parser.test.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/version.ts`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.63.0] - 2026-11-13
+
+### Added
+- **Configurable Inventory Edit Access Policy (`require_login_for_edits` in `utils/userAuthServer.ts`, `server.ts`, `hooks/useUserAuth.tsx`, `hooks/useInventory.ts`, `components/UserAccountModal.tsx`, `components/UsersAndDevicesPanel.tsx`, `App.tsx`)**:
+  - Added SQLite `app_config` key `require_login_for_edits` (exposed on `GET /api/auth/status` and updated via `PUT /api/admin/auth-policy`) with an interactive option during first-admin setup (defaulting to **Required**) and a live toggle in **Users & Devices → Inventory Edit Access Policy** (`Protected` vs `Open Floor / Kiosk` mode).
+  - Enforced backend `requireEditAuth` middleware (`401 AUTH_REQUIRED`) across all inventory actions, uploads, photos, mode changes, and client/lock mutation routes when required and unauthenticated, keeping read-only browsing open with a top **View-Only Mode** + **Sign In with PIN** banner.
+- **Legacy Non-PIN User Migration & Device Assignment (`utils/userAuthServer.ts`, `server.ts`, `components/UsersAndDevicesPanel.tsx`, `components/PwaDeviceManagerCard.tsx`, `types.ts`)**:
+  - Added `/api/admin/legacy-users`, `/api/admin/legacy-users/migrate`, and `/api/admin/devices/:id/assign-user` to discover unlinked or orphaned `pwa_devices` rows once admins are configured, 1-click link matching-name operators or anonymous devices to existing PIN accounts, or upgrade named legacy operators directly into full PIN accounts.
+  - Added an **Assigned User Account (PIN Access)** selector inside the Edit Device modal (`PUT /api/devices/:id` & `PUT /api/admin/devices/:id/assign-user`), automatically revoking prior-owner sessions when reassigning or unlinking a device.
+- **Automated Tests (`tests/user-auth-and-admin.test.ts`)**:
+  - Added tests for `require_login_for_edits` policy lifecycle & backup persistence, legacy operator discovery/case-insensitive grouping/upgrade/linking (preserving revoked status), and single-device reassignment with selective session revocation.
+
+### Changed
+- **Consolidated Users & Devices Workspace & Settings Cleanup (`components/UsersAndDevicesPanel.tsx`, `components/AdminUsersManagerCard.tsx`, `components/PwaDeviceManagerCard.tsx`, `views/LibraryView.tsx`, `App.tsx`)**:
+  - Unified user account administration, edit policy controls, legacy migration, and device management into a single **Users & Devices** tab (`users_devices`, preserving `#library/pwa` and `'pwa'` tab aliases for backwards compatibility).
+  - Grouped devices by verified PIN account (`PIN Admin` / `PIN Account` badges) vs `Legacy • No PIN`, and switched bulk revoke/authorize actions to target exact `deviceIds` via `/api/devices/batch-revoke` and `/api/devices/batch-authorize`.
+  - Moved non-user **Offline App Installation / Direct PWA URL / App Name & Home Screen Icon Branding** into **Settings**, removed the duplicate `<AdminUsersManagerCard />` and duplicate `<CloudflareTokenHelperCard />`, and synced user/device lists across subcards via shared refresh callbacks.
+
+### Fixed
+- **Optimistic Rollback & Unauthenticated Offline Queue Guard (`hooks/useInventory.ts`, `server.ts`, `components/DeviceSetupModal.tsx`, `App.tsx`)**:
+  - Prevented failed unauthenticated (`401 AUTH_REQUIRED`) or revoked (`403 DEVICE_REVOKED`) mutations from enqueuing into IndexedDB offline storage, cleared pending debounces cleanly, rolled back optimistic local state from server truth, and opened the Sign-In or Device Revoked flow automatically.
+  - Hardened `/api/devices/register` recovery ID checks (`__recovery_admin__`) and stopped unauthenticated heartbeats from overwriting owned device operator names, while suppressing automatic Device Setup popups once PIN user accounts are active.
+
+### Files Modified
+- `/types.ts`
+- `/utils/userAuthServer.ts`
+- `/server.ts`
+- `/hooks/useUserAuth.tsx`
+- `/hooks/useInventory.ts`
+- `/components/UserAccountModal.tsx`
+- `/components/DeviceSetupModal.tsx`
+- `/components/AdminUsersManagerCard.tsx`
+- `/components/PwaDeviceManagerCard.tsx`
+- `/components/UsersAndDevicesPanel.tsx`
+- `/views/LibraryView.tsx`
+- `/App.tsx`
+- `/tests/user-auth-and-admin.test.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/version.ts`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.62.0] - 2026-11-13
+
+### Added
+- **Local User Accounts & Salted PIN Authentication (`utils/userAuthServer.ts`, `server.ts`, `hooks/useUserAuth.tsx`, `components/UserAccountModal.tsx`, `types.ts`)**:
+  - Introduced 100% local-first user accounts (`app_users`) and persistent trusted sessions (`user_sessions`) without any Cloudflare requirement—compatible with both local standalone installs and Cloudflare-fronted deployments.
+  - Added salted `scryptSync` PIN hashing/verification (`timingSafeEqual`, 4–16 non-whitespace characters), SHA-256 hashed opaque session tokens delivered via `HttpOnly` cookie + `X-User-Session` header, and a `PinRateLimiter` locking out repeated failures (5 attempts / 60s).
+  - Added first-run bootstrap (`Set Up Admin` pill in header -> `POST /api/auth/setup-first-admin`) keeping the app unlocked until the first active admin account is created, then automatically engaging role-based access control.
+- **Role-Based Admin Gating & Master Control (`server.ts`, `views/LibraryView.tsx`, `components/AdminUsersManagerCard.tsx`, `App.tsx`)**:
+  - Enforced `requireAdmin` (`401`/`403`) on sensitive backend routes when users are configured: `/api/backups/*`, `/api/devices*` (except `/api/devices/register`), `/api/app-config` (`POST|DELETE`), `/api/config` (`POST`), `/api/notifications/*`, `/api/demo/start|end`, and `/api/admin/*`.
+  - Hid `Import / Manage Data`, `PWA & Devices`, and `Settings` tabs in `LibraryView.tsx` for non-admin users, gated direct hash routes (`#library/import`, `#library/pwa`, `#library/settings`, and `#import`) with an **Administrator Access Required** screen and Sign In prompt, and guarded background `app_config` localStorage migration writes.
+  - Added `<AdminUsersManagerCard />` inside **Settings** for creating users, promoting/demoting roles, activating/deactivating accounts, resetting PINs, revoking active sessions, and deleting users while protecting the last remaining active admin (`LAST_ADMIN_PROTECTED`).
+- **Standard User Self-Service & Per-User Device Registry (`utils/userAuthServer.ts`, `components/UserAccountModal.tsx`, `server.ts`)**:
+  - Signed-in users can change their own PIN (`POST /api/account/change-pin`), view active sessions, automatically link registered devices via `pwa_devices.userId`, and rename, revoke, authorize, or delete only their own devices (`DEVICE_FORBIDDEN` for other users' devices).
+- **Home Assistant & Non-HA Lockout Recovery (`config.yaml`, `config.json`, `scripts/admin-recovery.ts`, `server.ts`, `components/UserAccountModal.tsx`)**:
+  - Added `admin_recovery_mode` and `admin_recovery_pin` add-on options in `config.yaml` / `config.json` (plus `ADMIN_RECOVERY_MODE` / `ADMIN_RECOVERY_PIN` env overrides) with HMAC recovery login (`POST /api/auth/recovery-login`) and a top recovery alert banner in `App.tsx`.
+  - Added `/scripts/admin-recovery.ts` (`npm run admin:recover -- <list|create-admin|reset-pin|promote|revoke-sessions> [--db <path>]`) for non-Home Assistant CLI lockout recovery.
+- **23-Table Backup & Restore Coverage + Automated Tests (`server.ts`, `views/DataImportView.tsx`, `tests/test-harness.ts`, `tests/user-auth-and-admin.test.ts`)**:
+  - Integrated `app_users`, `user_sessions`, and `pwa_devices.userId` across SQLite `.db`, `.json`, and `.zip` backups, preview comparisons, dependency checks, and selective restore UI while excluding secret credential hashes from runtime `/api/inventory` and SSE payloads.
+  - Added comprehensive tests in `tests/user-auth-and-admin.test.ts` covering PIN hashing, rate limiting, first-admin setup, session revocation, per-user device isolation, last-admin protection, 23-table SQLite backup roundtrips, HA recovery parsing, and CLI recovery execution.
+
+### Changed
+- **Authenticated API Transport & SSE Reconnect Guard (`utils/clientDevice.ts`, `hooks/apiUrl.ts`, `hooks/useInventory.ts`, `components/DeviceSetupModal.tsx`, `components/PwaDeviceManagerCard.tsx`, `components/VoiceDictionaryManager.tsx`, `utils/sortOrder.ts`, `views/DataImportView.tsx`, `views/LibraryView.tsx`, `App.tsx`)**:
+  - Exported `authFetch` attaching `X-User-Session` and `credentials: 'include'`, updated `fetchWithRetry` to include credentials, migrated protected UI fetches to `authFetch`, passed `userSession` in SSE stream URLs, handled live `session_revoked` / `auth_changed` events, and guarded SSE reconnects to avoid peer reconnect storms.
+- **Version Bumps & Documentation (`package.json`, `config.yaml`, `config.json`, `version.ts`, `APP_CONTEXT.md`, `FREEZER_MAPPING_AI_GUIDE.md`, `CHANGELOG.md`)**:
+  - Bumped application SemVer from `2.61.1` to `2.62.0`, added `admin:recover` script, and updated technical architecture & mapping documentation for 23 database tables and local auth/recovery.
+
+### Files Modified
+- `/types.ts`
+- `/utils/userAuthServer.ts`
+- `/scripts/admin-recovery.ts`
+- `/server.ts`
+- `/utils/clientDevice.ts`
+- `/hooks/apiUrl.ts`
+- `/hooks/useUserAuth.tsx`
+- `/hooks/useInventory.ts`
+- `/components/UserAccountModal.tsx`
+- `/components/AdminUsersManagerCard.tsx`
+- `/components/DeviceSetupModal.tsx`
+- `/components/PwaDeviceManagerCard.tsx`
+- `/components/VoiceDictionaryManager.tsx`
+- `/utils/sortOrder.ts`
+- `/views/DataImportView.tsx`
+- `/views/LibraryView.tsx`
+- `/App.tsx`
+- `/tests/test-harness.ts`
+- `/tests/user-auth-and-admin.test.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/version.ts`
+- `/APP_CONTEXT.md`
+- `/FREEZER_MAPPING_AI_GUIDE.md`
+- `/CHANGELOG.md`
+
+### [2.61.1] - 2026-11-13
+
+### Changed
+- **Relocated Primary Voice Display Freezer Selector (`components/VoiceDictionaryManager.tsx`, `views/LibraryView.tsx`, `views/VoiceControlView.tsx`, `App.tsx`)**: Moved the **Primary Voice Display Freezer** preference selector out of general Settings into the **Voice Dictionary** page (already linked directly from Voice Control), and removed the redundant Primary Display status/change link from the **On-Site Voice Control** header for a cleaner UI.
+
+### Files Modified
+- `/components/VoiceDictionaryManager.tsx`
+- `/views/LibraryView.tsx`
+- `/views/VoiceControlView.tsx`
+- `/App.tsx`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/version.ts`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
+### [2.61.0] - 2026-11-13
+
+### Added
+- **Primary Voice Display Freezer Setting (`views/LibraryView.tsx`, `views/VoiceControlView.tsx`, `utils/voiceCommandParser.ts`, `App.tsx`)**: Added a **Voice Control Preferences** selector in **Settings** (`voice_primary_display_freezer_id` persisted in SQLite `app_config` across devices, SSE streams, and backups) with `Automatic` default and grouped Special / Standard on-site freezers, plus a compact **Primary Display** indicator and `Change` shortcut in the **Voice Control** header. Gracefully falls back to `Automatic` if a configured freezer is later deleted.
+- **Literal Display Priority & Plural Special-Freezer Commands (`utils/voiceCommandParser.ts`, `views/VoiceControlView.tsx`)**:
+  - Updated singular display resolution (`"display"`, `"display case"`, `"display freezer"`, `"front display"`, `"store display"`) to follow a deterministic 3-tier hierarchy: 1) configured Primary Display Freezer, 2) literal name match (`"Display"` beats differently named `isSpecial` freezers like `"Farmers Market"`), and 3) `isSpecial` fallback (auto-selecting when unique, prompting only when tied).
+  - Added explicit plural group phrases (`"all displays"`, `"all display freezers"`, `"all display cases"`, `"special freezers"`, `"all special freezers"`, `"specialty freezers"`, `"special displays"`) to span every Special Freezer together for stock checks, container queries, removals, and moves, along with new interactive examples in **Sample phrases & full command guide**.
+- **Automated Tests (`tests/voice-command-parser.test.ts`)**: Added coverage for Automatic literal `"Display"` priority over secondary Special Freezers, direct targeting of secondary Special Freezers, explicit `voice_primary_display_freezer_id` override, stale/deleted primary fallback recovery, plural `"all displays"` / `"special freezers"` aggregation and multi-target selection, tied literal display disambiguation, and multi non-literal Special Freezer disambiguation.
+
+### Files Modified
+- `/utils/voiceCommandParser.ts`
+- `/views/LibraryView.tsx`
+- `/views/VoiceControlView.tsx`
+- `/App.tsx`
+- `/tests/voice-command-parser.test.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/version.ts`
+- `/APP_CONTEXT.md`
+- `/CHANGELOG.md`
+
 ### [2.60.0] - 2026-11-13
 
 ### Added

@@ -2,7 +2,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { InventoryState, Action, UndoSnapshotItem, OperatingMode, ConnectedClientInfo, ForcedMultiUser, OperationalZone, ZoneClientCounts, View, getOperationalZone } from '../types';
 import { getApiUrl, fetchWithRetry } from './apiUrl';
-import { getClientAuditHeaders } from '../utils/clientDevice';
+import { authFetch, getClientAuditHeaders } from '../utils/clientDevice';
 import {
   saveCachedState,
   getCachedState,
@@ -136,6 +136,7 @@ const TABLE_TO_KEY_MAP: Record<string, keyof InventoryState> = {
   'butcher_orders': 'butcherOrders',
   'voice_dictionary': 'voiceDictionary',
   'history': 'history',
+  'notification_channels': 'notificationChannels',
   'notification_settings': 'notificationSettings',
   'notification_logs': 'notificationLogs'
 };
@@ -156,6 +157,7 @@ const STATE_ARRAY_KEYS: (keyof InventoryState)[] = [
   'butcherOrders',
   'voiceDictionary',
   'history',
+  'notificationChannels',
   'notificationSettings',
   'notificationLogs',
   'containerTemplates'
@@ -223,6 +225,7 @@ export const normalizeClientState = (s: any): InventoryState => {
     locations: Array.isArray(s.locations) ? s.locations : [],
     movementOrders: Array.isArray(s.movementOrders) ? s.movementOrders : [],
     voiceDictionary: Array.isArray(s.voiceDictionary) ? s.voiceDictionary : [],
+    notificationChannels: Array.isArray(s.notificationChannels) ? s.notificationChannels : [],
     notificationSettings: Array.isArray(s.notificationSettings) && s.notificationSettings.length > 0 ? s.notificationSettings : defaultInitialState.notificationSettings,
     notificationLogs: Array.isArray(s.notificationLogs) ? s.notificationLogs : [],
     appConfig: Array.isArray(s.appConfig) ? s.appConfig : []
@@ -430,6 +433,7 @@ export const useInventory = (activeView: View = 'product') => {
   const stateRef = useRef<InventoryState>(state);
   const undoStackRef = useRef<InventoryState[]>(undoStack);
   const redoStackRef = useRef<InventoryState[]>(redoStack);
+  const fetchStateRef = useRef<(showSpinner?: boolean) => Promise<void>>(async () => {});
 
   useEffect(() => {
     stateRef.current = state;
@@ -544,6 +548,9 @@ export const useInventory = (activeView: View = 'product') => {
           const errorObj = new Error(errMsg);
           (errorObj as any).details = errData.details || errData.error || errMsg;
           (errorObj as any).actionType = action?.type;
+          (errorObj as any).statusCode = res.status;
+          (errorObj as any).isAuthRequired = res.status === 401 || errData.error === 'AUTH_REQUIRED' || errData.code === 'LOGIN_REQUIRED_FOR_EDITS';
+          (errorObj as any).isDeviceRevoked = errData.error === 'DEVICE_REVOKED';
           (errorObj as any).isReadOnlyPreview = errData.error === 'READ_ONLY_PREVIEW_MODE' || errData.isPreviewMode || errMsg.includes('Live Preview Mode');
           (errorObj as any).isSingleUserLocked = errData.error === 'SINGLE_USER_LOCKED';
           if (errData.error === 'SINGLE_USER_LOCKED' && errData.holderName) {
@@ -561,7 +568,7 @@ export const useInventory = (activeView: View = 'product') => {
         const updatedState = await res.json();
         return updatedState;
       } catch (err: any) {
-        if (!err.isReadOnlyPreview && !err.isSingleUserLocked && !err.message?.includes('READ_ONLY_PREVIEW_MODE') && !err.message?.includes('Live Preview Mode')) {
+        if (!err.isAuthRequired && !err.isDeviceRevoked && !err.isReadOnlyPreview && !err.isSingleUserLocked && !err.message?.includes('READ_ONLY_PREVIEW_MODE') && !err.message?.includes('Live Preview Mode')) {
           console.warn('Action server sync issue:', err.message);
         }
         throw err;
@@ -651,6 +658,47 @@ export const useInventory = (activeView: View = 'product') => {
       }).catch((err) => {
         pendingCountRef.current -= 1;
 
+        if (err.isAuthRequired || err.isDeviceRevoked) {
+          if (globalDebounceTimerRef.current) {
+            clearTimeout(globalDebounceTimerRef.current);
+            globalDebounceTimerRef.current = null;
+          }
+          if (movementDebounceTimerRef.current) {
+            clearTimeout(movementDebounceTimerRef.current);
+            movementDebounceTimerRef.current = null;
+          }
+          if (listToggleDebounceTimerRef.current) {
+            clearTimeout(listToggleDebounceTimerRef.current);
+            listToggleDebounceTimerRef.current = null;
+          }
+          pendingQuantityUpdatesRef.current = {};
+          inFlightQuantityUpdatesRef.current = {};
+          latestLocalQuantityRef.current = {};
+          pendingMovementUpdatesRef.current = {};
+          pendingListToggleUpdatesRef.current = {};
+
+          if (pendingCountRef.current <= 0) {
+            pendingCountRef.current = 0;
+            setIsSaving(false);
+            setHasPendingChanges(false);
+            setIsPendingSync(false);
+            const rollbackState = rollbackStateRef.current;
+            if (rollbackState) {
+              setState(rollbackState);
+            }
+            rollbackStateRef.current = null;
+            fetchStateRef.current(false).catch(() => {});
+          }
+
+          window.dispatchEvent(
+            new CustomEvent(err.isDeviceRevoked ? 'freezer-device-revoked' : 'freezer-auth-required', {
+              detail: { message: err.message }
+            })
+          );
+          resolve(false);
+          return;
+        }
+
         if (pendingCountRef.current === 0) {
           setIsSaving(false);
           const hasRemainingPending = Object.keys(pendingQuantityUpdatesRef.current).length > 0 || 
@@ -737,6 +785,18 @@ export const useInventory = (activeView: View = 'product') => {
         },
         body: JSON.stringify({ action })
       }, 2, 300, 8000);
+      if (res.status === 401) {
+        const errData = await res.json().catch(() => ({}));
+        window.dispatchEvent(new CustomEvent('freezer-auth-required', { detail: { message: errData.message } }));
+        return false;
+      }
+      if (res.status === 403) {
+        const errData = await res.json().catch(() => ({}));
+        if (errData.error === 'DEVICE_REVOKED') {
+          window.dispatchEvent(new CustomEvent('freezer-device-revoked', { detail: { message: errData.message } }));
+          return false;
+        }
+      }
       return res.ok;
     } catch (e) {
       return false;
@@ -926,9 +986,14 @@ export const useInventory = (activeView: View = 'product') => {
       }, 2, 300, 10000);
       if (!res.ok) {
         const errData = await res.json().catch(() => ({ error: res.statusText }));
+        if (res.status === 401 || errData?.error === 'AUTH_REQUIRED') {
+          window.dispatchEvent(new CustomEvent('freezer-auth-required', { detail: { message: errData?.message } }));
+        } else if (res.status === 403 && errData?.error === 'DEVICE_REVOKED') {
+          window.dispatchEvent(new CustomEvent('freezer-device-revoked', { detail: { message: errData?.message } }));
+        }
         return {
           success: false,
-          error: errData?.error || 'No undoable action found in audit log.'
+          error: errData?.message || errData?.error || 'No undoable action found in audit log.'
         };
       }
       const data = await res.json().catch(() => ({ error: 'Invalid response from server' }));
@@ -970,7 +1035,8 @@ export const useInventory = (activeView: View = 'product') => {
         headers: {
           'Authorization': `Bearer ${token}`,
           'Cache-Control': 'no-cache, no-store, must-revalidate',
-          'Pragma': 'no-cache'
+          'Pragma': 'no-cache',
+          ...getClientAuditHeaders()
         },
         cache: 'no-store'
       }, 3, 300, 10000);
@@ -1040,6 +1106,10 @@ export const useInventory = (activeView: View = 'product') => {
     }
   }, [fetchUndoSnapshots]);
 
+  useEffect(() => {
+    fetchStateRef.current = fetchState;
+  }, [fetchState]);
+
   // Sync / Drain the offline action queue back to the server in FIFO order
   const syncOfflineQueue = useCallback(async (): Promise<boolean> => {
     if (isSyncingOfflineQueueRef.current) return false;
@@ -1071,11 +1141,12 @@ export const useInventory = (activeView: View = 'product') => {
                 try {
                   const token = getToken();
                   const headers: Record<string, string> = {
-                    'Content-Type': 'application/json'
+                    'Content-Type': 'application/json',
+                    ...getClientAuditHeaders()
                   };
                   if (token) headers['Authorization'] = `Bearer ${token}`;
                   
-                  const uploadRes = await fetch(getApiUrl('api/upload'), {
+                  const uploadRes = await authFetch(getApiUrl('api/upload'), {
                     method: 'POST',
                     headers,
                     body: JSON.stringify({ base64: record.base64, filename: record.filename })
@@ -1250,10 +1321,11 @@ export const useInventory = (activeView: View = 'product') => {
         const now = Date.now();
         if (now - lastEditingPingRef.current > 1000) {
           lastEditingPingRef.current = now;
-          fetch(getApiUrl('api/inventory/editing'), {
+          authFetch(getApiUrl('api/inventory/editing'), {
             method: 'POST',
             headers: {
-              'x-client-id': clientIdRef.current
+              'x-client-id': clientIdRef.current,
+              ...getClientAuditHeaders()
             }
           }).catch(() => {});
         }
@@ -1400,6 +1472,10 @@ export const useInventory = (activeView: View = 'product') => {
     // Instant optimistic client update for MOVE_CONTAINER
     if (action.type === 'EDIT_CONTAINER') {
       const { containerId, updates, applyGlobally } = action.payload;
+      const normalizedUpdates = updates ? { ...updates } : {};
+      if ('imageUrl' in normalizedUpdates) {
+        normalizedUpdates.imageUrl = normalizedUpdates.imageUrl ? normalizedUpdates.imageUrl : undefined;
+      }
       setState(prev => {
         const originalContainer = prev.containers.find(c => c.id === containerId);
         if (!originalContainer) return prev;
@@ -1414,7 +1490,7 @@ export const useInventory = (activeView: View = 'product') => {
             const isSameName = c.name.trim().toLowerCase() === originalNameLower;
             const isSameTpl = originalTplId && c.templateId === originalTplId;
             if (c.id === containerId || isSameName || isSameTpl) {
-              return { ...c, ...updates };
+              return { ...c, ...normalizedUpdates };
             }
             return c;
           });
@@ -1423,8 +1499,8 @@ export const useInventory = (activeView: View = 'product') => {
             if ((originalTplId && t.id === originalTplId) || t.name.trim().toLowerCase() === originalNameLower) {
               return {
                 ...t,
-                ...(updates.name ? { name: updates.name } : {}),
-                ...(updates.imageUrl !== undefined ? { imageUrl: updates.imageUrl } : {})
+                ...(normalizedUpdates.name ? { name: normalizedUpdates.name } : {}),
+                ...('imageUrl' in normalizedUpdates ? { imageUrl: normalizedUpdates.imageUrl } : {})
               };
             }
             return t;
@@ -1435,7 +1511,7 @@ export const useInventory = (activeView: View = 'product') => {
             if (c.id === containerId) {
               return {
                 ...c,
-                ...updates,
+                ...normalizedUpdates,
                 templateId: undefined,
                 ...(isTemplateContainer ? { deleteOnEmpty: true } : {})
               };
@@ -1478,13 +1554,17 @@ export const useInventory = (activeView: View = 'product') => {
 
     if (action.type === 'EDIT_CONTAINER_TEMPLATE') {
       const { id, updates } = action.payload;
+      const normalizedUpdates = updates ? { ...updates } : {};
+      if ('imageUrl' in normalizedUpdates) {
+        normalizedUpdates.imageUrl = normalizedUpdates.imageUrl ? normalizedUpdates.imageUrl : undefined;
+      }
       setState(prev => ({
         ...prev,
-        containerTemplates: (prev.containerTemplates || []).map(t => t.id === id ? { ...t, ...updates } : t),
+        containerTemplates: (prev.containerTemplates || []).map(t => t.id === id ? { ...t, ...normalizedUpdates } : t),
         containers: prev.containers.map(c => c.templateId === id ? {
           ...c,
-          name: updates.name !== undefined ? updates.name : c.name,
-          imageUrl: updates.imageUrl !== undefined ? updates.imageUrl : c.imageUrl
+          name: normalizedUpdates.name !== undefined ? normalizedUpdates.name : c.name,
+          imageUrl: 'imageUrl' in normalizedUpdates ? normalizedUpdates.imageUrl : c.imageUrl
         } : c)
       }));
 
@@ -2066,7 +2146,7 @@ export const useInventory = (activeView: View = 'product') => {
           globalDebounceTimerRef.current = null;
         }
 
-        fetch(getApiUrl('api/inventory/action'), {
+        authFetch(getApiUrl('api/inventory/action'), {
           method: 'POST',
           headers: baseHeaders,
           body: JSON.stringify({
@@ -2089,7 +2169,7 @@ export const useInventory = (activeView: View = 'product') => {
         }
 
         Object.keys(movementUpdatesToSync).forEach(orderId => {
-          fetch(getApiUrl('api/inventory/action'), {
+          authFetch(getApiUrl('api/inventory/action'), {
             method: 'POST',
             headers: baseHeaders,
             body: JSON.stringify({
@@ -2112,7 +2192,7 @@ export const useInventory = (activeView: View = 'product') => {
           listToggleDebounceTimerRef.current = null;
         }
 
-        fetch(getApiUrl('api/inventory/action'), {
+        authFetch(getApiUrl('api/inventory/action'), {
           method: 'POST',
           headers: baseHeaders,
           body: JSON.stringify({
@@ -2197,7 +2277,8 @@ export const useInventory = (activeView: View = 'product') => {
           'Authorization': `Bearer ${token}`,
           'X-Client-Id': clientIdRef.current,
           'X-User-Name': storedUserName,
-          'X-Client-Zone': activeZoneRef.current
+          'X-Client-Zone': activeZoneRef.current,
+          ...getClientAuditHeaders()
         },
         body: JSON.stringify({ clientId: clientIdRef.current, userName: storedUserName, scope })
       }, 2, 300, 8000);
@@ -2251,7 +2332,8 @@ export const useInventory = (activeView: View = 'product') => {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`,
           'X-Client-Id': clientIdRef.current,
-          'X-Client-Zone': activeZoneRef.current
+          'X-Client-Zone': activeZoneRef.current,
+          ...getClientAuditHeaders()
         },
         body: JSON.stringify({ clientId: clientIdRef.current, scope })
       }, 2, 200, 6000);
@@ -2283,7 +2365,8 @@ export const useInventory = (activeView: View = 'product') => {
           'Authorization': `Bearer ${token}`,
           'X-Client-Id': clientIdRef.current,
           'X-User-Name': storedUserName,
-          'X-Client-Zone': activeZoneRef.current
+          'X-Client-Zone': activeZoneRef.current,
+          ...getClientAuditHeaders()
         },
         body: JSON.stringify({ clientId: clientIdRef.current, userName: storedUserName, scope: targetScope })
       }, 2, 300, 8000);
@@ -2310,7 +2393,8 @@ export const useInventory = (activeView: View = 'product') => {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`,
           'X-Client-Id': clientIdRef.current,
-          'X-Client-Zone': activeZoneRef.current
+          'X-Client-Zone': activeZoneRef.current,
+          ...getClientAuditHeaders()
         },
         body: JSON.stringify({ clientId: clientIdRef.current, zone: activeZoneRef.current })
       }, 2, 200, 6000);
@@ -2332,7 +2416,8 @@ export const useInventory = (activeView: View = 'product') => {
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`,
-          'X-Client-Id': clientIdRef.current
+          'X-Client-Id': clientIdRef.current,
+          ...getClientAuditHeaders()
         },
         body: JSON.stringify({ clientId: clientIdRef.current })
       }, 2, 200, 6000);
@@ -2391,7 +2476,8 @@ export const useInventory = (activeView: View = 'product') => {
             'Authorization': `Bearer ${token}`,
             'X-Client-Id': clientIdRef.current,
             'X-User-Name': currentUserName,
-            'X-Client-Zone': activeZoneRef.current
+            'X-Client-Zone': activeZoneRef.current,
+            ...getClientAuditHeaders()
           },
           body: JSON.stringify({ mode: 'auto', clientId: clientIdRef.current, userName: currentUserName, scope: 'all' })
         }, 2, 200, 6000);
@@ -2428,13 +2514,14 @@ export const useInventory = (activeView: View = 'product') => {
     if (!isSingleUserMode) return;
     const heartbeatInterval = setInterval(() => {
       const token = getToken();
-      fetch(getApiUrl('api/single-user/heartbeat'), {
+      authFetch(getApiUrl('api/single-user/heartbeat'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`,
           'X-Client-Id': clientIdRef.current,
-          'X-Client-Zone': activeZoneRef.current
+          'X-Client-Zone': activeZoneRef.current,
+          ...getClientAuditHeaders()
         },
         body: JSON.stringify({ clientId: clientIdRef.current, zone: activeZoneRef.current })
       }).then(res => (res.ok ? res.json().catch(() => null) : null)).then(data => {
@@ -2534,7 +2621,7 @@ export const useInventory = (activeView: View = 'product') => {
       }
       const token = getToken();
       const userName = localStorage.getItem('freezerUserName') || localStorage.getItem('freezer_user') || 'User';
-      fetch(getApiUrl('api/inventory/clients/heartbeat'), {
+      authFetch(getApiUrl('api/inventory/clients/heartbeat'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -2569,7 +2656,7 @@ export const useInventory = (activeView: View = 'product') => {
     recalculateCollaborativeMode();
     const token = getToken();
     const userName = localStorage.getItem('freezerUserName') || localStorage.getItem('freezer_user') || 'User';
-    fetch(getApiUrl('api/inventory/clients/heartbeat'), {
+    authFetch(getApiUrl('api/inventory/clients/heartbeat'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -2604,12 +2691,13 @@ export const useInventory = (activeView: View = 'product') => {
         // In Single-User Mode, sync state to server while keeping lock active
         if (isSingleUserMode) {
           const token = getToken();
-          fetch(getApiUrl('api/single-user/sync-state'), {
+          authFetch(getApiUrl('api/single-user/sync-state'), {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
               'Authorization': `Bearer ${token}`,
-              'X-Client-Id': clientIdRef.current
+              'X-Client-Id': clientIdRef.current,
+              ...getClientAuditHeaders()
             },
             body: JSON.stringify({ clientId: clientIdRef.current, fullState: stateRef.current })
           }).catch(() => {});
@@ -2622,9 +2710,9 @@ export const useInventory = (activeView: View = 'product') => {
               const blob = new Blob([payload], { type: 'application/json' });
               navigator.sendBeacon(leaveUrl, blob);
             } else {
-              fetch(leaveUrl, {
+              authFetch(leaveUrl, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'X-Client-Id': clientIdRef.current },
+                headers: { 'Content-Type': 'application/json', 'X-Client-Id': clientIdRef.current, ...getClientAuditHeaders() },
                 body: payload,
                 keepalive: true
               }).catch(() => {});
@@ -2635,7 +2723,7 @@ export const useInventory = (activeView: View = 'product') => {
         // On screen wake / return to tab: immediately touch client heartbeat and refresh state
         const token = getToken();
         const userName = localStorage.getItem('freezerUserName') || localStorage.getItem('freezer_user') || 'User';
-        fetch(getApiUrl('api/inventory/clients/heartbeat'), {
+        authFetch(getApiUrl('api/inventory/clients/heartbeat'), {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -2666,9 +2754,9 @@ export const useInventory = (activeView: View = 'product') => {
           const blob = new Blob([payload], { type: 'application/json' });
           navigator.sendBeacon(leaveUrl, blob);
         } else {
-          fetch(leaveUrl, {
+          authFetch(leaveUrl, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Client-Id': clientIdRef.current },
+            headers: { 'Content-Type': 'application/json', 'X-Client-Id': clientIdRef.current, ...getClientAuditHeaders() },
             body: payload,
             keepalive: true
           }).catch(() => {});
@@ -2729,7 +2817,7 @@ export const useInventory = (activeView: View = 'product') => {
         lastClientsFetchTimeRef.current = Date.now();
         const token = getToken();
         const userName = localStorage.getItem('freezerUserName') || localStorage.getItem('freezer_user') || 'User';
-        const res = await fetch(getApiUrl('api/inventory/clients'), {
+        const res = await authFetch(getApiUrl('api/inventory/clients'), {
           headers: {
             'Authorization': `Bearer ${token}`,
             'X-Client-Id': clientIdRef.current,
@@ -2803,7 +2891,7 @@ export const useInventory = (activeView: View = 'product') => {
 
   const disconnectClient = useCallback(async (targetClientId: string): Promise<boolean> => {
     try {
-      const res = await fetch(getApiUrl(`api/inventory/clients/disconnect/${encodeURIComponent(targetClientId)}`), {
+      const res = await authFetch(getApiUrl(`api/inventory/clients/disconnect/${encodeURIComponent(targetClientId)}`), {
         method: 'POST'
       });
       if (!res.ok) return false;
@@ -2829,7 +2917,7 @@ export const useInventory = (activeView: View = 'product') => {
     try {
       // Immediately flush our own local pending changes first
       await flushAllPendingSyncs();
-      const res = await fetch(getApiUrl('api/inventory/clients/force-sync'), {
+      const res = await authFetch(getApiUrl('api/inventory/clients/force-sync'), {
         method: 'POST'
       });
       if (!res.ok) return { success: false, count: activeClientCountRef.current };

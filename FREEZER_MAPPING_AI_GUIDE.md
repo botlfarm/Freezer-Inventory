@@ -97,6 +97,7 @@ interface InventoryState {
   history: HistoryEntry[];
   containerTypes: ContainerType[];
   appConfig?: AppConfigItem[];
+  notificationChannels?: NotificationChannel[];
   notificationSettings?: NotificationSettings[];
   notificationLogs?: NotificationLog[];
   pwaDevices?: PwaDevice[];
@@ -295,6 +296,8 @@ Below is a complete, syntactically correct example representation showing how 2 
 }
 ```
 Instructions: Save database to a `.json` file and upload it in the Database Settings tab under the "JSON Backup / Restore" option.
+
+> **Optional User Accounts, Sessions & Notification Channels Schema (v2.62.0 / v2.72.0+)**: Full `.db`, `.zip`, and `.json` database backups support all 24 tables including `notificationChannels` (`id`, `name`, `type`: `'smtp_email' | 'webhook' | 'in_app'`, `enabled`, `config`, `createdAt`, `updatedAt`, `lastTestedAt`, `lastTestStatus`), `appUsers` (`id`, `name`, `role`: `'admin' | 'user'`, `pinHash`, `pinSalt`, `isActive`, `createdAt`, `updatedAt`, `lastLoginAt`), `userSessions` (`id`, `userId`, `tokenHash`, `deviceId`, `deviceName`, `userAgent`, `ip`, `createdAt`, `lastSeenAt`, `expiresAt`, `revokedAt`), and `pwaDevices[].userId` linking registered devices to local user accounts. For initial catalog/inventory migrations, omit `appUsers` and `userSessions` so existing user accounts remain untouched unless performing a full disaster recovery restore.
 
 ---
 

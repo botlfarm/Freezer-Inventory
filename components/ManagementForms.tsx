@@ -4,8 +4,10 @@ import { EditIcon, PlusIcon, XIcon, BoxIcon, BinIcon, PillowcaseIcon, PackageIco
 import { MediaSelector } from './MediaSelector';
 import { CONTAINER_ICONS, getContainerIcon } from './ContainerIconsMap';
 import { generateUUID } from './uuidHelper';
+import { getTagActionIcon } from '../utils/tagRestockRules';
 import { ComboboxInput } from './ComboboxInput';
 import { generateDefaultUpcABarcode, validateUpcABarcode } from '../utils/barcode';
+import { CatalogSearchFilterBar } from './CatalogSearchFilterBar';
 
 interface CommonFormProps {
   dispatch: React.Dispatch<Action>;
@@ -634,7 +636,7 @@ const ProductForm: React.FC<CommonFormProps & { products: Product[], existingPro
                                 }}
                                 className={`px-2.5 py-1 rounded text-xs font-bold border transition flex items-center gap-1.5 select-none cursor-pointer hover:brightness-110 ${isSelected ? 'ring-1 ring-white/10 shadow-sm' : 'text-cool-gray-300 border-cool-gray-700/60 hover:bg-cool-gray-800'}`}
                             >
-                                <span>{tag.id === 'use-first' ? '⚡' : tag.id === 'not-for-sale' ? '🛑' : '🏷️'}</span>
+                                <span>{getTagActionIcon(tag)}</span>
                                 <span>{tag.name}</span>
                             </button>
                         );
@@ -1244,6 +1246,48 @@ export const ManageFreezers: React.FC<{state: InventoryState, dispatch: React.Di
     const [newIsSpecial, setNewIsSpecial] = useState(false);
     const [newIsLooseOnly, setNewIsLooseOnly] = useState(false);
     const [confirmDelete, setConfirmDelete] = useState<{ id: string; name: string; count: number } | null>(null);
+    const [freezerSearch, setFreezerSearch] = useState("");
+    const [showFreezerFilters, setShowFreezerFilters] = useState(false);
+    const [freezerModeFilter, setFreezerModeFilter] = useState<'all' | 'standard' | 'display' | 'loose'>('all');
+    const [freezerSortBy, setFreezerSortBy] = useState<'default' | 'name_asc' | 'name_desc' | 'containers_desc'>('default');
+
+    const containerCountByFreezer = useMemo(() => {
+        const counts: Record<string, number> = {};
+        (state.containers || []).forEach(c => {
+            if (c.freezerId && !c.isArchived) {
+                counts[c.freezerId] = (counts[c.freezerId] || 0) + 1;
+            }
+        });
+        return counts;
+    }, [state.containers]);
+
+    const filteredFreezers = useMemo(() => {
+        const q = freezerSearch.trim().toLowerCase();
+        const filtered = freezers.filter(f => {
+            if (q && !(f.name || '').toLowerCase().includes(q)) return false;
+            if (freezerModeFilter === 'display' && !f.isSpecial) return false;
+            if (freezerModeFilter === 'loose' && !f.isLooseOnly) return false;
+            if (freezerModeFilter === 'standard' && (f.isSpecial || f.isLooseOnly)) return false;
+            return true;
+        });
+
+        if (freezerSortBy === 'default') return filtered;
+
+        return [...filtered].sort((a, b) => {
+            if (freezerSortBy === 'name_asc') {
+                return (a.name || '').localeCompare(b.name || '', undefined, { numeric: true, sensitivity: 'base' });
+            }
+            if (freezerSortBy === 'name_desc') {
+                return (b.name || '').localeCompare(a.name || '', undefined, { numeric: true, sensitivity: 'base' });
+            }
+            if (freezerSortBy === 'containers_desc') {
+                return (containerCountByFreezer[b.id] || 0) - (containerCountByFreezer[a.id] || 0);
+            }
+            return 0;
+        });
+    }, [freezers, freezerSearch, freezerModeFilter, freezerSortBy, containerCountByFreezer]);
+
+    const activeFreezerFilterCount = (freezerModeFilter !== 'all' ? 1 : 0) + (freezerSortBy !== 'default' ? 1 : 0);
 
     const handleAdd = () => {
         if (newName.trim()) {
@@ -1278,7 +1322,53 @@ export const ManageFreezers: React.FC<{state: InventoryState, dispatch: React.Di
     }
 
     return (
-        <div className="space-y-4">
+        <div className="space-y-3.5">
+            <CatalogSearchFilterBar
+                searchValue={freezerSearch}
+                onSearchChange={setFreezerSearch}
+                searchPlaceholder={type === 'pallets' ? 'Search pallets by name...' : 'Search freezers by name...'}
+                isFiltersOpen={showFreezerFilters}
+                onToggleFilters={() => setShowFreezerFilters(prev => !prev)}
+                activeFilterCount={activeFreezerFilterCount}
+                onResetFilters={() => {
+                    setFreezerSearch('');
+                    setFreezerModeFilter('all');
+                    setFreezerSortBy('default');
+                }}
+            >
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <div className="space-y-1">
+                        <label className="text-[11px] font-bold text-cool-gray-400 uppercase tracking-wider block">
+                            Storage Mode
+                        </label>
+                        <select
+                            value={freezerModeFilter}
+                            onChange={(e) => setFreezerModeFilter(e.target.value as any)}
+                            className="w-full h-9 bg-cool-gray-900 border border-cool-gray-750 rounded-lg px-2.5 text-xs text-white outline-none focus:border-cyan-500 cursor-pointer"
+                        >
+                            <option value="all">All {type === 'pallets' ? 'Pallets' : 'Freezers'} ({freezers.length})</option>
+                            <option value="standard">Standard Container Storage</option>
+                            <option value="display">Showroom Display Case</option>
+                            <option value="loose">Loose Only</option>
+                        </select>
+                    </div>
+                    <div className="space-y-1">
+                        <label className="text-[11px] font-bold text-cool-gray-400 uppercase tracking-wider block">
+                            Sort Order
+                        </label>
+                        <select
+                            value={freezerSortBy}
+                            onChange={(e) => setFreezerSortBy(e.target.value as any)}
+                            className="w-full h-9 bg-cool-gray-900 border border-cool-gray-750 rounded-lg px-2.5 text-xs text-white outline-none focus:border-cyan-500 cursor-pointer"
+                        >
+                            <option value="default">Catalog Order</option>
+                            <option value="name_asc">Name: A to Z</option>
+                            <option value="name_desc">Name: Z to A</option>
+                            <option value="containers_desc">Most Containers First</option>
+                        </select>
+                    </div>
+                </div>
+            </CatalogSearchFilterBar>
             {confirmDelete && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
                     <div className="w-full max-w-md p-6 bg-cool-gray-800 border border-cool-gray-700 rounded-lg shadow-xl animate-scale-up">
@@ -1313,8 +1403,24 @@ export const ManageFreezers: React.FC<{state: InventoryState, dispatch: React.Di
                     </div>
                 </div>
             )}
-            <ul className="space-y-2">
-                {freezers.map(f => (
+            {freezers.length > 0 && filteredFreezers.length === 0 ? (
+                <div className="p-8 text-center bg-cool-gray-850/50 border border-cool-gray-750 rounded-xl space-y-2.5">
+                    <p className="text-sm font-semibold text-cool-gray-300">No {type === 'pallets' ? 'pallets' : 'freezers'} match your current search or filters.</p>
+                    <button
+                        type="button"
+                        onClick={() => {
+                            setFreezerSearch('');
+                            setFreezerModeFilter('all');
+                            setFreezerSortBy('default');
+                        }}
+                        className="px-3 py-1.5 bg-cool-gray-800 hover:bg-cool-gray-750 border border-cool-gray-700 text-cyan-300 text-xs font-semibold rounded-lg transition cursor-pointer"
+                    >
+                        Reset Filters
+                    </button>
+                </div>
+            ) : (
+                <ul className="space-y-2">
+                    {filteredFreezers.map(f => (
                     <li key={f.id} className="flex flex-col sm:flex-row sm:items-center justify-between p-3 bg-cool-gray-750 hover:bg-cool-gray-700 rounded-lg border border-cool-gray-700 transition duration-150 group gap-3">
                         <div className="flex-grow flex items-center gap-2 flex-wrap">
                            <InlineEdit value={f.name} onSave={(updatedName) => handleRename(f.id, updatedName)} textClass="font-semibold text-cool-gray-200"/>
@@ -1355,8 +1461,9 @@ export const ManageFreezers: React.FC<{state: InventoryState, dispatch: React.Di
                              <button onClick={() => handleDelete(f.id)} className="p-1 text-red-405 hover:text-red-300 transition-colors"><XIcon className="w-4 h-4" /></button>
                         </div>
                     </li>
-                ))}
-            </ul>
+                    ))}
+                </ul>
+            )}
             {isAdding ? (
                  <div className="space-y-3 p-4 bg-cool-gray-750/60 rounded-xl border border-cool-gray-700">
                     <input type="text" value={newName} onChange={e => setNewName(e.target.value)} placeholder={type === 'pallets' ? "New Pallet Name (e.g. Pallet 12)" : "New Freezer Name (e.g. Display Case A)"} className="w-full px-3 py-2 bg-cool-gray-850 border border-cool-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-cyan-500 text-white font-medium placeholder:text-cool-gray-500 text-sm" autoFocus onKeyDown={e => e.key === 'Enter' && handleAdd()} />

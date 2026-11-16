@@ -1,18 +1,15 @@
 // Photo manager view
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { InventoryState, Action, Product, Container } from '../types';
-import { getApiUrl } from '../hooks/apiUrl';
+import { getApiUrl, resolveImageUrl } from '../hooks/apiUrl';
+import { authFetch } from '../utils/clientDevice';
 import { saveOfflineImage } from '../utils/offlineStorage';
+import { PhotoAttachment, PhotoAttachmentType } from '../utils/photoManager';
 import { 
   Image as ImageIcon, Trash2, Search, Filter, ArrowUpDown, Sparkles, 
-  Upload, Check, Plus, AlertTriangle, Link, Unlink, RefreshCw, X, ChevronRight, CheckCircle2, Box, Package, Camera
+  Upload, Check, Plus, AlertTriangle, Link, Unlink, RefreshCw, X, ChevronRight, CheckCircle2, Box, Package, Camera, Layers
 } from 'lucide-react';
-
-interface PhotoAttachment {
-  id: string;
-  name: string;
-  type: 'product' | 'container';
-}
+import { CatalogSearchFilterBar } from '../components/CatalogSearchFilterBar';
 
 interface PhotoItem {
   filename: string;
@@ -25,25 +22,41 @@ interface PhotoItem {
 interface PhotoManagerViewProps {
   state: InventoryState;
   dispatch: any; // Dispatch function from hook
+  onRefreshState?: () => Promise<void> | void;
+  activeSubTab?: 'library' | 'missing';
+  onSubTabChange?: (tab: 'library' | 'missing') => void;
+  hideInternalHeader?: boolean;
 }
 
-export function PhotoManagerView({ state, dispatch }: PhotoManagerViewProps) {
+export function PhotoManagerView({
+  state,
+  dispatch,
+  onRefreshState,
+  activeSubTab: controlledSubTab,
+  onSubTabChange,
+  hideInternalHeader = false,
+}: PhotoManagerViewProps) {
   const [photos, setPhotos] = useState<PhotoItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState<'all' | 'attached' | 'unattached'>('all');
   const [sortBy, setSortBy] = useState<'newest' | 'oldest' | 'size_desc' | 'size_asc' | 'name_asc'>('newest');
+  const [showLibraryFilters, setShowLibraryFilters] = useState(false);
   
   // Bulk selection
   const [selectedFilenames, setSelectedFilenames] = useState<{ [filename: string]: boolean }>({});
   
   // Tabs inside photo manager
-  const [subTab, setSubTab] = useState<'library' | 'missing'>('library');
+  const [internalSubTab, setInternalSubTab] = useState<'library' | 'missing'>('library');
+  const subTab = controlledSubTab ?? internalSubTab;
+  const setSubTab = onSubTabChange ?? setInternalSubTab;
   const [missingSearch, setMissingSearch] = useState('');
-  const [missingFilter, setMissingFilter] = useState<'all' | 'product' | 'container'>('all');
+  const [missingFilter, setMissingFilter] = useState<'all' | 'product' | 'container' | 'container_template'>('all');
+  const [missingSortBy, setMissingSortBy] = useState<'name_asc' | 'name_desc' | 'type_first'>('name_asc');
+  const [showMissingFilters, setShowMissingFilters] = useState(false);
 
   // Assign photo modal or inline state
-  const [assigningElement, setAssigningElement] = useState<{ id: string; name: string; type: 'product' | 'container' } | null>(null);
+  const [assigningElement, setAssigningElement] = useState<{ id: string; name: string; type: PhotoAttachmentType } | null>(null);
   const [showExistingSelector, setShowExistingSelector] = useState(false);
   
   // Status message for optimization or deletes
@@ -97,7 +110,7 @@ export function PhotoManagerView({ state, dispatch }: PhotoManagerViewProps) {
     setIsLoading(true);
     try {
       const token = localStorage.getItem('freezerToken');
-      const res = await fetch(getApiUrl('api/photos'), {
+      const res = await authFetch(getApiUrl('api/photos'), {
         headers: { ...(token ? { 'Authorization': `Bearer ${token}` } : {}) }
       });
       if (res.ok) {
@@ -111,6 +124,13 @@ export function PhotoManagerView({ state, dispatch }: PhotoManagerViewProps) {
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const refreshAfterPhotoMutation = async () => {
+    if (onRefreshState) {
+      await onRefreshState();
+    }
+    await fetchPhotos();
   };
 
   useEffect(() => {
@@ -184,7 +204,7 @@ export function PhotoManagerView({ state, dispatch }: PhotoManagerViewProps) {
 
   // Elements missing photos
   const elementsMissingPhotos = useMemo(() => {
-    const missing: Array<{ id: string; name: string; type: 'product' | 'container'; details?: string }> = [];
+    const missing: Array<{ id: string; name: string; type: PhotoAttachmentType; details?: string }> = [];
 
     // Products missing photos
     if (missingFilter === 'all' || missingFilter === 'product') {
@@ -195,6 +215,20 @@ export function PhotoManagerView({ state, dispatch }: PhotoManagerViewProps) {
             name: p.name,
             type: 'product',
             details: `${p.primaryCategory} > ${p.subCategory}`
+          });
+        }
+      });
+    }
+
+    // Container templates missing photos
+    if (missingFilter === 'all' || missingFilter === 'container_template') {
+      (state.containerTemplates || []).forEach(t => {
+        if (!t.imageUrl) {
+          missing.push({
+            id: t.id,
+            name: t.name,
+            type: 'container_template',
+            details: 'Container Template'
           });
         }
       });
@@ -215,13 +249,29 @@ export function PhotoManagerView({ state, dispatch }: PhotoManagerViewProps) {
     }
 
     // Search matching
-    if (missingSearch.trim()) {
-      const low = missingSearch.toLowerCase();
-      return missing.filter(elem => elem.name.toLowerCase().includes(low) || (elem.details && elem.details.toLowerCase().includes(low)));
-    }
+    const filtered = missingSearch.trim()
+      ? missing.filter(elem => {
+          const low = missingSearch.toLowerCase();
+          return elem.name.toLowerCase().includes(low) || (elem.details && elem.details.toLowerCase().includes(low));
+        })
+      : missing;
 
-    return missing;
-  }, [state, missingFilter, missingSearch]);
+    const typeRank: Record<PhotoAttachmentType, number> = {
+      product: 0,
+      container_template: 1,
+      container: 2,
+    };
+
+    return [...filtered].sort((a, b) => {
+      if (missingSortBy === 'name_desc') {
+        return b.name.localeCompare(a.name, undefined, { numeric: true, sensitivity: 'base' });
+      }
+      if (missingSortBy === 'type_first') {
+        if (a.type !== b.type) return typeRank[a.type] - typeRank[b.type];
+      }
+      return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+    });
+  }, [state, missingFilter, missingSearch, missingSortBy]);
 
   // Bulk select toggles
   const handleToggleSelect = (filename: string) => {
@@ -256,7 +306,7 @@ export function PhotoManagerView({ state, dispatch }: PhotoManagerViewProps) {
         setIsLoading(true);
         try {
           const token = localStorage.getItem('freezerToken');
-          const res = await fetch(getApiUrl('api/photos/delete-bulk'), {
+          const res = await authFetch(getApiUrl('api/photos/delete-bulk'), {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -268,10 +318,7 @@ export function PhotoManagerView({ state, dispatch }: PhotoManagerViewProps) {
           if (res.ok) {
             showStatus('success', `Successfully deleted ${filenamesToDelete.length} photos and updated references!`);
             setSelectedFilenames({});
-            // Trigger reload on hook
-            dispatch({ type: 'UNDO' }).then(() => {
-              dispatch({ type: 'REDO' });
-            });
+            await refreshAfterPhotoMutation();
           } else {
             showStatus('error', 'Failed to delete selected photos.');
           }
@@ -294,7 +341,7 @@ export function PhotoManagerView({ state, dispatch }: PhotoManagerViewProps) {
         setIsLoading(true);
         try {
           const token = localStorage.getItem('freezerToken');
-          const res = await fetch(getApiUrl('api/photos/delete-bulk'), {
+          const res = await authFetch(getApiUrl('api/photos/delete-bulk'), {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -305,8 +352,7 @@ export function PhotoManagerView({ state, dispatch }: PhotoManagerViewProps) {
 
           if (res.ok) {
             showStatus('success', `Photo "${filename}" deleted successfully.`);
-            // Reload parent hook context
-            dispatch({ type: 'UNDO' }).then(() => dispatch({ type: 'REDO' }));
+            await refreshAfterPhotoMutation();
           } else {
             showStatus('error', 'Failed to delete photo.');
           }
@@ -329,15 +375,22 @@ export function PhotoManagerView({ state, dispatch }: PhotoManagerViewProps) {
         if (att.type === 'product') {
           await dispatch({
             type: 'EDIT_PRODUCT',
-            payload: { productId: att.id, updates: { imageUrl: undefined } }
+            payload: { productId: att.id, updates: { imageUrl: '' } }
+          });
+        } else if (att.type === 'container_template') {
+          await dispatch({
+            type: 'EDIT_CONTAINER_TEMPLATE',
+            payload: { id: att.id, updates: { imageUrl: '' } }
           });
         } else {
           await dispatch({
             type: 'EDIT_CONTAINER',
-            payload: { containerId: att.id, updates: { imageUrl: undefined } }
+            payload: { containerId: att.id, updates: { imageUrl: '' } }
           });
         }
-        showStatus('success', `Successfully unlinked photo from ${att.type} "${att.name}".`);
+        await fetchPhotos();
+        const label = att.type === 'container_template' ? 'container template' : att.type;
+        showStatus('success', `Successfully unlinked photo from ${label} "${att.name}".`);
       }
     );
   };
@@ -347,7 +400,7 @@ export function PhotoManagerView({ state, dispatch }: PhotoManagerViewProps) {
     setIsDeduplicating(true);
     try {
       const token = localStorage.getItem('freezerToken');
-      const res = await fetch(getApiUrl('api/photos/deduplicate'), {
+      const res = await authFetch(getApiUrl('api/photos/deduplicate'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -359,7 +412,7 @@ export function PhotoManagerView({ state, dispatch }: PhotoManagerViewProps) {
         const result = await res.json();
         if (result.merged > 0) {
           showStatus('success', `✨ Cleanup Success! Merged ${result.merged} duplicate photos, saving ${formatSize(result.savedBytes)} of database disk space!`);
-          dispatch({ type: 'UNDO' }).then(() => dispatch({ type: 'REDO' }));
+          await refreshAfterPhotoMutation();
         } else {
           showStatus('info', 'No duplicate photos were found. Your library is already fully optimized!');
         }
@@ -396,7 +449,7 @@ export function PhotoManagerView({ state, dispatch }: PhotoManagerViewProps) {
       let isNetworkError = false;
       try {
         const token = localStorage.getItem('freezerToken');
-        uploadRes = await fetch(getApiUrl('api/upload'), {
+        uploadRes = await authFetch(getApiUrl('api/upload'), {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -441,6 +494,11 @@ export function PhotoManagerView({ state, dispatch }: PhotoManagerViewProps) {
             type: 'EDIT_PRODUCT',
             payload: { productId: assigningElement.id, updates: { imageUrl: offlineUrl } }
           });
+        } else if (assigningElement.type === 'container_template') {
+          await dispatch({
+            type: 'EDIT_CONTAINER_TEMPLATE',
+            payload: { id: assigningElement.id, updates: { imageUrl: offlineUrl } }
+          });
         } else {
           await dispatch({
             type: 'EDIT_CONTAINER',
@@ -462,7 +520,7 @@ export function PhotoManagerView({ state, dispatch }: PhotoManagerViewProps) {
         const { imageUrl } = await uploadRes.json();
         const token = localStorage.getItem('freezerToken');
         // Assign to element
-        const assignRes = await fetch(getApiUrl('api/photos/assign'), {
+        const assignRes = await authFetch(getApiUrl('api/photos/assign'), {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -476,10 +534,10 @@ export function PhotoManagerView({ state, dispatch }: PhotoManagerViewProps) {
         });
 
         if (assignRes.ok) {
-          showStatus('success', `Successfully uploaded and assigned photo to ${assigningElement.type} "${assigningElement.name}"!`);
+          const label = assigningElement.type === 'container_template' ? 'container template' : assigningElement.type;
+          showStatus('success', `Successfully uploaded and assigned photo to ${label} "${assigningElement.name}"!`);
           setAssigningElement(null);
-          // Trigger hook context updates
-          dispatch({ type: 'UNDO' }).then(() => dispatch({ type: 'REDO' }));
+          await refreshAfterPhotoMutation();
         } else {
           showStatus('error', 'Uploaded photo, but failed to assign to target.');
         }
@@ -491,6 +549,7 @@ export function PhotoManagerView({ state, dispatch }: PhotoManagerViewProps) {
     } finally {
       setIsLoading(false);
       if (elementFileInputRef.current) elementFileInputRef.current.value = '';
+      if (elementCameraInputRef.current) elementCameraInputRef.current.value = '';
     }
   };
 
@@ -501,7 +560,7 @@ export function PhotoManagerView({ state, dispatch }: PhotoManagerViewProps) {
     setIsLoading(true);
     try {
       const token = localStorage.getItem('freezerToken');
-      const res = await fetch(getApiUrl('api/photos/assign'), {
+      const res = await authFetch(getApiUrl('api/photos/assign'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -515,11 +574,11 @@ export function PhotoManagerView({ state, dispatch }: PhotoManagerViewProps) {
       });
 
       if (res.ok) {
-        showStatus('success', `Assigned photo successfully to ${assigningElement.type} "${assigningElement.name}"!`);
+        const label = assigningElement.type === 'container_template' ? 'container template' : assigningElement.type;
+        showStatus('success', `Assigned photo successfully to ${label} "${assigningElement.name}"!`);
         setAssigningElement(null);
         setShowExistingSelector(false);
-        // Refresh hook context
-        dispatch({ type: 'UNDO' }).then(() => dispatch({ type: 'REDO' }));
+        await refreshAfterPhotoMutation();
       } else {
         showStatus('error', 'Failed to assign existing photo.');
       }
@@ -531,115 +590,114 @@ export function PhotoManagerView({ state, dispatch }: PhotoManagerViewProps) {
   };
 
   return (
-    <div className="mt-4 font-sans text-cool-gray-100 space-y-6">
-      
-      {/* Photo Manager Header Card */}
-      <div className="bg-cool-gray-850 rounded-xl border border-cool-gray-750/70 p-5 shadow-sm">
-        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-          <div>
-            <h2 className="text-base font-extrabold text-cool-gray-100 flex items-center gap-2">
-              📸 Comprehensive Catalog Photo Library
-            </h2>
-            <p className="text-xs text-cool-gray-400 mt-1 max-w-2xl">
-              Inspect all uploaded catalog photos on central disk storage. Match redundant file duplicates, identify waste files unattached to any item, clean storage, or easily add photos to blank elements.
-            </p>
+    <div className={`${hideInternalHeader ? '' : 'mt-4 '}font-sans text-cool-gray-100 space-y-4`}>
+      {!hideInternalHeader ? (
+        <>
+          {/* Photo Manager Header Card */}
+          <div className="bg-cool-gray-850 rounded-xl border border-cool-gray-750/70 p-5 shadow-sm">
+            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+              <div>
+                <h2 className="text-base font-extrabold text-cool-gray-100 flex items-center gap-2">
+                  📸 Comprehensive Catalog Photo Library
+                </h2>
+                <p className="text-xs text-cool-gray-400 mt-1 max-w-2xl">
+                  Inspect all uploaded catalog photos on central disk storage. Match redundant file duplicates, identify waste files unattached to any item, clean storage, or easily add photos to blank elements.
+                </p>
+              </div>
+            </div>
+
+            {statusMessage && (
+              <div className={`mt-4 p-3.5 rounded-lg border text-xs flex items-center gap-2.5 animate-fadeIn ${
+                statusMessage.type === 'success' ? 'bg-emerald-950/40 border-emerald-800 text-emerald-250' : 
+                statusMessage.type === 'error' ? 'bg-rose-955/40 border-rose-900 text-rose-200' : 
+                'bg-cyan-955/40 border-cyan-800 text-cyan-200'
+              }`}>
+                {statusMessage.type === 'success' ? <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" /> : <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />}
+                <span className="font-semibold leading-relaxed">{statusMessage.text}</span>
+              </div>
+            )}
           </div>
+
+          {/* Primary Sub-Tabs Controller */}
+          <div className="flex border-b border-cool-gray-700/65 pb-0.5 gap-2">
+            <button
+              onClick={() => setSubTab('library')}
+              className={`px-4 py-2 text-xs font-bold uppercase tracking-wider rounded-t-lg transition-all flex items-center gap-1.5 cursor-pointer ${
+                subTab === 'library'
+                  ? 'border-b-2 border-cyan-500 text-cyan-300 bg-cool-gray-800/60'
+                  : 'text-cool-gray-400 hover:text-white hover:bg-cool-gray-850/40'
+              }`}
+            >
+              <ImageIcon className="w-3.5 h-3.5" />
+              Active Photo Files ({photos.length})
+            </button>
+            
+            <button
+              onClick={() => setSubTab('missing')}
+              className={`px-4 py-2 text-xs font-bold uppercase tracking-wider rounded-t-lg transition-all flex items-center gap-1.5 cursor-pointer ${
+                subTab === 'missing'
+                  ? 'border-b-2 border-cyan-500 text-cyan-300 bg-cool-gray-800/60'
+                  : 'text-cool-gray-400 hover:text-white hover:bg-cool-gray-850/40'
+              }`}
+            >
+              <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
+              Missing Photos ({elementsMissingPhotos.length})
+            </button>
+          </div>
+        </>
+      ) : statusMessage ? (
+        <div className={`p-3.5 rounded-lg border text-xs flex items-center gap-2.5 animate-fadeIn ${
+          statusMessage.type === 'success' ? 'bg-emerald-950/40 border-emerald-800 text-emerald-250' : 
+          statusMessage.type === 'error' ? 'bg-rose-955/40 border-rose-900 text-rose-200' : 
+          'bg-cyan-955/40 border-cyan-800 text-cyan-200'
+        }`}>
+          {statusMessage.type === 'success' ? <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" /> : <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />}
+          <span className="font-semibold leading-relaxed">{statusMessage.text}</span>
         </div>
-
-        {/* Local Status Message Tray */}
-        {statusMessage && (
-          <div className={`mt-4 p-3.5 rounded-lg border text-xs flex items-center gap-2.5 animate-fadeIn ${
-            statusMessage.type === 'success' ? 'bg-emerald-950/40 border-emerald-800 text-emerald-250' : 
-            statusMessage.type === 'error' ? 'bg-rose-955/40 border-rose-900 text-rose-200' : 
-            'bg-cyan-955/40 border-cyan-800 text-cyan-200'
-          }`}>
-            {statusMessage.type === 'success' ? <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" /> : <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />}
-            <span className="font-semibold leading-relaxed">{statusMessage.text}</span>
-          </div>
-        )}
-      </div>
-
-      {/* Primary Sub-Tabs Controller */}
-      <div className="flex border-b border-cool-gray-700/65 pb-0.5 gap-2">
-        <button
-          onClick={() => setSubTab('library')}
-          className={`px-4 py-2 text-xs font-bold uppercase tracking-wider rounded-t-lg transition-all flex items-center gap-1.5 cursor-pointer ${
-            subTab === 'library'
-              ? 'border-b-2 border-cyan-500 text-cyan-300 bg-cool-gray-800/60'
-              : 'text-cool-gray-400 hover:text-white hover:bg-cool-gray-850/40'
-          }`}
-        >
-          <ImageIcon className="w-3.5 h-3.5" />
-          Active Photo Files ({photos.length})
-        </button>
-        
-        <button
-          onClick={() => setSubTab('missing')}
-          className={`px-4 py-2 text-xs font-bold uppercase tracking-wider rounded-t-lg transition-all flex items-center gap-1.5 cursor-pointer ${
-            subTab === 'missing'
-              ? 'border-b-2 border-cyan-500 text-cyan-300 bg-cool-gray-800/60'
-              : 'text-cool-gray-400 hover:text-white hover:bg-cool-gray-850/40'
-          }`}
-        >
-          <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
-          Missing Photos ({elementsMissingPhotos.length})
-        </button>
-      </div>
+      ) : null}
 
       {/* SUBTAB 1: ACTIVE PHOTO LIBRARY */}
       {subTab === 'library' && (
         <div className="space-y-4">
           
-          {/* Controls Bar: Search, Filters, Sorting */}
-          <div className="flex flex-col md:flex-row gap-3 items-center justify-between bg-cool-gray-855 p-3.5 rounded-xl border border-cool-gray-750/70">
-            <div className="relative w-full md:max-w-md">
-              <span className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                <Search className="h-4 w-4 text-cool-gray-500" />
-              </span>
-              <input
-                type="text"
-                placeholder="Search photo files by filename or attachment label..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full h-8.5 pl-9 pr-8 bg-cool-gray-950 border border-cool-gray-750 rounded-lg text-xs text-white placeholder-cool-gray-550 focus:outline-none focus:border-cyan-500 transition-colors"
-              />
-              {searchTerm && (
-                <button
-                  onClick={() => setSearchTerm('')}
-                  className="absolute inset-y-0 right-0 pr-3 flex items-center text-cool-gray-500 hover:text-white text-xs cursor-pointer"
-                >
-                  ✕
-                </button>
-              )}
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2 w-full md:w-auto justify-end">
-              
-              {/* Filter selection */}
-              <div className="flex items-center gap-1.5">
-                <span className="text-[10px] uppercase font-extrabold tracking-wider text-cool-gray-450 flex items-center gap-1">
-                  <Filter className="w-3 h-3" /> Status:
-                </span>
+          {/* Uniform Search & Condensed Filters Bar */}
+          <CatalogSearchFilterBar
+            searchValue={searchTerm}
+            onSearchChange={setSearchTerm}
+            searchPlaceholder="Search photo files by filename or attachment label..."
+            isFiltersOpen={showLibraryFilters}
+            onToggleFilters={() => setShowLibraryFilters(prev => !prev)}
+            activeFilterCount={(filterType !== 'all' ? 1 : 0) + (sortBy !== 'newest' ? 1 : 0)}
+            onResetFilters={() => {
+              setSearchTerm('');
+              setFilterType('all');
+              setSortBy('newest');
+            }}
+          >
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <div className="space-y-1">
+                <label className="text-[11px] font-bold text-cool-gray-400 uppercase tracking-wider block">
+                  Attachment Status
+                </label>
                 <select
                   value={filterType}
                   onChange={(e: any) => setFilterType(e.target.value)}
-                  className="h-8.5 py-1 px-2.5 bg-cool-gray-950 border border-cool-gray-750 text-xs rounded-lg text-white focus:outline-none focus:border-cyan-500 cursor-pointer"
+                  className="w-full h-9 py-1 px-2.5 bg-cool-gray-900 border border-cool-gray-750 text-xs rounded-lg text-white focus:outline-none focus:border-cyan-500 cursor-pointer"
                 >
                   <option value="all">All Photo Files</option>
                   <option value="attached">Attached (In Use)</option>
-                  <option value="unattached">Unattached (Waste)</option>
+                  <option value="unattached">Unattached (Unused)</option>
                 </select>
               </div>
 
-              {/* Sorting selection */}
-              <div className="flex items-center gap-1.5">
-                <span className="text-[10px] uppercase font-extrabold tracking-wider text-cool-gray-450 flex items-center gap-1">
-                  <ArrowUpDown className="w-3 h-3" /> Sort:
-                </span>
+              <div className="space-y-1">
+                <label className="text-[11px] font-bold text-cool-gray-400 uppercase tracking-wider block">
+                  Sort Order
+                </label>
                 <select
                   value={sortBy}
                   onChange={(e: any) => setSortBy(e.target.value)}
-                  className="h-8.5 py-1 px-2.5 bg-cool-gray-950 border border-cool-gray-750 text-xs rounded-lg text-white focus:outline-none focus:border-cyan-500 cursor-pointer"
+                  className="w-full h-9 py-1 px-2.5 bg-cool-gray-900 border border-cool-gray-750 text-xs rounded-lg text-white focus:outline-none focus:border-cyan-500 cursor-pointer"
                 >
                   <option value="newest">Modified Date (Newest)</option>
                   <option value="oldest">Modified Date (Oldest)</option>
@@ -648,9 +706,8 @@ export function PhotoManagerView({ state, dispatch }: PhotoManagerViewProps) {
                   <option value="name_asc">Filename (A-Z)</option>
                 </select>
               </div>
-
             </div>
-          </div>
+          </CatalogSearchFilterBar>
 
           {/* Bulk Action Selection Overlay Strip */}
           {selectedCount > 0 && (
@@ -731,7 +788,7 @@ export function PhotoManagerView({ state, dispatch }: PhotoManagerViewProps) {
                     {/* Image visual wrapper */}
                     <div className="relative aspect-video bg-cool-gray-950 overflow-hidden flex items-center justify-center border-b border-cool-gray-800">
                       <img
-                        src={photo.url}
+                        src={resolveImageUrl(photo.url)}
                         alt={photo.filename}
                         className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
                         referrerPolicy="no-referrer"
@@ -767,24 +824,31 @@ export function PhotoManagerView({ state, dispatch }: PhotoManagerViewProps) {
                       <div className="space-y-1.5 border-t border-cool-gray-800/80 pt-2 flex-grow flex flex-col justify-end">
                         {isUnattached ? (
                           <p className="text-[10px] text-cool-gray-500 italic leading-snug">
-                            This image is unassigned. It is taking up space without being referenced by any products or custom containers.
+                            This image is unassigned. It is taking up space without being referenced by any products, container templates, or custom containers.
                           </p>
                         ) : (
                           <div className="space-y-1 max-h-24 overflow-y-auto">
                             {photo.attachments.map((att) => (
                               <div
-                                key={att.id}
+                                key={`${att.type}-${att.id}`}
                                 className="flex items-center justify-between bg-cool-gray-950 p-1.5 rounded border border-cool-gray-850 gap-2"
                               >
                                 <div className="flex items-center gap-1.5 min-w-0">
                                   {att.type === 'product' ? (
                                     <Package className="w-3 h-3 text-emerald-400 shrink-0" />
+                                  ) : att.type === 'container_template' ? (
+                                    <Layers className="w-3 h-3 text-purple-400 shrink-0" />
                                   ) : (
                                     <Box className="w-3 h-3 text-cyan-400 shrink-0" />
                                   )}
                                   <span className="text-[10px] font-bold text-cool-gray-250 truncate leading-normal" title={att.name}>
                                     {att.name}
                                   </span>
+                                  {att.type === 'container_template' && (
+                                    <span className="text-[8px] font-bold uppercase tracking-wider px-1 py-0.2 rounded bg-purple-950/60 text-purple-300 border border-purple-700/40 shrink-0">
+                                      Template
+                                    </span>
+                                  )}
                                 </div>
                                 <button
                                   onClick={() => handleUnlinkAttachment(photo, att)}
@@ -815,56 +879,53 @@ export function PhotoManagerView({ state, dispatch }: PhotoManagerViewProps) {
       {subTab === 'missing' && (
         <div className="space-y-4">
           
-          {/* Missing elements filter row */}
-          <div className="flex flex-col sm:flex-row gap-3 items-center justify-between bg-cool-gray-855 p-3.5 rounded-xl border border-cool-gray-750/70">
-            <div className="relative w-full sm:max-w-md">
-              <span className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                <Search className="h-4 w-4 text-cool-gray-500" />
-              </span>
-              <input
-                type="text"
-                placeholder="Search missing elements by name or category..."
-                value={missingSearch}
-                onChange={(e) => setMissingSearch(e.target.value)}
-                className="w-full h-8.5 pl-9 pr-8 bg-cool-gray-950 border border-cool-gray-750 rounded-lg text-xs text-white placeholder-cool-gray-550 focus:outline-none focus:border-cyan-500 transition-colors"
-              />
-              {missingSearch && (
-                <button
-                  onClick={() => setMissingSearch('')}
-                  className="absolute inset-y-0 right-0 pr-3 flex items-center text-cool-gray-500 hover:text-white text-xs cursor-pointer"
+          {/* Missing elements search & condensed filters bar */}
+          <CatalogSearchFilterBar
+            searchValue={missingSearch}
+            onSearchChange={setMissingSearch}
+            searchPlaceholder="Search missing elements by name or category..."
+            isFiltersOpen={showMissingFilters}
+            onToggleFilters={() => setShowMissingFilters(prev => !prev)}
+            activeFilterCount={(missingFilter !== 'all' ? 1 : 0) + (missingSortBy !== 'name_asc' ? 1 : 0)}
+            onResetFilters={() => {
+              setMissingSearch('');
+              setMissingFilter('all');
+              setMissingSortBy('name_asc');
+            }}
+          >
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <div className="space-y-1">
+                <label className="text-[11px] font-bold text-cool-gray-400 uppercase tracking-wider block">
+                  Catalog Type
+                </label>
+                <select
+                  value={missingFilter}
+                  onChange={(e) => setMissingFilter(e.target.value as any)}
+                  className="w-full h-9 py-1 px-2.5 bg-cool-gray-900 border border-cool-gray-750 text-xs rounded-lg text-white focus:outline-none focus:border-cyan-500 cursor-pointer"
                 >
-                  ✕
-                </button>
-              )}
-            </div>
+                  <option value="all">All Missing ({(state.products || []).filter(p => !p.imageUrl).length + (state.containerTemplates || []).filter(t => !t.imageUrl).length + (state.containers || []).filter(c => !c.imageUrl && c.id !== 'staging_loose' && !c.id.endsWith('_loose')).length})</option>
+                  <option value="product">Products Only ({(state.products || []).filter(p => !p.imageUrl).length})</option>
+                  <option value="container_template">Container Templates Only ({(state.containerTemplates || []).filter(t => !t.imageUrl).length})</option>
+                  <option value="container">Containers Only ({(state.containers || []).filter(c => !c.imageUrl && c.id !== 'staging_loose' && !c.id.endsWith('_loose')).length})</option>
+                </select>
+              </div>
 
-            <div className="flex items-center gap-2 self-end sm:self-auto shrink-0 bg-cool-gray-950 p-0.5 rounded-lg border border-cool-gray-850">
-              <button
-                onClick={() => setMissingFilter('all')}
-                className={`px-3 py-1.5 rounded-md text-[10px] font-bold uppercase tracking-wider transition cursor-pointer select-none ${
-                  missingFilter === 'all' ? 'bg-cyan-600 text-white font-black' : 'text-cool-gray-400 hover:text-white'
-                }`}
-              >
-                All Missing
-              </button>
-              <button
-                onClick={() => setMissingFilter('product')}
-                className={`px-3 py-1.5 rounded-md text-[10px] font-bold uppercase tracking-wider transition cursor-pointer select-none ${
-                  missingFilter === 'product' ? 'bg-cyan-600 text-white font-black' : 'text-cool-gray-400 hover:text-white'
-                }`}
-              >
-                Products ({ (state.products || []).filter(p => !p.imageUrl).length })
-              </button>
-              <button
-                onClick={() => setMissingFilter('container')}
-                className={`px-3 py-1.5 rounded-md text-[10px] font-bold uppercase tracking-wider transition cursor-pointer select-none ${
-                  missingFilter === 'container' ? 'bg-cyan-600 text-white font-black' : 'text-cool-gray-400 hover:text-white'
-                }`}
-              >
-                Containers ({ (state.containers || []).filter(c => !c.imageUrl && c.id !== 'staging_loose' && !c.id.endsWith('_loose')).length })
-              </button>
+              <div className="space-y-1">
+                <label className="text-[11px] font-bold text-cool-gray-400 uppercase tracking-wider block">
+                  Sort Order
+                </label>
+                <select
+                  value={missingSortBy}
+                  onChange={(e) => setMissingSortBy(e.target.value as any)}
+                  className="w-full h-9 py-1 px-2.5 bg-cool-gray-900 border border-cool-gray-750 text-xs rounded-lg text-white focus:outline-none focus:border-cyan-500 cursor-pointer"
+                >
+                  <option value="name_asc">Name: A to Z</option>
+                  <option value="name_desc">Name: Z to A</option>
+                  <option value="type_first">Group by Type</option>
+                </select>
+              </div>
             </div>
-          </div>
+          </CatalogSearchFilterBar>
 
           {/* Missing list rendering */}
           {elementsMissingPhotos.length === 0 ? (
@@ -882,9 +943,13 @@ export function PhotoManagerView({ state, dispatch }: PhotoManagerViewProps) {
                 >
                   <div className="flex items-center gap-3.5 min-w-0">
                     <div className={`p-2.5 rounded-lg shrink-0 ${
-                      elem.type === 'product' ? 'bg-emerald-950/30 text-emerald-400 border border-emerald-900/40' : 'bg-cyan-950/30 text-cyan-400 border border-cyan-900/40'
+                      elem.type === 'product'
+                        ? 'bg-emerald-950/30 text-emerald-400 border border-emerald-900/40'
+                        : elem.type === 'container_template'
+                          ? 'bg-purple-950/30 text-purple-400 border border-purple-900/40'
+                          : 'bg-cyan-950/30 text-cyan-400 border border-cyan-900/40'
                     }`}>
-                      {elem.type === 'product' ? <Package className="w-5 h-5" /> : <Box className="w-5 h-5" />}
+                      {elem.type === 'product' ? <Package className="w-5 h-5" /> : elem.type === 'container_template' ? <Layers className="w-5 h-5" /> : <Box className="w-5 h-5" />}
                     </div>
                     <div className="min-w-0">
                       <p className="text-sm font-bold text-cool-gray-150 truncate leading-normal">
@@ -993,7 +1058,7 @@ export function PhotoManagerView({ state, dispatch }: PhotoManagerViewProps) {
             </div>
 
             <p className="text-xs text-cool-gray-300 mb-4 leading-relaxed shrink-0">
-              Assign one of your existing uploaded photos to the {assigningElement.type} <span className="font-extrabold text-cyan-300">"{assigningElement.name}"</span>. This reuses files and keeps backups highly optimized without duplicates!
+              Assign one of your existing uploaded photos to the {assigningElement.type === 'container_template' ? 'container template' : assigningElement.type} <span className="font-extrabold text-cyan-300">"{assigningElement.name}"</span>. This reuses files and keeps backups highly optimized without duplicates!
             </p>
 
             {photos.length === 0 ? (
@@ -1019,7 +1084,7 @@ export function PhotoManagerView({ state, dispatch }: PhotoManagerViewProps) {
                   >
                     <div className="aspect-video w-full rounded overflow-hidden bg-cool-gray-950 relative">
                       <img
-                        src={p.url}
+                        src={resolveImageUrl(p.url)}
                         alt={p.filename}
                         className="w-full h-full object-cover group-hover:scale-105 transition"
                         referrerPolicy="no-referrer"

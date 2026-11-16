@@ -12,6 +12,92 @@ export const FREEZER_DEVICE_ID_KEY = 'freezer_device_id';
 export const FREEZER_DEVICE_NAME_KEY = 'freezer_device_name';
 export const FREEZER_OPERATOR_NAME_KEY = 'freezer_operator_name';
 export const FREEZER_DEVICE_PROMPTED_KEY = 'freezer_device_prompted_v1';
+export const FREEZER_USER_SESSION_KEY = 'freezer_user_session';
+
+let inMemorySessionToken = '';
+
+export function getSessionToken(): string {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const val = (localStorage.getItem(FREEZER_USER_SESSION_KEY) || '').trim();
+      if (val) {
+        inMemorySessionToken = val;
+        try {
+          if (typeof sessionStorage !== 'undefined') {
+            sessionStorage.setItem(FREEZER_USER_SESSION_KEY, val);
+          }
+        } catch {}
+        return val;
+      }
+    }
+  } catch {
+    // ignore storage errors
+  }
+
+  try {
+    if (typeof sessionStorage !== 'undefined') {
+      const sVal = (sessionStorage.getItem(FREEZER_USER_SESSION_KEY) || '').trim();
+      if (sVal) {
+        inMemorySessionToken = sVal;
+        try {
+          if (typeof localStorage !== 'undefined') {
+            localStorage.setItem(FREEZER_USER_SESSION_KEY, sVal);
+          }
+        } catch {}
+        return sVal;
+      }
+    }
+  } catch {
+    // ignore storage errors
+  }
+
+  return inMemorySessionToken;
+}
+
+export function setSessionToken(token: string): void {
+  const clean = (token || '').trim();
+  inMemorySessionToken = clean;
+  try {
+    if (typeof localStorage !== 'undefined') {
+      if (clean) {
+        localStorage.setItem(FREEZER_USER_SESSION_KEY, clean);
+      } else {
+        localStorage.removeItem(FREEZER_USER_SESSION_KEY);
+      }
+    }
+  } catch {
+    // ignore storage errors
+  }
+  try {
+    if (typeof sessionStorage !== 'undefined') {
+      if (clean) {
+        sessionStorage.setItem(FREEZER_USER_SESSION_KEY, clean);
+      } else {
+        sessionStorage.removeItem(FREEZER_USER_SESSION_KEY);
+      }
+    }
+  } catch {
+    // ignore storage errors
+  }
+}
+
+export function clearSessionToken(): void {
+  inMemorySessionToken = '';
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem(FREEZER_USER_SESSION_KEY);
+    }
+  } catch {
+    // ignore storage errors
+  }
+  try {
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.removeItem(FREEZER_USER_SESSION_KEY);
+    }
+  } catch {
+    // ignore storage errors
+  }
+}
 
 /**
  * Detects whether the application is running as an installed Standalone PWA.
@@ -24,41 +110,87 @@ export function isStandalonePWA(): boolean {
   return Boolean(isMatchMedia || isNavigatorStandalone || isAndroidReferrer);
 }
 
+let inMemoryDeviceId = '';
+let inMemoryDeviceName = '';
+let inMemoryOperatorName = '';
+
+function safeStorageGet(storageType: 'local' | 'session', key: string): string {
+  try {
+    const store = storageType === 'local'
+      ? (typeof localStorage !== 'undefined' ? localStorage : undefined)
+      : (typeof sessionStorage !== 'undefined' ? sessionStorage : undefined);
+    if (!store) return '';
+    return (store.getItem(key) || '').trim();
+  } catch {
+    return '';
+  }
+}
+
+function safeStorageSet(storageType: 'local' | 'session', key: string, value: string): void {
+  try {
+    const store = storageType === 'local'
+      ? (typeof localStorage !== 'undefined' ? localStorage : undefined)
+      : (typeof sessionStorage !== 'undefined' ? sessionStorage : undefined);
+    if (!store) return;
+    store.setItem(key, value);
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function readIdentityBackup(): { deviceId?: string; deviceName?: string; operatorName?: string } | null {
+  try {
+    const backupRaw =
+      safeStorageGet('local', 'freezer_device_identity_backup_v1') ||
+      safeStorageGet('session', 'freezer_device_identity_backup_v1');
+    if (backupRaw) {
+      const parsed = JSON.parse(backupRaw);
+      if (parsed && typeof parsed === 'object') {
+        return parsed;
+      }
+    }
+  } catch {
+    // ignore invalid backup JSON
+  }
+  return null;
+}
+
 /**
  * Gets or initializes a persistent device identifier stored in localStorage.
- * Checks backup storage before generating any new ID to prevent losing identity.
+ * Checks backup storage and falls back to sessionStorage/memory if localStorage is blocked.
  */
 export function getDeviceId(): string {
-  if (typeof localStorage === 'undefined') {
-    return 'server_or_unknown';
+  let id = safeStorageGet('local', FREEZER_DEVICE_ID_KEY);
+  if (!id) {
+    const backup = readIdentityBackup();
+    if (backup?.deviceId && backup.deviceId.trim()) {
+      id = backup.deviceId.trim();
+    }
   }
-  let id = localStorage.getItem(FREEZER_DEVICE_ID_KEY);
-  if (!id || !id.trim()) {
-    // Check redundant backup storage before creating a new device ID
-    try {
-      const backupRaw = localStorage.getItem('freezer_device_identity_backup_v1') ||
-        (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('freezer_device_identity_backup_v1') : null);
-      if (backupRaw) {
-        const backup = JSON.parse(backupRaw);
-        if (backup?.deviceId && backup.deviceId.trim()) {
-          id = backup.deviceId.trim();
-          localStorage.setItem(FREEZER_DEVICE_ID_KEY, id);
-          return id;
-        }
-      }
-    } catch (e) {}
-
+  if (!id) {
+    id = safeStorageGet('session', FREEZER_DEVICE_ID_KEY);
+  }
+  if (!id && inMemoryDeviceId) {
+    id = inMemoryDeviceId;
+  }
+  if (!id) {
+    if (typeof localStorage === 'undefined' && typeof sessionStorage === 'undefined' && typeof window === 'undefined') {
+      return 'server_or_unknown';
+    }
     try {
       if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
         id = crypto.randomUUID();
       } else {
         id = 'dev_' + Math.random().toString(36).substring(2, 11) + '_' + Date.now().toString(36);
       }
-    } catch (e) {
+    } catch {
       id = 'dev_' + Math.random().toString(36).substring(2, 11) + '_' + Date.now().toString(36);
     }
-    localStorage.setItem(FREEZER_DEVICE_ID_KEY, id);
   }
+
+  inMemoryDeviceId = id;
+  safeStorageSet('local', FREEZER_DEVICE_ID_KEY, id);
+  safeStorageSet('session', FREEZER_DEVICE_ID_KEY, id);
   return id;
 }
 
@@ -85,60 +217,64 @@ export function getDefaultDeviceName(): string {
 
 /**
  * Gets the configured or default device name.
- * Checks redundant backup before falling back to default.
+ * Checks redundant backup before falling back to sessionStorage, memory, or default.
  */
 export function getDeviceName(): string {
-  if (typeof localStorage === 'undefined') return getDefaultDeviceName();
-  const stored = localStorage.getItem(FREEZER_DEVICE_NAME_KEY);
-  if (stored && stored.trim()) return stored.trim();
-
-  // Check redundant backup storage
-  try {
-    const backupRaw = localStorage.getItem('freezer_device_identity_backup_v1') ||
-      (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('freezer_device_identity_backup_v1') : null);
-    if (backupRaw) {
-      const backup = JSON.parse(backupRaw);
-      if (backup?.deviceName && backup.deviceName.trim()) {
-        const restored = backup.deviceName.trim();
-        localStorage.setItem(FREEZER_DEVICE_NAME_KEY, restored);
-        return restored;
-      }
+  let name = safeStorageGet('local', FREEZER_DEVICE_NAME_KEY);
+  if (!name) {
+    const backup = readIdentityBackup();
+    if (backup?.deviceName && backup.deviceName.trim()) {
+      name = backup.deviceName.trim();
     }
-  } catch (e) {}
+  }
+  if (!name) {
+    name = safeStorageGet('session', FREEZER_DEVICE_NAME_KEY);
+  }
+  if (!name && inMemoryDeviceName) {
+    name = inMemoryDeviceName;
+  }
+
+  if (name) {
+    inMemoryDeviceName = name;
+    safeStorageSet('local', FREEZER_DEVICE_NAME_KEY, name);
+    safeStorageSet('session', FREEZER_DEVICE_NAME_KEY, name);
+    return name;
+  }
 
   return getDefaultDeviceName();
 }
 
 /**
  * Gets the configured operator name for this specific device.
- * Checks redundant backup before returning empty.
+ * Checks redundant backup before falling back to sessionStorage or memory.
  */
 export function getOperatorName(): string {
-  if (typeof localStorage === 'undefined') return '';
-  const op =
-    localStorage.getItem(FREEZER_OPERATOR_NAME_KEY) ||
-    localStorage.getItem('freezerUserName') ||
-    localStorage.getItem('freezer_user') ||
-    '';
-  if (op.trim() && op.trim() !== 'User') {
-    return op.trim();
+  let op =
+    safeStorageGet('local', FREEZER_OPERATOR_NAME_KEY) ||
+    safeStorageGet('local', 'freezerUserName') ||
+    safeStorageGet('local', 'freezer_user');
+
+  if (!op || op === 'User') {
+    const backup = readIdentityBackup();
+    if (backup?.operatorName && backup.operatorName.trim() && backup.operatorName.trim() !== 'User') {
+      op = backup.operatorName.trim();
+    }
+  }
+  if (!op || op === 'User') {
+    op = safeStorageGet('session', FREEZER_OPERATOR_NAME_KEY);
+  }
+  if ((!op || op === 'User') && inMemoryOperatorName && inMemoryOperatorName !== 'User') {
+    op = inMemoryOperatorName;
   }
 
-  // Check redundant backup storage
-  try {
-    const backupRaw = localStorage.getItem('freezer_device_identity_backup_v1') ||
-      (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('freezer_device_identity_backup_v1') : null);
-    if (backupRaw) {
-      const backup = JSON.parse(backupRaw);
-      if (backup?.operatorName && backup.operatorName.trim() && backup.operatorName.trim() !== 'User') {
-        const restored = backup.operatorName.trim();
-        localStorage.setItem(FREEZER_OPERATOR_NAME_KEY, restored);
-        localStorage.setItem('freezerUserName', restored);
-        localStorage.setItem('freezer_user', restored);
-        return restored;
-      }
-    }
-  } catch (e) {}
+  if (op && op !== 'User') {
+    inMemoryOperatorName = op;
+    safeStorageSet('local', FREEZER_OPERATOR_NAME_KEY, op);
+    safeStorageSet('local', 'freezerUserName', op);
+    safeStorageSet('local', 'freezer_user', op);
+    safeStorageSet('session', FREEZER_OPERATOR_NAME_KEY, op);
+    return op;
+  }
 
   return '';
 }
@@ -147,22 +283,25 @@ export function getOperatorName(): string {
  * Saves operator name and device label locally and dispatches a change event.
  */
 export function setClientDeviceInfo(updates: { operatorName?: string; deviceName?: string; markPrompted?: boolean }) {
-  if (typeof localStorage === 'undefined') return;
-
   if (updates.operatorName !== undefined) {
     const cleanOp = updates.operatorName.trim();
-    localStorage.setItem(FREEZER_OPERATOR_NAME_KEY, cleanOp);
-    localStorage.setItem('freezerUserName', cleanOp);
-    localStorage.setItem('freezer_user', cleanOp);
+    inMemoryOperatorName = cleanOp;
+    safeStorageSet('local', FREEZER_OPERATOR_NAME_KEY, cleanOp);
+    safeStorageSet('local', 'freezerUserName', cleanOp);
+    safeStorageSet('local', 'freezer_user', cleanOp);
+    safeStorageSet('session', FREEZER_OPERATOR_NAME_KEY, cleanOp);
   }
 
   if (updates.deviceName !== undefined) {
     const cleanDev = updates.deviceName.trim();
-    localStorage.setItem(FREEZER_DEVICE_NAME_KEY, cleanDev);
+    inMemoryDeviceName = cleanDev;
+    safeStorageSet('local', FREEZER_DEVICE_NAME_KEY, cleanDev);
+    safeStorageSet('session', FREEZER_DEVICE_NAME_KEY, cleanDev);
   }
 
   if (updates.markPrompted) {
-    localStorage.setItem(FREEZER_DEVICE_PROMPTED_KEY, 'true');
+    safeStorageSet('local', FREEZER_DEVICE_PROMPTED_KEY, 'true');
+    safeStorageSet('session', FREEZER_DEVICE_PROMPTED_KEY, 'true');
   }
 
   if (typeof window !== 'undefined') {
@@ -302,6 +441,11 @@ export function getClientAuditHeaders(): Record<string, string> {
     headers['X-Operator-Name'] = info.operatorName.trim();
   }
 
+  const sessionToken = getSessionToken();
+  if (sessionToken) {
+    headers['X-User-Session'] = sessionToken;
+  }
+
   // Attach optional Cloudflare Access Service Token headers if configured
   if (typeof localStorage !== 'undefined') {
     try {
@@ -315,4 +459,23 @@ export function getClientAuditHeaders(): Record<string, string> {
   }
 
   return headers;
+}
+
+/**
+ * Wrapper around fetch() that attaches persistent user session cookies,
+ * X-User-Session header, and device audit headers.
+ */
+export function authFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  const mergedHeaders = new Headers(getClientAuditHeaders());
+  if (init.headers) {
+    const callerHeaders = new Headers(init.headers);
+    callerHeaders.forEach((value, key) => {
+      mergedHeaders.set(key, value);
+    });
+  }
+  return fetch(input, {
+    ...init,
+    credentials: init.credentials || 'include',
+    headers: mergedHeaders
+  });
 }

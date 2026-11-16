@@ -2,6 +2,7 @@
 import React, { useState, useMemo } from 'react';
 import { ChevronDown, ChevronRight, MapPin, Layers, PackageOpen, Edit3, FileText, X } from 'lucide-react';
 import { compareBoxLabels } from '../utils/boxSort';
+import { getTagActionIcon } from '../utils/tagRestockRules';
 
 export const OffSiteHierarchy = ({ state, dispatch }) => {
   const entries = (state.offSiteEntries || []).filter(e => {
@@ -283,7 +284,7 @@ export const OffSiteHierarchy = ({ state, dispatch }) => {
                                                   className="inline-flex items-center gap-1 text-[8px] border px-1.5 py-0.2 rounded font-black tracking-wide uppercase select-none group/boxtag hover:border-red-500/40 transition-colors"
                                                   title={`Tag: ${tag.description || tag.name} (Click ✕ to remove tag from box)`}
                                                 >
-                                                  <span>{tag.id === 'use-first' ? '🍳 ' : tag.id === 'not-for-sale' ? '🛑 ' : '🏷️ '}{tag.name}</span>
+                                                  <span>{getTagActionIcon(tag)} {tag.name}</span>
                                                   <button
                                                     type="button"
                                                     onClick={async (e) => {

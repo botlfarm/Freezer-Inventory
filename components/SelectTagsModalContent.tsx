@@ -2,6 +2,7 @@
 import React, { useState } from 'react';
 import { InventoryState, Action } from '../types';
 import { Tag, CheckSquare, Square, Trash2 } from 'lucide-react';
+import { getTagActionIcon } from '../utils/tagRestockRules';
 
 interface SelectTagsModalContentProps {
   dispatch: React.Dispatch<Action>;
@@ -139,7 +140,7 @@ export const SelectTagsModalContent: React.FC<SelectTagsModalContentProps> = ({ 
                       }}
                       className="px-2 py-0.5 rounded text-xs font-black border uppercase tracking-wider inline-flex items-center gap-1 select-none"
                     >
-                      <span>{tag.id === 'use-first' ? '⚡' : tag.id === 'not-for-sale' ? '🛑' : '🏷️'}</span>
+                      <span>{getTagActionIcon(tag)}</span>
                       <span>{tag.name}</span>
                     </span>
                   </div>

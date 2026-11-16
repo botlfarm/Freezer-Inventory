@@ -1,11 +1,13 @@
 import React, { useState, useMemo } from 'react';
 import { useInventory } from './hooks/useInventory';
 import { getApiUrl } from './hooks/apiUrl';
-import { getClientDeviceInfo, getDeviceId, getDeviceName, getOperatorName, FREEZER_DEVICE_PROMPTED_KEY, getClientAuditHeaders } from './utils/clientDevice';
+import { authFetch, clearSessionToken, getClientDeviceInfo, getDeviceId, getDeviceName, getOperatorName, FREEZER_DEVICE_PROMPTED_KEY, getClientAuditHeaders, getSessionToken } from './utils/clientDevice';
 import { DeviceSetupModal } from './components/DeviceSetupModal';
+import { UserAccountModal } from './components/UserAccountModal';
+import { UserAuthProvider, useUserAuth } from './hooks/useUserAuth';
 import { ModalType, View } from './types';
 import { APP_VERSION } from './version';
-import { Tag, PackagePlus, History, Sparkles, Table, Package, ClipboardList, Sun, Moon, Filter, Plus, Download, ChevronDown, ChevronUp, Eye, AlertTriangle, RefreshCw, Database, RotateCcw, Users, User, Zap, ArrowUpDown, SlidersHorizontal, Smartphone, Rocket, Settings, FolderTree, KeyRound, ShieldAlert, Mic } from 'lucide-react';
+import { Tag, PackagePlus, History, Sparkles, Table, Package, ClipboardList, Sun, Moon, Filter, Plus, Download, ChevronDown, ChevronUp, Eye, AlertTriangle, RefreshCw, Database, RotateCcw, Users, User, Zap, ArrowUpDown, SlidersHorizontal, Smartphone, Rocket, Settings, FolderTree, KeyRound, ShieldAlert, Mic, Shield, LogIn, Lock } from 'lucide-react';
 import { FreezerIcon, SearchIcon, GridViewIcon, ListViewIcon } from './components/icons';
 import Modal from './components/Modal';
 import AddForms from './components/AddForms';
@@ -20,6 +22,7 @@ import ProductView from './views/ProductView';
 import { DisplayCaseView } from './views/DisplayCaseView';
 import { VoiceControlView } from './views/VoiceControlView';
 import LibraryView, { ManageLists, LibraryTab } from './views/LibraryView';
+import { normalizeLibraryTab } from './utils/libraryNavigation';
 import HistoryView from './views/HistoryView';
 import ReconciliationView from './views/ReconciliationView';
 import { DataImportView } from './views/DataImportView';
@@ -41,6 +44,7 @@ import { useHomeAssistantTheme } from './hooks/useHomeAssistantTheme';
 import { OfflineSyncBadge } from './components/OfflineSyncBadge';
 import { SecurityTokenModal } from './components/SecurityTokenModal';
 import { cleanTokenRefreshUrlParams, executeSecurityTokenRefresh, isCloudflareTokenRefreshEnabled } from './utils/authSecurity';
+import { useHeaderMenuDismiss } from './utils/headerMenuDismiss';
 
 const VALID_VIEWS: Set<View> = new Set([
   'freezer', 'product', 'library', 'history', 'reconcile', 'import', 
@@ -56,8 +60,21 @@ function parseViewFromHash(hashString?: string): View | null {
   return null;
 }
 
-export default function App() {
+function AppContent() {
   useHomeAssistantTheme();
+  const {
+    authLoaded,
+    usersConfigured,
+    isAuthenticated,
+    isAdmin,
+    canAccessAdmin,
+    isEditLockedByAuth,
+    currentUser,
+    recoveryModeActive,
+    openAccountModal,
+  } = useUserAuth();
+  const [authReconnectKey, setAuthReconnectKey] = useState(0);
+  const lastSessionTokenRef = React.useRef<string | null>(getSessionToken());
   const [isScrolled, setIsScrolled] = useState(false);
   const [expandedImage, setExpandedImage] = useState<{ src: string; title: string } | null>(null);
   const [pwaBannerDismissed, setPwaBannerDismissed] = useState(() => {
@@ -392,16 +409,27 @@ export default function App() {
     return () => window.removeEventListener('freezer-open-security-token-modal', handleOpenSecurityModal);
   }, []);
 
-  // Initial device operator identification check and automatic SQLite hardware registration
-  React.useEffect(() => {
-    const op = getOperatorName();
-    const prompted = localStorage.getItem(FREEZER_DEVICE_PROMPTED_KEY);
-    if (!op && !prompted) {
-      setShowDeviceSetupModal(true);
-    }
+  const hasCheckedDevicePromptRef = React.useRef<boolean>(false);
 
+  const [deviceAutoUpdateCache, setDeviceAutoUpdateCache] = useState<boolean>(() => {
+    try {
+      const devId = getDeviceId();
+      const stored = localStorage.getItem(`pwa_device_auto_update_${devId}`);
+      if (stored === 'false') return false;
+      return true;
+    } catch {
+      return true;
+    }
+  });
+
+  // Automatic SQLite hardware registration on mount
+  React.useEffect(() => {
     const devInfo = getClientDeviceInfo();
-    fetch(getApiUrl('api/devices/register'), {
+    try {
+      localStorage.removeItem('pwa_auto_update_local');
+      localStorage.removeItem('pwa_auto_update');
+    } catch {}
+    authFetch(getApiUrl('api/devices/register'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -415,12 +443,49 @@ export default function App() {
         clientDevice: devInfo.clientDevice,
         clientInfo: devInfo.clientInfo
       })
-    }).then(res => {
+    }).then(async (res) => {
       if (res.status === 403) {
         setIsDeviceRevoked(true);
+        return;
+      }
+      if (res.ok) {
+        const data = await res.json().catch(() => null);
+        if (typeof data?.device?.autoUpdateCache === 'boolean') {
+          setDeviceAutoUpdateCache(data.device.autoUpdateCache);
+          try {
+            localStorage.setItem(`pwa_device_auto_update_${devInfo.deviceId}`, String(data.device.autoUpdateCache));
+          } catch {}
+        }
       }
     }).catch(() => {});
   }, []);
+
+  React.useEffect(() => {
+    const handleLocalDeviceAutoUpdate = (event: any) => {
+      const detail = event?.detail;
+      if (!detail || detail.deviceId !== getDeviceId()) return;
+      if (typeof detail.autoUpdateCache === 'boolean') {
+        setDeviceAutoUpdateCache(detail.autoUpdateCache);
+        try {
+          localStorage.setItem(`pwa_device_auto_update_${detail.deviceId}`, String(detail.autoUpdateCache));
+        } catch {}
+      }
+    };
+    window.addEventListener('freezer-device-auto-update-changed', handleLocalDeviceAutoUpdate);
+    return () => window.removeEventListener('freezer-device-auto-update-changed', handleLocalDeviceAutoUpdate);
+  }, []);
+
+  // Only auto-prompt legacy unlinked DeviceSetupModal when no user accounts are configured yet
+  React.useEffect(() => {
+    if (!authLoaded || hasCheckedDevicePromptRef.current) return;
+    hasCheckedDevicePromptRef.current = true;
+    if (usersConfigured) return;
+    const op = getOperatorName();
+    const prompted = localStorage.getItem(FREEZER_DEVICE_PROMPTED_KEY);
+    if (!op && !prompted) {
+      setShowDeviceSetupModal(true);
+    }
+  }, [authLoaded, usersConfigured]);
 
   // Automated PWA Service Worker & Version Push Update Management
   const [pwaUpdateAvailable, setPwaUpdateAvailable] = useState<{
@@ -430,11 +495,13 @@ export default function App() {
   const [pwaCountdown, setPwaCountdown] = useState<number | null>(null);
   const pwaUpdateDismissedRef = React.useRef<boolean>(false);
 
-  const isAutoUpdateEnabled = useMemo(() => {
-    const cfg = (state.appConfig || []).find(i => i.key === 'pwa_auto_update');
-    if (cfg?.value === 'false') return false;
-    return localStorage.getItem('pwa_auto_update') !== 'false';
-  }, [state.appConfig]);
+  // Per-device Auto-Update Cache setting controlled by Admin in Users & Devices (always defaults to true / Auto)
+  const isAutoUpdateEnabled = deviceAutoUpdateCache;
+
+  const [syncMenuServerVersion, setSyncMenuServerVersion] = useState<string | null>(null);
+  const [syncMenuVersionStatus, setSyncMenuVersionStatus] = useState<'checking' | 'connected' | 'mismatch' | 'offline'>('connected');
+  const [isCheckingSyncMenuUpdate, setIsCheckingSyncMenuUpdate] = useState<boolean>(false);
+  const [syncMenuUpdateMessage, setSyncMenuUpdateMessage] = useState<string | null>(null);
 
   // Execute immediate cache purge and clean reload
   const handleExecuteUpdate = React.useCallback(async () => {
@@ -462,17 +529,102 @@ export default function App() {
     window.location.reload();
   }, []);
 
+  const handleSyncMenuCheckUpdates = React.useCallback(async (showFeedback = true) => {
+    setIsCheckingSyncMenuUpdate(true);
+    if (showFeedback) {
+      setSyncMenuUpdateMessage('Checking server for updates...');
+    }
+    try {
+      if ('serviceWorker' in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        for (const reg of regs) {
+          await reg.update().catch(() => {});
+        }
+      }
+      const res = await authFetch(getApiUrl(`api/version?_t=${Date.now()}`), {
+        headers: { 'Cache-Control': 'no-cache, no-store' },
+        signal: AbortSignal.timeout(4000)
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const srvVer = data?.version || APP_VERSION;
+        setSyncMenuServerVersion(srvVer);
+        if (srvVer !== APP_VERSION) {
+          setSyncMenuVersionStatus('mismatch');
+          setPwaUpdateAvailable({ newVersion: srvVer, source: 'server' });
+          if (showFeedback) {
+            setSyncMenuUpdateMessage(`New version v${srvVer} detected! Reloading...`);
+            setTimeout(() => {
+              void handleExecuteUpdate();
+            }, 800);
+          }
+          return;
+        } else {
+          setSyncMenuVersionStatus('connected');
+          if (showFeedback) {
+            setSyncMenuUpdateMessage(`Up to date! Running v${APP_VERSION}.`);
+          }
+        }
+      } else {
+        setSyncMenuVersionStatus('offline');
+        if (showFeedback) {
+          setSyncMenuUpdateMessage(`Server unreachable. Running cached v${APP_VERSION}.`);
+        }
+      }
+    } catch {
+      setSyncMenuVersionStatus('offline');
+      if (showFeedback) {
+        setSyncMenuUpdateMessage(`Offline mode: Running cached v${APP_VERSION}.`);
+      }
+    } finally {
+      setIsCheckingSyncMenuUpdate(false);
+      if (showFeedback) {
+        setTimeout(() => setSyncMenuUpdateMessage(null), 4500);
+      }
+    }
+  }, [handleExecuteUpdate]);
+
+  const handleSyncMenuRefreshCache = React.useCallback(async () => {
+    setIsCheckingSyncMenuUpdate(true);
+    setSyncMenuUpdateMessage('Refreshing cache & reloading from server...');
+    try {
+      await flushAllPendingSyncs().catch(() => {});
+      if ('caches' in window) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map(k => caches.delete(k)));
+      }
+      if ('serviceWorker' in navigator) {
+        if (navigator.serviceWorker.controller) {
+          try {
+            navigator.serviceWorker.controller.postMessage({ type: 'FORCE_PURGE_CACHE' });
+          } catch {}
+        }
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map(r => r.unregister()));
+      }
+    } catch (e) {
+      console.warn('Error purging cache:', e);
+    }
+    setTimeout(() => {
+      window.location.reload();
+    }, 350);
+  }, [flushAllPendingSyncs]);
+
   // Periodic version checks and PWA update listener
   React.useEffect(() => {
     const checkServerVersion = async () => {
       if (pwaUpdateDismissedRef.current) return;
       try {
-        const res = await fetch(getApiUrl(`api/version?_t=${Date.now()}`), {
+        const res = await authFetch(getApiUrl(`api/version?_t=${Date.now()}`), {
           headers: { 'Cache-Control': 'no-cache, no-store' },
           signal: AbortSignal.timeout(4000)
         });
         if (res.ok) {
           const data = await res.json();
+          if (data?.version) {
+            setSyncMenuServerVersion(data.version);
+            setSyncMenuVersionStatus(data.version === APP_VERSION ? 'connected' : 'mismatch');
+          }
           if (data?.version && data.version !== APP_VERSION) {
             console.log(`[PWA Auto-Update] Version mismatch: server is ${data.version}, installed is ${APP_VERSION}`);
             setPwaUpdateAvailable({ newVersion: data.version, source: 'server' });
@@ -531,7 +683,7 @@ export default function App() {
   const handleStartDemo = async () => {
     setIsDemoTransitioning(true);
     try {
-      const res = await fetch(getApiUrl('api/demo/start'), {
+      const res = await authFetch(getApiUrl('api/demo/start'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -561,7 +713,7 @@ export default function App() {
   const handleEndDemo = async () => {
     setIsDemoTransitioning(true);
     try {
-      const res = await fetch(getApiUrl('api/demo/end'), {
+      const res = await authFetch(getApiUrl('api/demo/end'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -591,7 +743,7 @@ export default function App() {
   const handleStartPreviewMode = async (filename: string) => {
     setIsPreviewTransitioning(true);
     try {
-      const res = await fetch(getApiUrl('api/backups/preview-mode/start'), {
+      const res = await authFetch(getApiUrl('api/backups/preview-mode/start'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -614,7 +766,7 @@ export default function App() {
   const handleEndPreviewMode = async () => {
     setIsPreviewTransitioning(true);
     try {
-      const res = await fetch(getApiUrl('api/backups/preview-mode/end'), {
+      const res = await authFetch(getApiUrl('api/backups/preview-mode/end'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -658,8 +810,16 @@ export default function App() {
         actionType: e.detail?.actionType
       });
     };
+    const handleAuthRequired = () => {
+      openAccountModal('signin');
+    };
+    const handleDeviceRevoked = () => {
+      setIsDeviceRevoked(true);
+    };
     window.addEventListener('read-only-preview-attempt', handleReadOnlyAttempt);
     window.addEventListener('action-error-occurred', handleActionError);
+    window.addEventListener('freezer-auth-required', handleAuthRequired);
+    window.addEventListener('freezer-device-revoked', handleDeviceRevoked);
 
     return () => {
       delete (window as any).__startDemoMode;
@@ -669,8 +829,10 @@ export default function App() {
       delete (window as any).__navigateToSettings;
       window.removeEventListener('read-only-preview-attempt', handleReadOnlyAttempt);
       window.removeEventListener('action-error-occurred', handleActionError);
+      window.removeEventListener('freezer-auth-required', handleAuthRequired);
+      window.removeEventListener('freezer-device-revoked', handleDeviceRevoked);
     };
-  }, [refreshState, setCurrentView]);
+  }, [refreshState, setCurrentView, openAccountModal]);
 
   const [activeModal, setActiveModal] = useState<ModalType>(null);
   const [promptQueue, setPromptQueue] = useState<any[]>([]);
@@ -701,8 +863,14 @@ export default function App() {
     total: Record<string, number>;
   }>({ onsite: {}, offsiteCount: {}, offsiteWeight: {}, total: {} });
   const isInitialLoadRef = React.useRef<boolean>(true);
-  const [isUserDropdownOpen, setIsUserDropdownOpen] = useState(false);
   const [isSyncMenuOpen, setIsSyncMenuOpen] = useState(false);
+  const syncMenuRef = React.useRef<HTMLDivElement>(null);
+
+  useHeaderMenuDismiss(isSyncMenuOpen, syncMenuRef, () => setIsSyncMenuOpen(false));
+
+  React.useEffect(() => {
+    setIsSyncMenuOpen(false);
+  }, [currentView, activeModal]);
   const [searchTerm, setSearchTerm] = useState('');
   const [traceabilityInitialSearch, setTraceabilityInitialSearch] = useState<string>('');
 
@@ -949,18 +1117,21 @@ export default function App() {
     const initialParsed = parseViewFromHash(currentHash) || currentView;
     const initialSub = currentHash.includes('/') ? currentHash.replace(/^#\/?/, '').split('/')[1]?.split('?')[0] : null;
 
+    const normalizedLibrarySub = initialSub ? normalizeLibraryTab(initialSub) : null;
+
     if (initialParsed === 'offsite' && initialSub) {
       setOffsiteSubTab(initialSub as any);
-    } else if (initialParsed === 'library' && initialSub) {
-      setInitialLibraryTab(initialSub as any);
+    } else if (initialParsed === 'library' && normalizedLibrarySub) {
+      setInitialLibraryTab(normalizedLibrarySub);
     }
 
-    const initialHash = `#${initialParsed}${initialSub ? `/${initialSub}` : ''}`;
+    const effectiveSub = initialParsed === 'library' ? normalizedLibrarySub : initialSub;
+    const initialHash = `#${initialParsed}${effectiveSub ? `/${effectiveSub}` : ''}`;
     window.history.replaceState({
       view: initialParsed,
       step: 0,
       offsiteSubTab: initialParsed === 'offsite' ? initialSub || 'sheet' : undefined,
-      libraryTab: initialParsed === 'library' ? initialSub || 'products' : undefined
+      libraryTab: initialParsed === 'library' ? normalizedLibrarySub || 'products' : undefined
     }, '', initialHash);
 
     const handlePopState = (event: PopStateEvent) => {
@@ -995,7 +1166,7 @@ export default function App() {
       }
 
       if (st?.libraryTab) {
-        setInitialLibraryTab(st.libraryTab);
+        setInitialLibraryTab(normalizeLibraryTab(st.libraryTab));
       }
       if (st?.offsiteSubTab) {
         setOffsiteSubTab(st.offsiteSubTab);
@@ -1355,6 +1526,20 @@ export default function App() {
     return () => window.removeEventListener('focusout', handleFocusOut);
   }, []);
 
+  // Reconnect SSE stream whenever the local user session token changes
+  React.useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleLocalAuthChange = () => {
+      const nextToken = getSessionToken();
+      if (nextToken !== lastSessionTokenRef.current) {
+        lastSessionTokenRef.current = nextToken;
+        setAuthReconnectKey(prev => prev + 1);
+      }
+    };
+    window.addEventListener('freezer-auth-changed', handleLocalAuthChange);
+    return () => window.removeEventListener('freezer-auth-changed', handleLocalAuthChange);
+  }, []);
+
   // Setup EventSource for SSE live-sync
   React.useEffect(() => {
     setSyncStatus('connecting');
@@ -1374,6 +1559,10 @@ export default function App() {
       deviceName: deviceInfo.deviceName,
       isPwa: deviceInfo.isPwa ? '1' : '0'
     });
+    const sessionToken = getSessionToken();
+    if (sessionToken) {
+      params.set('userSession', sessionToken);
+    }
 
     const eventSource = new EventSource(`${streamUrl}?${params.toString()}`);
 
@@ -1396,7 +1585,32 @@ export default function App() {
           setIsDeviceRevoked(true);
           try { eventSource.close(); } catch (e) {}
           return;
+        } else if (data.type === 'session_revoked') {
+          clearSessionToken();
+          lastSessionTokenRef.current = null;
+          window.dispatchEvent(new CustomEvent('freezer-auth-changed'));
+          try { eventSource.close(); } catch (e) {}
+          setAuthReconnectKey(prev => prev + 1);
+          return;
+        } else if (data.type === 'auth_changed') {
+          window.dispatchEvent(new CustomEvent('freezer-auth-changed'));
+          return;
+        } else if (data.type === 'device_config_changed') {
+          const currentDevId = getDeviceId();
+          if (data.deviceId === currentDevId && typeof data.autoUpdateCache === 'boolean') {
+            setDeviceAutoUpdateCache(data.autoUpdateCache);
+            try {
+              localStorage.setItem(`pwa_device_auto_update_${currentDevId}`, String(data.autoUpdateCache));
+            } catch {}
+          }
+          return;
         } else if (data.type === 'init') {
+          if (typeof data.deviceAutoUpdateCache === 'boolean') {
+            setDeviceAutoUpdateCache(data.deviceAutoUpdateCache);
+            try {
+              localStorage.setItem(`pwa_device_auto_update_${getDeviceId()}`, String(data.deviceAutoUpdateCache));
+            } catch {}
+          }
           if (data.authenticatedUser && data.authenticatedUser !== 'User') {
             try {
               localStorage.setItem('freezerUserName', data.authenticatedUser);
@@ -1534,7 +1748,7 @@ export default function App() {
       if (remoteEditingTimeout) clearTimeout(remoteEditingTimeout);
       eventSource.close();
     };
-  }, [reconnectTrigger]);
+  }, [reconnectTrigger, authReconnectKey]);
 
   // Reconnect on window/tab focus, transition to visible focus, or network coming back online
   React.useEffect(() => {
@@ -2125,6 +2339,8 @@ export default function App() {
             onNavigateToStaging={() => {
               setCurrentView('freezer');
             }}
+            selectedProductId={selectedProductId}
+            onClearSelectedProduct={() => setSelectedProductId(null)}
             selectedPrimary={selectedPrimary}
             selectedSub={selectedSub}
             selectedFreezerId={selectedFreezerId}
@@ -2158,6 +2374,48 @@ export default function App() {
             isLoading={isLoading}
           />
         );
+      case 'import':
+        if (usersConfigured && !isAdmin) {
+          return (
+            <div className="mt-6 max-w-xl mx-auto bg-cool-gray-850 border border-amber-500/40 rounded-2xl p-6 text-center space-y-4 shadow-xl animate-fade-in">
+              <div className="w-14 h-14 mx-auto rounded-full bg-amber-950/70 border border-amber-500/40 flex items-center justify-center text-amber-300">
+                <Shield className="w-7 h-7" />
+              </div>
+              <div className="space-y-1.5">
+                <h3 className="text-lg font-extrabold text-white">Administrator Access Required</h3>
+                <p className="text-xs text-cool-gray-300 leading-relaxed">
+                  Data Import &amp; Backup management is restricted to administrators. Sign in with an administrator PIN to continue.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center justify-center gap-2.5 pt-1">
+                <button
+                  type="button"
+                  onClick={() => openAccountModal('signin')}
+                  className="px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-extrabold transition cursor-pointer flex items-center gap-1.5 shadow"
+                >
+                  <KeyRound className="w-3.5 h-3.5" />
+                  <span>Sign In as Admin</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCurrentView('product')}
+                  className="px-4 py-2 rounded-lg bg-cool-gray-800 hover:bg-cool-gray-750 border border-cool-gray-700 text-cool-gray-300 text-xs font-bold transition cursor-pointer"
+                >
+                  Return to Inventory
+                </button>
+              </div>
+            </div>
+          );
+        }
+        return (
+          <div className="mt-4">
+            <DataImportView
+              state={state}
+              dispatch={dispatch}
+              onNavigateToView={(view) => setCurrentView(view)}
+            />
+          </div>
+        );
       case 'library':
         return (
           <LibraryView 
@@ -2170,6 +2428,7 @@ export default function App() {
             theme={theme}
             onThemeChange={handleThemeChange}
             onNavigateToView={setCurrentView}
+            onRefreshState={() => refreshState(false)}
             isLoading={isLoading}
           />
         );
@@ -2186,6 +2445,7 @@ export default function App() {
               })
             }
             undoSnapshots={undoSnapshots}
+            canPurgeHistory={canAccessAdmin}
           />
         );
       case 'reconcile':
@@ -2203,7 +2463,13 @@ export default function App() {
               </h1>
             </div>
             <div className="flex-1 overflow-auto rounded-xl bg-cool-gray-850/50 border border-cool-gray-800 shadow-inner p-3 sm:p-5">
-              <ManageLists state={state} dispatch={dispatch} offSiteQuantityMap={offSiteQuantityMap} offSiteWeightMap={offSiteWeightMap} />
+              <ManageLists
+                state={state}
+                dispatch={dispatch}
+                offSiteQuantityMap={offSiteQuantityMap}
+                offSiteWeightMap={offSiteWeightMap}
+                onNavigateToNotifications={() => setCurrentView('library', { libraryTab: 'notifications' })}
+              />
             </div>
           </div>
         );
@@ -2267,10 +2533,121 @@ export default function App() {
             state={state}
             dispatch={dispatch}
             onNavigateToProduct={(productId) => {
+              const hasStock = (state.meatCuts || []).some(
+                (mc) => mc.productId === productId && mc.quantity > 0
+              );
+              if (!hasStock) {
+                setHideZeroQuantity(false);
+              }
+              setSearchTerm('');
+              setSelectedFreezerId('all');
+              setCheckedTagIds(null);
               setSelectedProductId(productId);
               setCurrentView('product');
             }}
-            onNavigateToFreezer={handleNavigateToFreezer}
+            onNavigateToFreezer={(containerId) => {
+              const cont = (state.containers || []).find((c) => c.id === containerId);
+              if (cont?.isArchived) {
+                setCurrentView('library', { libraryTab: 'containers' });
+                return;
+              }
+              const hasStock = (state.meatCuts || []).some(
+                (mc) => mc.containerId === containerId && mc.quantity > 0
+              );
+              if (!hasStock) {
+                setHideZeroQuantity(false);
+              }
+              setSearchTerm('');
+              setSelectedPrimary(null);
+              setSelectedSub(null);
+              setSelectedFreezerId('all');
+              setCheckedTagIds(null);
+              handleNavigateToFreezer(containerId);
+            }}
+            onNavigateToFreezerUnit={(freezerId) => {
+              setSearchTerm('');
+              setSelectedPrimary(null);
+              setSelectedSub(null);
+              setCheckedTagIds(null);
+              setSelectedFreezerId('all');
+              setCurrentView('freezer');
+              const sectionId =
+                freezerId === '__staging__'
+                  ? 'freezer-section-staging'
+                  : `freezer-section-${freezerId}`;
+              setTimeout(() => {
+                const el = document.getElementById(sectionId);
+                if (el) {
+                  el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
+              }, 150);
+            }}
+            onNavigateToDisplayCase={(productId?: string) => {
+              if (productId) {
+                const hasDisplayStock = (state.meatCuts || []).some((mc) => {
+                  if (mc.productId !== productId || mc.quantity <= 0) return false;
+                  const cont = (state.containers || []).find((c) => c.id === mc.containerId);
+                  const fz = cont?.freezerId
+                    ? (state.freezers || []).find((f) => f.id === cont.freezerId)
+                    : undefined;
+                  return Boolean(fz?.isSpecial);
+                });
+                if (!hasDisplayStock) {
+                  setHideZeroQuantity(false);
+                }
+                setSelectedProductId(productId);
+              } else {
+                setSelectedProductId(null);
+              }
+              setSearchTerm('');
+              setSelectedPrimary(null);
+              setSelectedSub(null);
+              setSelectedFreezerId('all');
+              setCheckedTagIds(null);
+              setCurrentView('display_case');
+            }}
+            onNavigateToProductsView={() => {
+              setSelectedProductId(null);
+              setSearchTerm('');
+              setSelectedPrimary(null);
+              setSelectedSub(null);
+              setSelectedFreezerId('all');
+              setCheckedTagIds(null);
+              setCurrentView('product');
+            }}
+            onNavigateToCategory={(categoryName, categoryType, primaryCategory) => {
+              setSelectedProductId(null);
+              setSearchTerm('');
+              setSelectedFreezerId('all');
+              setCheckedTagIds(null);
+              if (categoryType === 'primary') {
+                setSelectedPrimary(categoryName);
+                setSelectedSub(null);
+              } else {
+                const matchedPrimary =
+                  primaryCategory ||
+                  (state.products || []).find((p) => p.subCategory === categoryName)?.primaryCategory ||
+                  null;
+                setSelectedPrimary(matchedPrimary);
+                setSelectedSub(categoryName);
+              }
+              setCurrentView('product');
+            }}
+            onNavigateToTag={(tagId) => {
+              setSelectedProductId(null);
+              setSearchTerm('');
+              setSelectedPrimary(null);
+              setSelectedSub(null);
+              setSelectedFreezerId('all');
+              setCheckedTagIds([tagId]);
+              setCurrentView('product');
+            }}
+            onNavigateToList={() => {
+              setCurrentView('library', { libraryTab: 'lists' });
+            }}
+            onNavigateToHistory={() => {
+              setCurrentView('history');
+            }}
             onTriggerUndo={() =>
               openUndoModal({
                 isOpen: true,
@@ -2507,17 +2884,19 @@ export default function App() {
               </div>
             </div>
             <div className="flex items-center gap-2.5 shrink-0 w-full sm:w-auto justify-end">
-              <button
-                onClick={() => {
-                  setInitialLibraryTab('pwa');
-                  setCurrentView('library');
-                }}
-                className="px-3.5 py-1.5 rounded-lg bg-cool-gray-850 hover:bg-cool-gray-750 border border-cool-gray-700 text-cyan-300 hover:text-white text-xs font-bold transition cursor-pointer flex items-center gap-1.5"
-                title="Configure PWA domain, icon, and connected devices"
-              >
-                <SlidersHorizontal className="w-3.5 h-3.5" />
-                <span>PWA Settings</span>
-              </button>
+              {(!usersConfigured || isAdmin) && (
+                <button
+                  onClick={() => {
+                    setInitialLibraryTab('settings');
+                    setCurrentView('library', { libraryTab: 'settings' });
+                  }}
+                  className="px-3.5 py-1.5 rounded-lg bg-cool-gray-850 hover:bg-cool-gray-750 border border-cool-gray-700 text-cyan-300 hover:text-white text-xs font-bold transition cursor-pointer flex items-center gap-1.5"
+                  title="Configure PWA domain, app name, and home screen icon"
+                >
+                  <SlidersHorizontal className="w-3.5 h-3.5" />
+                  <span>PWA Settings</span>
+                </button>
+              )}
               <button
                 onClick={() => {
                   setPwaBannerDismissed(true);
@@ -2584,6 +2963,45 @@ export default function App() {
           </div>
         )}
 
+        {recoveryModeActive && (
+          <div className="bg-amber-950/90 border border-amber-500/50 text-amber-200 p-3 sm:px-4 sm:py-2.5 rounded-xl mb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs animate-scale-up shadow-lg w-full max-w-full box-border">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <ShieldAlert className="w-4 h-4 text-amber-400 shrink-0" />
+              <span className="leading-snug">
+                <strong className="text-white">Admin Recovery Mode Enabled:</strong> Temporary recovery override is active via server / Home Assistant config. Disable <code className="font-mono bg-amber-900/60 px-1 py-0.5 rounded text-amber-200">admin_recovery_mode</code> after regaining access.
+              </span>
+            </div>
+            {!isAdmin && (
+              <button
+                type="button"
+                onClick={() => openAccountModal('recovery')}
+                className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-cool-gray-950 font-extrabold text-xs transition cursor-pointer whitespace-nowrap shrink-0"
+              >
+                Unlock Recovery Admin
+              </button>
+            )}
+          </div>
+        )}
+
+        {isEditLockedByAuth && (
+          <div className="bg-cool-gray-900/95 border border-cyan-500/40 text-cool-gray-200 p-3 sm:px-4 sm:py-2.5 rounded-xl mb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs shadow-lg w-full max-w-full box-border">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <Lock className="w-4 h-4 text-cyan-400 shrink-0" />
+              <span className="leading-snug">
+                <strong className="text-white">View-Only Mode:</strong> Sign in with your user PIN to add, move, or edit inventory items.
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => openAccountModal('signin')}
+              className="px-3.5 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white font-extrabold text-xs transition cursor-pointer whitespace-nowrap shrink-0 flex items-center gap-1.5 self-end sm:self-auto"
+            >
+              <LogIn className="w-3.5 h-3.5" />
+              <span>Sign In with PIN</span>
+            </button>
+          </div>
+        )}
+
         {pwaUpdateAvailable && (
           <aside
             aria-label="Application Update Notice"
@@ -2632,10 +3050,10 @@ export default function App() {
           </aside>
         )}
 
-        <header ref={headerRef} id="main-app-header" className="sticky top-0 z-40 bg-cool-gray-900/95 backdrop-blur-sm -mx-3 px-3 sm:-mx-5 sm:px-5 lg:-mx-6 lg:px-6 pt-3 pb-3 border-b border-cool-gray-800 transition-all mb-4">
+        <header ref={headerRef} id="main-app-header" className={`sticky top-0 ${isSyncMenuOpen ? 'z-[65]' : 'z-40'} bg-cool-gray-900/95 backdrop-blur-sm -mx-3 px-3 sm:-mx-5 sm:px-5 lg:-mx-6 lg:px-6 pt-3 pb-3 border-b border-cool-gray-800 transition-all mb-4`}>
           <div className="flex flex-col gap-3 relative">
             {/* Title / Brand and 3 view tabs right next to it */}
-            <div className="flex flex-wrap items-center justify-between gap-3 w-full pr-10 md:pr-0">
+            <div className="flex flex-wrap items-center justify-between gap-2 sm:gap-3 w-full">
               <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
                 <div className="flex items-center cursor-pointer" onClick={() => setCurrentView('product')} title="Freezer Store Home">
                   <FreezerIcon className="text-cyan-400 transition-all w-7 h-7 sm:w-8 h-8 shrink-0 animate-scale-up" />
@@ -2793,7 +3211,15 @@ export default function App() {
                 {activeOrder && currentView === 'offsite' && (
                   <div className="relative">
                     <button
-                      onClick={() => setIsMovementPopdownOpen(!isMovementPopdownOpen)}
+                      onClick={() => {
+                        setIsMovementPopdownOpen((prev) => {
+                          const next = !prev;
+                          if (next) {
+                            setIsSyncMenuOpen(false);
+                          }
+                          return next;
+                        });
+                      }}
                       className="h-8 px-2 sm:px-2.5 rounded-lg flex items-center justify-center gap-1 sm:gap-1.5 bg-indigo-950/45 border border-indigo-500/50 text-indigo-300 hover:text-white hover:border-indigo-400 transition font-bold text-xs select-none cursor-pointer"
                       title="Active Relocation Order details"
                     >
@@ -2847,11 +3273,24 @@ export default function App() {
                   onRefreshToken={isCfTokenRefreshEnabled ? () => setShowSecurityTokenModal(true) : undefined}
                 />
 
-                {/* Combined Sync, Operating Mode, and History Dropdown Menu */}
-                <div className="relative">
+
+
+                {/* Unified Main Menu (Status-Triggered: Modes, Inbound, Navigation, Account, Sync & Version) */}
+                <div ref={syncMenuRef} className="relative z-50">
                   <button
-                    onClick={() => setIsSyncMenuOpen(!isSyncMenuOpen)}
-                    className={`h-8 px-2 sm:px-2.5 rounded-lg flex items-center justify-center gap-1 sm:gap-1.5 border transition duration-150 focus:outline-none cursor-pointer text-[11px] sm:text-xs font-bold ${
+                    type="button"
+                    aria-haspopup="menu"
+                    aria-expanded={isSyncMenuOpen}
+                    onClick={() => {
+                      setIsSyncMenuOpen((prev) => {
+                        const next = !prev;
+                        if (next) {
+                          setIsMovementPopdownOpen(false);
+                        }
+                        return next;
+                      });
+                    }}
+                    className={`h-8 px-2.5 rounded-lg flex items-center justify-center gap-1.5 border transition duration-150 focus:outline-none cursor-pointer text-[11px] sm:text-xs font-bold ${
                       operatingMode === 'single' || isSingleUserMode
                         ? 'bg-emerald-950/40 text-emerald-300 border-emerald-500/50 shadow-md shadow-emerald-950/30 ring-1 ring-emerald-500/30'
                         : singleUserLock && singleUserLock.clientId !== clientId
@@ -2872,14 +3311,14 @@ export default function App() {
                     }`}
                     title={
                       operatingMode === 'single' || isSingleUserMode
-                        ? 'Single-User Mode Active (Zero-Lag Local Storage)'
+                        ? 'Main Menu — Single-User Mode Active'
                         : singleUserLock && singleUserLock.clientId !== clientId
-                        ? `Locked in Single-User Mode by ${singleUserLock.holderName}`
+                        ? `Main Menu — Locked by ${singleUserLock.holderName}`
                         : operatingMode === 'auto'
                         ? isAutoMultiActive
-                          ? `Auto Mode: Multi-User Active (${activeClientCount} connected) — Live sync enabled`
-                          : 'Auto Mode: Single-User Active (Solo) — Zero-lag local buffering'
-                        : `Sync, History & Traceability (${isSaving ? 'Saving to server...' : hasPendingChanges ? 'Pending changes syncing...' : syncStatus === 'remote_editing' ? 'Someone else is actively editing...' : syncStatus === 'synced' ? 'Live connected' : syncStatus === 'connecting' ? 'Connecting...' : 'Disconnected (Click to sync)'})`
+                          ? `Main Menu — Auto: Multi (${activeClientCount} connected)`
+                          : 'Main Menu — Auto: Single'
+                        : `Main Menu — ${isSaving ? 'Saving...' : hasPendingChanges ? 'Pending changes...' : syncStatus === 'remote_editing' ? 'User editing...' : syncStatus === 'synced' ? 'Live connected' : syncStatus === 'connecting' ? 'Connecting...' : 'Offline'}`
                     }
                   >
                     {operatingMode === 'single' || isSingleUserMode ? (
@@ -2913,7 +3352,7 @@ export default function App() {
                     ) : (
                       <Zap className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
                     )}
-                    <span className="hidden sm:inline">
+                    <span className="hidden sm:inline whitespace-nowrap">
                       {operatingMode === 'single' || isSingleUserMode
                         ? 'Single-User'
                         : singleUserLock && singleUserLock.clientId !== clientId
@@ -2930,51 +3369,256 @@ export default function App() {
                         ? 'Syncing'
                         : 'Offline'}
                     </span>
-                    <svg className="w-2.5 h-2.5 text-cool-gray-400 ml-0.5" fill="currentColor" viewBox="0 0 20 20">
-                      <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
-                    </svg>
+                    <ChevronDown className={`w-3 h-3 text-cool-gray-400 shrink-0 transition-transform duration-150 ${isSyncMenuOpen ? 'rotate-180' : ''}`} />
                   </button>
 
-                  {isSyncMenuOpen && (
-                    <>
-                      <div className="fixed inset-0 z-40" onClick={() => setIsSyncMenuOpen(false)} />
-                      <div id="sync-status-dropdown" className="absolute right-0 mt-2 w-64 sm:w-72 bg-cool-gray-850 rounded-xl border border-cool-gray-700 shadow-2xl p-2.5 z-50 text-xs animate-scale-up max-h-[85vh] overflow-y-auto">
-                        
-                        {/* 2-Way Operating Mode Control Panel */}
-                        <div className="p-2.5 bg-cool-gray-900/90 rounded-lg border border-cool-gray-750 mb-2.5 shadow-inner">
-                          <div className="text-[10px] uppercase tracking-wider text-cool-gray-400 font-bold mb-2 flex items-center justify-between">
-                            <span>Operating Mode</span>
-                            <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider flex items-center gap-1 ${
-                              operatingMode === 'auto'
-                                ? isAutoMultiActive
-                                  ? 'bg-blue-950/80 text-blue-300 border-blue-800/50'
-                                  : 'bg-cyan-950/80 text-cyan-300 border-cyan-800/50'
-                                : 'bg-emerald-950/80 text-emerald-300 border-emerald-800/50'
-                            }`}>
-                              {operatingMode === 'auto' 
-                                ? (isAutoMultiActive ? `Auto: Multi (${activeClientCount})` : 'Auto: Single') 
-                                : 'Exclusive Lock'}
-                            </span>
-                          </div>
+                  {isSyncMenuOpen && (() => {
+                    const isOnSiteContext = ['product', 'freezer', 'display_case'].includes(currentView);
+                    const isOnSiteMode = ['product', 'freezer', 'display_case', 'voice'].includes(currentView);
+                    const isOffSiteMode = currentView === 'offsite';
+                    const hasContextualInbound = isOnSiteContext || isOffSiteMode;
 
-                          {/* 2-Mode Tab Buttons */}
-                          <div className="grid grid-cols-2 gap-1.5 bg-cool-gray-800/90 p-1 rounded-lg border border-cool-gray-700/60 mb-2.5">
+                    return (
+                      <div
+                        id="sync-status-dropdown"
+                        role="menu"
+                        className="absolute right-0 mt-1.5 w-[calc(100vw-1.5rem)] max-w-[340px] sm:w-80 bg-cool-gray-850 rounded-xl border border-cool-gray-700 shadow-2xl p-2 z-50 text-xs animate-scale-up max-h-[calc(100dvh-4.5rem)] overflow-y-auto space-y-2"
+                      >
+                        {/* 1. Top Priority: Storage Modes & Contextual Inbound */}
+                        <div className="grid grid-cols-2 gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setIsSyncMenuOpen(false);
+                              if (!isOnSiteMode) {
+                                setCurrentView('product');
+                              }
+                            }}
+                            className={`min-h-[40px] px-2.5 py-1.5 rounded-lg border text-left transition flex items-center justify-between gap-1.5 cursor-pointer font-bold ${
+                              isOnSiteMode
+                                ? 'bg-cyan-600/20 border-cyan-500/50 text-cyan-200 shadow-sm'
+                                : 'bg-cool-gray-900/80 border-cool-gray-750 text-cool-gray-200 hover:bg-cool-gray-800 hover:text-white'
+                            }`}
+                          >
+                            <span className="flex items-center gap-1.5 min-w-0">
+                              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-3.5 h-3.5 text-cyan-400 shrink-0">
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 21v-4.875c0-.621.504-1.125 1.125-1.125h5.25c.621 0 1.125.504 1.125 1.125V21m0 0h4.5V3.545M12.75 21h7.5V10.75M2.25 21h1.5m18 0h-18M2.25 9l4.5-1.636M18.75 3l-1.5.545m0 6.205l3 1M5.25 10.75H21" />
+                              </svg>
+                              <span className="truncate">On-Site</span>
+                            </span>
+                            {isOnSiteMode && (
+                              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-3 h-3 text-cyan-400 shrink-0">
+                                <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                              </svg>
+                            )}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setIsSyncMenuOpen(false);
+                              setCurrentView('offsite');
+                            }}
+                            className={`min-h-[40px] px-2.5 py-1.5 rounded-lg border text-left transition flex items-center justify-between gap-1.5 cursor-pointer font-bold ${
+                              isOffSiteMode
+                                ? 'bg-indigo-600/25 border-indigo-500/50 text-indigo-200 shadow-sm'
+                                : 'bg-cool-gray-900/80 border-cool-gray-750 text-cool-gray-200 hover:bg-cool-gray-800 hover:text-white'
+                            }`}
+                          >
+                            <span className="flex items-center gap-1.5 min-w-0">
+                              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-3.5 h-3.5 text-indigo-400 shrink-0">
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 21v-7.5a.75.75 0 01.75-.75h3a.75.75 0 01.75.75V21m-4.5 0H2.36m11.14 0H18m0 0h3.64m-1.39 0V9.349m-16.5 11.65V9.35m0 0a3.001 3.001 0 003.75-.615A2.993 2.993 0 009.75 9.75c.896 0 1.7-.393 2.25-1.016a2.993 2.993 0 002.25 1.016c.896 0 1.7-.393 2.25-1.015a3.001 3.001 0 003.75.614m-16.5 0a3.004 3.004 0 01-.621-4.72l1.189-1.19A1.5 1.5 0 0110.125 3h3.75a1.5 1.5 0 011.06.44l1.19 1.189a3 3 0 01-.621 4.72M6.75 18h3.75a.75.75 0 00.75-.75V13.5a.75.75 0 00-.75-.75H6.75a.75.75 0 00-.75.75v3.75c0 .414.336.75.75.75z" />
+                              </svg>
+                              <span className="truncate">Off-Site</span>
+                            </span>
+                            {isOffSiteMode && (
+                              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-3 h-3 text-indigo-400 shrink-0">
+                                <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                              </svg>
+                            )}
+                          </button>
+
+                          {isOnSiteContext && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setIsSyncMenuOpen(false);
+                                setActiveModal({ type: 'BULK_ADD_MEAT' });
+                              }}
+                              className="min-h-[40px] px-2.5 py-1.5 rounded-lg border border-emerald-500/40 bg-emerald-950/35 hover:bg-emerald-900/50 text-emerald-300 hover:text-white transition flex items-center gap-1.5 cursor-pointer font-bold select-none"
+                            >
+                              <PackagePlus className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                              <span className="truncate">Inbound Stock</span>
+                            </button>
+                          )}
+
+                          {isOffSiteMode && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setIsSyncMenuOpen(false);
+                                setOffsiteSubTab('import');
+                              }}
+                              className="min-h-[40px] px-2.5 py-1.5 rounded-lg border border-indigo-500/40 bg-indigo-950/35 hover:bg-indigo-900/50 text-indigo-300 hover:text-white transition flex items-center gap-1.5 cursor-pointer font-bold select-none"
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-3.5 h-3.5 text-indigo-400 shrink-0">
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                              </svg>
+                              <span className="truncate">Bulk CSV Intake</span>
+                            </button>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setIsSyncMenuOpen(false);
+                              setCurrentView('butcher_records');
+                            }}
+                            className={`${hasContextualInbound ? '' : 'col-span-2'} min-h-[40px] px-2.5 py-1.5 rounded-lg border text-left transition flex items-center justify-between gap-1.5 cursor-pointer font-bold ${
+                              currentView === 'butcher_records'
+                                ? 'bg-rose-600/20 border-rose-500/50 text-rose-200 shadow-sm'
+                                : 'bg-cool-gray-900/80 border-cool-gray-750 text-cool-gray-200 hover:bg-cool-gray-800 hover:text-white'
+                            }`}
+                          >
+                            <span className="flex items-center gap-1.5 min-w-0">
+                              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-3.5 h-3.5 text-rose-400 shrink-0">
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25M9 16.5v.75m3-3v3M15 12v5.25m-4.5-15H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+                              </svg>
+                              <span className="truncate">Butcher Records</span>
+                            </span>
+                            {currentView === 'butcher_records' && (
+                              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-3 h-3 text-rose-400 shrink-0">
+                                <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                              </svg>
+                            )}
+                          </button>
+                        </div>
+
+                        <div className="border-t border-cool-gray-800" />
+
+                        {/* 2. Workspace, Audit & Account */}
+                        <div className="grid grid-cols-2 gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setIsSyncMenuOpen(false);
+                              setCurrentView('library');
+                            }}
+                            className={`min-h-[40px] px-2.5 py-1.5 rounded-lg border text-left transition flex items-center justify-between gap-1.5 cursor-pointer font-semibold ${
+                              currentView === 'library'
+                                ? 'bg-cyan-600/20 border-cyan-500/50 text-cyan-200'
+                                : 'bg-cool-gray-900/70 border-cool-gray-750 text-cool-gray-200 hover:bg-cool-gray-800 hover:text-white'
+                            }`}
+                          >
+                            <span className="flex items-center gap-1.5 min-w-0">
+                              <FolderTree className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                              <span className="truncate">Catalog &amp; Settings</span>
+                            </span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setIsSyncMenuOpen(false);
+                              if (!usersConfigured) {
+                                openAccountModal('setup-admin');
+                              } else if (isAuthenticated) {
+                                openAccountModal('account');
+                              } else {
+                                openAccountModal('signin');
+                              }
+                            }}
+                            className={`min-h-[40px] px-2.5 py-1.5 rounded-lg border text-left transition flex items-center justify-between gap-1.5 cursor-pointer font-semibold ${
+                              !usersConfigured
+                                ? 'bg-amber-950/40 border-amber-500/40 text-amber-200 hover:bg-amber-900/50'
+                                : isAuthenticated && currentUser
+                                ? 'bg-cool-gray-900/90 border-cool-gray-700 text-white hover:bg-cool-gray-800'
+                                : 'bg-cool-gray-900/70 border-cool-gray-750 text-cool-gray-200 hover:bg-cool-gray-800 hover:text-white'
+                            }`}
+                          >
+                            <span className="flex items-center gap-1.5 min-w-0">
+                              {!usersConfigured ? (
+                                <Shield className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                              ) : isAuthenticated && currentUser ? (
+                                isAdmin ? <Shield className="w-3.5 h-3.5 text-indigo-400 shrink-0" /> : <User className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                              ) : (
+                                <LogIn className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                              )}
+                              <span className="truncate">
+                                {!usersConfigured
+                                  ? 'Set Up Admin'
+                                  : isAuthenticated && currentUser
+                                  ? currentUser.name
+                                  : 'Sign In PIN'}
+                              </span>
+                            </span>
+                            {isAuthenticated && currentUser && (
+                              <span className={`text-[10px] font-bold shrink-0 ${isAdmin ? 'text-indigo-300' : 'text-emerald-300'}`}>
+                                {isAdmin ? 'Admin' : 'User'}
+                              </span>
+                            )}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setCurrentView('history');
+                              setIsSyncMenuOpen(false);
+                            }}
+                            className={`min-h-[40px] px-2.5 py-1.5 rounded-lg border text-left transition flex items-center justify-between gap-1.5 cursor-pointer font-semibold ${
+                              currentView === 'history'
+                                ? 'bg-indigo-600/25 border-indigo-500/50 text-indigo-200'
+                                : 'bg-cool-gray-900/70 border-cool-gray-750 text-cool-gray-200 hover:bg-cool-gray-800 hover:text-white'
+                            }`}
+                          >
+                            <span className="flex items-center gap-1.5 min-w-0">
+                              <History className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                              <span className="truncate">Audit History</span>
+                            </span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setCurrentView('traceability');
+                              setIsSyncMenuOpen(false);
+                            }}
+                            className={`min-h-[40px] px-2.5 py-1.5 rounded-lg border text-left transition flex items-center justify-between gap-1.5 cursor-pointer font-semibold ${
+                              currentView === 'traceability'
+                                ? 'bg-amber-500/25 border-amber-500/50 text-amber-200'
+                                : 'bg-cool-gray-900/70 border-cool-gray-750 text-cool-gray-200 hover:bg-cool-gray-800 hover:text-white'
+                            }`}
+                          >
+                            <span className="flex items-center gap-1.5 min-w-0">
+                              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-3.5 h-3.5 text-amber-400 shrink-0">
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
+                              </svg>
+                              <span className="truncate">Traceability</span>
+                            </span>
+                          </button>
+                        </div>
+
+                        <div className="border-t border-cool-gray-800" />
+
+                        {/* 3. Operating Mode, Sync & Devices */}
+                        <div className="space-y-1.5">
+                          <div className="grid grid-cols-2 gap-1.5 bg-cool-gray-900/90 p-1 rounded-lg border border-cool-gray-750">
                             <button
                               type="button"
                               onClick={async () => {
                                 await setOperatingMode('auto');
                               }}
-                              className={`py-1.5 px-2 rounded-md text-[11px] font-bold flex items-center justify-center gap-1.5 transition cursor-pointer ${
+                              className={`min-h-[36px] py-1.5 px-2 rounded-md text-[11px] font-bold flex items-center justify-center gap-1.5 transition cursor-pointer ${
                                 operatingMode === 'auto'
                                   ? isAutoMultiActive
                                     ? 'bg-blue-600 text-white shadow-sm'
                                     : 'bg-cyan-600 text-white shadow-sm'
                                   : 'text-cool-gray-400 hover:text-cool-gray-200 hover:bg-cool-gray-700/50'
                               }`}
-                              title="Auto Mode (Default): Runs solo locally with zero lag and seamlessly upgrades to collaborative sync when multiple users are active."
+                              title="Auto Mode: Runs solo locally and upgrades to live sync when multiple users are active."
                             >
                               {isAutoMultiActive ? <Users className="w-3.5 h-3.5 shrink-0" /> : <Zap className="w-3.5 h-3.5 shrink-0" />}
-                              <span>Auto Mode</span>
+                              <span className="truncate">Auto Mode</span>
                             </button>
 
                             <button
@@ -2989,83 +3633,44 @@ export default function App() {
                                   });
                                 }
                               }}
-                              className={`py-1.5 px-2 rounded-md text-[11px] font-bold flex items-center justify-center gap-1.5 transition cursor-pointer ${
+                              className={`min-h-[36px] py-1.5 px-2 rounded-md text-[11px] font-bold flex items-center justify-center gap-1.5 transition cursor-pointer ${
                                 operatingMode === 'single'
                                   ? 'bg-emerald-600 text-slate-950 font-black shadow-sm'
                                   : singleUserLock && singleUserLock.clientId !== clientId
                                   ? 'text-amber-400 hover:bg-amber-950/40'
                                   : 'text-cool-gray-400 hover:text-cool-gray-200 hover:bg-cool-gray-700/50'
                               }`}
-                              title="Single-User Mode: Claims exclusive database lock for zero lag. Locks other users with break-in option. Auto-times out after 5m."
+                              title="Single-User Mode: Claims exclusive database lock (auto-releases after 5m inactivity)."
                             >
                               <User className="w-3.5 h-3.5 shrink-0" />
-                              <span>Force Single</span>
+                              <span className="truncate">Force Single</span>
                             </button>
                           </div>
 
-                          {/* Mode Description & Contextual Actions */}
-                          {operatingMode === 'auto' && (
-                            <div className="space-y-2 text-[11px] text-cool-gray-300">
-                              <p className="leading-snug">
-                                <span className="font-semibold text-cyan-300">⚡ Smart Auto:</span> Default solo performance with zero-lag local memory. Automatically transitions to live collaborative sync when multiple users are active.
-                              </p>
-                              <div className="flex items-center justify-between text-[10px] text-cool-gray-400 pt-1.5 border-t border-cool-gray-800">
-                                <span className="font-medium">Current Status:</span>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setIsSyncMenuOpen(false);
-                                    setActiveModal({ type: 'CONNECTED_CLIENTS' });
-                                  }}
-                                  className={`font-bold flex items-center gap-1.5 px-2 py-0.5 rounded cursor-pointer transition hover:scale-105 active:scale-95 ${
-                                    isAutoMultiActive 
-                                      ? 'bg-blue-950/90 hover:bg-blue-900/90 text-blue-300 border border-blue-800/60 shadow-sm' 
-                                      : 'bg-cyan-950/90 hover:bg-cyan-900/90 text-cyan-300 border border-cyan-800/60'
-                                  }`}
-                                  title="Click to view connected devices & active users"
-                                >
-                                  <span className={`w-1.5 h-1.5 rounded-full ${isAutoMultiActive ? 'bg-blue-400 animate-ping' : 'bg-cyan-400'}`} />
-                                  {isAutoMultiActive 
-                                    ? `Multi-User Active (${activeClientCount} Connected) ➔` 
-                                    : 'Single-User Active (Solo) ➔'}
-                                </button>
-                              </div>
-                            </div>
-                          )}
-
                           {operatingMode === 'single' && (
-                            <div className="space-y-2 text-[11px]">
-                              <p className="text-emerald-200 leading-snug">
-                                <span className="font-semibold text-emerald-300">🔒 Exclusive Lock Active:</span> Changes save with zero latency locally. Remote edits from other users are locked out.
-                              </p>
-                              <p className="text-[10px] text-cool-gray-400 italic">
-                                Automatically releases and reverts to Auto after 5 minutes of inactivity.
-                              </p>
-                              <button
-                                type="button"
-                                onClick={async () => {
-                                  await setOperatingMode('auto');
-                                }}
-                                className="w-full py-1.5 px-2 bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-bold rounded-md text-xs transition cursor-pointer flex items-center justify-center gap-1.5 shadow"
-                              >
-                                <span>⚡ Release Lock & Return to Auto</span>
-                              </button>
-                            </div>
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                await setOperatingMode('auto');
+                              }}
+                              className="w-full min-h-[36px] py-1.5 px-2 bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-bold rounded-lg text-[11px] transition cursor-pointer flex items-center justify-center gap-1.5 shadow"
+                            >
+                              <span>⚡ Release Lock &amp; Return to Auto</span>
+                            </button>
                           )}
 
-                          {/* Break-in prompt if another user holds the single-user lock while we are in Auto */}
                           {operatingMode !== 'single' && singleUserLock && singleUserLock.clientId !== clientId && (
-                            <div className="mt-2 pt-2 border-t border-amber-900/60 space-y-1.5">
-                              <p className="text-[11px] text-amber-300 leading-snug">
-                                🔒 Single-User lock held by <span className="font-bold text-white">{singleUserLock.holderName}</span>.
-                              </p>
-                              <div className="flex items-center gap-1.5">
+                            <div className="p-1.5 rounded-lg bg-amber-950/35 border border-amber-700/50 space-y-1">
+                              <div className="text-[11px] text-amber-300 font-semibold truncate">
+                                🔒 Locked by <span className="text-white">{singleUserLock.holderName}</span>
+                              </div>
+                              <div className="grid grid-cols-2 gap-1.5">
                                 <button
                                   type="button"
                                   onClick={async () => {
                                     await requestBreakIn();
                                   }}
-                                  className="flex-1 py-1.5 px-2 bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold rounded-md text-xs transition cursor-pointer flex items-center justify-center gap-1.5 shadow"
+                                  className="min-h-[36px] py-1 px-2 bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold rounded-md text-[11px] transition cursor-pointer flex items-center justify-center gap-1"
                                 >
                                   <span>⚠️ Break-In (5s)</span>
                                 </button>
@@ -3074,7 +3679,7 @@ export default function App() {
                                   onClick={async () => {
                                     await forceReleaseSingleUserLock();
                                   }}
-                                  className="py-1.5 px-2 bg-amber-900/80 hover:bg-amber-800 text-amber-200 border border-amber-700 font-bold rounded-md text-xs transition cursor-pointer flex items-center justify-center shadow"
+                                  className="min-h-[36px] py-1 px-2 bg-amber-900/80 hover:bg-amber-800 text-amber-200 border border-amber-700 font-bold rounded-md text-[11px] transition cursor-pointer flex items-center justify-center"
                                   title="Force unlock if other device is closed"
                                 >
                                   Force Unlock
@@ -3083,69 +3688,54 @@ export default function App() {
                             </div>
                           )}
 
-                          {/* Database Freshness & Last Sync Status */}
-                          <div className="border-t border-cool-gray-800/80 mt-2.5 pt-2.5 px-1 text-[10px] text-cool-gray-400 flex flex-col gap-1 select-none">
-                            <div className="flex justify-between items-center">
-                              <span className="font-semibold text-cool-gray-400">Database Freshness:</span>
-                              <span className={`font-mono tabular-nums font-bold ${
-                                !lastSyncTime 
-                                  ? 'text-rose-400 animate-pulse' 
-                                  : Date.now() - lastSyncTime < 300000 
-                                  ? 'text-cyan-400' 
-                                  : Date.now() - lastSyncTime < 3600000 
-                                  ? 'text-blue-300' 
-                                  : 'text-amber-400 animate-pulse'
-                              }`}>
-                                {!lastSyncTime ? 'Never synced' : (() => {
-                                  const diff = Date.now() - lastSyncTime;
-                                  const mins = Math.floor(diff / 60000);
-                                  if (mins < 1) return 'Just now';
-                                  if (mins < 60) return `${mins}m ago`;
-                                  const hrs = Math.floor(mins / 60);
-                                  if (hrs < 24) return `${hrs}h ago`;
-                                  return new Date(lastSyncTime).toLocaleDateString([], { month: 'short', day: 'numeric' });
-                                })()}
+                          <div className="grid grid-cols-2 gap-1.5">
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                await flushAllPendingSyncs();
+                                handleManualRefresh();
+                                setIsSyncMenuOpen(false);
+                              }}
+                              className="min-h-[40px] px-2.5 py-1.5 rounded-lg border border-cool-gray-750 bg-cool-gray-900/70 hover:bg-cool-gray-800 text-cool-gray-200 hover:text-white transition flex items-center justify-between gap-1 cursor-pointer font-semibold"
+                            >
+                              <span className="flex items-center gap-1.5 min-w-0">
+                                <RefreshCw className={`w-3.5 h-3.5 text-cyan-400 shrink-0 ${isRefreshing ? 'animate-spin' : ''}`} />
+                                <span className="truncate">Sync Now</span>
                               </span>
-                            </div>
-                            {lastSyncTime && (
-                              <div className="text-[9px] text-cool-gray-500 text-right font-medium">
-                                Last Synced: {new Date(lastSyncTime).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
-                              </div>
-                            )}
-                          </div>
-                        </div>
+                            </button>
 
-                        {/* Dedicated Cloudflare Security Token Refresh Card when Offline / Error (only if Cloudflare helper is enabled) */}
-                        {isCfTokenRefreshEnabled && (!isOnline || syncStatus === 'error') && (
-                          <div className="p-2.5 rounded-lg bg-gradient-to-br from-rose-950/70 via-rose-900/40 to-amber-950/50 border border-rose-500/60 mb-2.5 shadow-lg animate-scale-up">
-                            <div className="flex items-start gap-2 mb-1.5">
-                              <div className="w-6 h-6 rounded-md bg-rose-500/20 border border-rose-400/40 flex items-center justify-center shrink-0 mt-0.5">
-                                <KeyRound className="w-3.5 h-3.5 text-rose-300 animate-pulse" />
-                              </div>
-                              <div className="min-w-0 flex-1">
-                                <div className="flex items-center justify-between gap-1">
-                                  <span className="font-extrabold text-white text-[11px]">Security Token Expired?</span>
-                                  <span className="text-[9px] bg-rose-500/30 text-rose-200 border border-rose-500/50 px-1 py-0.2 rounded font-mono font-bold uppercase tracking-wider">
-                                    Cloudflare
-                                  </span>
-                                </div>
-                                <p className="text-[10px] text-rose-200/90 leading-snug mt-0.5">
-                                  Re-authenticate session without losing your device name or identity.
-                                </p>
-                              </div>
-                            </div>
-                            <div className="flex items-center gap-1.5 pt-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setIsSyncMenuOpen(false);
+                                setActiveModal({ type: 'CONNECTED_CLIENTS' });
+                              }}
+                              className="min-h-[40px] px-2.5 py-1.5 rounded-lg border border-cool-gray-750 bg-cool-gray-900/70 hover:bg-cool-gray-800 text-cool-gray-200 hover:text-white transition flex items-center justify-between gap-1 cursor-pointer font-semibold"
+                              title="View connected devices & active users"
+                            >
+                              <span className="flex items-center gap-1.5 min-w-0">
+                                <Users className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                                <span className="truncate">Connected Devices</span>
+                              </span>
+                              <span className="text-[10px] font-mono tabular-nums font-bold text-cyan-300 shrink-0">
+                                {activeClientCount}
+                              </span>
+                            </button>
+                          </div>
+
+                          {isCfTokenRefreshEnabled && (!isOnline || syncStatus === 'error') && (
+                            <div className="grid grid-cols-2 gap-1.5">
                               <button
                                 type="button"
                                 onClick={() => {
                                   setIsSyncMenuOpen(false);
                                   setShowSecurityTokenModal(true);
                                 }}
-                                className="flex-1 py-1.5 px-2 bg-gradient-to-r from-rose-600 to-amber-600 hover:from-rose-500 hover:to-amber-500 text-white font-black rounded-md text-xs transition cursor-pointer flex items-center justify-center gap-1.5 shadow-md active:scale-95"
+                                className="min-h-[38px] py-1.5 px-2 bg-gradient-to-r from-rose-600 to-amber-600 hover:from-rose-500 hover:to-amber-500 text-white font-bold rounded-lg text-[11px] transition cursor-pointer flex items-center justify-center gap-1 shadow"
                                 title="Refresh Cloudflare security token while preserving device identity"
                               >
-                                <KeyRound className="w-3 h-3 shrink-0" />
-                                <span>Refresh Security Token</span>
+                                <KeyRound className="w-3.5 h-3.5 shrink-0" />
+                                <span className="truncate">Refresh Token</span>
                               </button>
                               <button
                                 type="button"
@@ -3153,315 +3743,119 @@ export default function App() {
                                   setIsSyncMenuOpen(false);
                                   await executeSecurityTokenRefresh();
                                 }}
-                                className="py-1.5 px-2 bg-cool-gray-800 hover:bg-cool-gray-700 text-cool-gray-200 border border-cool-gray-650 rounded-md text-[11px] font-bold transition cursor-pointer flex items-center justify-center shrink-0"
+                                className="min-h-[38px] py-1.5 px-2 bg-cool-gray-800 hover:bg-cool-gray-700 text-cool-gray-200 border border-cool-gray-650 rounded-lg text-[11px] font-bold transition cursor-pointer flex items-center justify-center"
                                 title="Instant 1-Click Re-authentication"
                               >
                                 <span>Instant ➔</span>
                               </button>
                             </div>
-                          </div>
-                        )}
-
-                        <button
-                          onClick={async () => {
-                            await flushAllPendingSyncs();
-                            handleManualRefresh();
-                            setIsSyncMenuOpen(false);
-                          }}
-                          className="flex w-full items-center justify-between gap-2 px-3 py-2 rounded-lg text-left text-cool-gray-300 hover:bg-cool-gray-700 hover:text-white transition font-medium cursor-pointer"
-                        >
-                          <span className="flex items-center gap-2">
-                            <svg 
-                              className={`w-3.5 h-3.5 flex-shrink-0 text-cyan-400 ${isRefreshing ? 'animate-spin' : ''}`} 
-                              xmlns="http://www.w3.org/2000/svg" 
-                              fill="none" 
-                              viewBox="0 0 24 24" 
-                              stroke="currentColor" 
-                              strokeWidth={2.5}
-                            >
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
-                            </svg>
-                            Sync Now
-                          </span>
-                          <span className={`text-[10px] uppercase font-bold tracking-wide px-1.5 py-0.5 rounded ${
-                            operatingMode === 'single' || isSingleUserMode
-                              ? 'bg-emerald-950/80 text-emerald-400 border border-emerald-850/40'
-                              : isSaving
-                              ? 'bg-amber-950/80 text-amber-300 border border-amber-850/40 animate-pulse'
-                              : hasPendingChanges
-                              ? 'bg-amber-950/80 text-amber-400 border border-amber-850/40 animate-pulse'
-                              : isAutoMultiActive
-                              ? 'bg-blue-950/80 text-blue-400 border border-blue-850/40'
-                              : syncStatus === 'remote_editing'
-                              ? 'bg-fuchsia-950/80 text-fuchsia-400 border border-fuchsia-850/40 animate-pulse'
-                              : syncStatus === 'synced' 
-                              ? 'bg-cyan-950/80 text-cyan-400 border border-cyan-850/40' 
-                              : syncStatus === 'connecting'
-                              ? 'bg-amber-950/80 text-amber-400 border border-amber-850/40'
-                              : 'bg-rose-950/80 text-rose-400 border border-rose-850/40'
-                          }`}>
-                            {operatingMode === 'single' || isSingleUserMode ? 'Single-User' : isSaving ? 'Saving...' : hasPendingChanges ? 'Pending Sync' : isAutoMultiActive ? `Auto: Multi (${activeClientCount})` : syncStatus === 'remote_editing' ? 'User Editing' : syncStatus === 'synced' ? 'Auto: Single' : syncStatus === 'connecting' ? 'Connecting' : 'Offline'}
-                          </span>
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setIsSyncMenuOpen(false);
-                            setActiveModal({ type: 'CONNECTED_CLIENTS' });
-                          }}
-                          className="flex w-full items-center justify-between gap-2 px-3 py-2 rounded-lg text-left text-cool-gray-300 hover:bg-cool-gray-700 hover:text-white transition font-medium cursor-pointer"
-                        >
-                          <span className="flex items-center gap-2">
-                            <Users className="w-3.5 h-3.5 text-cyan-400" />
-                            <span>Connected Devices</span>
-                          </span>
-                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-cool-gray-800 border border-cool-gray-700 text-cool-gray-300">
-                            {activeClientCount} {activeClientCount === 1 ? 'Device' : 'Devices'}
-                          </span>
-                        </button>
-
-                        {isCfTokenRefreshEnabled && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setIsSyncMenuOpen(false);
-                              setShowSecurityTokenModal(true);
-                            }}
-                            className="flex w-full items-center justify-between gap-2 px-3 py-2 rounded-lg text-left text-cool-gray-300 hover:bg-cool-gray-700 hover:text-white transition font-medium cursor-pointer"
-                          >
-                            <span className="flex items-center gap-2">
-                              <KeyRound className="w-3.5 h-3.5 text-amber-400" />
-                              <span>Security & Auth Token</span>
-                            </span>
-                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-cool-gray-800 border border-cool-gray-700 text-cool-gray-300">
-                              Cloudflare
-                            </span>
-                          </button>
-                        )}
-
-                        <div className="h-px bg-cool-gray-700/60 my-1" />
-
-                        {/* Audit & Traceability Section */}
-                        <div className="px-3 py-1 text-[10px] font-bold text-cool-gray-400 uppercase tracking-wider">
-                          <span>Audit & Traceability</span>
-                        </div>
-
-                        <button
-                          onClick={() => {
-                            setCurrentView('history');
-                            setIsSyncMenuOpen(false);
-                          }}
-                          className={`flex w-full items-center justify-between px-3 py-2 rounded-lg text-left transition font-medium cursor-pointer ${
-                            currentView === 'history' 
-                              ? 'bg-indigo-600/25 text-indigo-300 font-semibold' 
-                              : 'text-cool-gray-300 hover:bg-cool-gray-700 hover:text-white'
-                          }`}
-                        >
-                          <span className="flex items-center gap-2">
-                            <History className="w-3.5 h-3.5 text-indigo-400" />
-                            <span>Audit History Log</span>
-                          </span>
-                          {currentView === 'history' && (
-                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-3 h-3 text-indigo-400 shrink-0">
-                              <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
-                            </svg>
                           )}
-                        </button>
 
-                        <button
-                          onClick={() => {
-                            setCurrentView('traceability');
-                            setIsSyncMenuOpen(false);
-                          }}
-                          className={`flex w-full items-center justify-between px-3 py-2 rounded-lg text-left transition font-medium cursor-pointer ${
-                            currentView === 'traceability' 
-                              ? 'bg-amber-500/25 text-amber-300 font-semibold' 
-                              : 'text-cool-gray-300 hover:bg-cool-gray-700 hover:text-white'
-                          }`}
-                        >
-                          <span className="flex items-center gap-2">
-                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-3.5 h-3.5 text-amber-400">
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
-                            </svg>
-                            <span>Item Traceability</span>
-                          </span>
-                          {currentView === 'traceability' && (
-                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-3 h-3 text-amber-400 shrink-0">
-                              <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
-                            </svg>
-                          )}
-                        </button>
-                      </div>
-                    </>
-                  )}
-                </div>
-
-                {/* User dropdown options (with hamburger menu trigger - always rightmost) */}
-                <div className="absolute top-0 right-0 md:relative md:top-auto md:right-auto z-50">
-                  <button
-                    onClick={() => setIsUserDropdownOpen(!isUserDropdownOpen)}
-                    className="flex items-center justify-center bg-cool-gray-850 hover:bg-cool-gray-750 text-cool-gray-200 rounded-lg border border-cool-gray-700 cursor-pointer transition duration-150 w-8 h-8 relative"
-                    title="Menu Options"
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4.5 h-4.5 text-cool-gray-300">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
-                    </svg>
-                  </button>
-
-                  {isUserDropdownOpen && (
-                    <>
-                      <div className="fixed inset-0 z-40" onClick={() => setIsUserDropdownOpen(false)} />
-                      <div id="user-hamburger-dropdown" className="absolute right-0 sm:right-0 mt-2 w-56 max-w-[90vw] max-h-[85vh] overflow-y-auto rounded-xl bg-cool-gray-900 border border-cool-gray-700 shadow-2xl py-1.5 z-50 text-xs animate-fade-in origin-top-right">
-                        <div className="py-1">
-                          {/* Top Action Section */}
-                          <div className="px-3.5 py-1 text-[10px] font-bold text-cool-gray-500 uppercase tracking-wider">
-                            <span>Operations</span>
-                          </div>
-
-                          {['product', 'freezer', 'display_case'].includes(currentView) && (
+                          {isCfTokenRefreshEnabled && isOnline && syncStatus !== 'error' && (
                             <button
+                              type="button"
                               onClick={() => {
-                                setIsUserDropdownOpen(false);
-                                setActiveModal({ type: 'BULK_ADD_MEAT' });
+                                setIsSyncMenuOpen(false);
+                                setShowSecurityTokenModal(true);
                               }}
-                              className="flex w-full items-center gap-2 px-4 py-2 text-left transition font-normal text-emerald-400 hover:bg-emerald-950/40 hover:text-white cursor-pointer select-none"
+                              className="w-full min-h-[36px] flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg border border-cool-gray-750 bg-cool-gray-900/70 text-cool-gray-200 hover:bg-cool-gray-800 hover:text-white transition font-semibold cursor-pointer"
                             >
-                              <PackagePlus className="w-3.5 h-3.5 text-emerald-450" />
-                              <span>Inbound Bulk Stock</span>
+                              <span className="flex items-center gap-1.5">
+                                <KeyRound className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                                <span>Security &amp; Auth Token</span>
+                              </span>
+                              <span className="text-[10px] font-mono text-cool-gray-400">Cloudflare</span>
                             </button>
                           )}
+                        </div>
 
-                          {currentView === 'offsite' && (
-                            <>
-                              <div className="border-t border-cool-gray-800/80 my-1.5"></div>
-                              <div className="px-3.5 py-1 text-[10px] font-bold text-indigo-400 uppercase tracking-wider">
-                                <span>Off-Site Management</span>
-                              </div>
+                        <div className="border-t border-cool-gray-800" />
 
-                              <button
-                                onClick={() => {
-                                  setIsUserDropdownOpen(false);
-                                  setOffsiteSubTab('import');
-                                }}
-                                className="flex w-full items-center gap-2 px-4 py-2 text-left transition font-normal text-indigo-300 hover:bg-indigo-950/40 hover:text-white cursor-pointer select-none"
-                              >
-                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-3.5 h-3.5 text-indigo-400">
-                                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
-                                </svg>
-                                <span>Bulk CSV Intake</span>
-                              </button>
-                            </>
-                          )}
-
-                          <div className="border-t border-cool-gray-800/80 my-1.5"></div>
-
-                          {/* Storage Locations */}
-                          <div className="px-3.5 py-1 text-[10px] font-bold text-cool-gray-500 uppercase tracking-wider">
-                            <span>Storage Locations</span>
+                        {/* 4. Bottom Version, Last Synced & Cache Controls */}
+                        <div className="px-0.5 text-[10px] text-cool-gray-400 space-y-1.5 select-none">
+                          <div
+                            onClick={async () => {
+                              await flushAllPendingSyncs();
+                              handleManualRefresh();
+                              void handleSyncMenuCheckUpdates(true);
+                            }}
+                            className="flex justify-between items-center gap-2 cursor-pointer rounded px-1.5 py-1 -mx-1 hover:bg-cool-gray-800/70 transition group"
+                            title="Click to sync database & check server version"
+                          >
+                            <span className="font-semibold text-cool-gray-400 group-hover:text-cool-gray-200 flex items-center gap-1">
+                              <span>Database Freshness:</span>
+                              <RefreshCw className={`w-2.5 h-2.5 text-cool-gray-500 group-hover:text-cyan-400 transition ${isRefreshing || isCheckingSyncMenuUpdate ? 'animate-spin text-cyan-400' : ''}`} />
+                            </span>
+                            <span className={`font-mono tabular-nums font-bold truncate ${
+                              !lastSyncTime 
+                                ? 'text-rose-400 animate-pulse' 
+                                : Date.now() - lastSyncTime < 300000 
+                                ? 'text-cyan-400' 
+                                : Date.now() - lastSyncTime < 3600000 
+                                ? 'text-blue-300' 
+                                : 'text-amber-400 animate-pulse'
+                            }`}>
+                              {!lastSyncTime ? 'Never synced' : (() => {
+                                const diff = Date.now() - lastSyncTime;
+                                const mins = Math.floor(diff / 60000);
+                                const rel = mins < 1 ? 'Just now' : mins < 60 ? `${mins}m ago` : Math.floor(mins / 60) < 24 ? `${Math.floor(mins / 60)}h ago` : new Date(lastSyncTime).toLocaleDateString([], { month: 'short', day: 'numeric' });
+                                const timeStr = new Date(lastSyncTime).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+                                return `${rel} · ${timeStr}`;
+                              })()}
+                            </span>
                           </div>
 
-                          <button
-                            onClick={() => {
-                              setIsUserDropdownOpen(false);
-                              if (!['product', 'freezer', 'display_case', 'voice'].includes(currentView)) {
-                                setCurrentView('product');
-                              }
-                            }}
-                            className={`flex w-full items-center justify-between px-4 py-2 text-left transition font-normal cursor-pointer ${
-                              ['product', 'freezer', 'display_case', 'voice'].includes(currentView)
-                                ? 'bg-cyan-600/10 text-cyan-455'
-                                : 'text-cool-gray-300 hover:bg-cool-gray-750 hover:text-white'
-                            }`}
-                          >
-                            <span className="flex items-center gap-2">
-                              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-3.5 h-3.5">
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 21v-4.875c0-.621.504-1.125 1.125-1.125h5.25c.621 0 1.125.504 1.125 1.125V21m0 0h4.5V3.545M12.75 21h7.5V10.75M2.25 21h1.5m18 0h-18M2.25 9l4.5-1.636M18.75 3l-1.5.545m0 6.205l3 1M5.25 10.75H21" />
-                              </svg>
-                              On-Site Warehouses
-                            </span>
-                            {['product', 'freezer', 'display_case', 'voice'].includes(currentView) && (
-                              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-3 h-3 text-cyan-400 shrink-0">
-                                <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
-                              </svg>
-                            )}
-                          </button>
+                          <div className="flex items-center justify-between gap-2 px-0.5">
+                            <span className="font-semibold text-cool-gray-400">App Version:</span>
+                            <div className="flex items-center gap-1.5 font-mono tabular-nums">
+                              <span className="font-bold text-cool-gray-100">v{APP_VERSION}</span>
+                              <span aria-hidden="true" className="text-cool-gray-600">·</span>
+                              {isCheckingSyncMenuUpdate ? (
+                                <span className="text-[10px] font-semibold text-cyan-300">Checking...</span>
+                              ) : syncMenuVersionStatus === 'mismatch' || (pwaUpdateAvailable && pwaUpdateAvailable.newVersion !== APP_VERSION) ? (
+                                <span className="text-[10px] font-bold text-amber-300">
+                                  v{syncMenuServerVersion || pwaUpdateAvailable?.newVersion} Available
+                                </span>
+                              ) : syncMenuVersionStatus === 'offline' || !isOnline ? (
+                                <span className="text-[10px] font-semibold text-sky-300">Cached</span>
+                              ) : (
+                                <span className="text-[10px] font-semibold text-emerald-300">Up to date</span>
+                              )}
+                            </div>
+                          </div>
 
-                          <button
-                            onClick={() => {
-                              setIsUserDropdownOpen(false);
-                              setCurrentView('offsite');
-                            }}
-                            className={`flex w-full items-center justify-between px-4 py-2 text-left transition font-normal cursor-pointer ${
-                              currentView === 'offsite' 
-                                ? 'bg-indigo-600/15 text-indigo-400' 
-                                : 'text-cool-gray-300 hover:bg-cool-gray-750 hover:text-white'
-                            }`}
-                          >
-                            <span className="flex items-center gap-2">
-                              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-3.5 h-3.5">
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 21v-7.5a.75.75 0 01.75-.75h3a.75.75 0 01.75.75V21m-4.5 0H2.36m11.14 0H18m0 0h3.64m-1.39 0V9.349m-16.5 11.65V9.35m0 0a3.001 3.001 0 003.75-.615A2.993 2.993 0 009.75 9.75c.896 0 1.7-.393 2.25-1.016a2.993 2.993 0 002.25 1.016c.896 0 1.7-.393 2.25-1.015a3.001 3.001 0 003.75.614m-16.5 0a3.004 3.004 0 01-.621-4.72l1.189-1.19A1.5 1.5 0 0110.125 3h3.75a1.5 1.5 0 011.06.44l1.19 1.189a3 3 0 01-.621 4.72M6.75 18h3.75a.75.75 0 00.75-.75V13.5a.75.75 0 00-.75-.75H6.75a.75.75 0 00-.75.75v3.75c0 .414.336.75.75.75z" />
-                              </svg>
-                              Off-Site Storage
-                            </span>
-                            {currentView === 'offsite' && (
-                              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-3 h-3 text-indigo-400 shrink-0">
-                                <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
-                              </svg>
-                            )}
-                          </button>
+                          {syncMenuUpdateMessage && (
+                            <div className="text-[10px] font-medium text-cyan-300 bg-cyan-950/50 border border-cyan-500/30 px-2 py-1 rounded animate-fade-in leading-snug">
+                              {syncMenuUpdateMessage}
+                            </div>
+                          )}
 
-                          <button
-                            onClick={() => {
-                              setIsUserDropdownOpen(false);
-                              setCurrentView('butcher_records');
-                            }}
-                            className={`flex w-full items-center justify-between px-4 py-2 text-left transition font-normal cursor-pointer ${
-                              currentView === 'butcher_records' 
-                                ? 'bg-rose-600/15 text-rose-400' 
-                                : 'text-cool-gray-300 hover:bg-cool-gray-750 hover:text-white'
-                            }`}
-                          >
-                            <span className="flex items-center gap-2">
-                              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-3.5 h-3.5">
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25M9 16.5v.75m3-3v3M15 12v5.25m-4.5-15H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
-                              </svg>
-                              Butcher Records
-                            </span>
-                            {currentView === 'butcher_records' && (
-                              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-3 h-3 text-rose-400 shrink-0">
-                                <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
-                              </svg>
-                            )}
-                          </button>
-
-                          <div className="border-t border-cool-gray-800 my-1.5"></div>
-
-                          <button
-                            onClick={() => {
-                              setIsUserDropdownOpen(false);
-                              setCurrentView('library');
-                            }}
-                            className={`flex w-full items-center justify-between px-4 py-2 text-left transition font-normal cursor-pointer ${
-                              currentView === 'library' 
-                                ? 'bg-cyan-600/15 text-cyan-400' 
-                                : 'text-cool-gray-300 hover:bg-cool-gray-750 hover:text-white'
-                            }`}
-                          >
-                            <span className="flex items-center gap-2">
-                              <FolderTree className="w-3.5 h-3.5" />
-                              Catalog &amp; Settings
-                            </span>
-                            {currentView === 'library' && (
-                              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-3 h-3 text-cyan-400 shrink-0">
-                                <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
-                              </svg>
-                            )}
-                          </button>
+                          <div className="grid grid-cols-2 gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => void handleSyncMenuCheckUpdates(true)}
+                              disabled={isCheckingSyncMenuUpdate}
+                              className="min-h-[36px] py-1.5 px-2 rounded-lg bg-cool-gray-800 hover:bg-cool-gray-750 text-cool-gray-200 hover:text-white border border-cool-gray-700 text-[11px] font-bold flex items-center justify-center gap-1 transition cursor-pointer disabled:opacity-50"
+                              title="Query server for new releases and check service worker updates"
+                            >
+                              <RefreshCw className={`w-3 h-3 text-cyan-400 shrink-0 ${isCheckingSyncMenuUpdate ? 'animate-spin' : ''}`} />
+                              <span className="truncate">{isCheckingSyncMenuUpdate ? 'Checking...' : 'Check Updates'}</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void handleSyncMenuRefreshCache()}
+                              disabled={isCheckingSyncMenuUpdate}
+                              className="min-h-[36px] py-1.5 px-2 rounded-lg bg-cool-gray-800 hover:bg-cool-gray-750 text-cool-gray-200 hover:text-white border border-cool-gray-700 text-[11px] font-bold flex items-center justify-center gap-1 transition cursor-pointer disabled:opacity-50"
+                              title="Clear Service Worker and browser caches and reload fresh from server"
+                            >
+                              <RotateCcw className="w-3 h-3 text-amber-400 shrink-0" />
+                              <span className="truncate">Refresh Cache</span>
+                            </button>
+                          </div>
                         </div>
                       </div>
-                    </>
-                  )}
+                    );
+                  })()}
                 </div>
               </div>
             </div>
@@ -4260,6 +4654,9 @@ export default function App() {
         }}
       />
 
+      {/* User Account, Sign In, PIN & My Devices Modal */}
+      <UserAccountModal />
+
       {/* Cloudflare Security & Auth Token Refresh Modal */}
       <SecurityTokenModal
         isOpen={showSecurityTokenModal}
@@ -4289,5 +4686,13 @@ export default function App() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <UserAuthProvider>
+      <AppContent />
+    </UserAuthProvider>
   );
 }

@@ -21,12 +21,73 @@ import crypto from 'crypto';
 import AdmZip from 'adm-zip';
 import Database from 'better-sqlite3';
 import { calculateHistoryRetention } from './utils/historyRetention';
+import { canNonAdminWriteAppConfig } from './utils/appConfigPermissions';
+import {
+  assignPhotoToTargetInState,
+  clearPhotoReferencesInState,
+  collectPhotoAttachments,
+  normalizeImageUrlValue,
+  rewritePhotoReferencesInState,
+} from './utils/photoManager';
+import {
+  buildInventoryMetricMaps,
+  detectNewlyBreachedListItems,
+  formatListItemsReport,
+  getDateAndTimeInTz,
+  isCustomScheduleDue,
+  migrateLegacyNotificationData,
+  normalizeNotificationChannel,
+  resolveEffectiveDailyDigestMode,
+  resolveListChannelIdsForTrigger,
+} from './utils/notifications';
 import { APP_VERSION } from './version';
 import { ensurePublicIconsExist, pwaIconMiddleware, ICON_192_BUFFER, ICON_512_BUFFER, DEFAULT_ICON_SVG } from './publicIcons';
+import {
+  USER_SESSION_COOKIE_NAME,
+  AuthError,
+  PinRateLimiter,
+  readRecoveryConfig,
+  verifyRecoveryPin,
+  parseCookies,
+  ensureAuthSchema,
+  getActiveAdminCount,
+  isUsersConfigured,
+  listUsersSummary,
+  listAvailableUsers,
+  getUserById,
+  createUser,
+  setupFirstAdmin,
+  authenticateUserPin,
+  createSession,
+  resolveSessionToken,
+  revokeSession,
+  revokeSessionByToken,
+  revokeAllSessionsForUser,
+  revokeSessionsForDevice,
+  listSessionsSummary,
+  updateUser,
+  resetUserPin,
+  changeOwnPin,
+  deleteUser,
+  linkDeviceToUser,
+  listDevicesForUser,
+  assertDeviceOwnedByUser,
+  normalizeUsername,
+  getRequireLoginForEdits,
+  setRequireLoginForEdits,
+  listLegacyUnlinkedGroups,
+  migrateLegacyOperatorToUser,
+  linkLegacyOperatorToUser,
+  assignDeviceToUser,
+  isHttpsRequest,
+  buildSessionCookieHeader
+} from './utils/userAuthServer';
+import { registerTempVoicePromptRoutes } from './utils/tempVoicePromptServer';
 
 const PORT = 3000;
 
 const app = express();
+app.set('trust proxy', true);
 
 // High-performance gzip/deflate compression for large database JSON states (6MB+ -> ~180KB)
 app.use(compression({
@@ -398,6 +459,7 @@ interface AppInventoryState {
   isDemoMode?: boolean;
   isPreviewMode?: boolean;
   previewBackupFilename?: string;
+  notificationChannels?: any[];
   notificationSettings?: any[];
   notificationLogs?: any[];
   appConfig?: any[];
@@ -859,10 +921,34 @@ const TABLE_SCHEMAS: Record<string, {
         items TEXT,
         notificationEnabled INTEGER DEFAULT 0,
         notificationType TEXT DEFAULT 'all_items',
+        notificationChannelIds TEXT,
+        notificationRecipientOverride TEXT,
+        notificationDailyDigestMode TEXT,
+        notificationDigestChannelIds TEXT,
+        notificationCustomSchedule TEXT,
+        notificationImmediate TEXT,
         lastNotifiedAt TEXT
       )
     `,
-    columns: ['id', 'name', 'description', 'allowNotes', 'isInventoryControlled', 'controlType', 'controlCondition', 'items', 'notificationEnabled', 'notificationType', 'lastNotifiedAt'],
+    columns: [
+      'id',
+      'name',
+      'description',
+      'allowNotes',
+      'isInventoryControlled',
+      'controlType',
+      'controlCondition',
+      'items',
+      'notificationEnabled',
+      'notificationType',
+      'notificationChannelIds',
+      'notificationRecipientOverride',
+      'notificationDailyDigestMode',
+      'notificationDigestChannelIds',
+      'notificationCustomSchedule',
+      'notificationImmediate',
+      'lastNotifiedAt'
+    ],
     fromDb: (row: any) => ({
       id: row.id,
       name: row.name,
@@ -874,6 +960,12 @@ const TABLE_SCHEMAS: Record<string, {
       items: row.items ? JSON.parse(row.items) : [],
       notificationEnabled: row.notificationEnabled === 1,
       notificationType: row.notificationType || 'all_items',
+      notificationChannelIds: row.notificationChannelIds ? JSON.parse(row.notificationChannelIds) : [],
+      notificationRecipientOverride: row.notificationRecipientOverride || undefined,
+      notificationDailyDigestMode: row.notificationDailyDigestMode || undefined,
+      notificationDigestChannelIds: row.notificationDigestChannelIds ? JSON.parse(row.notificationDigestChannelIds) : undefined,
+      notificationCustomSchedule: row.notificationCustomSchedule ? JSON.parse(row.notificationCustomSchedule) : undefined,
+      notificationImmediate: row.notificationImmediate ? JSON.parse(row.notificationImmediate) : undefined,
       lastNotifiedAt: row.lastNotifiedAt || undefined
     }),
     toDb: (item: any) => ({
@@ -887,7 +979,51 @@ const TABLE_SCHEMAS: Record<string, {
       items: item.items ? JSON.stringify(item.items) : null,
       notificationEnabled: item.notificationEnabled ? 1 : 0,
       notificationType: item.notificationType || 'all_items',
+      notificationChannelIds: Array.isArray(item.notificationChannelIds) ? JSON.stringify(item.notificationChannelIds) : null,
+      notificationRecipientOverride: item.notificationRecipientOverride || null,
+      notificationDailyDigestMode: item.notificationDailyDigestMode || null,
+      notificationDigestChannelIds: Array.isArray(item.notificationDigestChannelIds) ? JSON.stringify(item.notificationDigestChannelIds) : null,
+      notificationCustomSchedule: item.notificationCustomSchedule ? JSON.stringify(item.notificationCustomSchedule) : null,
+      notificationImmediate: item.notificationImmediate ? JSON.stringify(item.notificationImmediate) : null,
       lastNotifiedAt: item.lastNotifiedAt || null
+    })
+  },
+  notification_channels: {
+    createSql: `
+      CREATE TABLE IF NOT EXISTS notification_channels (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        type TEXT NOT NULL,
+        enabled INTEGER DEFAULT 1,
+        config TEXT,
+        createdAt TEXT,
+        updatedAt TEXT,
+        lastTestedAt TEXT,
+        lastTestStatus TEXT
+      )
+    `,
+    columns: ['id', 'name', 'type', 'enabled', 'config', 'createdAt', 'updatedAt', 'lastTestedAt', 'lastTestStatus'],
+    fromDb: (row: any) => normalizeNotificationChannel({
+      id: row.id,
+      name: row.name,
+      type: row.type,
+      enabled: row.enabled === 1 || row.enabled === true,
+      config: row.config ? JSON.parse(row.config) : {},
+      createdAt: row.createdAt || undefined,
+      updatedAt: row.updatedAt || undefined,
+      lastTestedAt: row.lastTestedAt || undefined,
+      lastTestStatus: row.lastTestStatus || undefined
+    }),
+    toDb: (item: any) => ({
+      id: item.id,
+      name: item.name || 'Notification Channel',
+      type: item.type || 'in_app',
+      enabled: item.enabled === false || item.enabled === 0 ? 0 : 1,
+      config: item.config ? JSON.stringify(item.config) : '{}',
+      createdAt: item.createdAt || null,
+      updatedAt: item.updatedAt || null,
+      lastTestedAt: item.lastTestedAt || null,
+      lastTestStatus: item.lastTestStatus || null
     })
   },
   notification_settings: {
@@ -899,6 +1035,8 @@ const TABLE_SCHEMAS: Record<string, {
         digestTime TEXT DEFAULT '20:00',
         timezone TEXT DEFAULT 'America/New_York',
         method TEXT DEFAULT 'in_app',
+        defaultChannelIds TEXT,
+        systemRoutes TEXT,
         smtpHost TEXT,
         smtpPort INTEGER DEFAULT 587,
         smtpUser TEXT,
@@ -915,6 +1053,7 @@ const TABLE_SCHEMAS: Record<string, {
     `,
     columns: [
       'id', 'digestEnabled', 'digestMode', 'digestTime', 'timezone', 'method',
+      'defaultChannelIds', 'systemRoutes',
       'smtpHost', 'smtpPort', 'smtpUser', 'smtpPass', 'smtpFrom',
       'smtpTo', 'smtpSecure', 'webhookUrl', 'haNotifyService', 'haUrl', 'haToken', 'lastDigestSentAt'
     ],
@@ -925,6 +1064,8 @@ const TABLE_SCHEMAS: Record<string, {
       digestTime: row.digestTime || '20:00',
       timezone: row.timezone || 'America/New_York',
       method: row.method || 'in_app',
+      defaultChannelIds: row.defaultChannelIds ? JSON.parse(row.defaultChannelIds) : [],
+      systemRoutes: row.systemRoutes ? JSON.parse(row.systemRoutes) : { pinResetChannelIds: [], systemAlertChannelIds: [] },
       smtpHost: row.smtpHost || '',
       smtpPort: row.smtpPort || 587,
       smtpUser: row.smtpUser || '',
@@ -945,6 +1086,8 @@ const TABLE_SCHEMAS: Record<string, {
       digestTime: item.digestTime || '20:00',
       timezone: item.timezone || 'America/New_York',
       method: item.method || 'in_app',
+      defaultChannelIds: Array.isArray(item.defaultChannelIds) ? JSON.stringify(item.defaultChannelIds) : null,
+      systemRoutes: item.systemRoutes ? JSON.stringify(item.systemRoutes) : null,
       smtpHost: item.smtpHost || null,
       smtpPort: item.smtpPort || 587,
       smtpUser: item.smtpUser || null,
@@ -968,10 +1111,15 @@ const TABLE_SCHEMAS: Record<string, {
         message TEXT NOT NULL,
         method TEXT NOT NULL,
         status TEXT NOT NULL,
-        error TEXT
+        error TEXT,
+        channelId TEXT,
+        channelName TEXT,
+        eventSource TEXT,
+        listId TEXT,
+        listName TEXT
       )
     `,
-    columns: ['id', 'sentAt', 'title', 'message', 'method', 'status', 'error'],
+    columns: ['id', 'sentAt', 'title', 'message', 'method', 'status', 'error', 'channelId', 'channelName', 'eventSource', 'listId', 'listName'],
     fromDb: (row: any) => ({
       id: row.id,
       sentAt: row.sentAt,
@@ -979,7 +1127,12 @@ const TABLE_SCHEMAS: Record<string, {
       message: row.message,
       method: row.method,
       status: row.status,
-      error: row.error || undefined
+      error: row.error || undefined,
+      channelId: row.channelId || undefined,
+      channelName: row.channelName || undefined,
+      eventSource: row.eventSource || undefined,
+      listId: row.listId || undefined,
+      listName: row.listName || undefined
     }),
     toDb: (item: any) => ({
       id: item.id,
@@ -988,7 +1141,12 @@ const TABLE_SCHEMAS: Record<string, {
       message: item.message,
       method: item.method,
       status: item.status,
-      error: item.error || null
+      error: item.error || null,
+      channelId: item.channelId || null,
+      channelName: item.channelName || null,
+      eventSource: item.eventSource || null,
+      listId: item.listId || null,
+      listName: item.listName || null
     })
   },
   tags: {
@@ -999,17 +1157,19 @@ const TABLE_SCHEMAS: Record<string, {
         description TEXT,
         color TEXT,
         textColor TEXT,
-        excludeFromDisplayRestock INTEGER DEFAULT 0
+        excludeFromDisplayRestock INTEGER DEFAULT 0,
+        prioritizeItem INTEGER DEFAULT 0
       )
     `,
-    columns: ['id', 'name', 'description', 'color', 'textColor', 'excludeFromDisplayRestock'],
+    columns: ['id', 'name', 'description', 'color', 'textColor', 'excludeFromDisplayRestock', 'prioritizeItem'],
     fromDb: (row: any) => ({
       id: row.id,
       name: row.name,
       description: row.description || undefined,
       color: row.color || undefined,
       textColor: row.textColor || undefined,
-      excludeFromDisplayRestock: row.excludeFromDisplayRestock === 1 || row.excludeFromDisplayRestock === true
+      excludeFromDisplayRestock: row.excludeFromDisplayRestock === 1 || row.excludeFromDisplayRestock === true,
+      prioritizeItem: row.prioritizeItem === 1 || row.prioritizeItem === true
     }),
     toDb: (item: any) => ({
       id: item.id,
@@ -1017,7 +1177,8 @@ const TABLE_SCHEMAS: Record<string, {
       description: item.description || null,
       color: item.color || null,
       textColor: item.textColor || null,
-      excludeFromDisplayRestock: item.excludeFromDisplayRestock ? 1 : 0
+      excludeFromDisplayRestock: item.excludeFromDisplayRestock ? 1 : 0,
+      prioritizeItem: item.prioritizeItem ? 1 : 0
     })
   },
   locations: {
@@ -1207,6 +1368,7 @@ const TABLE_SCHEMAS: Record<string, {
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         operator TEXT,
+        userId TEXT,
         deviceType TEXT,
         clientDevice TEXT,
         clientInfo TEXT,
@@ -1216,14 +1378,16 @@ const TABLE_SCHEMAS: Record<string, {
         lastIp TEXT,
         userAgent TEXT,
         status TEXT DEFAULT 'authorized',
+        autoUpdateCache INTEGER DEFAULT 1,
         notes TEXT
       )
     `,
-    columns: ['id', 'name', 'operator', 'deviceType', 'clientDevice', 'clientInfo', 'isPwa', 'firstSeen', 'lastSeen', 'lastIp', 'userAgent', 'status', 'notes'],
+    columns: ['id', 'name', 'operator', 'userId', 'deviceType', 'clientDevice', 'clientInfo', 'isPwa', 'firstSeen', 'lastSeen', 'lastIp', 'userAgent', 'status', 'autoUpdateCache', 'notes'],
     fromDb: (row: any) => ({
       id: row.id,
       name: row.name,
       operator: row.operator || '',
+      userId: row.userId || undefined,
       deviceType: row.deviceType || '',
       clientDevice: row.clientDevice || '',
       clientInfo: row.clientInfo || '',
@@ -1233,12 +1397,14 @@ const TABLE_SCHEMAS: Record<string, {
       lastIp: row.lastIp || '',
       userAgent: row.userAgent || '',
       status: row.status || 'authorized',
+      autoUpdateCache: row.autoUpdateCache === undefined || row.autoUpdateCache === null ? true : Boolean(row.autoUpdateCache),
       notes: row.notes || ''
     }),
     toDb: (item: any) => ({
       id: item.id,
       name: item.name || 'Unnamed Device',
       operator: item.operator || null,
+      userId: item.userId || null,
       deviceType: item.deviceType || null,
       clientDevice: item.clientDevice || null,
       clientInfo: item.clientInfo || null,
@@ -1248,6 +1414,7 @@ const TABLE_SCHEMAS: Record<string, {
       lastIp: item.lastIp || null,
       userAgent: item.userAgent || null,
       status: item.status || 'authorized',
+      autoUpdateCache: item.autoUpdateCache === undefined || item.autoUpdateCache === null ? 1 : (item.autoUpdateCache ? 1 : 0),
       notes: item.notes || null
     })
   },
@@ -1310,6 +1477,90 @@ const TABLE_SCHEMAS: Record<string, {
       notes: item.notes || null,
       createdAt: item.createdAt || new Date().toISOString()
     })
+  },
+  app_users: {
+    primaryKey: 'id',
+    createSql: `
+      CREATE TABLE IF NOT EXISTS app_users (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'user',
+        pinHash TEXT NOT NULL,
+        pinSalt TEXT NOT NULL,
+        isActive INTEGER DEFAULT 1,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL,
+        lastLoginAt TEXT
+      )
+    `,
+    columns: ['id', 'name', 'role', 'pinHash', 'pinSalt', 'isActive', 'createdAt', 'updatedAt', 'lastLoginAt'],
+    fromDb: (row: any) => ({
+      id: row.id,
+      name: row.name,
+      role: row.role === 'admin' ? 'admin' : 'user',
+      pinHash: row.pinHash,
+      pinSalt: row.pinSalt,
+      isActive: row.isActive === 1 || row.isActive === true,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+      lastLoginAt: row.lastLoginAt || undefined
+    }),
+    toDb: (item: any) => ({
+      id: item.id,
+      name: item.name,
+      role: item.role === 'admin' ? 'admin' : 'user',
+      pinHash: item.pinHash,
+      pinSalt: item.pinSalt,
+      isActive: item.isActive === false || item.isActive === 0 ? 0 : 1,
+      createdAt: item.createdAt || new Date().toISOString(),
+      updatedAt: item.updatedAt || new Date().toISOString(),
+      lastLoginAt: item.lastLoginAt || null
+    })
+  },
+  user_sessions: {
+    primaryKey: 'id',
+    createSql: `
+      CREATE TABLE IF NOT EXISTS user_sessions (
+        id TEXT PRIMARY KEY,
+        userId TEXT NOT NULL,
+        tokenHash TEXT NOT NULL UNIQUE,
+        deviceId TEXT,
+        deviceName TEXT,
+        userAgent TEXT,
+        ip TEXT,
+        createdAt TEXT NOT NULL,
+        lastSeenAt TEXT NOT NULL,
+        expiresAt TEXT,
+        revokedAt TEXT
+      )
+    `,
+    columns: ['id', 'userId', 'tokenHash', 'deviceId', 'deviceName', 'userAgent', 'ip', 'createdAt', 'lastSeenAt', 'expiresAt', 'revokedAt'],
+    fromDb: (row: any) => ({
+      id: row.id,
+      userId: row.userId,
+      tokenHash: row.tokenHash,
+      deviceId: row.deviceId || undefined,
+      deviceName: row.deviceName || undefined,
+      userAgent: row.userAgent || undefined,
+      ip: row.ip || undefined,
+      createdAt: row.createdAt,
+      lastSeenAt: row.lastSeenAt,
+      expiresAt: row.expiresAt || undefined,
+      revokedAt: row.revokedAt || undefined
+    }),
+    toDb: (item: any) => ({
+      id: item.id,
+      userId: item.userId,
+      tokenHash: item.tokenHash,
+      deviceId: item.deviceId || null,
+      deviceName: item.deviceName || null,
+      userAgent: item.userAgent || null,
+      ip: item.ip || null,
+      createdAt: item.createdAt || new Date().toISOString(),
+      lastSeenAt: item.lastSeenAt || new Date().toISOString(),
+      expiresAt: item.expiresAt || null,
+      revokedAt: item.revokedAt || null
+    })
   }
 };
 
@@ -1361,6 +1612,7 @@ function initDatabase() {
     for (const table of Object.keys(TABLE_SCHEMAS)) {
       db.prepare(TABLE_SCHEMAS[table].createSql).run();
     }
+    ensureAuthSchema(db);
 
     // Ensure persisted auto_snapshot_config in live database does not keep isDemoMode enabled across server restart
     if (!isDemoMode) {
@@ -1513,6 +1765,24 @@ function initDatabase() {
       if (!listCols.some(col => col.name === 'notificationType')) {
         db.prepare("ALTER TABLE custom_lists ADD COLUMN notificationType TEXT DEFAULT 'all_items'").run();
       }
+      if (!listCols.some(col => col.name === 'notificationChannelIds')) {
+        db.prepare("ALTER TABLE custom_lists ADD COLUMN notificationChannelIds TEXT").run();
+      }
+      if (!listCols.some(col => col.name === 'notificationRecipientOverride')) {
+        db.prepare("ALTER TABLE custom_lists ADD COLUMN notificationRecipientOverride TEXT").run();
+      }
+      if (!listCols.some(col => col.name === 'notificationDailyDigestMode')) {
+        db.prepare("ALTER TABLE custom_lists ADD COLUMN notificationDailyDigestMode TEXT").run();
+      }
+      if (!listCols.some(col => col.name === 'notificationDigestChannelIds')) {
+        db.prepare("ALTER TABLE custom_lists ADD COLUMN notificationDigestChannelIds TEXT").run();
+      }
+      if (!listCols.some(col => col.name === 'notificationCustomSchedule')) {
+        db.prepare("ALTER TABLE custom_lists ADD COLUMN notificationCustomSchedule TEXT").run();
+      }
+      if (!listCols.some(col => col.name === 'notificationImmediate')) {
+        db.prepare("ALTER TABLE custom_lists ADD COLUMN notificationImmediate TEXT").run();
+      }
       if (!listCols.some(col => col.name === 'lastNotifiedAt')) {
         db.prepare("ALTER TABLE custom_lists ADD COLUMN lastNotifiedAt TEXT").run();
       }
@@ -1531,10 +1801,36 @@ function initDatabase() {
       if (!settingsCols.some(col => col.name === 'timezone')) {
         db.prepare("ALTER TABLE notification_settings ADD COLUMN timezone TEXT DEFAULT 'America/New_York'").run();
       }
+      if (!settingsCols.some(col => col.name === 'defaultChannelIds')) {
+        db.prepare("ALTER TABLE notification_settings ADD COLUMN defaultChannelIds TEXT").run();
+      }
+      if (!settingsCols.some(col => col.name === 'systemRoutes')) {
+        db.prepare("ALTER TABLE notification_settings ADD COLUMN systemRoutes TEXT").run();
+      }
+
+      const logCols = db.prepare("PRAGMA table_info(notification_logs)").all() as any[];
+      if (!logCols.some(col => col.name === 'channelId')) {
+        db.prepare("ALTER TABLE notification_logs ADD COLUMN channelId TEXT").run();
+      }
+      if (!logCols.some(col => col.name === 'channelName')) {
+        db.prepare("ALTER TABLE notification_logs ADD COLUMN channelName TEXT").run();
+      }
+      if (!logCols.some(col => col.name === 'eventSource')) {
+        db.prepare("ALTER TABLE notification_logs ADD COLUMN eventSource TEXT").run();
+      }
+      if (!logCols.some(col => col.name === 'listId')) {
+        db.prepare("ALTER TABLE notification_logs ADD COLUMN listId TEXT").run();
+      }
+      if (!logCols.some(col => col.name === 'listName')) {
+        db.prepare("ALTER TABLE notification_logs ADD COLUMN listName TEXT").run();
+      }
 
       const tagCols = db.prepare("PRAGMA table_info(tags)").all() as any[];
       if (!tagCols.some(col => col.name === 'excludeFromDisplayRestock')) {
         db.prepare("ALTER TABLE tags ADD COLUMN excludeFromDisplayRestock INTEGER DEFAULT 0").run();
+      }
+      if (!tagCols.some(col => col.name === 'prioritizeItem')) {
+        db.prepare("ALTER TABLE tags ADD COLUMN prioritizeItem INTEGER DEFAULT 0").run();
       }
 
       const productCols = db.prepare("PRAGMA table_info(products)").all() as any[];
@@ -1671,6 +1967,17 @@ function initDatabase() {
       }
     } catch (e) {
       console.error("Error checking/adding partial confirmation columns to movement_orders:", e);
+    }
+
+    // Ensure pwa_devices has autoUpdateCache column (defaults to 1 = Auto)
+    try {
+      const pwaDeviceCols = db.prepare("PRAGMA table_info(pwa_devices)").all() as any[];
+      if (!pwaDeviceCols.some(col => col.name === 'autoUpdateCache')) {
+        console.log("Adding 'autoUpdateCache' column to pwa_devices table...");
+        db.prepare("ALTER TABLE pwa_devices ADD COLUMN autoUpdateCache INTEGER DEFAULT 1").run();
+      }
+    } catch (e) {
+      console.error("Error checking/adding autoUpdateCache column to pwa_devices:", e);
     }
 
     // Reclaim disk space and eliminate SSD write amplification by dropping legacy disk-based undo_snapshots table
@@ -2060,6 +2367,7 @@ function loadStateSync(): AppInventoryState {
         importedToOffSite: !e.archived
       }));
 
+    let notificationChannels = loadTableData('notification_channels');
     let notificationSettings = loadTableData('notification_settings');
     if (notificationSettings.length === 0) {
       const defaultSettings = {
@@ -2067,7 +2375,10 @@ function loadStateSync(): AppInventoryState {
         digestEnabled: false,
         digestMode: 'combined',
         digestTime: '20:00',
+        timezone: 'America/New_York',
         method: 'in_app',
+        defaultChannelIds: [],
+        systemRoutes: { pinResetChannelIds: [], systemAlertChannelIds: [] },
         smtpHost: '',
         smtpPort: 587,
         smtpUser: '',
@@ -2085,6 +2396,25 @@ function loadStateSync(): AppInventoryState {
       notificationSettings = [defaultSettings];
     }
 
+    let customLists = loadTableData('custom_lists');
+    const migration = migrateLegacyNotificationData(
+      notificationSettings[0],
+      notificationChannels,
+      customLists
+    );
+    if (migration.migrated) {
+      notificationChannels = migration.channels;
+      notificationSettings = [migration.settings];
+      customLists = migration.customLists;
+      try {
+        saveTableData('notification_channels', notificationChannels);
+        saveTableData('notification_settings', notificationSettings);
+        saveTableData('custom_lists', customLists);
+      } catch (migErr) {
+        console.error('Error persisting migrated notification channels:', migErr);
+      }
+    }
+
     let containerTemplates = loadTableData('container_templates') || [];
 
     return {
@@ -2100,11 +2430,12 @@ function loadStateSync(): AppInventoryState {
       boxes: loadTableData('boxes') || [],
       butcherOrders: loadTableData('butcher_orders'),
       butcherRecords: butcherRecords,
-      customLists: loadTableData('custom_lists'),
+      customLists: customLists,
       tags: loadTableData('tags'),
       locations: loadTableData('locations'),
       movementOrders: loadTableData('movement_orders'),
       voiceDictionary: loadTableData('voice_dictionary') || [],
+      notificationChannels: notificationChannels,
       notificationSettings: notificationSettings,
       notificationLogs: loadTableData('notification_logs') || [],
       appConfig: loadTableData('app_config') || [],
@@ -2232,6 +2563,9 @@ function saveStateSync(state: AppInventoryState, affectedTables?: string[], hist
       }
       if (shouldSync('voice_dictionary')) {
         syncTableData('voice_dictionary', state.voiceDictionary || [], collectInverse ? inverseCollector : undefined);
+      }
+      if (shouldSync('notification_channels') && state.notificationChannels) {
+        syncTableData('notification_channels', state.notificationChannels);
       }
       if (shouldSync('notification_settings') && state.notificationSettings) {
         syncTableData('notification_settings', state.notificationSettings);
@@ -2434,17 +2768,9 @@ function normalizeState(state: AppInventoryState): AppInventoryState {
     }));
   }
 
-  // Guarantee tags exist
+  // Guarantee tags array exists without forcing hardcoded tag rules
   if (!state.tags) {
     state.tags = [];
-  } else {
-    // Ensure 'not-for-sale' tag gets excludeFromDisplayRestock = true if present and undefined
-    state.tags = state.tags.map(t => {
-      if (t.id === 'not-for-sale' && t.excludeFromDisplayRestock === undefined) {
-        return { ...t, excludeFromDisplayRestock: true };
-      }
-      return t;
-    });
   }
 
   if (!Array.isArray(state.voiceDictionary)) {
@@ -2967,7 +3293,7 @@ async function saveState(state: AppInventoryState, affectedTables?: string[], hi
 
 // ---------------- INVENTORY SYNC ENDPOINTS ----------------
 
-app.post('/api/upload', async (req: any, res) => {
+app.post('/api/upload', requireEditAuth, async (req: any, res) => {
   try {
     const { base64, filename } = req.body;
     if (!base64 || !filename) {
@@ -3359,7 +3685,11 @@ runAutomaticRollingSnapshots().catch(err => console.error(err));
 
 async function sendNotificationPayload(title: string, message: string, settings: any): Promise<{ success: boolean; error?: string }> {
   try {
-    const { method, webhookUrl, haNotifyService, haUrl, haToken, smtpHost, smtpPort, smtpUser, smtpPass, smtpFrom, smtpTo, smtpSecure } = settings;
+    const { method, webhookUrl, haNotifyService, haUrl, haToken, smtpHost, smtpPort, smtpUser, smtpPass, smtpFrom, smtpTo, smtpSecure } = settings || {};
+
+    if (method === 'in_app') {
+      return { success: true };
+    }
 
     if (method === 'ha_persistent' || method === 'ha_notify') {
       let finalUrl = (haUrl || '').trim();
@@ -3387,10 +3717,7 @@ async function sendNotificationPayload(title: string, message: string, settings:
 
       if (method === 'ha_persistent') {
         serviceUrl = `${cleanBase}/services/persistent_notification/create`;
-        payload = {
-          title,
-          message
-        };
+        payload = { title, message };
       } else {
         let rawSvc = (haNotifyService || 'notify.notify').trim();
         if (rawSvc.startsWith('notify.')) {
@@ -3412,51 +3739,27 @@ async function sendNotificationPayload(title: string, message: string, settings:
         }
 
         serviceUrl = `${cleanBase}/services/${domain}/${service}`;
-        payload = {
-          title,
-          message
-        };
+        payload = { title, message };
       }
 
-      console.log(`Sending Home Assistant notification to ${serviceUrl}...`);
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json'
-      };
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (finalToken) {
         headers['Authorization'] = `Bearer ${finalToken}`;
         headers['X-Supervisor-Token'] = finalToken;
       }
 
-      try {
-        const response = await fetch(serviceUrl, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(payload),
-          signal: AbortSignal.timeout(10000)
-        });
+      const response = await fetch(serviceUrl, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(10000)
+      });
 
-        if (!response.ok) {
-          const errText = await response.text().catch(() => '');
-          let hint = '';
-          if (response.status === 401) {
-            hint = ' (Unauthorized: Check your Long-Lived Access Token or Supervisor credentials)';
-          } else if (response.status === 404) {
-            hint = ` (Not Found: Verify service endpoint "${serviceUrl}" exists in Home Assistant)`;
-          }
-          throw new Error(`Home Assistant API returned status ${response.status}${hint}: ${errText || response.statusText}`);
-        }
-
-        return { success: true };
-      } catch (fetchErr: any) {
-        if (fetchErr.message?.includes('Home Assistant API returned status')) {
-          throw fetchErr;
-        }
-        const msg = fetchErr.message || String(fetchErr);
-        if (msg.includes('ECONNREFUSED') || msg.includes('ENOTFOUND') || msg.includes('fetch failed') || fetchErr.name === 'TimeoutError') {
-          throw new Error(`Unable to reach Home Assistant at "${cleanBase}". Please verify Home Assistant URL and network connectivity.`);
-        }
-        throw fetchErr;
+      if (!response.ok) {
+        const errText = await response.text().catch(() => '');
+        throw new Error(`Home Assistant API returned status ${response.status}: ${errText || response.statusText}`);
       }
+      return { success: true };
     }
 
     if (method === 'smtp_email') {
@@ -3472,15 +3775,11 @@ async function sendNotificationPayload(title: string, message: string, settings:
         throw new Error('Nodemailer package is not available on this system.');
       }
 
-      console.log(`Sending SMTP email to ${smtpTo} via ${smtpHost}...`);
       const transporter = nodemailerModule.createTransport({
         host: smtpHost,
         port: Number(smtpPort || 587),
         secure: !!smtpSecure,
-        auth: smtpUser && smtpPass ? {
-          user: smtpUser,
-          pass: smtpPass
-        } : undefined
+        auth: smtpUser && smtpPass ? { user: smtpUser, pass: smtpPass } : undefined
       });
 
       const htmlBody = `
@@ -3509,17 +3808,15 @@ async function sendNotificationPayload(title: string, message: string, settings:
         throw new Error('Webhook URL must be configured.');
       }
 
-      console.log(`Sending Webhook POST to ${webhookUrl}...`);
       const response = await fetch(webhookUrl, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           title,
           message,
           timestamp: new Date().toISOString()
-        })
+        }),
+        signal: AbortSignal.timeout(10000)
       });
 
       if (!response.ok) {
@@ -3537,297 +3834,1365 @@ async function sendNotificationPayload(title: string, message: string, settings:
   }
 }
 
-async function triggerNotification(customListIds?: string[], forceNow: boolean = false): Promise<{ success: boolean; results: any[] }> {
+interface NotificationDispatchContext {
+  eventSource?: string;
+  listId?: string;
+  listName?: string;
+  recipientOverride?: string;
+  metadata?: Record<string, any>;
+}
+
+async function dispatchToChannel(
+  channel: any,
+  title: string,
+  message: string,
+  context?: NotificationDispatchContext
+): Promise<{ success: boolean; error?: string }> {
+  const normalized = normalizeNotificationChannel(channel);
+  const cfg = normalized.config || {};
+
+  if (normalized.type === 'in_app') {
+    return { success: true };
+  }
+
+  if (normalized.type === 'smtp_email') {
+    const targetTo = (context?.recipientOverride || cfg.smtpTo || '').trim();
+    return sendNotificationPayload(title, message, {
+      method: 'smtp_email',
+      smtpHost: cfg.smtpHost,
+      smtpPort: cfg.smtpPort,
+      smtpUser: cfg.smtpUser,
+      smtpPass: cfg.smtpPass,
+      smtpFrom: cfg.smtpFrom,
+      smtpTo: targetTo,
+      smtpSecure: cfg.smtpSecure
+    });
+  }
+
+  if (normalized.type === 'webhook') {
+    if (!cfg.webhookUrl) {
+      return { success: false, error: 'Webhook URL must be configured.' };
+    }
+    try {
+      const response = await fetch(cfg.webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title,
+          message,
+          eventSource: context?.eventSource || 'system',
+          channelId: normalized.id,
+          channelName: normalized.name,
+          listId: context?.listId,
+          listName: context?.listName,
+          timestamp: new Date().toISOString(),
+          metadata: context?.metadata
+        }),
+        signal: AbortSignal.timeout(10000)
+      });
+      if (!response.ok) {
+        const errText = await response.text().catch(() => '');
+        return { success: false, error: `Webhook returned status ${response.status}: ${errText}` };
+      }
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message || String(err) };
+    }
+  }
+
+  return { success: false, error: `Unsupported channel type: ${normalized.type}` };
+}
+
+async function dispatchToChannels(
+  channelIds: string[],
+  title: string,
+  message: string,
+  state: AppInventoryState,
+  context?: NotificationDispatchContext
+): Promise<{ logs: any[]; results: Array<{ channelId: string; channelName: string; method: string; success: boolean; error?: string }> }> {
+  const allChannels = state.notificationChannels || [];
+  const channelMap = new Map<string, any>(allChannels.map((c: any) => [c.id, c]));
+  const nowStr = new Date().toISOString();
+
+  let targetChannels = (channelIds || [])
+    .map(id => channelMap.get(id))
+    .filter(c => c && c.enabled !== false);
+
+  if (targetChannels.length === 0) {
+    const fallbackInApp = allChannels.find((c: any) => c.type === 'in_app' && c.enabled !== false);
+    if (fallbackInApp) {
+      targetChannels = [fallbackInApp];
+    } else {
+      targetChannels = [
+        {
+          id: 'channel-default-in-app',
+          name: 'System In-App Log',
+          type: 'in_app',
+          enabled: true,
+          config: {}
+        }
+      ];
+    }
+  }
+
+  const logs: any[] = [];
+  const results: Array<{ channelId: string; channelName: string; method: string; success: boolean; error?: string }> = [];
+
+  for (const ch of targetChannels) {
+    const dispatchResult = await dispatchToChannel(ch, title, message, context);
+    const logEntry = {
+      id: crypto.randomUUID(),
+      sentAt: nowStr,
+      title,
+      message,
+      method: ch.type,
+      status: dispatchResult.success ? 'success' : 'failed',
+      error: dispatchResult.error,
+      channelId: ch.id,
+      channelName: ch.name,
+      eventSource: context?.eventSource || 'system',
+      listId: context?.listId,
+      listName: context?.listName
+    };
+    logs.push(logEntry);
+    results.push({
+      channelId: ch.id,
+      channelName: ch.name,
+      method: ch.type,
+      success: dispatchResult.success,
+      error: dispatchResult.error
+    });
+  }
+
+  state.notificationLogs = [...logs, ...(state.notificationLogs || [])].slice(0, 500);
+  return { logs, results };
+}
+
+async function triggerNotification(
+  customListIds?: string[],
+  forceNow: boolean = false,
+  mode: 'digest' | 'list' | 'all' = 'digest'
+): Promise<{ success: boolean; results: any[]; messagesSent: number }> {
   const state = await loadState();
   const settings = state.notificationSettings?.[0];
   if (!settings) {
     console.warn('No notification settings found.');
-    return { success: false, results: [] };
+    return { success: false, results: [], messagesSent: 0 };
   }
 
-  if (!settings.digestEnabled && !forceNow) {
-    console.log('Daily digest is disabled and forceNow is false. Skipping.');
-    return { success: true, results: [] };
+  const isExplicitListTrigger = Array.isArray(customListIds) && customListIds.length > 0;
+  if (!isExplicitListTrigger && mode === 'digest' && !settings.digestEnabled && !forceNow) {
+    return { success: true, results: [], messagesSent: 0 };
   }
 
   let lists = state.customLists || [];
-  if (customListIds && customListIds.length > 0) {
-    lists = lists.filter(l => customListIds.includes(l.id));
+  if (isExplicitListTrigger) {
+    lists = lists.filter(l => customListIds!.includes(l.id));
   } else {
     lists = lists.filter(l => l.notificationEnabled);
   }
 
   if (lists.length === 0) {
-    console.log('No custom lists configured for notifications.');
-    return { success: true, results: [] };
+    return { success: true, results: [], messagesSent: 0 };
   }
 
+  const channels = state.notificationChannels || [];
   const productsMap = new Map<string, any>();
   for (const p of state.products || []) {
     productsMap.set(p.id, p);
   }
+  const metricMaps = buildInventoryMetricMaps(state);
 
   const results: any[] = [];
   const nowStr = new Date().toISOString();
+  const dateLabel = new Date().toLocaleDateString();
+  const notifiedListIds = new Set<string>();
+  let messagesSent = 0;
 
-  const formatListItems = (list: any): { text: string; hasItems: boolean; itemsCount: number } => {
-    let itemsToNotify = [...list.items];
-
-    if (list.notificationType === 'newly_added_only') {
-      const lastNotified = list.lastNotifiedAt ? new Date(list.lastNotifiedAt).getTime() : 0;
-      if (lastNotified > 0) {
-        itemsToNotify = itemsToNotify.filter(item => {
-          const added = item.addedAt ? new Date(item.addedAt).getTime() : 0;
-          return added > lastNotified;
-        });
-      } else {
-        const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
-        itemsToNotify = itemsToNotify.filter(item => {
-          const added = item.addedAt ? new Date(item.addedAt).getTime() : 0;
-          return added > oneDayAgo;
-        });
-      }
-    } else if (list.notificationType === 'item_specific') {
-      itemsToNotify = itemsToNotify.filter(item => item.notifyEnabled);
-    }
-
-    if (itemsToNotify.length === 0) {
-      return { text: '', hasItems: false, itemsCount: 0 };
-    }
-
-    let text = `📋 ${list.name}\n`;
-    if (list.description) text += `Description: ${list.description}\n`;
-    text += `----------------------------------------\n`;
-
-    itemsToNotify.forEach((item, index) => {
-      const product = productsMap.get(item.productId);
-      const prodName = product ? product.name : 'Unknown Product';
-      const cat = product ? product.primaryCategory || 'Uncategorized' : 'N/A';
-      
-      const stockQty = (state.meatCuts || [])
-        .filter(mc => mc.productId === item.productId)
-        .reduce((sum, mc) => sum + (mc.quantity || 0), 0);
-
-      text += `${index + 1}. ${prodName} (Category: ${cat}) | In Stock: ${stockQty}\n`;
-      if (list.allowNotes && item.notes) {
-        text += `   Notes: ${item.notes}\n`;
-      }
-      text += `\n`;
-    });
-
-    return { text, hasItems: true, itemsCount: itemsToNotify.length };
-  };
-
-  if (settings.digestMode === 'combined') {
-    let combinedMsg = '';
-    let totalItems = 0;
-    const notifiedListIds: string[] = [];
-
+  if (isExplicitListTrigger) {
     for (const list of lists) {
-      const { text, hasItems, itemsCount } = formatListItems(list);
-      if (hasItems) {
-        combinedMsg += text + `\n\n`;
-        totalItems += itemsCount;
-        notifiedListIds.push(list.id);
-      }
-    }
-
-    if (totalItems === 0) {
-      console.log('Combined daily digest has no matching items to notify today.');
-      return { success: true, results: [] };
-    }
-
-    const title = `Freezer Tracker: Daily Combined Digest (${new Date().toLocaleDateString()})`;
-    const header = `Here is your daily combined inventory list digest:\n\n`;
-    const fullMessage = header + combinedMsg;
-
-    const dispatchResult = await sendNotificationPayload(title, fullMessage, settings);
-    
-    const logId = crypto.randomUUID();
-    const logEntry = {
-      id: logId,
-      sentAt: nowStr,
-      title,
-      message: fullMessage,
-      method: settings.method,
-      status: dispatchResult.success ? 'success' : 'failed',
-      error: dispatchResult.error
-    };
-
-    const currentLogs = state.notificationLogs || [];
-    state.notificationLogs = [logEntry as any, ...currentLogs];
-
-    state.customLists = (state.customLists || []).map(cl => {
-      if (notifiedListIds.includes(cl.id)) {
-        return { ...cl, lastNotifiedAt: nowStr };
-      }
-      return cl;
-    });
-
-    saveStateSync(state);
-    notifyInventoryUpdate();
-
-    results.push({ title, success: dispatchResult.success, error: dispatchResult.error });
-  } else {
-    for (const list of lists) {
-      const { text, hasItems } = formatListItems(list);
+      const { text, hasItems } = formatListItemsReport(list, productsMap, state, metricMaps);
       if (!hasItems) continue;
 
-      const title = `Freezer Tracker Digest: ${list.name} (${new Date().toLocaleDateString()})`;
-      const fullMessage = `Here is your daily digest for list "${list.name}":\n\n` + text;
+      const resolvedDigest = resolveListChannelIdsForTrigger(list, 'digest', settings, channels);
+      const resolvedCustom = resolveListChannelIdsForTrigger(list, 'custom_schedule', settings, channels);
+      const resolvedImmediate = resolveListChannelIdsForTrigger(list, 'immediate', settings, channels);
+      const targetChannelIds =
+        resolvedDigest.length > 0
+          ? resolvedDigest
+          : resolvedCustom.length > 0
+          ? resolvedCustom
+          : resolvedImmediate;
 
-      const dispatchResult = await sendNotificationPayload(title, fullMessage, settings);
+      const title = `Freezer Tracker: ${list.name} (${dateLabel})`;
+      const fullMessage = `Here is your requested report for list "${list.name}":\n\n` + text;
 
-      const logId = crypto.randomUUID();
-      const logEntry = {
-        id: logId,
-        sentAt: nowStr,
-        title,
-        message: fullMessage,
-        method: settings.method,
-        status: dispatchResult.success ? 'success' : 'failed',
-        error: dispatchResult.error
-      };
-
-      const currentLogs = state.notificationLogs || [];
-      state.notificationLogs = [logEntry as any, ...currentLogs];
-
-      state.customLists = (state.customLists || []).map(cl => {
-        if (cl.id === list.id) {
-          return { ...cl, lastNotifiedAt: nowStr };
-        }
-        return cl;
+      const dispatchOut = await dispatchToChannels(targetChannelIds, title, fullMessage, state, {
+        eventSource: mode === 'digest' ? 'daily_digest_separate' : 'manual_send_now',
+        listId: list.id,
+        listName: list.name,
+        recipientOverride: list.notificationRecipientOverride
       });
 
-      results.push({ title, success: dispatchResult.success, error: dispatchResult.error });
+      notifiedListIds.add(list.id);
+      messagesSent += dispatchOut.results.filter(r => r.success).length;
+      dispatchOut.results.forEach(r => results.push({ title, ...r }));
+    }
+  } else {
+    const combinedBuckets = new Map<
+      string,
+      { channelId: string; recipientOverride?: string; sections: string[]; listIds: string[]; listNames: string[] }
+    >();
+
+    for (const list of lists) {
+      const digestMode = resolveEffectiveDailyDigestMode(list);
+      if (digestMode === 'none') continue;
+
+      const { text, hasItems } = formatListItemsReport(list, productsMap, state, metricMaps);
+      if (!hasItems) continue;
+
+      const targetChannelIds = resolveListChannelIdsForTrigger(list, 'digest', settings, channels);
+      const effectiveChannelIds = targetChannelIds.length > 0 ? targetChannelIds : ['__fallback_in_app__'];
+
+      if (digestMode === 'combined') {
+        for (const chId of effectiveChannelIds) {
+          const override = (list.notificationRecipientOverride || '').trim();
+          const bucketKey = `${chId}::${override}`;
+          if (!combinedBuckets.has(bucketKey)) {
+            combinedBuckets.set(bucketKey, {
+              channelId: chId,
+              recipientOverride: override || undefined,
+              sections: [],
+              listIds: [],
+              listNames: []
+            });
+          }
+          const bucket = combinedBuckets.get(bucketKey)!;
+          bucket.sections.push(text);
+          bucket.listIds.push(list.id);
+          bucket.listNames.push(list.name);
+        }
+      } else {
+        const title = `Freezer Tracker Digest: ${list.name} (${dateLabel})`;
+        const fullMessage = `Here is your daily digest for list "${list.name}":\n\n` + text;
+        const dispatchOut = await dispatchToChannels(targetChannelIds, title, fullMessage, state, {
+          eventSource: 'daily_digest_separate',
+          listId: list.id,
+          listName: list.name,
+          recipientOverride: list.notificationRecipientOverride
+        });
+        notifiedListIds.add(list.id);
+        messagesSent += dispatchOut.results.filter(r => r.success).length;
+        dispatchOut.results.forEach(r => results.push({ title, ...r }));
+      }
     }
 
-    saveStateSync(state);
+    for (const bucket of combinedBuckets.values()) {
+      const title = `Freezer Tracker: Daily Combined Digest (${dateLabel})`;
+      const fullMessage =
+        `Daily Combined Inventory List Digest (${bucket.listNames.join(', ')}):\n\n` +
+        bucket.sections.join('\n\n');
+      const targetIds = bucket.channelId === '__fallback_in_app__' ? [] : [bucket.channelId];
+      const dispatchOut = await dispatchToChannels(targetIds, title, fullMessage, state, {
+        eventSource: 'daily_digest_combined',
+        recipientOverride: bucket.recipientOverride,
+        metadata: { listIds: bucket.listIds, listNames: bucket.listNames }
+      });
+      bucket.listIds.forEach(id => notifiedListIds.add(id));
+      messagesSent += dispatchOut.results.filter(r => r.success).length;
+      dispatchOut.results.forEach(r => results.push({ title, ...r }));
+    }
+  }
+
+  if (notifiedListIds.size > 0 || results.length > 0) {
+    state.customLists = (state.customLists || []).map(cl =>
+      notifiedListIds.has(cl.id) ? { ...cl, lastNotifiedAt: nowStr } : cl
+    );
+    saveStateSync(state, ['custom_lists', 'notification_logs']);
     notifyInventoryUpdate();
   }
 
-  if (!forceNow) {
-    db.prepare(`
-      UPDATE notification_settings 
-      SET lastDigestSentAt = ? 
-      WHERE id = 'global'
-    `).run(nowStr);
+  if (!forceNow && !isExplicitListTrigger) {
+    try {
+      db.prepare(`UPDATE notification_settings SET lastDigestSentAt = ? WHERE id = 'global'`).run(nowStr);
+    } catch (e) {
+      console.error('Failed updating lastDigestSentAt:', e);
+    }
   }
 
-  return { success: true, results };
+  return { success: true, results, messagesSent };
 }
 
 function getDateAndMinutesInTz(date: Date, timeZone: string) {
-  const safeTz = timeZone && timeZone.trim() ? timeZone.trim() : 'America/New_York';
-  try {
-    const formatter = new Intl.DateTimeFormat('en-US', {
-      timeZone: safeTz,
-      hour12: false,
-      hourCycle: 'h23',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-    const parts = formatter.formatToParts(date);
-    const year = parts.find(p => p.type === 'year')?.value || '1970';
-    const month = parts.find(p => p.type === 'month')?.value || '01';
-    const day = parts.find(p => p.type === 'day')?.value || '01';
-    const hour = parseInt(parts.find(p => p.type === 'hour')?.value || '0', 10);
-    const minute = parseInt(parts.find(p => p.type === 'minute')?.value || '0', 10);
-    return {
-      dateStr: `${year}-${month}-${day}`,
-      totalMinutes: hour * 60 + minute,
-      hour,
-      minute
-    };
-  } catch (e) {
-    try {
-      const formatter = new Intl.DateTimeFormat('en-US', {
-        timeZone: 'America/New_York',
-        hour12: false,
-        hourCycle: 'h23',
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit'
-      });
-      const parts = formatter.formatToParts(date);
-      const year = parts.find(p => p.type === 'year')?.value || '1970';
-      const month = parts.find(p => p.type === 'month')?.value || '01';
-      const day = parts.find(p => p.type === 'day')?.value || '01';
-      const hour = parseInt(parts.find(p => p.type === 'hour')?.value || '0', 10);
-      const minute = parseInt(parts.find(p => p.type === 'minute')?.value || '0', 10);
-      return {
-        dateStr: `${year}-${month}-${day}`,
-        totalMinutes: hour * 60 + minute,
-        hour,
-        minute
-      };
-    } catch {
-      return {
-        dateStr: date.toISOString().split('T')[0],
-        totalMinutes: date.getUTCHours() * 60 + date.getUTCMinutes(),
-        hour: date.getUTCHours(),
-        minute: date.getUTCMinutes()
-      };
-    }
-  }
+  return getDateAndTimeInTz(date, timeZone);
 }
 
 async function checkAndTriggerScheduledNotifications() {
   if (isDemoMode) return;
   try {
-    const state = await loadState();
+    let state = await loadState();
     const settings = state.notificationSettings?.[0];
-    if (!settings || !settings.digestEnabled) return;
-
-    const digestTime = settings.digestTime || '20:00';
-    const [targetHour, targetMinute] = digestTime.split(':').map(Number);
-    const targetMinutes = targetHour * 60 + targetMinute;
+    if (!settings) return;
 
     const now = new Date();
+    const nowStr = now.toISOString();
     const userTz = settings.timezone || 'America/New_York';
-    const currentInfo = getDateAndMinutesInTz(now, userTz);
+    const currentInfo = getDateAndTimeInTz(now, userTz);
 
-    let lastSentDateStr = '';
-    if (settings.lastDigestSentAt) {
-      const lastSentDate = new Date(settings.lastDigestSentAt);
-      if (!isNaN(lastSentDate.getTime())) {
-        lastSentDateStr = getDateAndMinutesInTz(lastSentDate, userTz).dateStr;
+    // 1. Check Global Daily Digest Window
+    if (settings.digestEnabled) {
+      const digestTime = settings.digestTime || '20:00';
+      const [targetHour, targetMinute] = digestTime.split(':').map(Number);
+      const targetMinutes = (targetHour || 0) * 60 + (targetMinute || 0);
+
+      let lastSentDateStr = '';
+      if (settings.lastDigestSentAt) {
+        const lastSentDate = new Date(settings.lastDigestSentAt);
+        if (!isNaN(lastSentDate.getTime())) {
+          lastSentDateStr = getDateAndTimeInTz(lastSentDate, userTz).dateStr;
+        }
+      }
+
+      if (currentInfo.totalMinutes >= targetMinutes && currentInfo.dateStr !== lastSentDateStr) {
+        console.log(`Daily digest scheduled time reached (${digestTime} ${userTz}). Triggering daily digest...`);
+        settings.lastDigestSentAt = nowStr;
+        try {
+          db.prepare(`UPDATE notification_settings SET lastDigestSentAt = ? WHERE id = 'global'`).run(nowStr);
+        } catch (e) {
+          console.error('Failed to record lastDigestSentAt:', e);
+        }
+        await triggerNotification(undefined, false, 'digest');
+        state = await loadState();
       }
     }
 
-    if (currentInfo.totalMinutes >= targetMinutes && currentInfo.dateStr !== lastSentDateStr) {
-      console.log(`Daily digest scheduled time reached (${digestTime} ${userTz}, current local time: ${currentInfo.hour}:${currentInfo.minute.toString().padStart(2, '0')}). Triggering daily notifications...`);
-      const nowStr = now.toISOString();
-      settings.lastDigestSentAt = nowStr;
-      try {
-        db.prepare(`
-          UPDATE notification_settings 
-          SET lastDigestSentAt = ? 
-          WHERE id = 'global'
-        `).run(nowStr);
-      } catch (e) {
-        console.error('Failed to record lastDigestSentAt:', e);
+    // 2. Check Per-List Custom Schedules (Daily / Weekly / Interval)
+    const channels = state.notificationChannels || [];
+    const dueLists = (state.customLists || []).filter(
+      (list: any) => list.notificationEnabled && isCustomScheduleDue(list.notificationCustomSchedule, now, userTz)
+    );
+
+    if (dueLists.length > 0) {
+      const productsMap = new Map<string, any>();
+      for (const p of state.products || []) {
+        productsMap.set(p.id, p);
       }
-      await triggerNotification();
+      const metricMaps = buildInventoryMetricMaps(state);
+      const updatedScheduleListIds = new Set<string>();
+      const notifiedListIds = new Set<string>();
+      let anyLogsCreated = false;
+
+      for (const list of dueLists) {
+        updatedScheduleListIds.add(list.id);
+        const { text, hasItems } = formatListItemsReport(list, productsMap, state, metricMaps);
+        if (!hasItems) continue;
+
+        const targetChannelIds = resolveListChannelIdsForTrigger(list, 'custom_schedule', settings, channels);
+        const dateLabel = now.toLocaleDateString();
+        const title = `Freezer Tracker Scheduled Report: ${list.name} (${dateLabel})`;
+        const fullMessage = `Scheduled notification for list "${list.name}":\n\n` + text;
+
+        const dispatchOut = await dispatchToChannels(targetChannelIds, title, fullMessage, state, {
+          eventSource: 'custom_schedule',
+          listId: list.id,
+          listName: list.name,
+          recipientOverride: list.notificationRecipientOverride
+        });
+        if (dispatchOut.logs.length > 0) {
+          anyLogsCreated = true;
+        }
+        notifiedListIds.add(list.id);
+      }
+
+      state.customLists = (state.customLists || []).map((cl: any) => {
+        if (!updatedScheduleListIds.has(cl.id)) return cl;
+        return {
+          ...cl,
+          ...(notifiedListIds.has(cl.id) ? { lastNotifiedAt: nowStr } : {}),
+          notificationCustomSchedule: cl.notificationCustomSchedule
+            ? { ...cl.notificationCustomSchedule, lastSentAt: nowStr }
+            : cl.notificationCustomSchedule
+        };
+      });
+
+      const tablesToSave = anyLogsCreated ? ['custom_lists', 'notification_logs'] : ['custom_lists'];
+      saveStateSync(state, tablesToSave);
+      notifyInventoryUpdate();
     }
   } catch (err) {
     console.error('Failed to run scheduled notifications check:', err);
   }
 }
 
-// Check scheduled notifications every 30 minutes
+async function processImmediateNotificationsForAction(
+  action: any,
+  prevState: AppInventoryState,
+  nextState: AppInventoryState
+): Promise<void> {
+  if (!action || !action.type || isDemoMode) return;
+  try {
+    const settings = nextState.notificationSettings?.[0];
+    const channels = nextState.notificationChannels || [];
+    const productsMap = new Map<string, any>((nextState.products || []).map((p: any) => [p.id, p]));
+    const metricMaps = buildInventoryMetricMaps(nextState);
+    let logsCreated = false;
+
+    // 1. Immediate Item Added triggers
+    if (action.type === 'TOGGLE_PRODUCT_ON_LIST' || action.type === 'BATCH_TOGGLE_PRODUCTS_ON_LIST') {
+      const updates: Array<{ listId: string; productId: string }> =
+        action.type === 'TOGGLE_PRODUCT_ON_LIST'
+          ? [{ listId: action.payload?.listId, productId: action.payload?.productId }]
+          : Array.isArray(action.payload?.updates)
+          ? action.payload.updates
+          : [];
+
+      const newlyAddedByList = new Map<string, string[]>();
+      const prevListsMap = new Map<string, any>((prevState.customLists || []).map((l: any) => [l.id, l]));
+      const nextListsMap = new Map<string, any>((nextState.customLists || []).map((l: any) => [l.id, l]));
+
+      for (const u of updates) {
+        if (!u.listId || !u.productId) continue;
+        const prevList = prevListsMap.get(u.listId);
+        const nextList = nextListsMap.get(u.listId);
+        if (!nextList) continue;
+
+        const wasInList = Boolean(prevList?.items?.some((i: any) => i.productId === u.productId));
+        const isInList = Boolean(nextList.items?.some((i: any) => i.productId === u.productId));
+        if (!wasInList && isInList) {
+          const existing = newlyAddedByList.get(u.listId) || [];
+          if (!existing.includes(u.productId)) {
+            existing.push(u.productId);
+            newlyAddedByList.set(u.listId, existing);
+          }
+        }
+      }
+
+      for (const [listId, addedProductIds] of newlyAddedByList.entries()) {
+        const list = nextListsMap.get(listId);
+        if (
+          !list ||
+          !list.notificationEnabled ||
+          !list.notificationImmediate?.enabled ||
+          !list.notificationImmediate?.onItemAdded
+        ) {
+          continue;
+        }
+
+        const itemLines = addedProductIds.map((pid, idx) => {
+          const prod = productsMap.get(pid);
+          const item = (list.items || []).find((i: any) => i.productId === pid);
+          const stockQty = metricMaps.onsiteCount.get(pid) || 0;
+          const noteSuffix = list.allowNotes && item?.notes ? ` — Note: ${item.notes}` : '';
+          return `${idx + 1}. ${prod?.name || 'Unknown Product'} (${prod?.primaryCategory || 'Uncategorized'}) | On-Site: ${stockQty}${noteSuffix}`;
+        });
+
+        const title =
+          addedProductIds.length === 1
+            ? `Item Added to ${list.name}: ${productsMap.get(addedProductIds[0])?.name || 'Product'}`
+            : `${addedProductIds.length} Items Added to ${list.name}`;
+        const message =
+          `The following item(s) were just added to "${list.name}":\n\n` +
+          itemLines.join('\n');
+
+        const targetChannelIds = resolveListChannelIdsForTrigger(list, 'immediate', settings, channels);
+        const out = await dispatchToChannels(targetChannelIds, title, message, nextState, {
+          eventSource: 'immediate_item_added',
+          listId: list.id,
+          listName: list.name,
+          recipientOverride: list.notificationRecipientOverride,
+          metadata: { productIds: addedProductIds }
+        });
+        if (out.logs.length > 0) logsCreated = true;
+      }
+    }
+
+    // 2. Immediate Inventory Threshold Breach triggers (edge-triggered)
+    const stockOrThresholdActions = new Set([
+      'ADD_MEAT_CUT',
+      'BULK_ADD_MEAT_CUTS',
+      'UPDATE_MEAT_QUANTITY',
+      'BATCH_UPDATE_MEAT_QUANTITY',
+      'MOVE_MEAT_QUANTITY',
+      'SPLIT_MEAT_CUT',
+      'RECONCILE_QUANTITIES',
+      'ADD_OFFSITE_ENTRY',
+      'UPDATE_OFFSITE_ENTRY',
+      'DELETE_OFFSITE_ENTRY',
+      'BULK_DELETE_OFFSITE_ENTRIES',
+      'BULK_EDIT_OFFSITE_ENTRIES',
+      'EXECUTE_MOVEMENT_ORDER',
+      'EDIT_PRODUCT',
+      'TOGGLE_PRODUCT_ON_LIST',
+      'BATCH_TOGGLE_PRODUCTS_ON_LIST',
+      'UPDATE_LIST_ITEM_THRESHOLD',
+      'UPDATE_LIST_ITEM_CONTROL_SOURCE'
+    ]);
+
+    if (stockOrThresholdActions.has(action.type)) {
+      const triggeredLists = detectNewlyBreachedListItems(prevState, nextState);
+      for (const { list, breaches } of triggeredLists) {
+        const lines = breaches.map(({ product, evaluation, item }, idx) => {
+          const name = product?.name || 'Unknown Product';
+          const op = evaluation.condition === 'max' ? '>' : '<';
+          const noteSuffix = list.allowNotes && item.notes ? ` — Note: ${item.notes}` : '';
+          return `${idx + 1}. ${name}: Current ${evaluation.controlSource} is ${evaluation.currentValue} (${op} threshold ${evaluation.thresholdValue})${noteSuffix}`;
+        });
+
+        const title = `Threshold Alert (${list.name}): ${breaches.length} item${breaches.length === 1 ? '' : 's'}`;
+        const message =
+          `Inventory threshold alert triggered for controlled list "${list.name}":\n\n` +
+          lines.join('\n');
+
+        const targetChannelIds = resolveListChannelIdsForTrigger(list, 'immediate', settings, channels);
+        const out = await dispatchToChannels(targetChannelIds, title, message, nextState, {
+          eventSource: 'immediate_threshold_breach',
+          listId: list.id,
+          listName: list.name,
+          recipientOverride: list.notificationRecipientOverride,
+          metadata: { breachedProductIds: breaches.map(b => b.item.productId) }
+        });
+        if (out.logs.length > 0) logsCreated = true;
+      }
+    }
+
+    if (logsCreated) {
+      const freshState = loadStateSync();
+      const existingIds = new Set((freshState.notificationLogs || []).map((l: any) => l.id));
+      const newLogs = (nextState.notificationLogs || []).filter((l: any) => !existingIds.has(l.id));
+      if (newLogs.length > 0) {
+        freshState.notificationLogs = [...newLogs, ...(freshState.notificationLogs || [])].slice(0, 500);
+        saveStateSync(freshState, ['notification_logs']);
+        notifyInventoryUpdate();
+      }
+    }
+  } catch (err) {
+    console.error('Error processing immediate notifications for action:', err);
+  }
+}
+
+// Check scheduled notifications every 5 minutes (supports daily digest & per-list custom schedules)
 setInterval(() => {
   checkAndTriggerScheduledNotifications().catch(err => console.error('Error running scheduled notification checks:', err));
-}, 30 * 60 * 1000);
+}, 5 * 60 * 1000);
 
 // Run initial notification check on server boot
 checkAndTriggerScheduledNotifications().catch(err => console.error('Error running initial notification check:', err));
 
+
+// ---------------- AUTHENTICATION, SESSIONS, & RBAC HELPERS ----------------
+
+const pinRateLimiter = new PinRateLimiter(5, 60_000, 10 * 60_000);
+const RECOVERY_RUNTIME_SECRET = crypto.randomBytes(32).toString('hex');
+
+function getRequestIp(req: any): string {
+  return (req?.headers?.['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req?.socket?.remoteAddress || '';
+}
+
+function getRequestDeviceId(req: any): string {
+  return String(
+    req?.headers?.['x-device-id'] ||
+    req?.body?.deviceId ||
+    req?.body?.action?.deviceId ||
+    req?.query?.deviceId ||
+    ''
+  ).trim();
+}
+
+function getRawSessionTokenFromReq(req: any): string {
+  const headerToken = req?.headers?.['x-user-session'];
+  if (typeof headerToken === 'string' && headerToken.trim()) {
+    return headerToken.trim();
+  }
+  const queryToken = req?.query?.userSession;
+  if (typeof queryToken === 'string' && queryToken.trim()) {
+    return queryToken.trim();
+  }
+  const cookies = parseCookies(req?.headers?.cookie);
+  if (cookies[USER_SESSION_COOKIE_NAME]) {
+    return cookies[USER_SESSION_COOKIE_NAME];
+  }
+  return '';
+}
+
+function createRecoverySessionToken(recoveryPin: string): string {
+  const issuedAt = String(Date.now());
+  const hmacKey = `${RECOVERY_RUNTIME_SECRET}:${recoveryPin || 'no-pin'}`;
+  const sig = crypto.createHmac('sha256', hmacKey).update(issuedAt).digest('hex');
+  return `rec_${issuedAt}_${sig}`;
+}
+
+function isValidRecoverySessionToken(token: string, recoveryPin: string): boolean {
+  if (!token || !token.startsWith('rec_')) return false;
+  const parts = token.split('_');
+  if (parts.length !== 3) return false;
+  const issuedAt = parts[1];
+  const sig = parts[2];
+  const hmacKey = `${RECOVERY_RUNTIME_SECRET}:${recoveryPin || 'no-pin'}`;
+  const expectedSig = crypto.createHmac('sha256', hmacKey).update(issuedAt).digest('hex');
+  const a = Buffer.from(sig, 'utf8');
+  const b = Buffer.from(expectedSig, 'utf8');
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
+function setSessionCookie(req: any, res: any, token: string) {
+  res.setHeader(
+    'Set-Cookie',
+    buildSessionCookieHeader({
+      token,
+      isHttps: isHttpsRequest(req),
+      maxAgeSeconds: 365 * 24 * 60 * 60
+    })
+  );
+}
+
+function clearSessionCookie(req: any, res: any) {
+  res.setHeader(
+    'Set-Cookie',
+    buildSessionCookieHeader({
+      token: '',
+      isHttps: isHttpsRequest(req),
+      maxAgeSeconds: 0
+    })
+  );
+}
+
+function setAuthNoStoreHeaders(res: any) {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+}
+
+interface ResolvedUserAuthContext {
+  usersConfigured: boolean;
+  isAuthenticated: boolean;
+  isAdmin: boolean;
+  isRecoverySession: boolean;
+  recoveryModeActive: boolean;
+  recoveryPinConfigured: boolean;
+  recoverySource: 'none' | 'env' | 'ha_options';
+  currentUser: any | null;
+  currentSession: any | null;
+}
+
+function resolveUserContext(req: any): ResolvedUserAuthContext {
+  if (!db) initDatabase();
+  const usersConfigured = isUsersConfigured(db);
+  const recovery = readRecoveryConfig();
+  const rawToken = getRawSessionTokenFromReq(req);
+
+  if (recovery.recoveryMode && rawToken && isValidRecoverySessionToken(rawToken, recovery.recoveryPin)) {
+    return {
+      usersConfigured,
+      isAuthenticated: true,
+      isAdmin: true,
+      isRecoverySession: true,
+      recoveryModeActive: true,
+      recoveryPinConfigured: recovery.recoveryPinConfigured,
+      recoverySource: recovery.source,
+      currentUser: {
+        id: '__recovery_admin__',
+        name: 'Recovery Admin',
+        role: 'admin',
+        isActive: true,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      },
+      currentSession: {
+        id: '__recovery_session__',
+        userId: '__recovery_admin__',
+        userName: 'Recovery Admin',
+        userRole: 'admin',
+        createdAt: new Date().toISOString(),
+        lastSeenAt: new Date().toISOString(),
+        isCurrentSession: true
+      }
+    };
+  }
+
+  if (rawToken) {
+    const resolved = resolveSessionToken(db, rawToken);
+    if (resolved) {
+      return {
+        usersConfigured,
+        isAuthenticated: true,
+        isAdmin: resolved.user.role === 'admin',
+        isRecoverySession: false,
+        recoveryModeActive: recovery.recoveryMode,
+        recoveryPinConfigured: recovery.recoveryPinConfigured,
+        recoverySource: recovery.source,
+        currentUser: resolved.user,
+        currentSession: resolved.session
+      };
+    }
+  }
+
+  // If HA/env emergency recovery mode is toggled on WITHOUT a separate PIN, unlock admin recovery access immediately
+  const openRecoveryOverride = recovery.recoveryMode && !recovery.recoveryPinConfigured;
+
+  return {
+    usersConfigured,
+    isAuthenticated: openRecoveryOverride,
+    isAdmin: !usersConfigured || openRecoveryOverride,
+    isRecoverySession: openRecoveryOverride,
+    recoveryModeActive: recovery.recoveryMode,
+    recoveryPinConfigured: recovery.recoveryPinConfigured,
+    recoverySource: recovery.source,
+    currentUser: openRecoveryOverride
+      ? {
+          id: '__recovery_admin__',
+          name: 'Recovery Admin',
+          role: 'admin',
+          isActive: true,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        }
+      : null,
+    currentSession: null
+  };
+}
+
+function requireSignedIn(req: any, res: any, next: any) {
+  if (!db) initDatabase();
+  const auth = resolveUserContext(req);
+  if (!auth.isAuthenticated || !auth.currentUser || auth.currentUser.id === '__recovery_admin__') {
+    return res.status(401).json({
+      error: 'AUTH_REQUIRED',
+      message: 'Please sign in with your user PIN to continue.'
+    });
+  }
+  req.userAuth = auth;
+  return next();
+}
+
+function requireAdmin(req: any, res: any, next: any) {
+  if (!db) initDatabase();
+  const auth = resolveUserContext(req);
+  if (!auth.usersConfigured || auth.isAdmin) {
+    req.userAuth = auth;
+    return next();
+  }
+  if (!auth.isAuthenticated) {
+    return res.status(401).json({
+      error: 'AUTH_REQUIRED',
+      message: 'Please sign in with an administrator account to access this setting.'
+    });
+  }
+  return res.status(403).json({
+    error: 'ADMIN_REQUIRED',
+    message: 'Administrator privileges are required to perform this action.'
+  });
+}
+
+function requireEditAuth(req: any, res: any, next: any) {
+  if (!db) initDatabase();
+  const auth = resolveUserContext(req);
+  if (auth.usersConfigured && getRequireLoginForEdits(db) && !auth.isAuthenticated) {
+    return res.status(401).json({
+      error: 'AUTH_REQUIRED',
+      code: 'LOGIN_REQUIRED_FOR_EDITS',
+      message: 'Sign in with your user PIN to make changes to inventory.'
+    });
+  }
+  req.userAuth = auth;
+  return next();
+}
+
+function terminateLiveUserSessions(opts: { userId?: string; sessionId?: string; reason?: string }) {
+  for (const [cid, client] of activeClients.entries()) {
+    const matchUser = Boolean(opts.userId && client.userId === opts.userId);
+    const matchSession = Boolean(opts.sessionId && client.sessionId === opts.sessionId);
+    if (matchUser || matchSession) {
+      try {
+        if (client.res) {
+          client.res.write(
+            `data: ${JSON.stringify({
+              type: 'session_revoked',
+              userId: opts.userId,
+              sessionId: opts.sessionId,
+              reason: opts.reason || 'SESSION_REVOKED'
+            })}\n\n`
+          );
+          client.res.end();
+        }
+      } catch (e) {}
+      activeClients.delete(cid);
+    }
+  }
+  broadcastSSE({ type: 'auth_changed', userId: opts.userId, sessionId: opts.sessionId });
+}
+
+function handleAuthError(res: any, err: any) {
+  if (err instanceof AuthError) {
+    return res.status(err.statusCode).json({ error: err.code, message: err.message });
+  }
+  console.error('Auth/Admin endpoint error:', err);
+  return res.status(500).json({ error: 'SERVER_ERROR', message: err?.message || 'Unexpected authentication error.' });
+}
+
+// Public Auth & Lockout Recovery Endpoints
+app.get('/api/auth/status', (req, res) => {
+  try {
+    setAuthNoStoreHeaders(res);
+    if (!db) initDatabase();
+    const auth = resolveUserContext(req);
+    const deviceId = getRequestDeviceId(req);
+    const availableUsers = listAvailableUsers(db);
+    res.json({
+      usersConfigured: auth.usersConfigured,
+      isAuthenticated: auth.isAuthenticated,
+      isAdmin: auth.isAdmin,
+      requireLoginForEdits: getRequireLoginForEdits(db),
+      currentUser: auth.currentUser,
+      currentSessionId: auth.currentSession?.id || null,
+      currentDeviceId: deviceId || undefined,
+      recoveryModeActive: auth.recoveryModeActive,
+      recoveryPinConfigured: auth.recoveryPinConfigured,
+      recoverySource: auth.recoverySource,
+      availableUsers
+    });
+  } catch (err: any) {
+    handleAuthError(res, err);
+  }
+});
+
+app.post('/api/auth/setup-first-admin', (req, res) => {
+  try {
+    if (!db) initDatabase();
+    const { name, pin, deviceName, requireLoginForEdits } = req.body || {};
+    const deviceId = getRequestDeviceId(req) || (req.body?.deviceId ? String(req.body.deviceId).trim() : '');
+    const ip = getRequestIp(req);
+    const userAgent = (req.headers['user-agent'] as string) || '';
+    const clientMeta = extractClientInfoFromReq(req);
+
+    const created = setupFirstAdmin(db, {
+      name,
+      pin,
+      requireLoginForEdits,
+      deviceId: deviceId || undefined,
+      deviceName: deviceName || clientMeta.deviceName,
+      clientDevice: clientMeta.clientDevice,
+      clientInfo: clientMeta.clientInfo,
+      isPwa: clientMeta.isPwa,
+      ip,
+      userAgent
+    });
+
+    setAuthNoStoreHeaders(res);
+    setSessionCookie(req, res, created.sessionToken);
+    broadcastSSE({ type: 'auth_changed', userId: created.user.id });
+    notifyInventoryUpdate();
+    res.json({
+      success: true,
+      user: created.user,
+      session: created.session,
+      sessionToken: created.sessionToken,
+      requireLoginForEdits: created.requireLoginForEdits
+    });
+  } catch (err: any) {
+    handleAuthError(res, err);
+  }
+});
+
+app.post('/api/auth/login', (req, res) => {
+  try {
+    if (!db) initDatabase();
+    const { name, pin, deviceName } = req.body || {};
+    const deviceId = getRequestDeviceId(req) || (req.body?.deviceId ? String(req.body.deviceId).trim() : '');
+    const ip = getRequestIp(req);
+    const rateKey = deviceId ? `device:${deviceId}` : `ip:${ip || 'unknown'}`;
+
+    const check = pinRateLimiter.check(rateKey);
+    if (!check.allowed) {
+      return res.status(429).json({
+        error: 'RATE_LIMITED',
+        retryAfterSeconds: check.retryAfterSeconds,
+        message: `Too many failed PIN attempts. Try again in ${check.retryAfterSeconds}s.`
+      });
+    }
+
+    const user = authenticateUserPin(db, { name, pin });
+    if (!user) {
+      const fail = pinRateLimiter.recordFailure(rateKey);
+      if (fail.locked) {
+        return res.status(429).json({
+          error: 'RATE_LIMITED',
+          retryAfterSeconds: fail.retryAfterSeconds,
+          message: `Too many failed PIN attempts. Try again in ${fail.retryAfterSeconds}s.`
+        });
+      }
+      return res.status(401).json({
+        error: 'INVALID_CREDENTIALS',
+        remainingAttempts: fail.remaining,
+        message: 'Invalid user name or PIN.'
+      });
+    }
+
+    pinRateLimiter.reset(rateKey);
+
+    if (deviceId && !isDeviceAuthorized(deviceId)) {
+      return res.status(403).json({
+        error: 'DEVICE_REVOKED',
+        message: 'This device has been revoked. Sign in from an authorized device to re-authorize it.'
+      });
+    }
+
+    const userAgent = (req.headers['user-agent'] as string) || '';
+    const clientMeta = extractClientInfoFromReq(req);
+    if (deviceId) {
+      linkDeviceToUser(db, {
+        deviceId,
+        userId: user.id,
+        deviceName: deviceName || clientMeta.deviceName,
+        operatorName: user.name,
+        clientDevice: clientMeta.clientDevice,
+        clientInfo: clientMeta.clientInfo,
+        isPwa: clientMeta.isPwa,
+        ip,
+        userAgent
+      });
+    }
+
+    const { sessionToken, session } = createSession(db, {
+      userId: user.id,
+      deviceId: deviceId || undefined,
+      deviceName: deviceName || clientMeta.deviceName,
+      userAgent,
+      ip
+    });
+
+    setAuthNoStoreHeaders(res);
+    setSessionCookie(req, res, sessionToken);
+    broadcastSSE({ type: 'auth_changed', userId: user.id });
+
+    res.json({
+      success: true,
+      user,
+      session,
+      sessionToken
+    });
+  } catch (err: any) {
+    handleAuthError(res, err);
+  }
+});
+
+app.post('/api/auth/recovery-login', (req, res) => {
+  try {
+    if (!db) initDatabase();
+    const recovery = readRecoveryConfig();
+    if (!recovery.recoveryMode) {
+      return res.status(403).json({
+        error: 'RECOVERY_DISABLED',
+        message: 'Emergency recovery mode is not enabled on this server.'
+      });
+    }
+
+    const deviceId = getRequestDeviceId(req);
+    const ip = getRequestIp(req);
+    const rateKey = `recovery:${deviceId || ip || 'unknown'}`;
+    const check = pinRateLimiter.check(rateKey);
+    if (!check.allowed) {
+      return res.status(429).json({
+        error: 'RATE_LIMITED',
+        retryAfterSeconds: check.retryAfterSeconds,
+        message: `Too many failed recovery attempts. Try again in ${check.retryAfterSeconds}s.`
+      });
+    }
+
+    if (recovery.recoveryPinConfigured) {
+      const entered = String(req.body?.pin || '').trim();
+      if (!verifyRecoveryPin(entered, recovery.recoveryPin)) {
+        const fail = pinRateLimiter.recordFailure(rateKey);
+        return res.status(fail.locked ? 429 : 401).json({
+          error: fail.locked ? 'RATE_LIMITED' : 'INVALID_RECOVERY_PIN',
+          retryAfterSeconds: fail.retryAfterSeconds || undefined,
+          message: fail.locked
+            ? `Too many failed attempts. Try again in ${fail.retryAfterSeconds}s.`
+            : 'Invalid Home Assistant recovery PIN.'
+        });
+      }
+    }
+
+    pinRateLimiter.reset(rateKey);
+    const sessionToken = createRecoverySessionToken(recovery.recoveryPin);
+    setAuthNoStoreHeaders(res);
+    setSessionCookie(req, res, sessionToken);
+    broadcastSSE({ type: 'auth_changed' });
+    res.json({
+      success: true,
+      sessionToken,
+      recoverySource: recovery.source
+    });
+  } catch (err: any) {
+    handleAuthError(res, err);
+  }
+});
+
+app.post('/api/auth/logout', (req, res) => {
+  try {
+    setAuthNoStoreHeaders(res);
+    if (!db) initDatabase();
+    const rawToken = getRawSessionTokenFromReq(req);
+    const resolved = rawToken ? resolveSessionToken(db, rawToken) : null;
+    if (rawToken) {
+      revokeSessionByToken(db, rawToken);
+    }
+    clearSessionCookie(req, res);
+    if (resolved) {
+      terminateLiveUserSessions({ sessionId: resolved.session.id, reason: 'USER_LOGOUT' });
+    } else {
+      broadcastSSE({ type: 'auth_changed' });
+    }
+    res.json({ success: true });
+  } catch (err: any) {
+    handleAuthError(res, err);
+  }
+});
+
+// Self-Service Account & Owned Device Endpoints
+app.post('/api/account/change-pin', requireSignedIn, (req: any, res) => {
+  try {
+    const auth = req.userAuth as ResolvedUserAuthContext;
+    const deviceId = getRequestDeviceId(req);
+    const ip = getRequestIp(req);
+    const rateKey = `changepin:${auth.currentUser.id}:${deviceId || ip || 'unknown'}`;
+    const check = pinRateLimiter.check(rateKey);
+    if (!check.allowed) {
+      return res.status(429).json({
+        error: 'RATE_LIMITED',
+        retryAfterSeconds: check.retryAfterSeconds,
+        message: `Too many failed PIN attempts. Try again in ${check.retryAfterSeconds}s.`
+      });
+    }
+
+    const { currentPin, newPin } = req.body || {};
+    try {
+      const updated = changeOwnPin(db, auth.currentUser.id, String(currentPin || ''), String(newPin || ''));
+      pinRateLimiter.reset(rateKey);
+      res.json({ success: true, user: updated });
+    } catch (err: any) {
+      if (err instanceof AuthError && err.code === 'INVALID_CURRENT_PIN') {
+        pinRateLimiter.recordFailure(rateKey);
+      }
+      throw err;
+    }
+  } catch (err: any) {
+    handleAuthError(res, err);
+  }
+});
+
+app.get('/api/account/devices', requireSignedIn, (req: any, res) => {
+  try {
+    const auth = req.userAuth as ResolvedUserAuthContext;
+    const currentDeviceId = getRequestDeviceId(req);
+    const onlineDeviceIds = new Set(
+      Array.from(activeClients.values())
+        .filter(c => c.deviceId && (Date.now() - c.lastActive < 20000))
+        .map(c => c.deviceId as string)
+    );
+    const devices = listDevicesForUser(db, auth.currentUser.id, currentDeviceId, onlineDeviceIds);
+    const sessions = listSessionsSummary(db, {
+      userId: auth.currentUser.id,
+      currentSessionId: auth.currentSession?.id || null
+    });
+    res.json({ success: true, devices, sessions });
+  } catch (err: any) {
+    handleAuthError(res, err);
+  }
+});
+
+app.put('/api/account/devices/:id', requireSignedIn, (req: any, res) => {
+  try {
+    const auth = req.userAuth as ResolvedUserAuthContext;
+    const deviceId = req.params.id;
+    assertDeviceOwnedByUser(db, deviceId, auth.currentUser.id);
+    const { name, notes } = req.body || {};
+    db.prepare(`
+      UPDATE pwa_devices
+      SET name = COALESCE(?, name),
+          notes = COALESCE(?, notes),
+          lastSeen = ?
+      WHERE id = ? AND userId = ?
+    `).run(
+      name !== undefined && String(name).trim() ? String(name).trim() : null,
+      notes !== undefined ? String(notes) : null,
+      new Date().toISOString(),
+      deviceId,
+      auth.currentUser.id
+    );
+    res.json({ success: true });
+  } catch (err: any) {
+    handleAuthError(res, err);
+  }
+});
+
+app.post('/api/account/devices/:id/revoke', requireSignedIn, (req: any, res) => {
+  try {
+    const auth = req.userAuth as ResolvedUserAuthContext;
+    const deviceId = req.params.id;
+    assertDeviceOwnedByUser(db, deviceId, auth.currentUser.id);
+    db.prepare("UPDATE pwa_devices SET status = 'revoked' WHERE id = ? AND userId = ?").run(
+      deviceId,
+      auth.currentUser.id
+    );
+    revokeSessionsForDevice(db, deviceId, auth.currentUser.id);
+    for (const [cid, client] of activeClients.entries()) {
+      if (client.deviceId === deviceId) {
+        try {
+          if (client.res) {
+            client.res.write(`data: ${JSON.stringify({ type: 'device_revoked', deviceId, error: 'DEVICE_REVOKED' })}\n\n`);
+            client.res.end();
+          }
+        } catch (e) {}
+        activeClients.delete(cid);
+      }
+    }
+    broadcastSSE({ type: 'clients_changed', count: getActiveClientCount(), clients: getConnectedClientsSummary() });
+    broadcastSSE({ type: 'auth_changed', userId: auth.currentUser.id });
+    res.json({ success: true, status: 'revoked' });
+  } catch (err: any) {
+    handleAuthError(res, err);
+  }
+});
+
+app.post('/api/account/devices/:id/authorize', requireSignedIn, (req: any, res) => {
+  try {
+    const auth = req.userAuth as ResolvedUserAuthContext;
+    const deviceId = req.params.id;
+    assertDeviceOwnedByUser(db, deviceId, auth.currentUser.id);
+    db.prepare("UPDATE pwa_devices SET status = 'authorized' WHERE id = ? AND userId = ?").run(
+      deviceId,
+      auth.currentUser.id
+    );
+    res.json({ success: true, status: 'authorized' });
+  } catch (err: any) {
+    handleAuthError(res, err);
+  }
+});
+
+app.delete('/api/account/devices/:id', requireSignedIn, (req: any, res) => {
+  try {
+    const auth = req.userAuth as ResolvedUserAuthContext;
+    const deviceId = req.params.id;
+    assertDeviceOwnedByUser(db, deviceId, auth.currentUser.id);
+    revokeSessionsForDevice(db, deviceId, auth.currentUser.id);
+    db.prepare('DELETE FROM pwa_devices WHERE id = ? AND userId = ?').run(deviceId, auth.currentUser.id);
+    broadcastSSE({ type: 'auth_changed', userId: auth.currentUser.id });
+    res.json({ success: true });
+  } catch (err: any) {
+    handleAuthError(res, err);
+  }
+});
+
+// Admin Master User & Session Management Endpoints
+app.get('/api/admin/users', requireAdmin, (req, res) => {
+  try {
+    if (!db) initDatabase();
+    const users = listUsersSummary(db);
+    res.json({ success: true, users });
+  } catch (err: any) {
+    handleAuthError(res, err);
+  }
+});
+
+app.post('/api/admin/users', requireAdmin, (req, res) => {
+  try {
+    if (!db) initDatabase();
+    const { name, role, pin, isActive } = req.body || {};
+    const user = createUser(db, { name, role, pin, isActive });
+    broadcastSSE({ type: 'auth_changed', userId: user.id });
+    res.json({ success: true, user });
+  } catch (err: any) {
+    handleAuthError(res, err);
+  }
+});
+
+app.put('/api/admin/users/:id', requireAdmin, (req, res) => {
+  try {
+    if (!db) initDatabase();
+    const { name, role, isActive } = req.body || {};
+    const user = updateUser(db, req.params.id, { name, role, isActive });
+    if (isActive === false) {
+      terminateLiveUserSessions({ userId: req.params.id, reason: 'USER_DEACTIVATED' });
+    } else {
+      broadcastSSE({ type: 'auth_changed', userId: req.params.id });
+    }
+    res.json({ success: true, user });
+  } catch (err: any) {
+    handleAuthError(res, err);
+  }
+});
+
+app.post('/api/admin/users/:id/reset-pin', requireAdmin, (req, res) => {
+  try {
+    if (!db) initDatabase();
+    const { pin, revokeSessions } = req.body || {};
+    const user = resetUserPin(db, req.params.id, String(pin || ''));
+    if (revokeSessions) {
+      revokeAllSessionsForUser(db, req.params.id);
+      terminateLiveUserSessions({ userId: req.params.id, reason: 'PIN_RESET' });
+    }
+    res.json({ success: true, user });
+  } catch (err: any) {
+    handleAuthError(res, err);
+  }
+});
+
+app.post('/api/admin/users/:id/revoke-sessions', requireAdmin, (req, res) => {
+  try {
+    if (!db) initDatabase();
+    const count = revokeAllSessionsForUser(db, req.params.id);
+    terminateLiveUserSessions({ userId: req.params.id, reason: 'ADMIN_REVOKED' });
+    res.json({ success: true, revokedCount: count });
+  } catch (err: any) {
+    handleAuthError(res, err);
+  }
+});
+
+app.delete('/api/admin/users/:id', requireAdmin, (req, res) => {
+  try {
+    if (!db) initDatabase();
+    deleteUser(db, req.params.id);
+    terminateLiveUserSessions({ userId: req.params.id, reason: 'USER_DELETED' });
+    res.json({ success: true });
+  } catch (err: any) {
+    handleAuthError(res, err);
+  }
+});
+
+app.get('/api/admin/sessions', requireAdmin, (req: any, res) => {
+  try {
+    if (!db) initDatabase();
+    const auth = req.userAuth as ResolvedUserAuthContext;
+    const sessions = listSessionsSummary(db, {
+      userId: typeof req.query?.userId === 'string' && req.query.userId ? req.query.userId : undefined,
+      currentSessionId: auth.currentSession?.id || null
+    });
+    res.json({ success: true, sessions });
+  } catch (err: any) {
+    handleAuthError(res, err);
+  }
+});
+
+app.post('/api/admin/sessions/:id/revoke', requireAdmin, (req, res) => {
+  try {
+    if (!db) initDatabase();
+    const revoked = revokeSession(db, req.params.id);
+    terminateLiveUserSessions({ sessionId: req.params.id, reason: 'ADMIN_REVOKED' });
+    res.json({ success: true, revoked });
+  } catch (err: any) {
+    handleAuthError(res, err);
+  }
+});
+
+app.put('/api/admin/auth-policy', requireAdmin, (req, res) => {
+  try {
+    if (!db) initDatabase();
+    const { requireLoginForEdits } = req.body || {};
+    if (typeof requireLoginForEdits !== 'boolean') {
+      return res.status(400).json({ error: 'INVALID_POLICY', message: 'requireLoginForEdits boolean is required.' });
+    }
+    const updated = setRequireLoginForEdits(db, requireLoginForEdits);
+    broadcastSSE({ type: 'auth_changed' });
+    notifyInventoryUpdate();
+    res.json({ success: true, requireLoginForEdits: updated });
+  } catch (err: any) {
+    handleAuthError(res, err);
+  }
+});
+
+app.get('/api/admin/legacy-users', requireAdmin, (req, res) => {
+  try {
+    if (!db) initDatabase();
+    const currentDeviceId = getRequestDeviceId(req);
+    const onlineDeviceIds = new Set(
+      Array.from(activeClients.values())
+        .filter((c) => c.deviceId && (Date.now() - c.lastActive < 20000))
+        .map((c) => c.deviceId as string)
+    );
+    const groups = listLegacyUnlinkedGroups(db, currentDeviceId, onlineDeviceIds);
+    res.json({ success: true, groups });
+  } catch (err: any) {
+    handleAuthError(res, err);
+  }
+});
+
+app.post('/api/admin/legacy-users/migrate', requireAdmin, (req, res) => {
+  try {
+    if (!db) initDatabase();
+    const { mode, sourceOperatorKey, newName, role, pin, targetUserId, deviceIds } = req.body || {};
+    let resultUser: any = null;
+    let migratedCount = 0;
+
+    if (mode === 'link') {
+      if (!targetUserId) {
+        return res.status(400).json({ error: 'TARGET_USER_REQUIRED', message: 'Select an existing user account to link devices to.' });
+      }
+      const linked = linkLegacyOperatorToUser(db, {
+        sourceOperatorKey: sourceOperatorKey || '__unassigned__',
+        targetUserId: String(targetUserId),
+        deviceIds: Array.isArray(deviceIds) ? deviceIds : undefined
+      });
+      resultUser = linked.user;
+      migratedCount = linked.linkedDeviceCount;
+    } else {
+      const migrated = migrateLegacyOperatorToUser(db, {
+        sourceOperatorKey: sourceOperatorKey || '__unassigned__',
+        newName,
+        role: role === 'admin' ? 'admin' : 'user',
+        pin: String(pin || ''),
+        deviceIds: Array.isArray(deviceIds) ? deviceIds : undefined
+      });
+      resultUser = migrated.user;
+      migratedCount = migrated.migratedDeviceCount;
+    }
+
+    if (resultUser) {
+      for (const client of activeClients.values()) {
+        if (client.deviceId) {
+          const devRow = db.prepare('SELECT userId FROM pwa_devices WHERE id = ?').get(client.deviceId) as any;
+          if (devRow?.userId === resultUser.id) {
+            client.userId = resultUser.id;
+            client.userName = resultUser.name;
+            client.userRole = resultUser.role;
+          }
+        }
+      }
+    }
+
+    broadcastSSE({ type: 'auth_changed', userId: resultUser?.id });
+    broadcastSSE({ type: 'clients_changed', count: getActiveClientCount(), clients: getConnectedClientsSummary() });
+    res.json({ success: true, user: resultUser, migratedCount });
+  } catch (err: any) {
+    handleAuthError(res, err);
+  }
+});
+
+app.put('/api/admin/devices/:id/assign-user', requireAdmin, (req, res) => {
+  try {
+    if (!db) initDatabase();
+    const deviceId = req.params.id;
+    const rawUserId = req.body?.userId;
+    const targetUserId = rawUserId === null || rawUserId === '' || rawUserId === undefined ? null : String(rawUserId);
+    const device = assignDeviceToUser(db, deviceId, targetUserId);
+
+    for (const client of activeClients.values()) {
+      if (client.deviceId === deviceId) {
+        client.userId = device.userId;
+        if (device.operator) client.userName = device.operator;
+      }
+    }
+    broadcastSSE({ type: 'auth_changed', userId: device.userId });
+    broadcastSSE({ type: 'clients_changed', count: getActiveClientCount(), clients: getConnectedClientsSummary() });
+    res.json({ success: true, device });
+  } catch (err: any) {
+    handleAuthError(res, err);
+  }
+});
+
+
+// [TEMP] Temporary voice prompt capture routes (delete when voice model is built out)
+registerTempVoicePromptRoutes(app, DATA_DIR, requireEditAuth);
 
 // ---------------- APP CONFIG DB TABLE ENDPOINTS ----------------
 
@@ -3864,7 +5229,7 @@ app.get('/api/app-config/:key', (req, res) => {
   }
 });
 
-app.delete('/api/app-config/:key', async (req, res) => {
+app.delete('/api/app-config/:key', requireAdmin, async (req, res) => {
   try {
     if (!db) initDatabase();
     const key = req.params.key;
@@ -3892,6 +5257,29 @@ app.delete('/api/app-config/:key', async (req, res) => {
 app.post('/api/app-config', async (req, res) => {
   try {
     if (!db) initDatabase();
+    const auth = resolveUserContext(req);
+    if (canNonAdminWriteAppConfig(req.body)) {
+      if (auth.usersConfigured && getRequireLoginForEdits(db) && !auth.isAuthenticated) {
+        return res.status(401).json({
+          error: 'AUTH_REQUIRED',
+          code: 'LOGIN_REQUIRED_FOR_EDITS',
+          message: 'Sign in with your user PIN to update Off-Site Settings.'
+        });
+      }
+    } else if (auth.usersConfigured && !auth.isAdmin) {
+      if (!auth.isAuthenticated) {
+        return res.status(401).json({
+          error: 'AUTH_REQUIRED',
+          message: 'Please sign in with an administrator account to access this setting.'
+        });
+      }
+      return res.status(403).json({
+        error: 'ADMIN_REQUIRED',
+        message: 'Administrator privileges are required to perform this action.'
+      });
+    }
+    (req as any).userAuth = auth;
+
     const { key, value, configs } = req.body;
     const nowIso = new Date().toISOString();
 
@@ -4002,7 +5390,7 @@ app.get('/api/config/:key', (req, res) => {
   }
 });
 
-app.post('/api/config', (req, res) => {
+app.post('/api/config', requireAdmin, (req, res) => {
   try {
     if (!db) initDatabase();
     const { key, value, configs } = req.body;
@@ -4064,7 +5452,7 @@ app.get('/api/demo/status', (req, res) => {
   }
 });
 
-app.post('/api/demo/start', async (req, res) => {
+app.post('/api/demo/start', requireAdmin, async (req, res) => {
   try {
     console.log('Initiating demo mode...');
     if (isDemoMode && db) {
@@ -4120,7 +5508,7 @@ app.post('/api/demo/start', async (req, res) => {
   }
 });
 
-app.post('/api/demo/end', async (req, res) => {
+app.post('/api/demo/end', requireAdmin, async (req, res) => {
   try {
     console.log('Exiting demo mode...');
 
@@ -4166,6 +5554,8 @@ app.post('/api/demo/end', async (req, res) => {
 
 
 // ---------------- BACKUP ENDPOINTS ----------------
+
+app.use('/api/backups', requireAdmin);
 
 app.get('/api/backups/config', (req, res) => {
   try {
@@ -4295,9 +5685,14 @@ app.post('/api/backups/create', async (req: any, res) => {
       db.prepare('VACUUM INTO ?').run(tempDbPath);
       zip.addLocalFile(tempDbPath, '', 'inventory.db');
 
-      // 2. Add complete JSON state with all 19 tables
+      // 2. Add complete JSON state across all tables (plus auth backup tables)
       const fullState = await loadState();
-      zip.addFile('inventory-on-site.json', Buffer.from(JSON.stringify(fullState, null, 2), 'utf-8'));
+      const backupState = {
+        ...fullState,
+        appUsers: loadTableData('app_users') || [],
+        userSessions: loadTableData('user_sessions') || []
+      };
+      zip.addFile('inventory-on-site.json', Buffer.from(JSON.stringify(backupState, null, 2), 'utf-8'));
 
       // 3. Add Off-Site CSV
       const entries = fullState.offSiteEntries || [];
@@ -4347,6 +5742,8 @@ app.post('/api/backups/create', async (req: any, res) => {
       const currentConfig = getFullBackupConfigObject();
       const exportJson = {
         ...fullState,
+        appUsers: loadTableData('app_users') || [],
+        userSessions: loadTableData('user_sessions') || [],
         config: currentConfig
       };
       fs.writeFileSync(filepath, JSON.stringify(exportJson, null, 2), 'utf-8');
@@ -4636,12 +6033,20 @@ export const DATABASE_TABLE_DEFINITIONS = [
     description: 'Sender addresses, simulated box weights, auto-snapshot policies, and theme preferences'
   },
   {
+    name: 'notification_channels',
+    label: 'Notification Delivery Channels',
+    category: 'system',
+    categoryLabel: 'System & Preferences',
+    iconName: 'Send',
+    description: 'Named SMTP email, webhook POST, and in-app notification endpoints'
+  },
+  {
     name: 'notification_settings',
     label: 'Notification & Digest Settings',
     category: 'system',
     categoryLabel: 'System & Preferences',
     iconName: 'Bell',
-    description: 'SMTP email configurations, Home Assistant notify targets, and digest schedules'
+    description: 'Daily digest windows, default delivery routes, and system notification preferences'
   },
   {
     name: 'notification_logs',
@@ -4685,6 +6090,25 @@ export const DATABASE_TABLE_DEFINITIONS = [
     categoryLabel: 'System & Preferences',
     iconName: 'BookOpen',
     description: 'Custom spoken aliases and phrase rewrites mapping words to products, containers, freezers, or phrases'
+  },
+  {
+    name: 'app_users',
+    label: 'Local User Accounts & Roles',
+    category: 'system',
+    categoryLabel: 'System & Preferences',
+    iconName: 'Users',
+    description: 'Registered user names, roles (Admin/User), and salted PIN hashes'
+  },
+  {
+    name: 'user_sessions',
+    label: 'User Device Sessions',
+    category: 'system',
+    categoryLabel: 'System & Preferences',
+    iconName: 'KeyRound',
+    description: 'Persistent signed-in session tokens linked to user accounts and devices',
+    dependsOn: [
+      { table: 'app_users', foreignKey: 'userId', label: 'User Accounts' }
+    ]
   }
 ];
 
@@ -4705,11 +6129,14 @@ export const TABLE_ALIAS_MAP: Record<string, string[]> = {
   tags: ['tags'],
   voice_dictionary: ['voice_dictionary'],
   app_config: ['app_config'],
+  notification_channels: ['notification_channels'],
   notification_settings: ['notification_settings'],
   notification_logs: ['notification_logs'],
   history: ['history'],
   pwa_devices: ['pwa_devices'],
   undo_sql_journal: ['undo_sql_journal'],
+  app_users: ['app_users'],
+  user_sessions: ['user_sessions'],
 
   // CamelCase aliases
   containerTemplates: ['container_templates'],
@@ -4721,11 +6148,16 @@ export const TABLE_ALIAS_MAP: Record<string, string[]> = {
   voiceDictionary: ['voice_dictionary'],
   dictionary: ['voice_dictionary'],
   appConfig: ['app_config'],
+  notificationChannels: ['notification_channels'],
   notificationSettings: ['notification_settings'],
   notificationLogs: ['notification_logs'],
   pwaDevices: ['pwa_devices'],
   undoJournal: ['undo_sql_journal'],
   undoSqlJournal: ['undo_sql_journal'],
+  appUsers: ['app_users'],
+  userSessions: ['user_sessions'],
+  users: ['app_users'],
+  sessions: ['user_sessions'],
 
   // Broad Section aliases
   layout: ['freezers', 'containers', 'container_templates'],
@@ -4735,8 +6167,8 @@ export const TABLE_ALIAS_MAP: Record<string, string[]> = {
   items: ['products', 'categories'],
   offsite: ['locations', 'pallets', 'boxes', 'off_site_entries', 'movement_orders'],
   lists: ['custom_lists', 'tags'],
-  system: ['app_config', 'notification_settings', 'notification_logs', 'history', 'pwa_devices', 'undo_sql_journal', 'voice_dictionary'],
-  settings: ['app_config', 'notification_settings', 'notification_logs', 'pwa_devices', 'undo_sql_journal', 'voice_dictionary'],
+  system: ['app_config', 'notification_channels', 'notification_settings', 'notification_logs', 'history', 'pwa_devices', 'undo_sql_journal', 'voice_dictionary', 'app_users', 'user_sessions'],
+  settings: ['app_config', 'notification_channels', 'notification_settings', 'notification_logs', 'pwa_devices', 'undo_sql_journal', 'voice_dictionary', 'app_users', 'user_sessions'],
   audit: ['history', 'undo_sql_journal'],
   logs: ['history', 'notification_logs', 'undo_sql_journal'],
   devices: ['pwa_devices']
@@ -5024,6 +6456,36 @@ function checkDatabaseDependencies(srcDb: any, selectedTables: string[]) {
     }
   }
 
+  // Check user_sessions dependencies
+  if (isTableSelected('user_sessions') && !isTableSelected('app_users')) {
+    try {
+      const activeUserIds = getExistingIds(db, 'app_users');
+      const sRows = srcDb.prepare("SELECT userId FROM user_sessions WHERE userId IS NOT NULL AND trim(userId) != ''").all() as any[];
+      const missingUserIds = new Set<string>();
+      let missingCount = 0;
+      for (const row of sRows) {
+        const uid = String(row.userId).trim();
+        if (uid && !activeUserIds.has(uid)) {
+          missingUserIds.add(uid);
+          missingCount++;
+        }
+      }
+      if (missingCount > 0) {
+        issues.push({
+          sourceTable: 'user_sessions',
+          sourceLabel: 'User Login Sessions',
+          targetTable: 'app_users',
+          targetLabel: 'User Accounts',
+          missingCount,
+          sampleIds: Array.from(missingUserIds).slice(0, 5),
+          message: `${missingCount} user session(s) reference user ID(s) missing from active app_users.`,
+          recommendation: 'app_users'
+        });
+        suggestedTables.add('app_users');
+      }
+    } catch (e) {}
+  }
+
   return {
     hasMissingDependencies: issues.length > 0,
     issues,
@@ -5204,14 +6666,23 @@ function restoreFromJsonData(backupData: any, targetSections?: string[]): AppInv
   const srcCustomLists = backupData.customLists || backupData.custom_lists || backupData.lists;
   const srcTags = backupData.tags;
   const srcAppConfig = backupData.appConfig || backupData.app_config || backupData.config || backupData.configs;
+  const srcNotificationChannels = backupData.notificationChannels || backupData.notification_channels;
   const srcNotificationSettings = backupData.notificationSettings || backupData.notification_settings;
   const srcNotificationLogs = backupData.notificationLogs || backupData.notification_logs;
   const srcHistory = backupData.history || backupData.logs || backupData.audit;
   const srcPwaDevices = backupData.pwaDevices || backupData.pwa_devices || backupData.devices;
   const srcUndoJournal = backupData.undoJournal || backupData.undo_sql_journal || backupData.undo_journal || backupData.undoSqlJournal;
   const srcVoiceDictionary = backupData.voiceDictionary || backupData.voice_dictionary || backupData.customDictionary;
+  const srcAppUsers = backupData.appUsers || backupData.app_users;
+  const srcUserSessions = backupData.userSessions || backupData.user_sessions;
 
   if (isFull) {
+    const rawSettings = srcNotificationSettings || currentState.notificationSettings || [];
+    const migration = migrateLegacyNotificationData(
+      rawSettings[0],
+      srcNotificationChannels,
+      srcCustomLists || []
+    );
     const nextState: any = {
       freezers: srcFreezers || [],
       containerTemplates: srcContainerTemplates || [],
@@ -5225,17 +6696,28 @@ function restoreFromJsonData(backupData: any, targetSections?: string[]): AppInv
       offSiteEntries: srcOffSite || [],
       movementOrders: srcMovementOrders || [],
       butcherOrders: srcButcherOrders || [],
-      customLists: srcCustomLists || [],
+      customLists: migration.migrated ? migration.customLists : (srcCustomLists || []),
       tags: srcTags || [],
       voiceDictionary: srcVoiceDictionary || [],
       history: srcHistory || [],
-      notificationSettings: srcNotificationSettings || currentState.notificationSettings || [],
+      notificationChannels: migration.migrated ? migration.channels : (srcNotificationChannels || []),
+      notificationSettings: migration.migrated ? [migration.settings] : rawSettings,
       notificationLogs: srcNotificationLogs || [],
       appConfig: Array.isArray(srcAppConfig) ? srcAppConfig : (srcAppConfig && typeof srcAppConfig === 'object' ? Object.entries(srcAppConfig).map(([key, value]) => ({ key, value: typeof value === 'string' ? value : JSON.stringify(value) })) : (currentState.appConfig || [])),
       pwaDevices: srcPwaDevices || currentState.pwaDevices || [],
       undoJournal: srcUndoJournal || currentState.undoJournal || []
     };
     saveStateSync(nextState);
+    if (Array.isArray(srcAppUsers)) {
+      db.transaction(() => {
+        saveTableData('app_users', srcAppUsers);
+      })();
+    }
+    if (Array.isArray(srcUserSessions)) {
+      db.transaction(() => {
+        saveTableData('user_sessions', srcUserSessions);
+      })();
+    }
     return nextState;
   }
 
@@ -5305,9 +6787,21 @@ function restoreFromJsonData(backupData: any, targetSections?: string[]): AppInv
     currentState.appConfig = Array.isArray(srcAppConfig) ? srcAppConfig : (srcAppConfig && typeof srcAppConfig === 'object' ? Object.entries(srcAppConfig).map(([key, value]) => ({ key, value: typeof value === 'string' ? value : JSON.stringify(value) })) : (currentState.appConfig || []));
     affectedTablesList.push('app_config');
   }
+  if (tablesToRestore.has('notification_channels') && srcNotificationChannels) {
+    currentState.notificationChannels = srcNotificationChannels;
+    affectedTablesList.push('notification_channels');
+  }
   if (tablesToRestore.has('notification_settings') && srcNotificationSettings) {
     currentState.notificationSettings = srcNotificationSettings;
     affectedTablesList.push('notification_settings');
+    if (!srcNotificationChannels) {
+      const mig = migrateLegacyNotificationData(srcNotificationSettings[0], [], currentState.customLists);
+      if (mig.migrated) {
+        currentState.notificationChannels = mig.channels;
+        currentState.notificationSettings = [mig.settings];
+        affectedTablesList.push('notification_channels');
+      }
+    }
   }
   if (tablesToRestore.has('notification_logs') && srcNotificationLogs) {
     currentState.notificationLogs = srcNotificationLogs;
@@ -5326,7 +6820,17 @@ function restoreFromJsonData(backupData: any, targetSections?: string[]): AppInv
     affectedTablesList.push('undo_sql_journal');
   }
 
-  saveStateSync(currentState, affectedTablesList);
+  saveStateSync(currentState, Array.from(new Set(affectedTablesList)));
+  if (tablesToRestore.has('app_users') && Array.isArray(srcAppUsers)) {
+    db.transaction(() => {
+      saveTableData('app_users', srcAppUsers);
+    })();
+  }
+  if (tablesToRestore.has('user_sessions') && Array.isArray(srcUserSessions)) {
+    db.transaction(() => {
+      saveTableData('user_sessions', srcUserSessions);
+    })();
+  }
   return currentState;
 }
 
@@ -5827,11 +7331,14 @@ app.get('/api/backups/preview/:filename', async (req, res) => {
           tags: getArrayLength(data.tags),
           voice_dictionary: getArrayLength(data.voiceDictionary || data.voice_dictionary || data.customDictionary),
           app_config: data.config ? Object.keys(data.config).length : (data.appConfig ? Object.keys(data.appConfig).length : 0),
+          notification_channels: getArrayLength(data.notificationChannels || data.notification_channels),
           notification_settings: getArrayLength(data.notificationSettings),
           notification_logs: getArrayLength(data.notificationLogs),
           history: getArrayLength(data.history || data.logs),
           pwa_devices: getArrayLength(data.pwaDevices || data.pwa_devices || data.devices),
-          undo_sql_journal: getArrayLength(data.undoJournal || data.undo_sql_journal || data.undo_journal || data.undoSqlJournal)
+          undo_sql_journal: getArrayLength(data.undoJournal || data.undo_sql_journal || data.undo_journal || data.undoSqlJournal),
+          app_users: getArrayLength(data.appUsers || data.app_users),
+          user_sessions: getArrayLength(data.userSessions || data.user_sessions)
         };
 
         summary.counts.freezers = summary.tableCounts.freezers;
@@ -5940,11 +7447,14 @@ app.get('/api/backups/preview/:filename', async (req, res) => {
               tags: getArrayLength(parsed.tags),
               voice_dictionary: getArrayLength(parsed.voiceDictionary || parsed.voice_dictionary || parsed.customDictionary),
               app_config: parsed.config ? Object.keys(parsed.config).length : 0,
+              notification_channels: getArrayLength(parsed.notificationChannels || parsed.notification_channels),
               notification_settings: getArrayLength(parsed.notificationSettings),
               notification_logs: getArrayLength(parsed.notificationLogs),
               history: getArrayLength(parsed.history || parsed.logs),
               pwa_devices: getArrayLength(parsed.pwaDevices || parsed.pwa_devices),
-              undo_sql_journal: getArrayLength(parsed.undoJournal || parsed.undo_sql_journal)
+              undo_sql_journal: getArrayLength(parsed.undoJournal || parsed.undo_sql_journal),
+              app_users: getArrayLength(parsed.appUsers || parsed.app_users),
+              user_sessions: getArrayLength(parsed.userSessions || parsed.user_sessions)
             };
           }
         }
@@ -6620,6 +8130,9 @@ app.post('/api/backups/upload-chunk', async (req: any, res) => {
 interface ActiveClient {
   id: string;
   userName: string;
+  userId?: string;
+  userRole?: string;
+  sessionId?: string;
   device: string;
   browser: string;
   clientDevice?: string; // 'Desktop Browser' | 'Mobile Browser' | 'HA Companion App' | 'Standalone PWA'
@@ -6653,6 +8166,7 @@ function trackOrRegisterDevice(params: {
   deviceId?: string;
   deviceName?: string;
   operator?: string;
+  userId?: string;
   clientDevice?: string;
   clientInfo?: string;
   userAgent?: string;
@@ -6668,8 +8182,13 @@ function trackOrRegisterDevice(params: {
         return { authorized: false, device: existing };
       }
       const cleanName = params.deviceName && params.deviceName !== 'Unnamed Device' && params.deviceName.trim() ? params.deviceName.trim() : existing.name;
-      const cleanOp = params.operator && params.operator.trim() && params.operator.trim() !== 'User' && params.operator.trim() !== 'Home Assistant' ? params.operator.trim() : existing.operator;
+      // Do not allow unauthenticated heartbeats to overwrite operator on a device already owned by an app_users account
+      const canUpdateOperator = !existing.userId || Boolean(params.userId);
+      const cleanOp = canUpdateOperator && params.operator && params.operator.trim() && params.operator.trim() !== 'User' && params.operator.trim() !== 'Home Assistant'
+        ? params.operator.trim()
+        : existing.operator;
       const isPwaVal = params.isPwa !== undefined ? (params.isPwa ? 1 : 0) : existing.isPwa;
+      const resolvedUserId = existing.userId || params.userId || null;
 
       db.prepare(`
         UPDATE pwa_devices 
@@ -6677,6 +8196,7 @@ function trackOrRegisterDevice(params: {
             lastIp = COALESCE(?, lastIp),
             name = ?,
             operator = ?,
+            userId = COALESCE(userId, ?),
             clientDevice = COALESCE(?, clientDevice),
             clientInfo = COALESCE(?, clientInfo),
             userAgent = COALESCE(?, userAgent),
@@ -6687,18 +8207,21 @@ function trackOrRegisterDevice(params: {
         params.ip || null,
         cleanName,
         cleanOp,
+        params.userId || null,
         params.clientDevice || null,
         params.clientInfo || null,
         params.userAgent || null,
         isPwaVal,
         params.deviceId
       );
-      return { authorized: true, device: { ...existing, lastSeen: now, name: cleanName, operator: cleanOp } };
+      const resolvedAutoUpdateCache = existing.autoUpdateCache === undefined || existing.autoUpdateCache === null ? true : Boolean(existing.autoUpdateCache);
+      return { authorized: true, device: { ...existing, lastSeen: now, name: cleanName, operator: cleanOp, userId: resolvedUserId, autoUpdateCache: resolvedAutoUpdateCache } };
     } else {
       const newDevice = {
         id: params.deviceId,
         name: params.deviceName && params.deviceName.trim() ? params.deviceName.trim() : (params.isPwa ? 'Standalone PWA' : 'Web Device'),
         operator: params.operator && params.operator.trim() !== 'User' && params.operator.trim() !== 'Home Assistant' ? params.operator.trim() : null,
+        userId: params.userId || null,
         deviceType: params.clientDevice || (params.isPwa ? 'Standalone PWA' : 'Web Browser'),
         clientDevice: params.clientDevice || (params.isPwa ? 'Standalone PWA' : 'Desktop Browser'),
         clientInfo: params.clientInfo || null,
@@ -6708,18 +8231,19 @@ function trackOrRegisterDevice(params: {
         lastIp: params.ip || null,
         userAgent: params.userAgent || null,
         status: 'authorized',
+        autoUpdateCache: 1,
         notes: null
       };
       db.prepare(`
-        INSERT INTO pwa_devices (id, name, operator, deviceType, clientDevice, clientInfo, isPwa, firstSeen, lastSeen, lastIp, userAgent, status, notes)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO pwa_devices (id, name, operator, userId, deviceType, clientDevice, clientInfo, isPwa, firstSeen, lastSeen, lastIp, userAgent, status, autoUpdateCache, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
-        newDevice.id, newDevice.name, newDevice.operator, newDevice.deviceType,
+        newDevice.id, newDevice.name, newDevice.operator, newDevice.userId, newDevice.deviceType,
         newDevice.clientDevice, newDevice.clientInfo, newDevice.isPwa,
         newDevice.firstSeen, newDevice.lastSeen, newDevice.lastIp, newDevice.userAgent,
-        newDevice.status, newDevice.notes
+        newDevice.status, newDevice.autoUpdateCache, newDevice.notes
       );
-      return { authorized: true, device: newDevice };
+      return { authorized: true, device: { ...newDevice, autoUpdateCache: true } };
     }
   } catch (err) {
     console.error('Error tracking device in SQLite:', err);
@@ -6849,9 +8373,12 @@ function cleanStaleClients(): boolean {
 }
 
 function registerOrTouchClient(
-  clientId: string,
+    clientId: string,
   options?: {
     userName?: string;
+    userId?: string;
+    userRole?: string;
+    sessionId?: string;
     userAgent?: string;
     clientDevice?: string;
     clientInfo?: string;
@@ -6883,6 +8410,9 @@ function registerOrTouchClient(
     client = {
       id: clientId,
       userName: options?.userName || 'Home Assistant',
+      userId: options?.userId,
+      userRole: options?.userRole,
+      sessionId: options?.sessionId,
       device: effectiveDevice,
       browser,
       clientDevice,
@@ -6900,6 +8430,9 @@ function registerOrTouchClient(
     activeClients.set(clientId, client);
   } else {
     client.lastActive = now;
+    if (options?.userId !== undefined) client.userId = options.userId;
+    if (options?.userRole !== undefined) client.userRole = options.userRole;
+    if (options?.sessionId !== undefined) client.sessionId = options.sessionId;
     if (options?.userName && (client.userName === 'User' || client.userName === 'Home Assistant' || (options.userName !== 'User' && options.userName !== 'Home Assistant'))) {
       client.userName = options.userName;
     }
@@ -7211,7 +8744,7 @@ app.get('/api/operating-mode/status', (req, res) => {
   });
 });
 
-app.post('/api/operating-mode/set', (req, res) => {
+app.post('/api/operating-mode/set', requireEditAuth, (req, res) => {
   const clientId = (req.headers['x-client-id'] as string) || req.body.clientId;
   const userName = extractUserFromReq(req);
   const zone = ((req.headers['x-client-zone'] as string) || req.body.zone || req.body.scope || 'onsite') as 'onsite' | 'offsite' | 'all';
@@ -7264,7 +8797,7 @@ app.post('/api/operating-mode/set', (req, res) => {
   });
 });
 
-app.post('/api/single-user/claim', (req, res) => {
+app.post('/api/single-user/claim', requireEditAuth, (req, res) => {
   const clientId = (req.headers['x-client-id'] as string) || req.body.clientId;
   const userName = extractUserFromReq(req);
   const clientZone = ((req.headers['x-client-zone'] as string) || 'onsite') as 'onsite' | 'offsite';
@@ -7426,7 +8959,7 @@ app.post('/api/single-user/release', (req, res) => {
   });
 });
 
-app.post('/api/single-user/force-release', (req, res) => {
+app.post('/api/single-user/force-release', requireEditAuth, (req, res) => {
   singleUserLocks.all = null;
   singleUserLocks.onsite = null;
   singleUserLocks.offsite = null;
@@ -7522,7 +9055,7 @@ app.post('/api/single-user/cancel-break-in', (req, res) => {
   res.json({ success: true, locks: { ...singleUserLocks } });
 });
 
-app.post('/api/single-user/sync-state', async (req, res) => {
+app.post('/api/single-user/sync-state', requireEditAuth, async (req, res) => {
   const clientId = (req.headers['x-client-id'] as string) || req.body.clientId;
   const { fullState } = req.body || {};
 
@@ -7552,7 +9085,7 @@ app.post('/api/single-user/sync-state', async (req, res) => {
   });
 });
 
-app.post('/api/single-user/sync-and-release', async (req, res) => {
+app.post('/api/single-user/sync-and-release', requireEditAuth, async (req, res) => {
   const clientId = (req.headers['x-client-id'] as string) || req.body.clientId;
   const clientZone = ((req.headers['x-client-zone'] as string) || req.body.zone || req.body.scope || 'onsite') as 'onsite' | 'offsite' | 'all';
   const { fullState } = req.body || {};
@@ -7609,6 +9142,7 @@ app.get('/api/inventory/stream', (req: any, res: any) => {
     return;
   }
 
+  const authCtx = resolveUserContext(req);
   const userName = extractUserFromReq(req);
   const userAgent = (req.headers['user-agent'] as string) || '';
   const clientDevice = (req.query.clientDevice as string) || (req.headers['x-client-device'] as string) || (isPwa ? 'Standalone PWA' : '');
@@ -7617,7 +9151,22 @@ app.get('/api/inventory/stream', (req: any, res: any) => {
   const currentView = (req.query.currentView as string) || (req.query.clientView as string) || (req.headers['x-client-view'] as string) || undefined;
   const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.socket?.remoteAddress || '';
 
-  registerOrTouchClient(clientId, { userName, userAgent, clientDevice, clientInfo, deviceId, deviceName, isPwa, ip, zone, currentView, res });
+  registerOrTouchClient(clientId, {
+    userName,
+    userId: authCtx.currentUser?.id,
+    userRole: authCtx.currentUser?.role,
+    sessionId: authCtx.currentSession?.id,
+    userAgent,
+    clientDevice,
+    clientInfo,
+    deviceId,
+    deviceName,
+    isPwa,
+    ip,
+    zone,
+    currentView,
+    res
+  });
 
   checkSingleUserLockStaleness();
   checkForcedMultiStaleness();
@@ -7629,12 +9178,24 @@ app.get('/api/inventory/stream', (req: any, res: any) => {
   const targetLock = getActiveSingleUserLockForScope(clientZone);
   const targetForcedMulti = getActiveForcedMultiForScope(clientZone);
 
+  let deviceAutoUpdateCache = true;
+  if (deviceId && db) {
+    try {
+      const devCfg = db.prepare('SELECT autoUpdateCache FROM pwa_devices WHERE id = ?').get(deviceId) as any;
+      if (devCfg && devCfg.autoUpdateCache !== undefined && devCfg.autoUpdateCache !== null) {
+        deviceAutoUpdateCache = Boolean(devCfg.autoUpdateCache);
+      }
+    } catch {}
+  }
+
   // Send initial load details including current single user lock status, active client count, zone counts, clients list, and resolved user identity
   res.write(`data: ${JSON.stringify({ 
     type: 'init', 
     version: currentVersion, 
     appVersion: APP_VERSION,
+    deviceAutoUpdateCache,
     authenticatedUser: userName,
+    authRole: authCtx.currentUser?.role || null,
     lock: targetLock,
     locks: { ...singleUserLocks },
     forcedMulti: targetForcedMulti,
@@ -7710,6 +9271,7 @@ app.post('/api/inventory/clients/heartbeat', (req, res) => {
     });
   }
 
+  const authCtx = resolveUserContext(req);
   const userName = extractUserFromReq(req);
   const userAgent = (req.headers['user-agent'] as string) || '';
   const clientDevice = (req.headers['x-client-device'] as string) || req.body?.clientDevice || (req.query?.clientDevice as string) || (isPwa ? 'Standalone PWA' : '');
@@ -7722,7 +9284,21 @@ app.post('/api/inventory/clients/heartbeat', (req, res) => {
     const isNew = !activeClients.has(reqClientId);
     const existingClient = activeClients.get(reqClientId);
     const prevZone = existingClient?.zone;
-    registerOrTouchClient(reqClientId, { userName, userAgent, clientDevice, clientInfo, deviceId, deviceName, isPwa, ip, zone, currentView });
+    registerOrTouchClient(reqClientId, {
+      userName,
+      userId: authCtx.currentUser?.id,
+      userRole: authCtx.currentUser?.role,
+      sessionId: authCtx.currentSession?.id,
+      userAgent,
+      clientDevice,
+      clientInfo,
+      deviceId,
+      deviceName,
+      isPwa,
+      ip,
+      zone,
+      currentView
+    });
     if (isNew || (zone && prevZone && prevZone !== zone)) {
       broadcastSSE({ type: 'clients_changed', count: getActiveClientCount(), zoneCounts: getZoneClientCounts(), clients: getConnectedClientsSummary() });
     }
@@ -7819,7 +9395,7 @@ app.get('/api/inventory/clients', (req, res) => {
 });
 
 // Endpoint to broadcast force sync / cache flush request to all active clients
-app.post('/api/inventory/clients/force-sync', (req, res) => {
+app.post('/api/inventory/clients/force-sync', requireEditAuth, (req, res) => {
   cleanStaleClients();
   broadcastSSE({ type: 'force_flush' });
   setTimeout(() => {
@@ -7829,7 +9405,7 @@ app.post('/api/inventory/clients/force-sync', (req, res) => {
 });
 
 // Endpoint to disconnect/purge a specific client session with pre-flush
-app.post('/api/inventory/clients/disconnect/:id', (req, res) => {
+app.post('/api/inventory/clients/disconnect/:id', requireEditAuth, (req, res) => {
   const targetId = req.params.id;
   const client = activeClients.get(targetId);
   if (client) {
@@ -7859,20 +9435,20 @@ app.post('/api/inventory/clients/disconnect/:id', (req, res) => {
 // ---------------- PWA & DEVICE REGISTRY ENDPOINTS ----------------
 
 // Fetch all registered devices with live online presence status
-app.get('/api/devices', (req, res) => {
+app.get('/api/devices', requireAdmin, (req, res) => {
   if (!db) initDatabase();
   try {
     const devices = db.prepare('SELECT * FROM pwa_devices ORDER BY lastSeen DESC').all() as any[];
     const activeClientList = Array.from(activeClients.values());
     const result = devices.map(d => {
       const isOnline = activeClientList.some(c => 
-        (c.deviceId && c.deviceId === d.id) ||
-        (c.ip && d.lastIp && c.ip === d.lastIp && (Date.now() - c.lastActive < 20000))
+        Boolean(c.deviceId && c.deviceId === d.id && (Date.now() - c.lastActive < 20000))
       );
       return {
         id: d.id,
         name: d.name,
         operator: d.operator || '',
+        userId: d.userId || undefined,
         deviceType: d.deviceType || '',
         clientDevice: d.clientDevice || '',
         clientInfo: d.clientInfo || '',
@@ -7881,6 +9457,7 @@ app.get('/api/devices', (req, res) => {
         lastSeen: d.lastSeen,
         lastIp: d.lastIp || '',
         status: d.status || 'authorized',
+        autoUpdateCache: d.autoUpdateCache === undefined || d.autoUpdateCache === null ? true : Boolean(d.autoUpdateCache),
         notes: d.notes || '',
         isOnline
       };
@@ -7901,10 +9478,16 @@ app.post('/api/devices/register', (req, res) => {
   const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.socket?.remoteAddress || '';
   const userAgent = (req.headers['user-agent'] as string) || '';
 
+  const auth = resolveUserContext(req);
+  const authenticatedUserId = auth.isAuthenticated && !auth.isRecoverySession && auth.currentUser?.id && auth.currentUser.id !== '__recovery_admin__'
+    ? auth.currentUser.id
+    : undefined;
+
   const result = trackOrRegisterDevice({
     deviceId,
     deviceName,
-    operator: operatorName,
+    operator: auth.isAuthenticated && auth.currentUser?.name ? auth.currentUser.name : operatorName,
+    userId: authenticatedUserId,
     clientDevice,
     clientInfo,
     userAgent,
@@ -7919,41 +9502,70 @@ app.post('/api/devices/register', (req, res) => {
     });
   }
 
+  if (authenticatedUserId && result.device && !result.device.userId) {
+    linkDeviceToUser(db, {
+      deviceId,
+      userId: authenticatedUserId,
+      deviceName: deviceName || result.device.name,
+      operatorName: auth.currentUser?.name || operatorName,
+      clientDevice,
+      clientInfo,
+      isPwa,
+      ip,
+      userAgent
+    });
+  }
+
   res.json({ success: true, authorized: true, device: result.device });
 });
 
-// Update device name, operator, or notes
-app.put('/api/devices/:id', (req, res) => {
+// Update device name, operator, userId, autoUpdateCache, or notes
+app.put('/api/devices/:id', requireAdmin, (req, res) => {
   if (!db) initDatabase();
   const deviceId = req.params.id;
-  const { name, operator, notes } = req.body;
+  const { name, operator, notes, userId, autoUpdateCache } = req.body || {};
   try {
-    const existing = db.prepare('SELECT * FROM pwa_devices WHERE id = ?').get(deviceId);
+    const existing = db.prepare('SELECT * FROM pwa_devices WHERE id = ?').get(deviceId) as any;
     if (!existing) {
       return res.status(404).json({ error: 'Device not found' });
     }
+    const autoUpdateDbVal = autoUpdateCache !== undefined ? (autoUpdateCache ? 1 : 0) : null;
     db.prepare(`
       UPDATE pwa_devices
       SET name = COALESCE(?, name),
           operator = COALESCE(?, operator),
           notes = COALESCE(?, notes),
+          autoUpdateCache = COALESCE(?, autoUpdateCache),
           lastSeen = ?
       WHERE id = ?
     `).run(
       name !== undefined ? name : null,
       operator !== undefined ? operator : null,
       notes !== undefined ? notes : null,
+      autoUpdateDbVal,
       new Date().toISOString(),
       deviceId
     );
+    let finalOperator = operator !== undefined ? operator : existing.operator;
+    if (userId !== undefined) {
+      const reassigned = assignDeviceToUser(db, deviceId, userId ? String(userId) : null);
+      if (reassigned.operator) finalOperator = reassigned.operator;
+    }
     // If active client has this deviceId, update its displayed operator/name
     for (const client of activeClients.values()) {
       if (client.deviceId === deviceId) {
-        if (operator) client.userName = operator;
+        if (finalOperator) client.userName = finalOperator;
         if (name) client.device = name;
+        if (userId !== undefined) client.userId = userId || undefined;
       }
     }
     broadcastSSE({ type: 'clients_changed', count: getActiveClientCount(), clients: getConnectedClientsSummary() });
+    if (userId !== undefined) {
+      broadcastSSE({ type: 'auth_changed', userId: userId || undefined });
+    }
+    if (autoUpdateCache !== undefined) {
+      broadcastSSE({ type: 'device_config_changed', deviceId, autoUpdateCache: Boolean(autoUpdateCache) });
+    }
     res.json({ success: true });
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to update device', details: err.message });
@@ -7961,11 +9573,12 @@ app.put('/api/devices/:id', (req, res) => {
 });
 
 // Revoke device access
-app.post('/api/devices/:id/revoke', (req, res) => {
+app.post('/api/devices/:id/revoke', requireAdmin, (req, res) => {
   if (!db) initDatabase();
   const deviceId = req.params.id;
   try {
     db.prepare("UPDATE pwa_devices SET status = 'revoked' WHERE id = ?").run(deviceId);
+    revokeSessionsForDevice(db, deviceId);
     // Instantly terminate any live SSE streams for this device
     for (const [clientId, client] of activeClients.entries()) {
       if (client.deviceId === deviceId) {
@@ -7986,7 +9599,7 @@ app.post('/api/devices/:id/revoke', (req, res) => {
 });
 
 // Authorize / restore device access
-app.post('/api/devices/:id/authorize', (req, res) => {
+app.post('/api/devices/:id/authorize', requireAdmin, (req, res) => {
   if (!db) initDatabase();
   const deviceId = req.params.id;
   try {
@@ -7998,10 +9611,11 @@ app.post('/api/devices/:id/authorize', (req, res) => {
 });
 
 // Delete device registration
-app.delete('/api/devices/:id', (req, res) => {
+app.delete('/api/devices/:id', requireAdmin, (req, res) => {
   if (!db) initDatabase();
   const deviceId = req.params.id;
   try {
+    revokeSessionsForDevice(db, deviceId);
     db.prepare('DELETE FROM pwa_devices WHERE id = ?').run(deviceId);
     res.json({ success: true });
   } catch (err: any) {
@@ -8010,7 +9624,7 @@ app.delete('/api/devices/:id', (req, res) => {
 });
 
 // Revoke all devices belonging to a specific operator/user
-app.post('/api/devices/user/:operator/revoke', (req, res) => {
+app.post('/api/devices/user/:operator/revoke', requireAdmin, (req, res) => {
   if (!db) initDatabase();
   const rawOperator = decodeURIComponent(req.params.operator || '').trim();
   const isUnassigned = rawOperator === '__unassigned__' || rawOperator === '' || rawOperator.toLowerCase() === 'unassigned';
@@ -8024,6 +9638,9 @@ app.post('/api/devices/user/:operator/revoke', (req, res) => {
       db.prepare("UPDATE pwa_devices SET status = 'revoked' WHERE LOWER(TRIM(operator)) = LOWER(TRIM(?))").run(rawOperator);
     }
     const affectedIds = new Set(affectedDevices.map(d => d.id));
+    for (const devId of affectedIds) {
+      revokeSessionsForDevice(db, devId);
+    }
 
     // Instantly terminate any live SSE streams for affected devices or matching user
     for (const [clientId, client] of activeClients.entries()) {
@@ -8048,7 +9665,7 @@ app.post('/api/devices/user/:operator/revoke', (req, res) => {
 });
 
 // Authorize / restore all devices belonging to a specific operator/user
-app.post('/api/devices/user/:operator/authorize', (req, res) => {
+app.post('/api/devices/user/:operator/authorize', requireAdmin, (req, res) => {
   if (!db) initDatabase();
   const rawOperator = decodeURIComponent(req.params.operator || '').trim();
   const isUnassigned = rawOperator === '__unassigned__' || rawOperator === '' || rawOperator.toLowerCase() === 'unassigned';
@@ -8069,7 +9686,7 @@ app.post('/api/devices/user/:operator/authorize', (req, res) => {
 });
 
 // Delete all devices belonging to a specific operator/user
-app.delete('/api/devices/user/:operator', (req, res) => {
+app.delete('/api/devices/user/:operator', requireAdmin, (req, res) => {
   if (!db) initDatabase();
   const rawOperator = decodeURIComponent(req.params.operator || '').trim();
   const isUnassigned = rawOperator === '__unassigned__' || rawOperator === '' || rawOperator.toLowerCase() === 'unassigned';
@@ -8090,7 +9707,7 @@ app.delete('/api/devices/user/:operator', (req, res) => {
 });
 
 // Batch revoke devices by IDs
-app.post('/api/devices/batch-revoke', (req, res) => {
+app.post('/api/devices/batch-revoke', requireAdmin, (req, res) => {
   if (!db) initDatabase();
   const { deviceIds } = req.body;
   if (!Array.isArray(deviceIds) || deviceIds.length === 0) {
@@ -8099,6 +9716,9 @@ app.post('/api/devices/batch-revoke', (req, res) => {
   try {
     const placeholders = deviceIds.map(() => '?').join(',');
     db.prepare(`UPDATE pwa_devices SET status = 'revoked' WHERE id IN (${placeholders})`).run(...deviceIds);
+    for (const devId of deviceIds) {
+      revokeSessionsForDevice(db, devId);
+    }
     const affectedSet = new Set(deviceIds);
     for (const [clientId, client] of activeClients.entries()) {
       if (client.deviceId && affectedSet.has(client.deviceId)) {
@@ -8119,7 +9739,7 @@ app.post('/api/devices/batch-revoke', (req, res) => {
 });
 
 // Batch authorize devices by IDs
-app.post('/api/devices/batch-authorize', (req, res) => {
+app.post('/api/devices/batch-authorize', requireAdmin, (req, res) => {
   if (!db) initDatabase();
   const { deviceIds } = req.body;
   if (!Array.isArray(deviceIds) || deviceIds.length === 0) {
@@ -8147,18 +9767,177 @@ app.get('/api/inventory', async (req, res) => {
   }
 });
 
-// Notification endpoints
-app.get('/api/notifications/settings', async (req, res) => {
+// Notification endpoints (Admin only)
+app.get('/api/notifications/config', requireAdmin, async (req, res) => {
   try {
     const state = await loadState();
-    const settings = state.notificationSettings?.[0] || {};
-    res.json(settings);
+    res.json({
+      settings: state.notificationSettings?.[0] || {},
+      channels: state.notificationChannels || []
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message || String(err) });
   }
 });
 
-app.post('/api/notifications/test-settings', async (req, res) => {
+app.get('/api/notifications/settings', requireAdmin, async (req, res) => {
+  try {
+    const state = await loadState();
+    const settings = state.notificationSettings?.[0] || {};
+    res.json({ ...settings, channels: state.notificationChannels || [] });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
+app.post('/api/notifications/channels', requireAdmin, async (req, res) => {
+  try {
+    const raw = req.body?.channel || req.body;
+    if (!raw || !raw.type || !raw.name?.trim()) {
+      return res.status(400).json({ error: 'Channel name and type are required.' });
+    }
+    const state = await loadState();
+    const channels = [...(state.notificationChannels || [])];
+    const nowStr = new Date().toISOString();
+    const existingIdx = raw.id ? channels.findIndex((c: any) => c.id === raw.id) : -1;
+    const channelId = existingIdx !== -1 ? raw.id : (raw.id || `channel-${crypto.randomUUID()}`);
+
+    const savedChannel = normalizeNotificationChannel({
+      ...raw,
+      id: channelId,
+      name: raw.name.trim(),
+      createdAt: existingIdx !== -1 ? channels[existingIdx].createdAt || nowStr : nowStr,
+      updatedAt: nowStr,
+      lastTestedAt: existingIdx !== -1 ? channels[existingIdx].lastTestedAt : undefined,
+      lastTestStatus: existingIdx !== -1 ? channels[existingIdx].lastTestStatus : undefined
+    });
+
+    if (existingIdx !== -1) {
+      channels[existingIdx] = savedChannel;
+    } else {
+      channels.push(savedChannel);
+    }
+
+    state.notificationChannels = channels;
+    saveStateSync(state, ['notification_channels']);
+    notifyInventoryUpdate();
+    res.json({ success: true, channel: savedChannel, channels });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
+app.delete('/api/notifications/channels/:id', requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const state = await loadState();
+    const nextChannels = (state.notificationChannels || []).filter((c: any) => c.id !== id);
+    state.notificationChannels = nextChannels;
+
+    // Clean references from settings and custom lists
+    const currentSettings = state.notificationSettings?.[0];
+    if (currentSettings) {
+      currentSettings.defaultChannelIds = (currentSettings.defaultChannelIds || []).filter((cid: string) => cid !== id);
+      if (currentSettings.systemRoutes) {
+        currentSettings.systemRoutes.pinResetChannelIds = (currentSettings.systemRoutes.pinResetChannelIds || []).filter((cid: string) => cid !== id);
+        currentSettings.systemRoutes.systemAlertChannelIds = (currentSettings.systemRoutes.systemAlertChannelIds || []).filter((cid: string) => cid !== id);
+      }
+      state.notificationSettings = [currentSettings];
+    }
+
+    state.customLists = (state.customLists || []).map((cl: any) => ({
+      ...cl,
+      notificationChannelIds: Array.isArray(cl.notificationChannelIds)
+        ? cl.notificationChannelIds.filter((cid: string) => cid !== id)
+        : cl.notificationChannelIds,
+      notificationDigestChannelIds: Array.isArray(cl.notificationDigestChannelIds)
+        ? cl.notificationDigestChannelIds.filter((cid: string) => cid !== id)
+        : cl.notificationDigestChannelIds,
+      notificationCustomSchedule: cl.notificationCustomSchedule
+        ? {
+            ...cl.notificationCustomSchedule,
+            channelIds: Array.isArray(cl.notificationCustomSchedule.channelIds)
+              ? cl.notificationCustomSchedule.channelIds.filter((cid: string) => cid !== id)
+              : cl.notificationCustomSchedule.channelIds
+          }
+        : cl.notificationCustomSchedule,
+      notificationImmediate: cl.notificationImmediate
+        ? {
+            ...cl.notificationImmediate,
+            channelIds: Array.isArray(cl.notificationImmediate.channelIds)
+              ? cl.notificationImmediate.channelIds.filter((cid: string) => cid !== id)
+              : cl.notificationImmediate.channelIds
+          }
+        : cl.notificationImmediate
+    }));
+
+    saveStateSync(state, ['notification_channels', 'notification_settings', 'custom_lists']);
+    notifyInventoryUpdate();
+    res.json({ success: true, channels: nextChannels });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
+app.post('/api/notifications/test-channel', requireAdmin, async (req, res) => {
+  try {
+    const { channelId, channel: inlineChannel, recipientOverride } = req.body || {};
+    const state = await loadState();
+    const existing = channelId
+      ? (state.notificationChannels || []).find((c: any) => c.id === channelId)
+      : undefined;
+    const targetChannel = inlineChannel ? { ...(existing || {}), ...inlineChannel } : existing;
+
+    if (!targetChannel) {
+      return res.status(404).json({ error: 'Notification channel not found.' });
+    }
+
+    const title = `Freezer Tracker: Test Notification (${targetChannel.name || 'Channel'})`;
+    const message = `This is a test notification verifying delivery through "${targetChannel.name || targetChannel.type}".`;
+    const result = await dispatchToChannel(targetChannel, title, message, {
+      eventSource: 'test_channel',
+      recipientOverride
+    });
+    const nowStr = new Date().toISOString();
+
+    const logEntry = {
+      id: crypto.randomUUID(),
+      sentAt: nowStr,
+      title,
+      message,
+      method: targetChannel.type,
+      status: result.success ? 'success' : 'failed',
+      error: result.error,
+      channelId: targetChannel.id,
+      channelName: targetChannel.name,
+      eventSource: 'test_channel'
+    };
+    state.notificationLogs = [logEntry as any, ...(state.notificationLogs || [])].slice(0, 500);
+
+    const tablesToSave = ['notification_logs'];
+    if (existing) {
+      state.notificationChannels = (state.notificationChannels || []).map((c: any) =>
+        c.id === existing.id
+          ? { ...c, lastTestedAt: nowStr, lastTestStatus: result.success ? 'success' : 'failed' }
+          : c
+      );
+      tablesToSave.push('notification_channels');
+    }
+
+    saveStateSync(state, tablesToSave);
+    notifyInventoryUpdate();
+
+    if (result.success) {
+      res.json({ success: true, channels: state.notificationChannels || [] });
+    } else {
+      res.status(500).json({ success: false, error: result.error, channels: state.notificationChannels || [] });
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
+app.post('/api/notifications/test-settings', requireAdmin, async (req, res) => {
   try {
     const { settings } = req.body;
     if (!settings) {
@@ -8177,37 +9956,45 @@ app.post('/api/notifications/test-settings', async (req, res) => {
   }
 });
 
-app.post('/api/notifications/save-settings', async (req, res) => {
+app.post('/api/notifications/save-settings', requireAdmin, async (req, res) => {
   try {
     const { settings } = req.body;
     if (!settings) {
       return res.status(400).json({ error: 'Settings are required.' });
     }
     const state = await loadState();
-    state.notificationSettings = [settings];
-    saveStateSync(state);
+    const existing = state.notificationSettings?.[0] || {};
+    const merged = { ...existing, ...settings, id: 'global' };
+    state.notificationSettings = [merged];
+    if (merged.timezone) {
+      const cfg = loadAutoSnapshotConfig();
+      cfg.timezone = merged.timezone;
+      saveAutoSnapshotConfig(cfg);
+    }
+    saveStateSync(state, ['notification_settings']);
     notifyInventoryUpdate();
-    res.json({ success: true, settings });
+    res.json({ success: true, settings: merged });
   } catch (err: any) {
     res.status(500).json({ error: err.message || String(err) });
   }
 });
 
-app.post('/api/notifications/trigger-now', async (req, res) => {
+app.post('/api/notifications/trigger-now', requireAdmin, async (req, res) => {
   try {
-    const { listIds } = req.body;
-    const result = await triggerNotification(listIds, true);
+    const { listIds, mode } = req.body || {};
+    const targetMode = mode || (Array.isArray(listIds) && listIds.length > 0 ? 'list' : 'digest');
+    const result = await triggerNotification(listIds, true, targetMode);
     res.json(result);
   } catch (err: any) {
     res.status(500).json({ error: err.message || String(err) });
   }
 });
 
-app.post('/api/notifications/clear-logs', async (req, res) => {
+app.post('/api/notifications/clear-logs', requireAdmin, async (req, res) => {
   try {
     const state = await loadState();
     state.notificationLogs = [];
-    saveStateSync(state);
+    saveStateSync(state, ['notification_logs']);
     notifyInventoryUpdate();
     res.json({ success: true });
   } catch (err: any) {
@@ -8216,6 +10003,23 @@ app.post('/api/notifications/clear-logs', async (req, res) => {
 });
 
 function extractUserFromReq(req: any): string {
+  // 0. Prioritize authenticated local PIN session user (prevents audit log spoofing)
+  try {
+    if (db) {
+      const rawToken = getRawSessionTokenFromReq(req);
+      if (rawToken) {
+        const recovery = readRecoveryConfig();
+        if (recovery.recoveryMode && isValidRecoverySessionToken(rawToken, recovery.recoveryPin)) {
+          return 'Recovery Admin';
+        }
+        const resolved = resolveSessionToken(db, rawToken);
+        if (resolved?.user?.name) {
+          return resolved.user.name;
+        }
+      }
+    }
+  } catch (e) {}
+
   // 1. Prioritize authenticated Ingress / reverse proxy headers provided by Home Assistant core or authentication proxies
   const ingressUser =
     req?.headers?.['x-remote-user-name'] ||
@@ -8951,7 +10755,7 @@ app.get('/api/inventory/undo/recent', async (req, res) => {
   }
 });
 
-app.post('/api/inventory/undo', async (req: any, res) => {
+app.post('/api/inventory/undo', requireEditAuth, async (req: any, res) => {
   try {
     const { snapshotId, historyId } = req.body || {};
     const ingressUser = extractUserFromReq(req);
@@ -9082,7 +10886,7 @@ function getAffectedTablesForAction(actionType: string): string[] | undefined {
       return ['custom_lists', 'products', 'history'];
 
     case 'UPDATE_NOTIFICATION_SETTINGS':
-      return ['notification_settings', 'history'];
+      return ['notification_settings', 'notification_channels', 'history'];
 
     case 'ADD_LOCATION':
     case 'EDIT_LOCATION':
@@ -9096,10 +10900,26 @@ function getAffectedTablesForAction(actionType: string): string[] | undefined {
 }
 
 // Process a single action on the backend and return the new unified database state safely
-app.post('/api/inventory/action', async (req: any, res) => {
+app.post('/api/inventory/action', requireEditAuth, async (req: any, res) => {
   const { action } = req.body;
   if (!action || !action.type) {
     return res.status(400).json({ error: 'Action type is required.' });
+  }
+
+  if (action.type === 'PURGE_HISTORY') {
+    const auth = req.userAuth || resolveUserContext(req);
+    if (auth.usersConfigured && !auth.isAdmin) {
+      if (!auth.isAuthenticated) {
+        return res.status(401).json({
+          error: 'AUTH_REQUIRED',
+          message: 'Please sign in with an administrator account to purge audit history.'
+        });
+      }
+      return res.status(403).json({
+        error: 'ADMIN_REQUIRED',
+        message: 'Administrator privileges are required to purge audit history.'
+      });
+    }
   }
 
   const deviceId = (req.headers['x-device-id'] as string) || req.body?.deviceId || req.body?.action?.deviceId;
@@ -9482,10 +11302,14 @@ app.post('/api/inventory/action', async (req: any, res) => {
       }
       case 'EDIT_CONTAINER_TEMPLATE': {
         const { id, updates } = action.payload;
+        const normalizedUpdates = updates ? { ...updates } : {};
+        if ('imageUrl' in normalizedUpdates) {
+          normalizedUpdates.imageUrl = normalizeImageUrlValue(normalizedUpdates.imageUrl);
+        }
         let updatedName = '';
         nextState.containerTemplates = (nextState.containerTemplates || []).map((t: any) => {
           if (t.id === id) {
-            const merged = { ...t, ...updates };
+            const merged = { ...t, ...normalizedUpdates };
             updatedName = merged.name;
             return merged;
           }
@@ -9497,9 +11321,9 @@ app.post('/api/inventory/action', async (req: any, res) => {
             if (c.templateId === id) {
               return {
                 ...c,
-                name: updates.name !== undefined ? updates.name : c.name,
-                icon: updates.icon !== undefined ? updates.icon : c.icon,
-                imageUrl: updates.imageUrl !== undefined ? updates.imageUrl : c.imageUrl
+                name: normalizedUpdates.name !== undefined ? normalizedUpdates.name : c.name,
+                icon: normalizedUpdates.icon !== undefined ? normalizedUpdates.icon : c.icon,
+                imageUrl: 'imageUrl' in normalizedUpdates ? normalizedUpdates.imageUrl : c.imageUrl
               };
             }
             return c;
@@ -9675,9 +11499,13 @@ app.post('/api/inventory/action', async (req: any, res) => {
       }
       case 'EDIT_PRODUCT': {
         const { productId, updates } = action.payload;
+        const normalizedUpdates = updates ? { ...updates } : {};
+        if ('imageUrl' in normalizedUpdates) {
+          normalizedUpdates.imageUrl = normalizeImageUrlValue(normalizedUpdates.imageUrl);
+        }
         nextState.products = nextState.products.map(p => {
           if (p.id === productId) {
-            const updated = { ...p, ...updates };
+            const updated = { ...p, ...normalizedUpdates };
             if (!updated.barcode && updated.productNumbers && updated.productNumbers.length > 0 && updated.productNumbers[0]) {
               updated.barcode = generateDefaultUpcABarcode(updated.productNumbers[0]);
             }
@@ -10734,9 +12562,14 @@ app.post('/api/inventory/action', async (req: any, res) => {
         const originalContainer = nextState.containers.find(c => c.id === containerId);
         if (!originalContainer) break;
 
+        const normalizedUpdates = updates ? { ...updates } : {};
+        if ('imageUrl' in normalizedUpdates) {
+          normalizedUpdates.imageUrl = normalizeImageUrlValue(normalizedUpdates.imageUrl);
+        }
+
         if (containerId === 'staging_loose' || containerId.endsWith('_loose') || originalContainer.name.toLowerCase().trim() === 'loose') {
           // Do not allow re-naming core "loose" containers
-          if (updates.name) delete updates.name;
+          if (normalizedUpdates.name) delete normalizedUpdates.name;
         }
 
         const originalNameLower = originalContainer.name.trim().toLowerCase();
@@ -10748,7 +12581,7 @@ app.post('/api/inventory/action', async (req: any, res) => {
             const isSameName = c.name.trim().toLowerCase() === originalNameLower;
             const isSameTpl = originalTplId && c.templateId === originalTplId;
             if (c.id === containerId || isSameName || isSameTpl) {
-              return { ...c, ...updates };
+              return { ...c, ...normalizedUpdates };
             }
             return c;
           });
@@ -10759,8 +12592,8 @@ app.post('/api/inventory/action', async (req: any, res) => {
               if ((originalTplId && t.id === originalTplId) || t.name.trim().toLowerCase() === originalNameLower) {
                 return {
                   ...t,
-                  ...(updates.name ? { name: updates.name } : {}),
-                  ...(updates.imageUrl !== undefined ? { imageUrl: updates.imageUrl } : {})
+                  ...(normalizedUpdates.name ? { name: normalizedUpdates.name } : {}),
+                  ...('imageUrl' in normalizedUpdates ? { imageUrl: normalizedUpdates.imageUrl } : {})
                 };
               }
               return t;
@@ -10771,7 +12604,7 @@ app.post('/api/inventory/action', async (req: any, res) => {
           const isTemplateContainer = !!originalTplId || (nextState.containerTemplates || []).some((t: any) => t.name.trim().toLowerCase() === originalNameLower);
           nextState.containers = nextState.containers.map(c => {
             if (c.id === containerId) {
-              const updated = { ...c, ...updates };
+              const updated = { ...c, ...normalizedUpdates };
               updated.templateId = undefined;
               if (isTemplateContainer) {
                 updated.deleteOnEmpty = true;
@@ -12349,7 +14182,22 @@ app.post('/api/inventory/action', async (req: any, res) => {
         break;
       }
       case 'ADD_CUSTOM_LIST': {
-        const { name, description, allowNotes, isInventoryControlled, controlType, controlCondition, notificationEnabled, notificationType } = action.payload;
+        const {
+          name,
+          description,
+          allowNotes,
+          isInventoryControlled,
+          controlType,
+          controlCondition,
+          notificationEnabled,
+          notificationType,
+          notificationChannelIds,
+          notificationRecipientOverride,
+          notificationDailyDigestMode,
+          notificationDigestChannelIds,
+          notificationCustomSchedule,
+          notificationImmediate
+        } = action.payload;
         const listId = 'custom-list-' + crypto.randomUUID();
         const lists = nextState.customLists || [];
         const newList = {
@@ -12362,6 +14210,12 @@ app.post('/api/inventory/action', async (req: any, res) => {
           controlCondition: isInventoryControlled ? (controlCondition || 'min') : undefined,
           notificationEnabled: !!notificationEnabled,
           notificationType: notificationType || 'all_items',
+          notificationChannelIds: Array.isArray(notificationChannelIds) ? notificationChannelIds : undefined,
+          notificationRecipientOverride: notificationRecipientOverride ? String(notificationRecipientOverride).trim() : undefined,
+          notificationDailyDigestMode: notificationDailyDigestMode || undefined,
+          notificationDigestChannelIds: Array.isArray(notificationDigestChannelIds) ? notificationDigestChannelIds : undefined,
+          notificationCustomSchedule: notificationCustomSchedule || undefined,
+          notificationImmediate: notificationImmediate || undefined,
           lastNotifiedAt: null,
           items: []
         };
@@ -12760,6 +14614,11 @@ app.post('/api/inventory/action', async (req: any, res) => {
     // Broadcast change to other active restockers in real-time (exclude sender to prevent double-refresh race conditions)
     notifyInventoryUpdate(clientId);
 
+    // Trigger immediate item-added and threshold-breach notifications asynchronously without delaying UI response
+    void processImmediateNotificationsForAction(action, state, nextState).catch(notifErr => {
+      console.error('Async immediate notification error:', notifErr);
+    });
+
     // Return the updated state directly to avoid unnecessary disk re-reads and ensure instant response
     (nextState as any)._affectedTables = affectedTables;
     res.json(nextState);
@@ -12791,30 +14650,7 @@ app.get('/api/photos', async (req, res) => {
         if (!stat.isFile()) return null;
 
         const urlPath = `uploads/${f}`;
-        const lowUrlPath = urlPath.toLowerCase();
-        const lowF = f.toLowerCase();
-
-        const attachments: any[] = [];
-        
-        // Find attached products
-        (state.products || []).forEach(p => {
-          if (p.imageUrl) {
-            const lowImg = p.imageUrl.toLowerCase();
-            if (lowImg === lowUrlPath || lowImg === lowF || lowImg.endsWith('/' + lowF) || lowImg.endsWith('\\' + lowF)) {
-              attachments.push({ id: p.id, name: p.name, type: 'product' });
-            }
-          }
-        });
-
-        // Find attached containers
-        (state.containers || []).forEach(c => {
-          if (c.imageUrl) {
-            const lowImg = c.imageUrl.toLowerCase();
-            if (lowImg === lowUrlPath || lowImg === lowF || lowImg.endsWith('/' + lowF) || lowImg.endsWith('\\' + lowF)) {
-              attachments.push({ id: c.id, name: c.name, type: 'container' });
-            }
-          }
-        });
+        const attachments = collectPhotoAttachments(state, f);
 
         return {
           filename: f,
@@ -12833,7 +14669,7 @@ app.get('/api/photos', async (req, res) => {
   }
 });
 
-app.post('/api/photos/delete-bulk', async (req, res) => {
+app.post('/api/photos/delete-bulk', requireEditAuth, async (req, res) => {
   try {
     const { filenames } = req.body;
     if (!filenames || !Array.isArray(filenames)) {
@@ -12841,11 +14677,10 @@ app.post('/api/photos/delete-bulk', async (req, res) => {
     }
 
     const state = await loadState();
-    let dbChanged = false;
 
     filenames.forEach(f => {
       // Basic sanitization to prevent directory traversal
-      if (f.includes('..') || f.includes('/') || f.includes('\\')) {
+      if (typeof f !== 'string' || f.includes('..') || f.includes('/') || f.includes('\\')) {
         return;
       }
 
@@ -12857,36 +14692,12 @@ app.post('/api/photos/delete-bulk', async (req, res) => {
           console.error(`Failed to delete file from disk: ${f}`, e);
         }
       }
-
-      const urlPath = `uploads/${f}`;
-      const lowUrlPath = urlPath.toLowerCase();
-      const lowF = f.toLowerCase();
-
-      // Clear product references
-      (state.products || []).forEach(p => {
-        if (p.imageUrl) {
-          const lowImg = p.imageUrl.toLowerCase();
-          if (lowImg === lowUrlPath || lowImg === lowF || lowImg.endsWith('/' + lowF) || lowImg.endsWith('\\' + lowF)) {
-            p.imageUrl = undefined;
-            dbChanged = true;
-          }
-        }
-      });
-
-      // Clear container references
-      (state.containers || []).forEach(c => {
-        if (c.imageUrl) {
-          const lowImg = c.imageUrl.toLowerCase();
-          if (lowImg === lowUrlPath || lowImg === lowF || lowImg.endsWith('/' + lowF) || lowImg.endsWith('\\' + lowF)) {
-            c.imageUrl = undefined;
-            dbChanged = true;
-          }
-        }
-      });
     });
 
+    const dbChanged = clearPhotoReferencesInState(state, filenames);
+
     if (dbChanged) {
-      await saveState(state);
+      await saveState(state, ['products', 'containers', 'container_templates']);
       notifyInventoryUpdate();
     }
 
@@ -12897,7 +14708,7 @@ app.post('/api/photos/delete-bulk', async (req, res) => {
   }
 });
 
-app.post('/api/photos/deduplicate', async (req, res) => {
+app.post('/api/photos/deduplicate', requireEditAuth, async (req, res) => {
   try {
     if (!fs.existsSync(UPLOADS_DIR)) {
       return res.json({ merged: 0, savedBytes: 0 });
@@ -12939,35 +14750,14 @@ app.post('/api/photos/deduplicate', async (req, res) => {
       // Canonical file is the first one
       const canonical = group[0];
       const canonicalUrl = `uploads/${canonical.filename}`;
+      const dupeFilenames = group.slice(1).map(d => d.filename);
+
+      if (rewritePhotoReferencesInState(state, dupeFilenames, canonicalUrl)) {
+        dbChanged = true;
+      }
 
       for (let i = 1; i < group.length; i++) {
         const dupe = group[i];
-        const dupeUrl = `uploads/${dupe.filename}`;
-        const lowDupeUrl = dupeUrl.toLowerCase();
-        const lowDupeF = dupe.filename.toLowerCase();
-
-        // Update all products referencing the duplicate
-        (state.products || []).forEach(p => {
-          if (p.imageUrl) {
-            const lowImg = p.imageUrl.toLowerCase();
-            if (lowImg === lowDupeUrl || lowImg === lowDupeF || lowImg.endsWith('/' + lowDupeF) || lowImg.endsWith('\\' + lowDupeF)) {
-              p.imageUrl = canonicalUrl;
-              dbChanged = true;
-            }
-          }
-        });
-
-        // Update all containers referencing the duplicate
-        (state.containers || []).forEach(c => {
-          if (c.imageUrl) {
-            const lowImg = c.imageUrl.toLowerCase();
-            if (lowImg === lowDupeUrl || lowImg === lowDupeF || lowImg.endsWith('/' + lowDupeF) || lowImg.endsWith('\\' + lowDupeF)) {
-              c.imageUrl = canonicalUrl;
-              dbChanged = true;
-            }
-          }
-        });
-
         // Delete duplicate file from disk
         try {
           if (fs.existsSync(dupe.path)) {
@@ -12982,7 +14772,7 @@ app.post('/api/photos/deduplicate', async (req, res) => {
     }
 
     if (dbChanged) {
-      await saveState(state);
+      await saveState(state, ['products', 'containers', 'container_templates']);
       notifyInventoryUpdate();
     }
 
@@ -12993,35 +14783,28 @@ app.post('/api/photos/deduplicate', async (req, res) => {
   }
 });
 
-app.post('/api/photos/assign', async (req, res) => {
+app.post('/api/photos/assign', requireEditAuth, async (req, res) => {
   try {
     const { imageUrl, targetId, targetType } = req.body;
     if (!targetId || !targetType) {
       return res.status(400).json({ error: 'targetId and targetType are required.' });
     }
+    if (targetType !== 'product' && targetType !== 'container' && targetType !== 'container_template') {
+      return res.status(400).json({ error: `Unsupported targetType: ${targetType}` });
+    }
 
     const state = await loadState();
-    let found = false;
-
-    if (targetType === 'product') {
-      const p = (state.products || []).find(p => p.id === targetId);
-      if (p) {
-        p.imageUrl = imageUrl || undefined;
-        found = true;
-      }
-    } else if (targetType === 'container') {
-      const c = (state.containers || []).find(c => c.id === targetId);
-      if (c) {
-        c.imageUrl = imageUrl || undefined;
-        found = true;
-      }
-    }
+    const { found, updatedTables } = assignPhotoToTargetInState(state, {
+      imageUrl,
+      targetId,
+      targetType,
+    });
 
     if (!found) {
       return res.status(404).json({ error: `Target ${targetType} with ID ${targetId} not found.` });
     }
 
-    await saveState(state);
+    await saveState(state, updatedTables);
     notifyInventoryUpdate();
 
     res.json({ success: true });

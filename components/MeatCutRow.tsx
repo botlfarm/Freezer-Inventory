@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom';
 import { MeatCut, ModalType, Action, InventoryState } from '../types';
 import { PlusIcon, MinusIcon, MeatIcon } from './icons';
 import { MoreVertical, Move, History, Trash2, Search, Tag, Edit, Package, AlertTriangle, GitFork, Combine } from 'lucide-react';
+import { getTagActionIcon } from '../utils/tagRestockRules';
 
 interface MeatCutRowProps {
   meatCut: MeatCut;
@@ -242,7 +243,7 @@ const MeatCutRow: React.FC<MeatCutRowProps> = ({
                     className="inline-flex items-center gap-0.5 text-[8px] sm:text-[9px] border px-1 sm:px-1.5 py-0.2 rounded font-semibold tracking-wide uppercase select-none" 
                     title={tag.description}
                   >
-                    {tag.id === 'use-first' ? '🍳 ' : tag.id === 'not-for-sale' ? '🛑 ' : '🏷️ '}{tag.name}
+                    {getTagActionIcon(tag)} {tag.name}
                   </span>
                 );
               })}

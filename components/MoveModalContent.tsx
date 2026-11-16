@@ -6,6 +6,7 @@ import { PackageIcon, PlusIcon, MinusIcon } from './icons';
 import { getContainerIcon } from './ContainerIconsMap';
 import { generateUUID } from './uuidHelper';
 import { Star } from 'lucide-react';
+import { getCutExcludedRestockTags, isCutExcludedFromDisplayRestock } from '../utils/tagRestockRules';
 
 interface CommonMoveProps {
   dispatch: React.Dispatch<Action>;
@@ -19,7 +20,12 @@ type MoveDestination = 'existing' | 'retired' | 'new';
 
 const MoveMeat: React.FC<CommonMoveProps & { meatCutId: string }> = ({ dispatch, state, onClose, meatCutId }) => {
   const meatCut = state.meatCuts.find(m => m.id === meatCutId);
+  const isExcludedFromDisplay = React.useMemo(
+    () => (meatCut ? isCutExcludedFromDisplayRestock(meatCut, state.tags) : false),
+    [meatCut, state.tags]
+  );
   const defaultContainerId = React.useMemo(() => {
+    if (isExcludedFromDisplay) return '';
     const specialFreezers = state.freezers.filter(f => f.isSpecial);
     for (const freezer of specialFreezers) {
       const looseContainer = state.containers.find(c => c.id === freezer.id + "_loose");
@@ -36,7 +42,7 @@ const MoveMeat: React.FC<CommonMoveProps & { meatCutId: string }> = ({ dispatch,
       return firstSpecial.id + "_loose";
     }
     return '';
-  }, [state.freezers, state.containers, meatCut]);
+  }, [state.freezers, state.containers, meatCut, isExcludedFromDisplay]);
 
   const [targetContainerId, setTargetContainerId] = useState<string>(defaultContainerId);
   const [quantityStr, setQuantityStr] = useState(meatCut ? meatCut.quantity.toString() : "1");
@@ -430,6 +436,24 @@ const MoveMeat: React.FC<CommonMoveProps & { meatCutId: string }> = ({ dispatch,
       </div>
 
       {renderDestinationSelector()}
+
+      {(() => {
+          if (!isExcludedFromDisplay) return null;
+          const destFreezerId =
+            destinationType === 'retired'
+              ? targetFreezerId
+              : state.containers.find(c => c.id === targetContainerId)?.freezerId;
+          const destFreezer = destFreezerId
+            ? state.freezers.find(f => f.id === destFreezerId)
+            : undefined;
+          if (!destFreezer?.isSpecial) return null;
+          const excludedTagNames = getCutExcludedRestockTags(meatCut, state.tags).map(t => t.name);
+          return (
+            <p className="text-amber-300 text-xs font-semibold bg-amber-950/35 p-2.5 rounded border border-amber-500/40">
+              ⚠️ Tag Rule Warning: This item carries "{excludedTagNames.join(', ')}" (excluded from Display Restock). Confirm only if you intentionally want to place it in {destFreezer.name}.
+            </p>
+          );
+      })()}
 
       {errorMsg && (
           <p className="text-red-400 text-xs font-bold animate-pulse bg-red-950/20 p-2 rounded border border-red-500/20">

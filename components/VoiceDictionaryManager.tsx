@@ -1,4 +1,7 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
+import { getApiUrl } from '../hooks/apiUrl';
+import { authFetch } from '../utils/clientDevice';
+import { VOICE_PRIMARY_DISPLAY_CONFIG_KEY } from '../utils/voiceCommandParser';
 import {
   Action,
   InventoryState,
@@ -19,27 +22,46 @@ import {
   AlertTriangle,
   Check,
   Terminal,
+  Mic,
 } from 'lucide-react';
 
 interface VoiceDictionaryManagerProps {
   state: InventoryState;
   dispatch: React.Dispatch<Action>;
+  onSaveAppConfigKey?: (key: string, value: string) => void;
 }
 
 const COMMAND_PRESETS: Array<{ label: string; value: string; hint: string }> = [
   { label: 'Remove / Sell', value: 'remove', hint: 'Deducts items from on-site stock' },
   { label: 'Add / Inbound', value: 'add', hint: 'Adds items to an existing container/freezer' },
   { label: 'Move / Transfer', value: 'move', hint: 'Transfers stock between on-site locations' },
+  { label: 'Restock Display from Backstock', value: 'restock display with', hint: 'Auto-pulls items from backstock containers into Display' },
+  { label: 'Adjust / Set Inventory', value: 'adjust inventory', hint: 'Sets item counts to an exact target quantity' },
+  { label: 'Reduce Inventory', value: 'reduce inventory', hint: 'Reduces item stock to a target or by a delta' },
+  { label: 'Increase Inventory', value: 'increase inventory', hint: 'Increases item stock to a target or by a delta' },
+  { label: 'Change Inventory', value: 'change inventory', hint: 'Updates counts for one or multiple items' },
+  { label: 'Add to Custom List', value: 'add to restock list', hint: 'Adds products (with optional threshold) to a custom list' },
+  { label: 'Remove from Custom List', value: 'remove from restock list', hint: 'Removes products from a custom list' },
+  { label: 'Set List Threshold', value: 'set threshold for', hint: 'Updates low-stock threshold for a custom list item' },
   { label: 'Empty Container', value: 'empty container', hint: 'Empties all items from a container to Staging' },
   { label: 'Move All Contents', value: 'move all of', hint: 'Moves all contents of one container into another' },
   { label: 'Combine Containers', value: 'combine containers', hint: 'Merges two or more containers into one' },
   { label: 'Move Whole Container', value: 'move container', hint: 'Relocates an entire container to another freezer' },
+  { label: 'Swap Containers', value: 'swap', hint: 'Swaps two containers between their freezers' },
+  { label: 'Rename Container', value: 'rename container', hint: 'Renames an existing container' },
+  { label: 'Archive Container', value: 'archive container', hint: 'Archives a container (moving any items to Staging)' },
+  { label: 'Delete Container', value: 'delete container', hint: 'Deletes a container (moving any items to Staging)' },
+  { label: 'Tag Inventory Stack', value: 'tag', hint: 'Applies a tag to an active inventory stack' },
+  { label: 'Correct Wrong Label', value: 'correct label on', hint: 'Fixes a mislabeled stack to the right product' },
   { label: 'New Container + Items', value: 'add container', hint: 'Creates a new container and adds items' },
   { label: 'Container from Template', value: 'add container from template', hint: 'Creates from a container template' },
-  { label: 'Stock Check / Query', value: 'how many', hint: 'Checks current on-site stock count' },
+  { label: 'Stock Check / Query', value: 'how many', hint: 'Checks current on-site product or category stock' },
+  { label: 'Check Low / Out of Stock', value: "what's out of stock in display", hint: 'Checks missing or low-stock items and backstock' },
   { label: 'Inspect Container', value: "what's in", hint: 'Lists all items inside a container or freezer' },
   { label: 'Where Is Container', value: 'where is container', hint: 'Finds which freezer a named container is located in' },
   { label: 'List Freezer Containers', value: 'what containers are in', hint: 'Lists all containers currently stored in a freezer' },
+  { label: 'Check Custom List', value: "what's on my restock list", hint: 'Reads items and thresholds on a custom list' },
+  { label: 'Undo Last Command', value: 'undo last command', hint: 'Reverts the most recent inventory action' },
 ];
 
 const TARGET_TYPE_META: Record<
@@ -76,6 +98,7 @@ const TARGET_TYPE_META: Record<
 export const VoiceDictionaryManager: React.FC<VoiceDictionaryManagerProps> = ({
   state,
   dispatch,
+  onSaveAppConfigKey,
 }) => {
   const [spokenPhrase, setSpokenPhrase] = useState('');
   const [targetType, setTargetType] = useState<VoiceDictionaryTargetType>('product');
@@ -126,6 +149,69 @@ export const VoiceDictionaryManager: React.FC<VoiceDictionaryManagerProps> = ({
         .sort((a, b) => a.name.localeCompare(b.name)),
     [state.freezers]
   );
+
+  const voiceDisplayGroups = useMemo(
+    () => ({
+      special: activeFreezers.filter(f => f.isSpecial),
+      standard: activeFreezers.filter(f => !f.isSpecial),
+    }),
+    [activeFreezers]
+  );
+
+  const [primaryVoiceDisplayId, setPrimaryVoiceDisplayId] = useState<string>(() => {
+    const rawId =
+      (state.appConfig || [])
+        .find(i => i.key === VOICE_PRIMARY_DISPLAY_CONFIG_KEY)
+        ?.value?.trim() || '';
+    if (!rawId) return '';
+    return activeFreezers.some(f => f.id === rawId) ? rawId : '';
+  });
+  const [voiceDisplaySavedNotice, setVoiceDisplaySavedNotice] = useState(false);
+
+  useEffect(() => {
+    const rawId =
+      (state.appConfig || [])
+        .find(i => i.key === VOICE_PRIMARY_DISPLAY_CONFIG_KEY)
+        ?.value?.trim() || '';
+    if (!rawId) {
+      setPrimaryVoiceDisplayId('');
+      return;
+    }
+    setPrimaryVoiceDisplayId(activeFreezers.some(f => f.id === rawId) ? rawId : '');
+  }, [state.appConfig, activeFreezers]);
+
+  const handleChangePrimaryVoiceDisplay = (nextId: string) => {
+    setPrimaryVoiceDisplayId(nextId);
+    if (onSaveAppConfigKey) {
+      onSaveAppConfigKey(VOICE_PRIMARY_DISPLAY_CONFIG_KEY, nextId);
+    } else {
+      authFetch(getApiUrl('api/app-config'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: VOICE_PRIMARY_DISPLAY_CONFIG_KEY, value: nextId }),
+      })
+        .then(res => (res.ok ? res.json() : null))
+        .then(data => {
+          if (data && data.configs) {
+            const newAppConfig = Object.entries(data.configs).map(([k, v]) => ({
+              key: k,
+              value: v as string,
+              updatedAt: new Date().toISOString(),
+            }));
+            dispatch({
+              type: 'REPLACE_STATE',
+              payload: {
+                ...state,
+                appConfig: newAppConfig,
+              },
+            });
+          }
+        })
+        .catch(err => console.warn('Could not save primary voice display freezer:', err));
+    }
+    setVoiceDisplaySavedNotice(true);
+    setTimeout(() => setVoiceDisplaySavedNotice(false), 3000);
+  };
 
   const productMap = useMemo(
     () => new Map((state.products || []).map(p => [p.id, p])),
@@ -347,6 +433,62 @@ export const VoiceDictionaryManager: React.FC<VoiceDictionaryManagerProps> = ({
 
   return (
     <div className="space-y-5 animate-fade-in">
+      {/* Primary Display Freezer Preference */}
+      <div className="bg-cool-gray-850 rounded-xl border border-cool-gray-750 p-4 sm:p-5 shadow-sm space-y-3">
+        <div className="flex items-center justify-between gap-2 pb-2.5 border-b border-cool-gray-800">
+          <div>
+            <h4 className="text-sm sm:text-base font-bold text-white flex items-center gap-2">
+              <Mic className="w-4 h-4 text-cyan-400" />
+              Primary Voice Display Freezer
+            </h4>
+            <p className="text-xs text-cool-gray-400 mt-0.5">
+              Choose which freezer resolves when you say &ldquo;display&rdquo; or &ldquo;display case&rdquo;. Leave on Automatic to match literal &ldquo;Display&rdquo; names first and prompt only if tied, or say &ldquo;all displays&rdquo; / &ldquo;special freezers&rdquo; to target every Special Freezer together.
+            </p>
+          </div>
+          {voiceDisplaySavedNotice && (
+            <span className="text-xs font-semibold text-emerald-400 shrink-0">
+              Saved
+            </span>
+          )}
+        </div>
+        <div>
+          <label
+            htmlFor="voice-primary-display-select"
+            className="block text-[11px] font-bold uppercase tracking-wider text-cool-gray-300 mb-1.5"
+          >
+            Default Freezer For &ldquo;Display&rdquo; Commands
+          </label>
+          <select
+            id="voice-primary-display-select"
+            value={primaryVoiceDisplayId}
+            onChange={e => handleChangePrimaryVoiceDisplay(e.target.value)}
+            className="w-full max-w-lg min-h-[44px] rounded-lg bg-cool-gray-900 border border-cool-gray-700 focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/30 px-3 py-2 text-sm text-white font-semibold cursor-pointer"
+          >
+            <option value="">
+              Automatic (Literal &ldquo;Display&rdquo; first, ask if tied)
+            </option>
+            {voiceDisplayGroups.special.length > 0 && (
+              <optgroup label="Special / Display Freezers">
+                {voiceDisplayGroups.special.map(f => (
+                  <option key={f.id} value={f.id}>
+                    {f.name} (Special Freezer)
+                  </option>
+                ))}
+              </optgroup>
+            )}
+            {voiceDisplayGroups.standard.length > 0 && (
+              <optgroup label="Other On-Site Freezers">
+                {voiceDisplayGroups.standard.map(f => (
+                  <option key={f.id} value={f.id}>
+                    {f.name}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+          </select>
+        </div>
+      </div>
+
       {/* Add / Edit Rule Form Card */}
       <form
         onSubmit={handleSubmit}

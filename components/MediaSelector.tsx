@@ -2,6 +2,7 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { Camera, Upload, Link, X, Loader2, Video, RefreshCw, Image as ImageIcon, Search, Check } from 'lucide-react';
 import { getApiUrl } from '../hooks/apiUrl';
+import { authFetch } from '../utils/clientDevice';
 import { saveOfflineImage } from '../utils/offlineStorage';
 
 interface MediaSelectorProps {
@@ -87,7 +88,7 @@ export const MediaSelector: React.FC<MediaSelectorProps> = ({ imageUrl = '', onC
       if (token) {
         headers['Authorization'] = `Bearer ${token}`;
       }
-      const res = await fetch(getApiUrl('api/photos'), { headers });
+      const res = await authFetch(getApiUrl('api/photos'), { headers });
       const contentType = res.headers.get('content-type') || '';
       
       if (res.ok && contentType.includes('application/json')) {
@@ -173,7 +174,7 @@ export const MediaSelector: React.FC<MediaSelectorProps> = ({ imageUrl = '', onC
           if (token) {
             headers['Authorization'] = `Bearer ${token}`;
           }
-          res = await fetch(getApiUrl('api/upload'), {
+          res = await authFetch(getApiUrl('api/upload'), {
             method: 'POST',
             headers,
             body: JSON.stringify({ base64: compressedBase64, filename })

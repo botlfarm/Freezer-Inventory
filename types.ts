@@ -140,6 +140,7 @@ export interface Tag {
   color?: string;
   textColor?: string;
   excludeFromDisplayRestock?: boolean;
+  prioritizeItem?: boolean;
 }
 
 export interface AppLocation {
@@ -153,7 +154,68 @@ export interface AppLocation {
   hasPallets?: boolean;
 }
 
-export type ControlSourceType = 'onsite_count' | 'offsite_count' | 'offsite_weight' | 'total_count';
+export type ControlSourceType =
+  | 'onsite_count'
+  | 'onsite_weight'
+  | 'offsite_count'
+  | 'offsite_weight'
+  | 'total_count'
+  | 'total_weight';
+
+export type NotificationChannelType = 'smtp_email' | 'webhook' | 'in_app';
+
+export interface NotificationChannelConfig {
+  // SMTP Email settings
+  smtpHost?: string;
+  smtpPort?: number;
+  smtpUser?: string;
+  smtpPass?: string;
+  smtpFrom?: string;
+  smtpTo?: string;
+  smtpSecure?: boolean;
+  // Webhook settings
+  webhookUrl?: string;
+  webhookHeaders?: Record<string, string>;
+  // Extensible extra gateway properties
+  [key: string]: any;
+}
+
+export interface NotificationChannel {
+  id: string;
+  name: string;
+  type: NotificationChannelType;
+  enabled: boolean;
+  config: NotificationChannelConfig;
+  createdAt?: string;
+  updatedAt?: string;
+  lastTestedAt?: string;
+  lastTestStatus?: 'success' | 'failed';
+}
+
+export interface NotificationSystemRoutes {
+  pinResetChannelIds?: string[];
+  systemAlertChannelIds?: string[];
+}
+
+export type ListDailyDigestMode = 'none' | 'combined' | 'separate';
+
+export interface ListCustomSchedule {
+  enabled: boolean;
+  cadence: 'daily' | 'weekly' | 'interval';
+  time?: string; // HH:mm
+  daysOfWeek?: number[]; // 0 (Sun) .. 6 (Sat)
+  intervalHours?: number; // e.g. 1, 2, 4, 6, 12
+  channelIds?: string[]; // Optional override; falls back to list notificationChannelIds
+  lastSentAt?: string;
+}
+
+export interface ListImmediateTriggers {
+  enabled: boolean;
+  onItemAdded?: boolean;
+  onThresholdBreach?: boolean;
+  channelIds?: string[]; // Optional override; falls back to list notificationChannelIds
+  lastTriggeredAt?: string;
+}
 
 export interface CustomListItem {
   productId: string;
@@ -174,7 +236,13 @@ export interface CustomList {
   controlCondition?: 'min' | 'max';
   items: CustomListItem[];
   notificationEnabled?: boolean;
-  notificationType?: 'all_items' | 'newly_added_only' | 'item_specific';
+  notificationType?: 'all_items' | 'newly_added_only' | 'item_specific' | 'threshold_breaches';
+  notificationChannelIds?: string[];
+  notificationRecipientOverride?: string;
+  notificationDailyDigestMode?: ListDailyDigestMode;
+  notificationDigestChannelIds?: string[];
+  notificationCustomSchedule?: ListCustomSchedule;
+  notificationImmediate?: ListImmediateTriggers;
   lastNotifiedAt?: string;
 }
 
@@ -183,7 +251,10 @@ export interface NotificationSettings {
   digestEnabled: boolean;
   digestMode: 'combined' | 'individual';
   digestTime: string;
+  timezone?: string;
   method: 'ha_persistent' | 'ha_notify' | 'smtp_email' | 'webhook' | 'in_app';
+  defaultChannelIds?: string[];
+  systemRoutes?: NotificationSystemRoutes;
   smtpHost?: string;
   smtpPort?: number;
   smtpUser?: string;
@@ -206,6 +277,11 @@ export interface NotificationLog {
   method: string;
   status: 'success' | 'failed';
   error?: string;
+  channelId?: string;
+  channelName?: string;
+  eventSource?: string;
+  listId?: string;
+  listName?: string;
 }
 
 
@@ -360,6 +436,7 @@ export type InventoryState = {
   isDemoMode?: boolean;
   isPreviewMode?: boolean;
   previewBackupFilename?: string;
+  notificationChannels?: NotificationChannel[];
   notificationSettings?: NotificationSettings[];
   notificationLogs?: NotificationLog[];
   appConfig?: AppConfigItem[];
@@ -429,7 +506,25 @@ export type Action =
   | { type: 'REVERT_MOVEMENT_ORDER'; payload: { id: string; palletNames?: string[]; destinationIds?: string[]; entryIds?: string[]; } }
   | { type: 'UNDO'; payload?: { snapshotId?: string; historyId?: string } }
   | { type: 'REDO' }
-  | { type: 'ADD_CUSTOM_LIST'; payload: { name: string; description: string; allowNotes: boolean; isInventoryControlled: boolean; controlType?: 'auto' | 'prompt'; controlCondition?: 'min' | 'max'; } }
+  | {
+      type: 'ADD_CUSTOM_LIST';
+      payload: {
+        name: string;
+        description: string;
+        allowNotes: boolean;
+        isInventoryControlled: boolean;
+        controlType?: 'auto' | 'prompt';
+        controlCondition?: 'min' | 'max';
+        notificationEnabled?: boolean;
+        notificationType?: 'all_items' | 'newly_added_only' | 'item_specific' | 'threshold_breaches';
+        notificationChannelIds?: string[];
+        notificationRecipientOverride?: string;
+        notificationDailyDigestMode?: ListDailyDigestMode;
+        notificationDigestChannelIds?: string[];
+        notificationCustomSchedule?: ListCustomSchedule;
+        notificationImmediate?: ListImmediateTriggers;
+      };
+    }
   | { type: 'EDIT_CUSTOM_LIST'; payload: { listId: string; updates: Partial<Omit<CustomList, 'id' | 'items'>> } }
   | { type: 'DELETE_CUSTOM_LIST'; payload: { listId: string } }
   | { type: 'TOGGLE_PRODUCT_ON_LIST'; payload: { listId: string; productId: string; notes?: string; forceState?: boolean; controlSource?: ControlSourceType; threshold?: number } }
@@ -494,10 +589,91 @@ export interface ZoneClientCounts {
   offsite: number;
 }
 
+export type AppUserRole = 'admin' | 'user';
+
+export interface AppUserSummary {
+  id: string;
+  name: string;
+  role: AppUserRole;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+  lastLoginAt?: string;
+  deviceCount?: number;
+  activeSessionCount?: number;
+}
+
+export interface UserSessionSummary {
+  id: string;
+  userId: string;
+  userName?: string;
+  userRole?: AppUserRole;
+  deviceId?: string;
+  deviceName?: string;
+  userAgent?: string;
+  ip?: string;
+  createdAt: string;
+  lastSeenAt: string;
+  expiresAt?: string;
+  revokedAt?: string;
+  isCurrentSession?: boolean;
+}
+
+export interface AuthStatus {
+  usersConfigured: boolean;
+  isAuthenticated: boolean;
+  isAdmin: boolean;
+  requireLoginForEdits: boolean;
+  currentUser: AppUserSummary | null;
+  currentSessionId: string | null;
+  currentDeviceId?: string;
+  recoveryModeActive: boolean;
+  recoveryPinConfigured?: boolean;
+  recoverySource?: 'none' | 'env' | 'ha_options';
+  availableUsers: Array<{ id: string; name: string }>;
+}
+
+export interface LegacyOperatorGroup {
+  operatorKey: string; // lowercased operator name or '__unassigned__'
+  displayName: string;
+  isUnassigned: boolean;
+  deviceCount: number;
+  devices: PwaDevice[];
+  matchingUserId?: string;
+  matchingUserName?: string;
+}
+
+export interface AppUserBackupRecord {
+  id: string;
+  name: string;
+  role: AppUserRole;
+  pinHash: string;
+  pinSalt: string;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+  lastLoginAt?: string;
+}
+
+export interface UserSessionBackupRecord {
+  id: string;
+  userId: string;
+  tokenHash: string;
+  deviceId?: string;
+  deviceName?: string;
+  userAgent?: string;
+  ip?: string;
+  createdAt: string;
+  lastSeenAt: string;
+  expiresAt?: string;
+  revokedAt?: string;
+}
+
 export interface PwaDevice {
   id: string; // Persistent UUID
   name: string; // Device label e.g. "Nick's iPhone"
   operator?: string; // Operator name e.g. "Nick"
+  userId?: string; // Owning app_users.id
   deviceType?: string; // "Standalone PWA (iOS)", "Mobile Browser", etc.
   clientDevice?: string; // "Standalone PWA" | "Mobile Browser" | "Desktop Browser" | "HA Companion App"
   clientInfo?: string; // Detailed browser and OS string
@@ -507,6 +683,7 @@ export interface PwaDevice {
   lastIp?: string;
   userAgent?: string;
   status: 'authorized' | 'revoked';
+  autoUpdateCache?: boolean; // Per-device auto-update cache setting controlled by admin (defaults to true)
   notes?: string;
   isCurrentDevice?: boolean;
   isOnline?: boolean;

@@ -12,6 +12,13 @@ import {
     sortSubCategories, 
     sortProductsHierarchy 
 } from '../utils/sortOrder';
+import {
+    compareBackstockForDisplayRestock,
+    compareCutsForRemoval,
+    getTagActionIcon,
+    isCutExcludedFromDisplayRestock,
+    isCutPrioritized
+} from '../utils/tagRestockRules';
 
 interface ProductLocationRowProps {
     meatCut: MeatCut;
@@ -239,7 +246,7 @@ const ProductLocationRow: React.FC<ProductLocationRowProps> = ({
                               className="inline-flex items-center gap-0.5 text-[8px] sm:text-[9px] border px-1 sm:px-1.5 py-0.2 rounded font-semibold tracking-wide uppercase select-none"
                               title={tag.description || tag.name}
                             >
-                              {tag.id === 'use-first' ? '🍳 ' : tag.id === 'not-for-sale' ? '🛑 ' : '🏷️ '}{tag.name}
+                              {getTagActionIcon(tag)} {tag.name}
                             </span>
                           );
                         })}
@@ -642,6 +649,32 @@ const StorageLocationRow: React.FC<StorageLocationRowProps> = ({ state, loc, dis
                         <span className="text-cool-gray-500">&gt;</span>
                         <span>{loc.container.name}</span>
                     </span>
+                    {(loc.meatCut.tagIds || []).map(tagId => {
+                        const tag = state.tags?.find(t => t.id === tagId);
+                        if (!tag) return null;
+                        return (
+                            <span
+                                key={tag.id}
+                                style={{
+                                    backgroundColor: `${tag.color}15`,
+                                    borderColor: `${tag.color}35`,
+                                    color: tag.color || '#60a5fa'
+                                }}
+                                className="inline-flex items-center gap-0.5 text-[8px] sm:text-[9px] border px-1 sm:px-1.5 py-0.2 rounded font-semibold tracking-wide uppercase select-none"
+                                title={tag.description || tag.name}
+                            >
+                                {getTagActionIcon(tag)} {tag.name}
+                            </span>
+                        );
+                    })}
+                    {isCutPrioritized(loc.meatCut, state.tags) && (
+                        <span
+                            className="inline-flex items-center gap-0.5 text-[8px] sm:text-[9px] bg-amber-500/15 border border-amber-500/40 text-amber-300 px-1.5 py-0.2 rounded font-black tracking-wide uppercase select-none"
+                            title="Tag rule: prioritize pulling this stock into Display Case before standard backstock"
+                        >
+                            ⚡ Pull First
+                        </span>
+                    )}
                     
                     {isEditing ? (
                         <div className="flex items-center gap-1 bg-cool-gray-900 p-1 rounded border border-cool-gray-700">
@@ -1604,7 +1637,7 @@ const ProductView: React.FC<ProductViewProps> = ({
                                                             <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
                                                                 {(() => {
                                                                     const backStockLocations = state.meatCuts
-                                                                        .filter(mc => mc.productId === product.id)
+                                                                        .filter(mc => mc.productId === product.id && mc.quantity > 0 && !isCutExcludedFromDisplayRestock(mc, state.tags))
                                                                         .map(mc => {
                                                                             const container = state.containers.find(c => c.id === mc.containerId);
                                                                             let freezer = container ? state.freezers.find(f => f.id === container.freezerId) : undefined;
@@ -1613,7 +1646,7 @@ const ProductView: React.FC<ProductViewProps> = ({
                                                                             }
                                                                             return { meatCut: mc, container, freezer };
                                                                         })
-                                                                        .filter(loc => loc.container && loc.freezer && !loc.freezer.isSpecial) as { meatCut: MeatCut, container: Container, freezer: Freezer }[];
+                                                                        .filter(loc => loc.container && !loc.container.isArchived && loc.freezer && !loc.freezer.isSpecial) as { meatCut: MeatCut, container: Container, freezer: Freezer }[];
                                                                     const totalBackStock = backStockLocations.reduce((sum, l) => sum + l.meatCut.quantity, 0);
 
                                                                     return (
@@ -1654,7 +1687,7 @@ const ProductView: React.FC<ProductViewProps> = ({
                                                             {/* Quick Restock Options on Card in Display mode */}
                                                             {isDisplayFocus && (() => {
                                                                 const backStockLocations = state.meatCuts
-                                                                    .filter(mc => mc.productId === product.id)
+                                                                    .filter(mc => mc.productId === product.id && mc.quantity > 0 && !isCutExcludedFromDisplayRestock(mc, state.tags))
                                                                     .map(mc => {
                                                                         const container = state.containers.find(c => c.id === mc.containerId);
                                                                         let freezer = container ? state.freezers.find(f => f.id === container.freezerId) : undefined;
@@ -1663,7 +1696,8 @@ const ProductView: React.FC<ProductViewProps> = ({
                                                                         }
                                                                         return { meatCut: mc, container, freezer };
                                                                     })
-                                                                    .filter(loc => loc.container && loc.freezer && !loc.freezer.isSpecial) as { meatCut: MeatCut, container: Container, freezer: Freezer }[];
+                                                                    .filter(loc => loc.container && !loc.container.isArchived && loc.freezer && !loc.freezer.isSpecial) as { meatCut: MeatCut, container: Container, freezer: Freezer }[];
+                                                                backStockLocations.sort((a, b) => compareBackstockForDisplayRestock(a, b, state.tags));
                                                                 
                                                                 const totalBackStock = backStockLocations.reduce((sum, l) => sum + l.meatCut.quantity, 0);
                                                                 
@@ -1710,7 +1744,11 @@ const ProductView: React.FC<ProductViewProps> = ({
                                                             {locations.length > 0 ? (
                                                                 <div className="mt-1.5" id={`locations-list-${product.id}`}>
                                                                     <ul className="text-cool-gray-300 text-sm space-y-1.5">
-                                                                        {locations.sort((a,b) => a.freezer.name.localeCompare(b.freezer.name, undefined, { numeric: true, sensitivity: 'base' })).map(loc => (
+                                                                        {[...locations].sort((a, b) => {
+                                                                            const prioDiff = compareCutsForRemoval(a, b, state.tags);
+                                                                            if (prioDiff !== 0) return prioDiff;
+                                                                            return a.freezer.name.localeCompare(b.freezer.name, undefined, { numeric: true, sensitivity: 'base' });
+                                                                        }).map(loc => (
                                                                             <ProductLocationRow 
                                                                                 key={loc.meatCut.id}
                                                                                 meatCut={loc.meatCut}

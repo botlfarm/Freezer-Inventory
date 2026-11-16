@@ -71,6 +71,17 @@ div[class*="sticky"][class*="bg-gray"] {
   opacity: 1 !important;
 }
 
+/* Mobile Voice Control sticky bottom confirmation bar must stay completely opaque */
+#voice-mobile-confirm-bar {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  background-color: var(--ha-bg-card, #1f2937) !important;
+  opacity: 1 !important;
+  border-top: 1px solid var(--ha-border, rgba(255, 255, 255, 0.12)) !important;
+  color: var(--ha-text-primary, #f3f4f6) !important;
+  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.35) !important;
+}
+
 /* Forms, Inputs, Select Options & Textareas */
 input,
 select,

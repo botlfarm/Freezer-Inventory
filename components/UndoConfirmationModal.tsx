@@ -57,6 +57,7 @@ export const UndoConfirmationModal: React.FC<UndoConfirmationModalProps> = ({
 
   // Determine the target snapshot to undo
   const targetSnapshot = useMemo(() => {
+    if (!isOpen) return null;
     if (preselectedSnapshotId) {
       return recentSnapshots.find(s => s.id === preselectedSnapshotId) || null;
     }
@@ -78,10 +79,11 @@ export const UndoConfirmationModal: React.FC<UndoConfirmationModalProps> = ({
       }
     }
     return recentSnapshots[0] || null;
-  }, [preselectedSnapshotId, preselectedHistoryId, recentSnapshots, historyEntries]);
+  }, [isOpen, preselectedSnapshotId, preselectedHistoryId, recentSnapshots, historyEntries]);
 
   // Target historical audit entry with its rich undoData
   const targetHistoryEntry = useMemo(() => {
+    if (!isOpen) return null;
     const targetId = preselectedHistoryId || targetSnapshot?.historyId || targetSnapshot?.id;
     if (targetId) {
       return historyEntries.find(h => h.id === targetId) || null;
@@ -90,17 +92,17 @@ export const UndoConfirmationModal: React.FC<UndoConfirmationModalProps> = ({
       return historyEntries[0];
     }
     return null;
-  }, [preselectedHistoryId, targetSnapshot, historyEntries]);
+  }, [isOpen, preselectedHistoryId, targetSnapshot, historyEntries]);
 
   // Determine the position in the chronological history (0 = newest / latest action)
   const historyIndex = useMemo(() => {
-    if (!targetHistoryEntry) return -1;
+    if (!isOpen || !targetHistoryEntry) return -1;
     return historyEntries.findIndex(h => h.id === targetHistoryEntry.id);
-  }, [targetHistoryEntry, historyEntries]);
+  }, [isOpen, targetHistoryEntry, historyEntries]);
 
   // Downstream Conflict Analysis: Find actions recorded AFTER this entry (index 0 to historyIndex - 1)
   const downstreamAnalysis = useMemo(() => {
-    if (historyIndex <= 0 || !targetHistoryEntry) {
+    if (!isOpen || historyIndex <= 0 || !targetHistoryEntry) {
       return {
         hasDownstream: false,
         stepsBack: 0,
@@ -184,11 +186,11 @@ export const UndoConfirmationModal: React.FC<UndoConfirmationModalProps> = ({
       subsequentCount: subsequentEntries.length,
       conflictingEntries
     };
-  }, [historyIndex, targetHistoryEntry, historyEntries, state]);
+  }, [isOpen, historyIndex, targetHistoryEntry, historyEntries, state]);
 
   // Compute Current State vs Proposed State Comparison
   const stateComparison = useMemo(() => {
-    if (!state || !targetHistoryEntry) return null;
+    if (!isOpen || !state || !targetHistoryEntry) return null;
 
     const undoData = targetHistoryEntry.undoData || {};
     const undoType = undoData.type || '';

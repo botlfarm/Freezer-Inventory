@@ -26,6 +26,7 @@ import {
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
 import { MovementOrder, MovementItem } from '../types';
 import { MovementReportModal } from './MovementReportModal';
+import { getTagActionIcon } from '../utils/tagRestockRules';
 
 // Audio Feedback System using Web Audio API
 const playBeep = (type: 'success' | 'error') => {
@@ -103,7 +104,7 @@ const renderItemTagsHelper = (tags: any[] | undefined, items: any[]) => {
             className="inline-flex items-center gap-0.5 text-[8px] border px-1 py-0.2 rounded font-black tracking-wide uppercase select-none"
             title={`Tag on item: ${tag.description || tag.name}`}
           >
-            {tag.id === 'use-first' ? '🍳 ' : tag.id === 'not-for-sale' ? '🛑 ' : '🏷️ '}{tag.name}
+            {getTagActionIcon(tag)} {tag.name}
           </span>
         );
       })}

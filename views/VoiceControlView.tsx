@@ -20,6 +20,14 @@ import {
   BookOpen,
   SlidersHorizontal,
   Image as ImageIcon,
+  Tag as TagIcon,
+  List as ListIcon,
+  ArrowLeftRight,
+  Archive,
+  Edit2,
+  Bell,
+  BellOff,
+  Layers,
 } from 'lucide-react';
 import { Action, InventoryState } from '../types';
 import AddForms, { ContainerDraftValues } from '../components/AddForms';
@@ -29,14 +37,39 @@ import {
   ParsedVoiceClause,
   VoiceSelectionOverrides,
 } from '../utils/voiceCommandParser';
+// [TEMP] Temporary failed-prompt recorder (remove import & component tag when voice model is built out)
+import { TempVoicePromptRecorder } from '../components/TempVoicePromptRecorder';
 
 interface VoiceControlViewProps {
   state: InventoryState;
   dispatch: React.Dispatch<Action>;
   onNavigateToProduct: (productId: string) => void;
   onNavigateToFreezer: (containerId: string) => void;
+  onNavigateToFreezerUnit?: (freezerId: string) => void;
+  onNavigateToDisplayCase?: (productId?: string) => void;
+  onNavigateToProductsView?: () => void;
+  onNavigateToCategory?: (
+    categoryName: string,
+    categoryType: 'primary' | 'sub',
+    primaryCategory?: string
+  ) => void;
+  onNavigateToTag?: (tagId: string) => void;
+  onNavigateToList?: (listId?: string) => void;
+  onNavigateToHistory?: () => void;
   onTriggerUndo?: () => void;
   onOpenVoiceDictionary?: () => void;
+}
+
+interface AppliedSummaryItem {
+  text: string;
+  productId?: string;
+  containerId?: string;
+  freezerId?: string;
+  listId?: string;
+  tagId?: string;
+  isDisplay?: boolean;
+  isContainerOp?: boolean;
+  isUndo?: boolean;
 }
 
 interface SpeechRecognitionInstance {
@@ -74,9 +107,12 @@ const SAMPLE_PHRASE_SECTIONS: SamplePhraseSection[] = [
     headingClass: 'text-red-300',
     items: [
       { label: 'Single item deduct', command: 'remove 2 brats from display' },
+      { label: 'Natural sell / grab verb', command: 'grabbed two brats from display' },
+      { label: 'Empty category from Display', command: 'Empty Broths from display' },
       { label: 'Multi-item sale list', command: 'remove 2 brats, 1 belly, 3 ground pork and 1 chicken broth from display' },
-      { label: 'Spoken numbers & synonyms', command: 'sold three belly fresh from display' },
-      { label: 'Remove all remaining', command: 'remove all brats from display' },
+      { label: 'Dictated list (no commas)', command: 'remove two brats one belly and one chicken broth from display' },
+      { label: 'Remove all / sold out', command: 'sold out of brats in display' },
+      { label: 'Remove from any special freezer', command: 'remove 2 brats from all displays' },
       { label: 'Zero out item in location', command: 'zero out ground pork from display' },
       { label: 'Multi-line bullet list', command: 'Remove from display:\n- 3 belly bacon\n- 2 pork liver' },
     ],
@@ -90,6 +126,7 @@ const SAMPLE_PHRASE_SECTIONS: SamplePhraseSection[] = [
     items: [
       { label: 'Container in freezer to Display', command: 'Move 4 hotdogs from orange in canada to display' },
       { label: 'Move all of one item', command: 'move all hotdogs from orange in canada to display' },
+      { label: 'Move from Display Loose shelf', command: 'move all hotdogs in display loose to orange in canada' },
       { label: 'Move to Staging Area', command: 'move 3 pork belly from chest freezer to staging' },
       { label: 'Same-line location header', command: 'Move to display: 2 hotdogs from orange in canada, 3 ribs from chest freezer' },
     ],
@@ -110,35 +147,109 @@ const SAMPLE_PHRASE_SECTIONS: SamplePhraseSection[] = [
     ],
   },
   {
+    id: 'adjust',
+    title: 'Bulk & Direct Inventory Changes',
+    description: 'Set exact counts to a target number (including 0) or adjust up/down by a delta.',
+    badgeClass: 'bg-sky-950/60 text-sky-300 border-sky-500/35',
+    headingClass: 'text-sky-300',
+    items: [
+      { label: 'Adjust quantity to target', command: 'adjust quantity of brats in display to two' },
+      { label: 'Reduce inventory to target', command: 'reduce inventory of hot dogs in box green to three' },
+      { label: 'Reduce inventory by delta', command: 'reduce inventory of hot dogs in box green by three' },
+      { label: 'Increase stock by delta', command: 'increase stock of brats in display by four' },
+      { label: 'Set item count to zero', command: 'set pork liver in display to zero' },
+      { label: 'Physical count statement', command: 'there are 4 brats left in display' },
+      { label: 'Bulk list (same location)', command: 'adjust inventory of brats to 2 and hotdogs to 3 in display' },
+      { label: 'Bulk list (multi-location)', command: 'reduce inventory of hot dogs in box green to 3, brats in display to 2' },
+      { label: 'Multi-line bulk change', command: 'Adjust inventory in display:\n- brats to 2\n- hotdogs to 3\n- pork liver to zero' },
+    ],
+  },
+  {
     id: 'containers',
-    title: 'Container Moves, Emptying & Combining',
-    description: 'Unload whole containers, move intact containers between freezers, or merge bins.',
+    title: 'Container Moves, Lifecycle & Exclusions',
+    description: 'Empty, move, swap, rename, archive, delete, or merge containers (with optional exclusions).',
     badgeClass: 'bg-purple-950/60 text-purple-300 border-purple-500/35',
     headingClass: 'text-purple-300',
     items: [
       { label: 'Empty container to Staging', command: 'empty container orange in canada' },
+      { label: 'Empty except specific items', command: 'empty container orange in canada except beef hot dogs' },
       { label: 'Unload container to Display', command: 'unload orange in canada to display' },
-      { label: 'Move all contents to another bin', command: 'move all of container orange in canada to blue tote' },
+      { label: 'Move all contents (with exclusion)', command: 'move all of container orange in canada to blue tote excluding pork belly' },
       { label: 'Move whole container to freezer', command: 'move container blue tote to chest freezer' },
-      { label: 'Relocate container to Staging', command: 'relocate orange in canada to staging' },
+      { label: 'Unplace / stage container', command: 'stage blue tote' },
+      { label: 'Swap two containers', command: 'swap orange in canada and orange in chest freezer' },
+      { label: 'Rename a container', command: 'rename blue tote in canada to snack tote' },
+      { label: 'Archive or restore container', command: 'archive orange in canada' },
+      { label: 'Delete container (moves items to Staging)', command: 'delete container orange in canada' },
       { label: 'Combine (pick survivor)', command: 'combine containers orange in canada and blue tote' },
       { label: 'Merge directionally into target', command: 'merge orange in canada into blue tote' },
-      { label: 'Combine multiple into target', command: 'combine orange in canada and red bag into blue tote' },
+    ],
+  },
+  {
+    id: 'restock_alerts',
+    title: 'Guided Display Restock & Stock Alerts',
+    description: 'Pull backstock into Display automatically or spot low and out-of-stock items.',
+    badgeClass: 'bg-teal-950/60 text-teal-300 border-teal-500/35',
+    headingClass: 'text-teal-300',
+    items: [
+      { label: 'Restock display from backstock', command: 'top off display with 4 hotdogs' },
+      { label: 'Pull backstock to display', command: 'pull 3 pork belly from backstock to display' },
+      { label: 'Out of stock in Display', command: "what's out of stock in display?" },
+      { label: 'Low stock in Display', command: "what's low stock in display?" },
+      { label: 'What to restock + check list', command: 'What do I need to restock? Check a list' },
+      { label: 'Low stock under count', command: "what's under 4 in display?" },
+      { label: 'Completely out of stock globally', command: 'what are we completely out of?' },
+    ],
+  },
+  {
+    id: 'custom_lists',
+    title: 'Custom Lists & Item Thresholds',
+    description: 'Manage custom restock or packing lists, low-stock thresholds, and item alerts.',
+    badgeClass: 'bg-indigo-950/60 text-indigo-300 border-indigo-500/35',
+    headingClass: 'text-indigo-300',
+    items: [
+      { label: 'Add items to list', command: 'add ribeye and chicken broth to restock list' },
+      { label: 'Add item with threshold', command: 'add hotdogs to restock list with threshold 6' },
+      { label: 'Remove item from list', command: 'remove pork belly from restock list' },
+      { label: 'Set list item threshold', command: 'set threshold for brats on restock list to 5' },
+      { label: 'Alert when drops below count', command: 'alert me when brats drops below 4 on restock list' },
+      { label: 'Turn off / on item alert', command: 'turn off alerts for brats on restock list' },
+      { label: 'Check what is on a list', command: "what's on my restock list?" },
+      { label: 'Check if product is listed', command: 'is ribeye on the restock list?' },
+    ],
+  },
+  {
+    id: 'tags_labels',
+    title: 'Tags, Wrong-Label Fixes & Undo',
+    description: 'Tag inventory stacks, fix mislabeled packages, or undo your last change.',
+    badgeClass: 'bg-amber-950/60 text-amber-300 border-amber-500/35',
+    headingClass: 'text-amber-300',
+    items: [
+      { label: 'Tag an inventory stack', command: 'tag pork belly in display as vacuum sealed' },
+      { label: 'Remove a tag', command: 'untag pork belly in display from vacuum sealed' },
+      { label: 'Correct a wrong label directly', command: 'correct label on ground pork in display to chicken broth' },
+      { label: 'Flag wrong label & pick product', command: 'mark ground pork in display as wrong label' },
+      { label: 'Quick undo last command', command: 'undo last command' },
     ],
   },
   {
     id: 'inventory',
-    title: 'Inventory Checks & Container Lookups',
-    description: 'Instant read-only queries — never alters inventory or touches off-site/butcher.',
+    title: 'Inventory Checks, Categories & Containers',
+    description: 'Instant read-only queries across products, categories, tags, and containers.',
     badgeClass: 'bg-cyan-950/60 text-cyan-300 border-cyan-500/35',
     headingClass: 'text-cyan-300',
     items: [
       { label: 'Product stock total', command: 'how many pork liver do I have?' },
-      { label: 'Product stock in location', command: 'how many brats are in display?' },
-      { label: 'Locate product across freezers', command: 'where are pork belly?' },
+      { label: 'Product stock in display', command: 'how many brats are in display?' },
+      { label: 'Stock across all displays', command: 'how many brats are in all displays?' },
+      { label: 'Category total stock', command: 'how much pork do I have?' },
+      { label: 'Find items by tag', command: "what's tagged as vacuum sealed?" },
+      { label: 'Locate product across freezers', command: 'where do I have pork belly?' },
       { label: 'Where is a container', command: 'where is red bag' },
       { label: 'Count matching containers', command: 'how many green bags are in freezer 1' },
       { label: 'List containers in freezer', command: 'what containers are in freezer 1' },
+      { label: 'Which containers are empty', command: 'which containers are empty?' },
+      { label: 'What is in Staging Area', command: "what's in staging?" },
       { label: 'Inspect container contents', command: "what's in orange in canada" },
     ],
   },
@@ -146,8 +257,8 @@ const SAMPLE_PHRASE_SECTIONS: SamplePhraseSection[] = [
     id: 'chaining',
     title: 'Chaining, Dictation & Shortcuts',
     description: 'Chain actions, speak naturally, or define custom shortcuts in Voice Dictionary.',
-    badgeClass: 'bg-indigo-950/60 text-indigo-300 border-indigo-500/35',
-    headingClass: 'text-indigo-300',
+    badgeClass: 'bg-slate-800/80 text-slate-200 border-slate-500/35',
+    headingClass: 'text-slate-200',
     items: [
       { label: 'Chain two commands with "and"', command: 'remove 2 brats from display and move 4 hotdogs from orange in canada to display' },
       { label: 'Chain steps with "then"', command: 'empty container orange in canada then move container orange in canada to chest freezer' },
@@ -182,6 +293,11 @@ function getIntentMeta(intent: ParsedVoiceClause['intent']) {
         label: 'Add',
         accentText: 'text-emerald-400',
       };
+    case 'set_quantity':
+      return {
+        label: 'Adjust Inventory',
+        accentText: 'text-sky-400',
+      };
     case 'add_container':
       return {
         label: 'New Container',
@@ -207,9 +323,64 @@ function getIntentMeta(intent: ParsedVoiceClause['intent']) {
         label: 'Combine Containers',
         accentText: 'text-purple-400',
       };
+    case 'swap_containers':
+      return {
+        label: 'Swap Containers',
+        accentText: 'text-purple-400',
+      };
+    case 'rename_container':
+      return {
+        label: 'Rename Container',
+        accentText: 'text-purple-400',
+      };
+    case 'archive_container':
+      return {
+        label: 'Archive Container',
+        accentText: 'text-amber-400',
+      };
+    case 'delete_container':
+      return {
+        label: 'Delete Container',
+        accentText: 'text-red-400',
+      };
+    case 'restock_display':
+      return {
+        label: 'Restock Display',
+        accentText: 'text-emerald-400',
+      };
+    case 'manage_list':
+      return {
+        label: 'Custom List',
+        accentText: 'text-indigo-400',
+      };
+    case 'manage_tag':
+      return {
+        label: 'Item Tag',
+        accentText: 'text-teal-400',
+      };
+    case 'correct_label':
+      return {
+        label: 'Correct Label',
+        accentText: 'text-amber-400',
+      };
+    case 'undo_last':
+      return {
+        label: 'Undo Last',
+        accentText: 'text-amber-400',
+      };
     case 'container_query':
       return {
         label: 'Container Contents',
+        accentText: 'text-cyan-400',
+      };
+    case 'list_query':
+      return {
+        label: 'List Check',
+        accentText: 'text-cyan-400',
+      };
+    case 'inventory_alert_query':
+      return {
+        label: 'Stock Alerts',
         accentText: 'text-cyan-400',
       };
     case 'query':
@@ -230,6 +401,13 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
   dispatch,
   onNavigateToProduct,
   onNavigateToFreezer,
+  onNavigateToFreezerUnit,
+  onNavigateToDisplayCase,
+  onNavigateToProductsView,
+  onNavigateToCategory,
+  onNavigateToTag,
+  onNavigateToList,
+  onNavigateToHistory,
   onTriggerUndo,
   onOpenVoiceDictionary,
 }) => {
@@ -245,7 +423,7 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
   const [isApplying, setIsApplying] = useState(false);
   const [appliedSummary, setAppliedSummary] = useState<{
     timestamp: string;
-    items: string[];
+    items: AppliedSummaryItem[];
   } | null>(null);
   const [recentCommands, setRecentCommands] = useState<string[]>(() => {
     try {
@@ -263,6 +441,31 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const speechSupported = useMemo(() => Boolean(getSpeechRecognitionCtor()), []);
+
+  const isDisplayContainerId = useCallback(
+    (containerId?: string | null) => {
+      if (!containerId) return false;
+      const cont = (state.containers || []).find(c => c.id === containerId);
+      const freezerId =
+        cont?.freezerId ||
+        (containerId.endsWith('_loose') ? containerId.slice(0, -'_loose'.length) : undefined);
+      if (!freezerId) return false;
+      const fz = (state.freezers || []).find(f => f.id === freezerId);
+      return Boolean(fz?.isSpecial);
+    },
+    [state.containers, state.freezers]
+  );
+
+  const navigateToItem = useCallback(
+    (productId: string, isDisplayItem?: boolean) => {
+      if (isDisplayItem && onNavigateToDisplayCase) {
+        onNavigateToDisplayCase(productId);
+      } else {
+        onNavigateToProduct(productId);
+      }
+    },
+    [onNavigateToDisplayCase, onNavigateToProduct]
+  );
 
   const stopListening = useCallback(() => {
     if (recognitionRef.current) {
@@ -451,11 +654,21 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
           (c.intent === 'remove' ||
             c.intent === 'move' ||
             c.intent === 'add' ||
+            c.intent === 'set_quantity' ||
             c.intent === 'add_container' ||
             c.intent === 'empty_container' ||
             c.intent === 'move_all' ||
             c.intent === 'move_container' ||
-            c.intent === 'combine_containers')
+            c.intent === 'combine_containers' ||
+            c.intent === 'swap_containers' ||
+            c.intent === 'rename_container' ||
+            c.intent === 'archive_container' ||
+            c.intent === 'delete_container' ||
+            c.intent === 'restock_display' ||
+            c.intent === 'manage_list' ||
+            c.intent === 'manage_tag' ||
+            c.intent === 'correct_label' ||
+            c.intent === 'undo_last')
       ),
     [parsedResult.clauses]
   );
@@ -475,7 +688,12 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
   const queryClauses = useMemo(
     () =>
       parsedResult.clauses.filter(
-        c => !c.excluded && (c.intent === 'query' || c.intent === 'container_query')
+        c =>
+          !c.excluded &&
+          (c.intent === 'query' ||
+            c.intent === 'container_query' ||
+            c.intent === 'list_query' ||
+            c.intent === 'inventory_alert_query')
       ),
     [parsedResult.clauses]
   );
@@ -484,6 +702,38 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
     () => parsedResult.clauses.filter(c => !c.excluded && c.intent === 'unknown'),
     [parsedResult.clauses]
   );
+
+  // [TEMP] Compact parser status summary for temporary failed-prompt recording
+  const tempPromptStatus = useMemo(() => {
+    if (!effectiveTranscript) {
+      return { hasIssue: false, summary: '' };
+    }
+    const failedQueries = queryClauses.filter(
+      c =>
+        Boolean(c.errorMessage) ||
+        (c.intent === 'query' &&
+          !c.categoryQueryResults &&
+          !c.tagQueryResults &&
+          (!c.queryResults || c.queryResults.length === 0)) ||
+        (c.intent === 'container_query' && (!c.containerQueryResults || c.containerQueryResults.length === 0))
+    );
+    const failedMutations = activeMutationClauses.filter(c => Boolean(c.errorMessage));
+    const hasIssue =
+      unknownClauses.length > 0 ||
+      failedQueries.length > 0 ||
+      failedMutations.length > 0 ||
+      parsedResult.pendingSelectionCount > 0;
+
+    const parts: string[] = [];
+    if (unknownClauses.length > 0) parts.push(`${unknownClauses.length} unrecognized`);
+    if (failedQueries.length > 0) parts.push(`${failedQueries.length} empty/error query`);
+    if (failedMutations.length > 0) parts.push(`${failedMutations.length} mutation error`);
+    if (parsedResult.pendingSelectionCount > 0) parts.push(`${parsedResult.pendingSelectionCount} needs selection`);
+    if (parts.length === 0 && parsedResult.clauses.length > 0) {
+      parts.push(`parsed ${parsedResult.clauses.length} clause${parsedResult.clauses.length === 1 ? '' : 's'}`);
+    }
+    return { hasIssue, summary: parts.join(', ') };
+  }, [effectiveTranscript, queryClauses, activeMutationClauses, unknownClauses, parsedResult]);
 
   const canConfirmApply =
     !isApplying &&
@@ -512,7 +762,7 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
     const actions = buildVoiceDispatchActions(parsedResult.clauses, state);
     if (actions.length === 0) return;
 
-    const summaryLines: string[] = [];
+    const summaryLines: AppliedSummaryItem[] = [];
     const loggedNewContainerGroups = new Set<string>();
     for (const c of activeMutationClauses) {
       if (c.intent === 'empty_container' || c.intent === 'move_all') {
@@ -526,7 +776,15 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
           'Staging Area (Loose)';
         const pieceTotal = (c.containerCutPreviews || []).reduce((s, item) => s + item.quantity, 0);
         const verb = c.intent === 'empty_container' ? 'Emptied' : 'Moved all contents of';
-        summaryLines.push(`${verb} ${srcLabel} (${pieceTotal} pcs) to ${dstLabel}`);
+        const exclNote =
+          (c.excludedProductIds?.length || 0) > 0
+            ? ` (${c.excludedProductIds!.length} excluded)`
+            : '';
+        summaryLines.push({
+          text: `${verb} ${srcLabel} (${pieceTotal} pcs${exclNote}) to ${dstLabel}`,
+          containerId: c.selectedDestContainerId || c.selectedSourceContainerId || undefined,
+          isContainerOp: true,
+        });
         continue;
       }
 
@@ -538,7 +796,12 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
         const freezerLabel =
           (c.freezerCandidates || []).find(f => f.freezerId === c.selectedFreezerId)?.freezerName ||
           'Staging Area';
-        summaryLines.push(`Moved container ${srcLabel} to ${freezerLabel}`);
+        summaryLines.push({
+          text: `Moved container ${srcLabel} to ${freezerLabel}`,
+          containerId: c.selectedSourceContainerId || undefined,
+          freezerId: c.selectedFreezerId || undefined,
+          isContainerOp: true,
+        });
         continue;
       }
 
@@ -558,36 +821,209 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
           )
         );
         const pieceTotal = (c.containerCutPreviews || []).reduce((s, item) => s + item.quantity, 0);
-        summaryLines.push(
-          `Combined ${absorbedLabels.join(', ')} (${pieceTotal} pcs) into ${dstLabel}`
-        );
+        summaryLines.push({
+          text: `Combined ${absorbedLabels.join(', ')} (${pieceTotal} pcs) into ${dstLabel}`,
+          containerId: c.selectedDestContainerId || undefined,
+          isContainerOp: true,
+        });
+        continue;
+      }
+
+      if (c.intent === 'swap_containers') {
+        const slotA = c.combineSlots?.[0];
+        const slotB = c.combineSlots?.[1];
+        const labelA =
+          slotA?.candidates.find(cand => cand.containerId === slotA.selectedContainerId)?.label ||
+          slotA?.query ||
+          'Container A';
+        const labelB =
+          slotB?.candidates.find(cand => cand.containerId === slotB.selectedContainerId)?.label ||
+          slotB?.query ||
+          'Container B';
+        summaryLines.push({
+          text: `Swapped ${labelA} ↔ ${labelB}`,
+          containerId: slotA?.selectedContainerId || slotB?.selectedContainerId || undefined,
+          isContainerOp: true,
+        });
+        continue;
+      }
+
+      if (c.intent === 'rename_container') {
+        const srcLabel =
+          c.sourceLocationCandidates.find(l => l.containerId === c.selectedSourceContainerId)?.label ||
+          c.sourceLocationQuery ||
+          'container';
+        summaryLines.push({
+          text: `Renamed ${srcLabel} to "${c.newContainerNameInput}"`,
+          containerId: c.selectedSourceContainerId || undefined,
+          isContainerOp: true,
+        });
+        continue;
+      }
+
+      if (c.intent === 'archive_container') {
+        const srcLabel =
+          c.sourceLocationCandidates.find(l => l.containerId === c.selectedSourceContainerId)?.label ||
+          c.sourceLocationQuery ||
+          'container';
+        summaryLines.push({
+          text: `${c.archiveState === false ? 'Restored' : 'Archived'} container ${srcLabel}`,
+          containerId: c.selectedSourceContainerId || undefined,
+          isContainerOp: true,
+        });
+        continue;
+      }
+
+      if (c.intent === 'delete_container') {
+        const srcLabel =
+          c.sourceLocationCandidates.find(l => l.containerId === c.selectedSourceContainerId)?.label ||
+          c.sourceLocationQuery ||
+          'container';
+        const srcObj = c.sourceLocationCandidates.find(l => l.containerId === c.selectedSourceContainerId);
+        summaryLines.push({
+          text: `Deleted container ${srcLabel}`,
+          freezerId: srcObj?.freezerId || '__staging__',
+          isContainerOp: true,
+        });
+        continue;
+      }
+
+      if (c.intent === 'undo_last') {
+        summaryLines.push({
+          text: `Undid: ${c.undoTargetDescription || 'last action'}`,
+          isUndo: true,
+        });
+        continue;
+      }
+
+      if (c.intent === 'restock_display') {
+        const prodName =
+          c.productCandidates.find(p => p.product.id === c.selectedProductId)?.product.name || c.productQuery;
+        const dstLabel =
+          c.destLocationCandidates.find(l => l.containerId === c.selectedDestContainerId)?.label ||
+          c.destLocationQuery ||
+          'Display';
+        const sources = (c.restockAllocations || [])
+          .map(a => `${a.moveQty}x from ${a.locationLabel}`)
+          .join(', ');
+        summaryLines.push({
+          text: `Restocked ${c.quantity}x ${prodName} to ${dstLabel}${sources ? ` (${sources})` : ''}`,
+          containerId: c.selectedDestContainerId || undefined,
+          productId: c.selectedProductId || undefined,
+          isDisplay: true,
+        });
+        continue;
+      }
+
+      if (c.intent === 'manage_list') {
+        const prodName =
+          c.productCandidates.find(p => p.product.id === c.selectedProductId)?.product.name || c.productQuery;
+        const listName =
+          (c.listCandidates || []).find(l => l.list.id === c.selectedListId)?.list.name ||
+          c.listQueryText ||
+          'list';
+        let text: string;
+        if (c.listAction === 'remove') {
+          text = `Removed ${prodName} from "${listName}"`;
+        } else if (c.listAction === 'set_threshold') {
+          text = `Set threshold for ${prodName} on "${listName}" to ${c.listThreshold ?? 0}`;
+        } else if (c.listAction === 'enable_notify') {
+          text = `Enabled alerts for ${prodName} on "${listName}"`;
+        } else if (c.listAction === 'disable_notify') {
+          text = `Muted alerts for ${prodName} on "${listName}"`;
+        } else {
+          text = `Added ${prodName} to "${listName}"${
+            c.listThreshold !== undefined ? ` (threshold: ${c.listThreshold})` : ''
+          }`;
+        }
+        summaryLines.push({
+          text,
+          listId: c.selectedListId || undefined,
+          productId: c.selectedProductId || undefined,
+        });
+        continue;
+      }
+
+      if (c.intent === 'manage_tag') {
+        const prodName =
+          c.productCandidates.find(p => p.product.id === c.selectedProductId)?.product.name || c.productQuery;
+        const tagName =
+          (c.tagCandidates || []).find(t => t.tag.id === c.selectedTagId)?.tag.name ||
+          c.tagQueryText ||
+          'tag';
+        const selectedCutObj = c.cutCandidates.find(cc => cc.meatCut.id === c.selectedMeatCutId);
+        const cutLabel = selectedCutObj?.locationLabel || 'on-site';
+        summaryLines.push({
+          text: `${c.tagAction === 'remove' ? 'Removed' : 'Added'} tag "${tagName}" on ${prodName} (${cutLabel})`,
+          containerId: selectedCutObj?.container.id,
+          productId: c.selectedProductId || undefined,
+          tagId: c.selectedTagId || undefined,
+          isDisplay: Boolean(
+            selectedCutObj?.freezer?.isSpecial || isDisplayContainerId(selectedCutObj?.container.id)
+          ),
+        });
+        continue;
+      }
+
+      if (c.intent === 'correct_label') {
+        const oldName =
+          c.productCandidates.find(p => p.product.id === c.selectedProductId)?.product.name || c.productQuery;
+        const newName =
+          (c.replacementProductCandidates || []).find(
+            p => p.product.id === c.selectedReplacementProductId
+          )?.product.name || 'new label';
+        const selectedCutObj = c.cutCandidates.find(cc => cc.meatCut.id === c.selectedMeatCutId);
+        const cutLabel = selectedCutObj?.locationLabel || 'on-site';
+        summaryLines.push({
+          text: `Corrected label on ${oldName} → ${newName} (${cutLabel})`,
+          productId: c.selectedReplacementProductId || c.selectedProductId || undefined,
+          containerId: selectedCutObj?.container.id,
+          isDisplay: Boolean(
+            selectedCutObj?.freezer?.isSpecial || isDisplayContainerId(selectedCutObj?.container.id)
+          ),
+        });
         continue;
       }
 
       if (c.newContainerGroupKey) {
         const contName = c.resolvedNewContainerName || c.newContainerNameQuery || 'New Container';
-        const freezerLabel =
-          (c.freezerCandidates || []).find(f => f.freezerId === c.selectedFreezerId)?.freezerName ||
-          'Staging Area';
+        const selectedFreezerObj = (c.freezerCandidates || []).find(f => f.freezerId === c.selectedFreezerId);
+        const freezerLabel = selectedFreezerObj?.freezerName || 'Staging Area';
         if (!loggedNewContainerGroups.has(c.newContainerGroupKey)) {
           loggedNewContainerGroups.add(c.newContainerGroupKey);
           const chosenTpl = (c.templateCandidates || []).find(
             t => t.templateId === c.selectedTemplateId && !t.isCustom
           );
           if (c.selectedExistingSpareContainerId) {
-            summaryLines.push(`Placed existing container ${contName} in ${freezerLabel}`);
+            summaryLines.push({
+              text: `Placed existing container ${contName} in ${freezerLabel}`,
+              containerId: c.selectedExistingSpareContainerId,
+              freezerId: c.selectedFreezerId || undefined,
+              isContainerOp: true,
+            });
           } else if (c.newContainerSaveAsTemplate) {
-            summaryLines.push(`Created container & template ${contName} in ${freezerLabel}`);
+            summaryLines.push({
+              text: `Created container & template ${contName} in ${freezerLabel}`,
+              freezerId: c.selectedFreezerId || undefined,
+              isContainerOp: true,
+            });
           } else {
-            summaryLines.push(
-              `Created container ${contName}${chosenTpl ? ' (from template)' : ''} in ${freezerLabel}`
-            );
+            summaryLines.push({
+              text: `Created container ${contName}${chosenTpl ? ' (from template)' : ''} in ${freezerLabel}`,
+              freezerId: c.selectedFreezerId || undefined,
+              isContainerOp: true,
+            });
           }
         }
         if (c.intent === 'add') {
           const prodName =
             c.productCandidates.find(p => p.product.id === c.selectedProductId)?.product.name || c.productQuery;
-          summaryLines.push(`Added ${c.quantity}x ${prodName} to ${contName} (${freezerLabel})`);
+          summaryLines.push({
+            text: `Added ${c.quantity}x ${prodName} to ${contName} (${freezerLabel})`,
+            productId: c.selectedProductId || undefined,
+            freezerId: c.selectedFreezerId || undefined,
+            isDisplay: Boolean(selectedFreezerObj?.isDisplay),
+          });
         }
         continue;
       }
@@ -595,27 +1031,45 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
       const prodName =
         c.productCandidates.find(p => p.product.id === c.selectedProductId)?.product.name || c.productQuery;
       if (c.intent === 'remove') {
-        const srcLabel =
-          c.sourceLocationCandidates.find(l => l.containerId === c.selectedSourceContainerId)?.label ||
-          c.sourceLocationQuery ||
-          'on-site';
-        summaryLines.push(`Removed ${c.quantity}x ${prodName} from ${srcLabel}`);
+        const srcLocObj = c.sourceLocationCandidates.find(l => l.containerId === c.selectedSourceContainerId);
+        const srcLabel = srcLocObj?.label || c.sourceLocationQuery || 'on-site';
+        summaryLines.push({
+          text: `Removed ${c.quantity}x ${prodName} from ${srcLabel}`,
+          productId: c.selectedProductId || undefined,
+          containerId: c.selectedSourceContainerId || undefined,
+          isDisplay: Boolean(srcLocObj?.isDisplay),
+        });
+      } else if (c.intent === 'set_quantity') {
+        const srcLocObj = c.sourceLocationCandidates.find(l => l.containerId === c.selectedSourceContainerId);
+        const locLabel = srcLocObj?.label || c.sourceLocationQuery || 'on-site';
+        summaryLines.push({
+          text: `Adjusted ${prodName} in ${locLabel} to ${c.quantity}x`,
+          productId: c.selectedProductId || undefined,
+          containerId: c.selectedSourceContainerId || undefined,
+          isDisplay: Boolean(srcLocObj?.isDisplay),
+        });
       } else if (c.intent === 'move') {
         const srcLabel =
           c.sourceLocationCandidates.find(l => l.containerId === c.selectedSourceContainerId)?.label ||
           c.sourceLocationQuery ||
           'source';
-        const dstLabel =
-          c.destLocationCandidates.find(l => l.containerId === c.selectedDestContainerId)?.label ||
-          c.destLocationQuery ||
-          'destination';
-        summaryLines.push(`Moved ${c.quantity}x ${prodName} from ${srcLabel} to ${dstLabel}`);
+        const dstLocObj = c.destLocationCandidates.find(l => l.containerId === c.selectedDestContainerId);
+        const dstLabel = dstLocObj?.label || c.destLocationQuery || 'destination';
+        summaryLines.push({
+          text: `Moved ${c.quantity}x ${prodName} from ${srcLabel} to ${dstLabel}`,
+          productId: c.selectedProductId || undefined,
+          containerId: c.selectedDestContainerId || c.selectedSourceContainerId || undefined,
+          isDisplay: Boolean(dstLocObj?.isDisplay),
+        });
       } else {
-        const dstLabel =
-          c.destLocationCandidates.find(l => l.containerId === c.selectedDestContainerId)?.label ||
-          c.destLocationQuery ||
-          'destination';
-        summaryLines.push(`Added ${c.quantity}x ${prodName} to ${dstLabel}`);
+        const dstLocObj = c.destLocationCandidates.find(l => l.containerId === c.selectedDestContainerId);
+        const dstLabel = dstLocObj?.label || c.destLocationQuery || 'destination';
+        summaryLines.push({
+          text: `Added ${c.quantity}x ${prodName} to ${dstLabel}`,
+          productId: c.selectedProductId || undefined,
+          containerId: c.selectedDestContainerId || undefined,
+          isDisplay: Boolean(dstLocObj?.isDisplay),
+        });
       }
     }
 
@@ -777,10 +1231,57 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
                   </button>
                 )}
               </div>
-              <ul className="space-y-0.5 text-xs text-cool-gray-200 pl-6 list-disc">
-                {appliedSummary.items.map((line, i) => (
-                  <li key={i}>{line}</li>
-                ))}
+              <ul className="space-y-1 text-xs text-cool-gray-200 pl-6 list-disc">
+                {appliedSummary.items.map((item, i) => {
+                  const canJump = Boolean(
+                    item.containerId ||
+                      item.productId ||
+                      item.freezerId ||
+                      item.listId ||
+                      item.tagId ||
+                      item.isUndo
+                  );
+                  const handleJump = () => {
+                    if (item.isContainerOp) {
+                      if (item.containerId) {
+                        onNavigateToFreezer(item.containerId);
+                      } else if (item.freezerId && onNavigateToFreezerUnit) {
+                        onNavigateToFreezerUnit(item.freezerId);
+                      }
+                    } else if (item.isDisplay && item.productId && onNavigateToDisplayCase) {
+                      onNavigateToDisplayCase(item.productId);
+                    } else if (item.productId) {
+                      onNavigateToProduct(item.productId);
+                    } else if (item.containerId) {
+                      onNavigateToFreezer(item.containerId);
+                    } else if (item.freezerId && onNavigateToFreezerUnit) {
+                      onNavigateToFreezerUnit(item.freezerId);
+                    } else if (item.listId && onNavigateToList) {
+                      onNavigateToList(item.listId);
+                    } else if (item.tagId && onNavigateToTag) {
+                      onNavigateToTag(item.tagId);
+                    } else if (item.isUndo && onNavigateToHistory) {
+                      onNavigateToHistory();
+                    }
+                  };
+                  return (
+                    <li key={i}>
+                      {canJump ? (
+                        <button
+                          type="button"
+                          onClick={handleJump}
+                          className="text-left hover:text-cyan-300 inline-flex items-center gap-1.5 transition cursor-pointer"
+                          title="Open updated item in main app"
+                        >
+                          <span>{item.text}</span>
+                          <ExternalLink className="w-3 h-3 text-cyan-400 shrink-0" />
+                        </button>
+                      ) : (
+                        <span>{item.text}</span>
+                      )}
+                    </li>
+                  );
+                })}
               </ul>
             </div>
           )}
@@ -814,6 +1315,22 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
                                 "{clause.sourceLocationQuery || clause.queryLocationFilter}"
                               </strong>
                             </>
+                          ) : clause.containerQueryMode === 'empty' ? (
+                            <>
+                              Empty containers
+                              {(clause.containerQueryTargetLabel || clause.queryLocationFilter) ? (
+                                <>
+                                  {' '}in{' '}
+                                  <strong className="text-cyan-300">
+                                    {clause.containerQueryTargetLabel || clause.queryLocationFilter}
+                                  </strong>
+                                </>
+                              ) : (
+                                <> across all on-site freezers</>
+                              )}
+                            </>
+                          ) : clause.containerQueryMode === 'staging' ? (
+                            <>Staging Area &amp; unplaced containers</>
                           ) : clause.containerQueryMode === 'count' ? (
                             <>
                               Container count:{' '}
@@ -862,32 +1379,61 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
                           </div>
                         </div>
                       ) : (
-                        <span className="tabular-nums shrink-0">
-                          {clause.containerQueryResults?.length || 0} container
-                          {(clause.containerQueryResults?.length || 0) === 1 ? '' : 's'}
-                        </span>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="tabular-nums">
+                            {clause.containerQueryResults?.length || 0} container
+                            {(clause.containerQueryResults?.length || 0) === 1 ? '' : 's'}
+                          </span>
+                          {clause.containerQueryMode === 'staging' && onNavigateToFreezerUnit && (
+                            <button
+                              type="button"
+                              onClick={() => onNavigateToFreezerUnit('__staging__')}
+                              title="Open Staging Area in Freezers view"
+                              className="px-2 py-1 rounded-md bg-cool-gray-850 hover:bg-cool-gray-800 border border-cool-gray-700 text-[11px] font-semibold text-cool-gray-300 hover:text-cyan-300 inline-flex items-center gap-1 transition cursor-pointer"
+                            >
+                              <ExternalLink className="w-3 h-3" />
+                              <span>Staging</span>
+                            </button>
+                          )}
+                        </div>
                       )}
                     </div>
 
                     {(!clause.containerQueryResults || clause.containerQueryResults.length === 0) && (
                       <div
-                        className={`p-2.5 rounded-lg bg-cool-gray-850 border border-cool-gray-800 text-xs flex items-center gap-2 ${
+                        className={`p-2.5 rounded-lg bg-cool-gray-850 border border-cool-gray-800 text-xs flex items-center justify-between gap-2 ${
                           clause.errorMessage ? 'text-amber-300' : 'text-cool-gray-300'
                         }`}
                       >
-                        {clause.errorMessage ? (
-                          <AlertTriangle className="w-4 h-4 shrink-0" />
-                        ) : (
-                          <Search className="w-4 h-4 text-cyan-400 shrink-0" />
+                        <div className="flex items-center gap-2 min-w-0">
+                          {clause.errorMessage ? (
+                            <AlertTriangle className="w-4 h-4 shrink-0" />
+                          ) : (
+                            <Search className="w-4 h-4 text-cyan-400 shrink-0" />
+                          )}
+                          <span>
+                            {clause.errorMessage ||
+                              `0 matching containers${
+                                clause.containerQueryTargetLabel
+                                  ? ` in ${clause.containerQueryTargetLabel}`
+                                  : ''
+                              }.`}
+                          </span>
+                        </div>
+                        {onNavigateToFreezerUnit && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onNavigateToFreezerUnit(
+                                clause.containerQueryMode === 'staging' ? '__staging__' : 'all'
+                              )
+                            }
+                            className="px-2.5 py-1 rounded-md bg-cool-gray-900 hover:bg-cool-gray-800 border border-cool-gray-700 text-xs font-semibold text-cyan-300 inline-flex items-center gap-1 shrink-0 cursor-pointer transition"
+                          >
+                            <ExternalLink className="w-3 h-3" />
+                            <span>Open Freezers</span>
+                          </button>
                         )}
-                        <span>
-                          {clause.errorMessage ||
-                            `0 matching containers${
-                              clause.containerQueryTargetLabel
-                                ? ` in ${clause.containerQueryTargetLabel}`
-                                : ''
-                            }.`}
-                        </span>
                       </div>
                     )}
 
@@ -896,9 +1442,16 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
                         {clause.containerQueryResults.map(res => (
                           <div key={res.containerId} className="py-2.5 first:pt-0.5 last:pb-0.5 space-y-2">
                             <div className="flex items-center justify-between gap-3">
-                              <div className="min-w-0">
+                              <button
+                                type="button"
+                                onClick={() => onNavigateToFreezer(res.containerId)}
+                                title="Open container in Freezers view"
+                                className="min-w-0 flex-1 text-left group cursor-pointer"
+                              >
                                 <div className="flex flex-wrap items-center gap-1.5">
-                                  <span className="text-sm font-bold text-white">{res.containerName}</span>
+                                  <span className="text-sm font-bold text-white group-hover:text-cyan-300 transition">
+                                    {res.containerName}
+                                  </span>
                                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-cyan-950/60 border border-cyan-500/35 text-[11px] font-semibold text-cyan-300">
                                     <MapPin className="w-3 h-3 shrink-0" />
                                     {res.freezerName}
@@ -907,7 +1460,7 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
                                 <div className="text-[11px] text-cool-gray-400 mt-0.5">
                                   {res.items.length} item line{res.items.length === 1 ? '' : 's'} · {res.totalPieces} total piece{res.totalPieces === 1 ? '' : 's'}
                                 </div>
-                              </div>
+                              </button>
                               <button
                                 type="button"
                                 onClick={() => onNavigateToFreezer(res.containerId)}
@@ -927,7 +1480,8 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
                                   <button
                                     key={`${item.meatCut.id}-${idx}`}
                                     type="button"
-                                    onClick={() => onNavigateToProduct(item.product.id)}
+                                    onClick={() => navigateToItem(item.product.id, res.isDisplay)}
+                                    title={res.isDisplay ? 'Open in Display Case view' : 'Open product in Products view'}
                                     className="w-full min-h-[34px] px-2.5 py-1.5 rounded-lg bg-cool-gray-850/70 hover:bg-cool-gray-800 border border-cool-gray-800 flex items-center justify-between gap-2 text-xs text-left transition cursor-pointer"
                                   >
                                     <div className="min-w-0 flex items-center gap-1.5">
@@ -950,6 +1504,501 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
                         ))}
                       </div>
                     )}
+                  </div>
+                ) : clause.intent === 'list_query' ? (
+                  <div
+                    key={clause.id}
+                    className="bg-cool-gray-900 border border-indigo-500/35 rounded-xl p-3.5 space-y-2.5"
+                  >
+                    <div className="flex items-center justify-between gap-2 text-xs text-cool-gray-400">
+                      <span className="flex items-center gap-1.5 min-w-0">
+                        <ListIcon className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                        <span className="truncate">
+                          Custom list check
+                          {clause.listQueryText ? (
+                            <>
+                              {': '}
+                              <strong className="text-white">"{clause.listQueryText}"</strong>
+                            </>
+                          ) : null}
+                        </span>
+                      </span>
+                      <span className="tabular-nums shrink-0">
+                        {clause.listQueryResults?.length || 0} list{(clause.listQueryResults?.length || 0) === 1 ? '' : 's'}
+                      </span>
+                    </div>
+
+                    {clause.errorMessage && (
+                      <div className="p-2.5 rounded-lg bg-cool-gray-850 border border-cool-gray-800 text-xs text-amber-300 flex items-center gap-2">
+                        <AlertTriangle className="w-4 h-4 shrink-0" />
+                        <span>{clause.errorMessage}</span>
+                      </div>
+                    )}
+
+                    {clause.listQueryResults && clause.listQueryResults.length > 0 && (
+                      <div className="divide-y divide-cool-gray-800">
+                        {clause.listQueryResults.map(res => {
+                          const lowCount = res.items.filter(
+                            it => it.threshold !== undefined && it.currentOnSiteQty <= it.threshold
+                          ).length;
+                          return (
+                            <div key={res.list.id} className="py-2.5 first:pt-0.5 last:pb-0.5 space-y-2">
+                              <div className="flex items-center justify-between gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => onNavigateToList?.(res.list.id)}
+                                  className="min-w-0 text-left flex items-center gap-1.5 group cursor-pointer"
+                                  title="Open custom lists in Catalog"
+                                >
+                                  <span className="text-sm font-bold text-white group-hover:text-cyan-300 truncate transition">
+                                    {res.list.name}
+                                  </span>
+                                  <ExternalLink className="w-3.5 h-3.5 text-cool-gray-400 group-hover:text-cyan-300 shrink-0 transition" />
+                                </button>
+                                <div className="flex items-center gap-2 shrink-0">
+                                  <span className="text-[11px] text-cool-gray-400 tabular-nums">
+                                    {res.items.length} item{res.items.length === 1 ? '' : 's'}
+                                    {lowCount > 0 ? (
+                                      <span className="text-amber-300 font-semibold">
+                                        {' '}
+                                        &middot; {lowCount} below min
+                                      </span>
+                                    ) : null}
+                                  </span>
+                                  {onNavigateToList && (
+                                    <button
+                                      type="button"
+                                      onClick={() => onNavigateToList(res.list.id)}
+                                      title="Open in Lists"
+                                      className="min-w-[34px] min-h-[34px] px-2 flex items-center justify-center gap-1 rounded-lg bg-cool-gray-850 hover:bg-cool-gray-800 border border-cool-gray-700 text-xs font-semibold text-cool-gray-300 hover:text-cyan-300 transition cursor-pointer"
+                                    >
+                                      <ExternalLink className="w-3.5 h-3.5" />
+                                      <span className="hidden sm:inline">Open</span>
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+
+                            {res.checkedProduct && (
+                              <div
+                                className={`px-2.5 py-2 rounded-lg border text-xs flex items-center justify-between gap-2 ${
+                                  res.isProductOnList
+                                    ? 'bg-emerald-950/30 border-emerald-500/40 text-emerald-200'
+                                    : 'bg-cool-gray-850 border-cool-gray-700 text-cool-gray-300'
+                                }`}
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => onNavigateToProduct(res.checkedProduct!.id)}
+                                  className="text-left hover:text-cyan-300 transition cursor-pointer"
+                                >
+                                  <strong>{res.checkedProduct.name}</strong> is{' '}
+                                  {res.isProductOnList ? 'ON' : 'NOT on'} {res.list.name}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => onNavigateToProduct(res.checkedProduct!.id)}
+                                  className="text-cyan-300 hover:text-cyan-200 font-semibold inline-flex items-center gap-1 shrink-0 cursor-pointer"
+                                >
+                                  <span>Open</span>
+                                  <ExternalLink className="w-3 h-3" />
+                                </button>
+                              </div>
+                            )}
+
+                            {!res.checkedProduct && res.items.length === 0 && (
+                              <div className="text-xs text-cool-gray-500 pl-1">No items on this list yet.</div>
+                            )}
+
+                            {!res.checkedProduct && res.items.length > 0 && (
+                              <div className="space-y-1">
+                                {res.items.map(it => {
+                                  const isLow = it.threshold !== undefined && it.currentOnSiteQty <= it.threshold;
+                                  return (
+                                    <button
+                                      key={it.product.id}
+                                      type="button"
+                                      onClick={() => onNavigateToProduct(it.product.id)}
+                                      className="w-full min-h-[36px] px-2.5 py-1.5 rounded-lg bg-cool-gray-850/70 hover:bg-cool-gray-800 border border-cool-gray-800 flex items-center justify-between gap-2 text-xs text-left transition cursor-pointer"
+                                    >
+                                      <div className="min-w-0 flex items-center gap-1.5">
+                                        <Package className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                                        <span className="text-cool-gray-100 font-medium truncate">
+                                          {it.product.name}
+                                        </span>
+                                        {it.threshold !== undefined && (
+                                          <span
+                                            className={`px-1.5 py-0.5 rounded text-[10px] font-semibold tabular-nums ${
+                                              isLow
+                                                ? 'bg-amber-950/60 text-amber-300 border border-amber-500/35'
+                                                : 'bg-cool-gray-900 text-cool-gray-400 border border-cool-gray-700'
+                                            }`}
+                                          >
+                                            min {it.threshold}
+                                          </span>
+                                        )}
+                                        {it.notifyEnabled === false && (
+                                          <BellOff className="w-3 h-3 text-cool-gray-500 shrink-0" />
+                                        )}
+                                      </div>
+                                      <span
+                                        className={`font-bold tabular-nums shrink-0 ${
+                                          isLow ? 'text-amber-300' : 'text-white'
+                                        }`}
+                                      >
+                                        {it.currentOnSiteQty} on-site
+                                      </span>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                ) : clause.intent === 'inventory_alert_query' ? (
+                  <div
+                    key={clause.id}
+                    className="bg-cool-gray-900 border border-amber-500/35 rounded-xl p-3.5 space-y-2.5"
+                  >
+                    <div className="flex items-center justify-between gap-2 text-xs text-cool-gray-400">
+                      <span className="flex items-center gap-1.5 min-w-0">
+                        <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                        <span className="truncate">
+                          {clause.alertQueryMode === 'needs_restock' ? (
+                            <>
+                              Needs restocking in <strong className="text-white">{clause.queryLocationFilter}</strong>
+                            </>
+                          ) : clause.alertQueryMode === 'display_low_stock' ? (
+                            <>
+                              Low stock (&le; {clause.alertThreshold}) in{' '}
+                              <strong className="text-white">{clause.queryLocationFilter}</strong>
+                            </>
+                          ) : clause.alertQueryMode === 'global_out_of_stock' ? (
+                            <>Completely out of stock across all on-site freezers</>
+                          ) : clause.alertQueryMode === 'global_low_stock' ? (
+                            <>Low stock (&le; {clause.alertThreshold}) across all on-site freezers</>
+                          ) : (
+                            <>
+                              Out of stock in <strong className="text-white">{clause.queryLocationFilter}</strong>
+                            </>
+                          )}
+                        </span>
+                      </span>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="tabular-nums font-semibold text-amber-300">
+                          {clause.alertQueryResults?.length || 0} item{(clause.alertQueryResults?.length || 0) === 1 ? '' : 's'}
+                        </span>
+                        {clause.alertQueryMode?.startsWith('global')
+                          ? onNavigateToProductsView && (
+                              <button
+                                type="button"
+                                onClick={onNavigateToProductsView}
+                                title="Open Products view"
+                                className="px-2 py-1 rounded-md bg-cool-gray-850 hover:bg-cool-gray-800 border border-cool-gray-700 text-[11px] font-semibold text-cool-gray-300 hover:text-cyan-300 inline-flex items-center gap-1 transition cursor-pointer"
+                              >
+                                <ExternalLink className="w-3 h-3" />
+                                <span>Products</span>
+                              </button>
+                            )
+                          : onNavigateToDisplayCase && (
+                              <button
+                                type="button"
+                                onClick={() => onNavigateToDisplayCase()}
+                                title="Open Display Case view"
+                                className="px-2 py-1 rounded-md bg-cool-gray-850 hover:bg-cool-gray-800 border border-cool-gray-700 text-[11px] font-semibold text-cool-gray-300 hover:text-cyan-300 inline-flex items-center gap-1 transition cursor-pointer"
+                              >
+                                <ExternalLink className="w-3 h-3" />
+                                <span>Display</span>
+                              </button>
+                            )}
+                      </div>
+                    </div>
+
+                    {clause.errorMessage && (
+                      <div className="p-2.5 rounded-lg bg-cool-gray-850 border border-cool-gray-800 text-xs text-amber-300 flex items-center gap-2">
+                        <AlertTriangle className="w-4 h-4 shrink-0" />
+                        <span>{clause.errorMessage}</span>
+                      </div>
+                    )}
+
+                    {!clause.errorMessage && (!clause.alertQueryResults || clause.alertQueryResults.length === 0) && (
+                      <div className="p-2.5 rounded-lg bg-cool-gray-850 border border-cool-gray-800 text-xs text-emerald-300 flex items-center gap-2">
+                        <Check className="w-4 h-4 shrink-0" />
+                        <span>All checked items are stocked above this threshold.</span>
+                      </div>
+                    )}
+
+                    {clause.alertQueryResults && clause.alertQueryResults.length > 0 && (() => {
+                      const isDisplayAlert = !clause.alertQueryMode?.startsWith('global');
+                      return (
+                        <div className="space-y-1.5">
+                          {clause.alertQueryResults.map(item => (
+                            <div
+                              key={item.product.id}
+                              className="p-2.5 rounded-lg bg-cool-gray-850/80 border border-cool-gray-800 space-y-1.5"
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => navigateToItem(item.product.id, isDisplayAlert)}
+                                  title={isDisplayAlert ? 'Open in Display Case view' : 'Open in Products view'}
+                                  className="min-w-0 flex-1 text-left cursor-pointer group"
+                                >
+                                  <div className="text-xs font-bold text-white group-hover:text-cyan-300 truncate">
+                                    {item.product.name}
+                                  </div>
+                                  <div className="text-[11px] text-cool-gray-400">
+                                    {item.product.primaryCategory} · {item.product.subCategory}
+                                  </div>
+                                </button>
+                                <div className="flex items-center gap-1.5 shrink-0 text-xs tabular-nums">
+                                  <span className="px-2 py-0.5 rounded bg-cool-gray-900 border border-cool-gray-700 text-amber-300 font-semibold">
+                                    {!isDisplayAlert
+                                      ? `${item.totalOnSiteQty} on-site`
+                                      : `${item.targetLocationQty} here`}
+                                  </span>
+                                  {isDisplayAlert && (
+                                    <span
+                                      className={`px-2 py-0.5 rounded border font-semibold ${
+                                        item.backstockQty > 0
+                                          ? 'bg-emerald-950/50 border-emerald-500/35 text-emerald-300'
+                                          : 'bg-cool-gray-900 border-cool-gray-800 text-cool-gray-500'
+                                      }`}
+                                    >
+                                      {item.backstockQty} backstock
+                                    </span>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => navigateToItem(item.product.id, isDisplayAlert)}
+                                    title={isDisplayAlert ? 'Open in Display Case view' : 'Open in Products view'}
+                                    className="min-w-[32px] min-h-[32px] flex items-center justify-center rounded-lg bg-cool-gray-900 hover:bg-cool-gray-800 border border-cool-gray-700 text-cool-gray-300 hover:text-cyan-300 transition cursor-pointer"
+                                  >
+                                    <ExternalLink className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              </div>
+                              {item.backstockLocations.length > 0 && isDisplayAlert && (
+                                <div className="flex flex-wrap gap-1 pt-0.5">
+                                  {item.backstockLocations.map(loc => (
+                                    <button
+                                      key={loc.containerId}
+                                      type="button"
+                                      onClick={() =>
+                                        isDisplayContainerId(loc.containerId) && onNavigateToDisplayCase
+                                          ? onNavigateToDisplayCase(item.product.id)
+                                          : onNavigateToFreezer(loc.containerId)
+                                      }
+                                      className={`px-2 py-0.5 rounded border text-[11px] cursor-pointer transition ${
+                                        loc.hasPrioritized
+                                          ? 'bg-amber-950/40 hover:bg-amber-950/60 border-amber-500/40 text-amber-200 hover:text-amber-100'
+                                          : 'bg-cool-gray-900 hover:bg-cool-gray-800 border-cool-gray-750 text-cool-gray-300 hover:text-cyan-300'
+                                      }`}
+                                      title={loc.hasPrioritized ? 'Prioritize pulling from this tagged container' : 'Open container in Freezers view'}
+                                    >
+                                      {loc.hasPrioritized ? '⚡ ' : ''}
+                                      {loc.label}: <strong className="text-white">{loc.quantity}</strong>
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })()}
+                  </div>
+                ) : clause.tagQueryResults ? (
+                  <div
+                    key={clause.id}
+                    className="bg-cool-gray-900 border border-teal-500/35 rounded-xl p-3.5 space-y-2.5"
+                  >
+                    <div className="flex items-center justify-between gap-2 text-xs text-cool-gray-400">
+                      <span className="flex items-center gap-1.5">
+                        <TagIcon className="w-3.5 h-3.5 text-teal-400 shrink-0" />
+                        <span>
+                          Tag check: <strong className="text-white">"{clause.tagQueryText}"</strong>
+                          {clause.queryLocationFilter && (
+                            <>
+                              {' · '}in <strong className="text-cyan-300">{clause.queryLocationFilter}</strong>
+                            </>
+                          )}
+                        </span>
+                      </span>
+                      <span className="tabular-nums shrink-0">
+                        {clause.tagQueryResults.reduce((s, t) => s + t.totalQuantity, 0)} pcs
+                      </span>
+                    </div>
+
+                    {clause.tagQueryResults.map(res => (
+                      <div key={res.tag.id} className="space-y-1.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <button
+                            type="button"
+                            onClick={() => onNavigateToTag?.(res.tag.id)}
+                            title="Filter Products view by this tag"
+                            className="text-left flex items-center gap-1.5 group cursor-pointer min-w-0"
+                          >
+                            <span className="text-sm font-bold text-white group-hover:text-cyan-300 truncate transition">
+                              {res.tag.name}
+                            </span>
+                            <ExternalLink className="w-3.5 h-3.5 text-cool-gray-400 group-hover:text-cyan-300 shrink-0 transition" />
+                          </button>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span className="text-xs font-bold text-teal-300 tabular-nums">
+                              {res.totalQuantity} total pcs
+                            </span>
+                            {onNavigateToTag && (
+                              <button
+                                type="button"
+                                onClick={() => onNavigateToTag(res.tag.id)}
+                                title="Open tagged items in Products view"
+                                className="min-w-[34px] min-h-[34px] px-2 flex items-center justify-center gap-1 rounded-lg bg-cool-gray-850 hover:bg-cool-gray-800 border border-cool-gray-700 text-xs font-semibold text-cool-gray-300 hover:text-cyan-300 transition cursor-pointer"
+                              >
+                                <ExternalLink className="w-3.5 h-3.5" />
+                                <span className="hidden sm:inline">Open</span>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                        {res.items.length === 0 ? (
+                          <div className="text-xs text-cool-gray-500">No active items carry this tag.</div>
+                        ) : (
+                          <div className="space-y-1">
+                            {res.items.map((item, idx) => {
+                              const itemIsDisplay = isDisplayContainerId(item.containerId);
+                              return (
+                                <div
+                                  key={`${item.meatCut.id}-${idx}`}
+                                  className="w-full min-h-[36px] px-2.5 py-1.5 rounded-lg bg-cool-gray-850/70 border border-cool-gray-800 flex items-center justify-between gap-2 text-xs"
+                                >
+                                  <button
+                                    type="button"
+                                    onClick={() => navigateToItem(item.product.id, itemIsDisplay)}
+                                    title={itemIsDisplay ? 'Open in Display Case view' : 'Open product in Products view'}
+                                    className="min-w-0 flex items-center gap-1.5 text-left hover:text-cyan-300 transition cursor-pointer"
+                                  >
+                                    <Package className="w-3.5 h-3.5 text-teal-400 shrink-0" />
+                                    <span className="text-white hover:text-cyan-300 font-medium truncate">
+                                      {item.product.name}
+                                    </span>
+                                  </button>
+                                  <div className="flex items-center gap-2 shrink-0">
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        itemIsDisplay && onNavigateToDisplayCase
+                                          ? onNavigateToDisplayCase(item.product.id)
+                                          : onNavigateToFreezer(item.containerId)
+                                      }
+                                      title={itemIsDisplay ? 'Open in Display Case view' : 'Open container in Freezers view'}
+                                      className="px-2 py-0.5 rounded bg-cool-gray-900 hover:bg-cool-gray-800 border border-cool-gray-700 text-[11px] text-cool-gray-300 hover:text-cyan-300 inline-flex items-center gap-1 transition cursor-pointer max-w-[160px]"
+                                    >
+                                      <MapPin className="w-3 h-3 shrink-0" />
+                                      <span className="truncate">{item.containerLabel}</span>
+                                    </button>
+                                    <span className="font-bold text-white tabular-nums shrink-0">{item.quantity}x</span>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : clause.categoryQueryResults ? (
+                  <div
+                    key={clause.id}
+                    className="bg-cool-gray-900 border border-cyan-500/35 rounded-xl p-3.5 space-y-2.5"
+                  >
+                    <div className="flex items-center justify-between gap-2 text-xs text-cool-gray-400">
+                      <span className="flex items-center gap-1.5">
+                        <Layers className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                        <span>
+                          Category stock: <strong className="text-white">"{clause.productQuery}"</strong>
+                          {clause.queryLocationFilter && (
+                            <>
+                              {' · '}in <strong className="text-cyan-300">{clause.queryLocationFilter}</strong>
+                            </>
+                          )}
+                        </span>
+                      </span>
+                      <span className="tabular-nums shrink-0">
+                        {clause.categoryQueryResults.length} categor{clause.categoryQueryResults.length === 1 ? 'y' : 'ies'}
+                      </span>
+                    </div>
+
+                    <div className="divide-y divide-cool-gray-800">
+                      {clause.categoryQueryResults.map(cat => (
+                        <div key={`${cat.categoryType}-${cat.categoryName}`} className="py-2 first:pt-0.5 last:pb-0.5 space-y-1.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                onNavigateToCategory?.(
+                                  cat.categoryName,
+                                  cat.categoryType,
+                                  cat.items[0]?.product.primaryCategory
+                                )
+                              }
+                              title="Open category in Products view"
+                              className="text-left group cursor-pointer min-w-0"
+                            >
+                              <span className="text-sm font-bold text-white group-hover:text-cyan-300 transition">
+                                {cat.categoryName}
+                              </span>
+                              <span className="ml-2 text-[10px] uppercase tracking-wider text-cool-gray-400">
+                                {cat.categoryType === 'primary' ? 'Primary Category' : 'Subcategory'}
+                              </span>
+                            </button>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <span className="text-base font-bold text-cyan-400 tabular-nums">
+                                {cat.totalQuantity} on-site
+                              </span>
+                              {onNavigateToCategory && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    onNavigateToCategory(
+                                      cat.categoryName,
+                                      cat.categoryType,
+                                      cat.items[0]?.product.primaryCategory
+                                    )
+                                  }
+                                  title="Open category in Products view"
+                                  className="min-w-[34px] min-h-[34px] px-2 flex items-center justify-center gap-1 rounded-lg bg-cool-gray-850 hover:bg-cool-gray-800 border border-cool-gray-700 text-xs font-semibold text-cool-gray-300 hover:text-cyan-300 transition cursor-pointer"
+                                >
+                                  <ExternalLink className="w-3.5 h-3.5" />
+                                  <span className="hidden sm:inline">Open</span>
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                          {cat.items.length === 0 ? (
+                            <div className="text-xs text-cool-gray-500">0 in stock.</div>
+                          ) : (
+                            <div className="space-y-1">
+                              {cat.items.map(it => (
+                                <button
+                                  key={it.product.id}
+                                  type="button"
+                                  onClick={() => onNavigateToProduct(it.product.id)}
+                                  className="w-full min-h-[34px] px-2.5 py-1.5 rounded-lg bg-cool-gray-850/70 hover:bg-cool-gray-800 border border-cool-gray-800 flex items-center justify-between gap-2 text-xs text-left transition cursor-pointer"
+                                >
+                                  <span className="text-cool-gray-100 font-medium truncate">{it.product.name}</span>
+                                  <span className="font-bold text-white tabular-nums shrink-0">{it.totalQuantity}</span>
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 ) : (
                   <div
@@ -982,69 +2031,85 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
 
                     {clause.queryResults && clause.queryResults.length > 0 && (
                       <div className="divide-y divide-cool-gray-800">
-                        {clause.queryResults.map(res => (
-                          <div key={res.product.id} className="py-2.5 first:pt-0.5 last:pb-0.5 space-y-1.5">
-                            <div className="flex items-center justify-between gap-3">
-                              <div>
-                                <div className="text-sm font-bold text-white">{res.product.name}</div>
-                                <div className="text-[11px] text-cool-gray-400">
-                                  {res.product.primaryCategory} · {res.product.subCategory}
-                                </div>
-                              </div>
-
-                              <div className="flex items-center gap-2.5 shrink-0">
-                                <div className="text-right">
-                                  <div className="text-lg font-bold text-cyan-400 tabular-nums leading-none">
-                                    {res.totalQuantity}
-                                  </div>
-                                  <div className="text-[10px] text-cool-gray-400">on-site</div>
-                                </div>
+                        {clause.queryResults.map(res => {
+                          const allLocationsDisplay =
+                            res.locations.length > 0 && res.locations.every(loc => loc.isDisplay);
+                          return (
+                            <div key={res.product.id} className="py-2.5 first:pt-0.5 last:pb-0.5 space-y-1.5">
+                              <div className="flex items-center justify-between gap-3">
                                 <button
                                   type="button"
-                                  onClick={() => onNavigateToProduct(res.product.id)}
-                                  title="Open in Products view"
-                                  className="min-w-[38px] min-h-[38px] flex items-center justify-center rounded-lg bg-cool-gray-850 hover:bg-cool-gray-800 border border-cool-gray-700 text-cool-gray-300 hover:text-cyan-300 transition cursor-pointer"
+                                  onClick={() => navigateToItem(res.product.id, allLocationsDisplay)}
+                                  title={allLocationsDisplay ? 'Open in Display Case view' : 'Open in Products view'}
+                                  className="min-w-0 flex-1 text-left group cursor-pointer"
                                 >
-                                  <ExternalLink className="w-3.5 h-3.5" />
+                                  <div className="text-sm font-bold text-white group-hover:text-cyan-300 truncate transition">
+                                    {res.product.name}
+                                  </div>
+                                  <div className="text-[11px] text-cool-gray-400 truncate">
+                                    {res.product.primaryCategory} · {res.product.subCategory}
+                                  </div>
                                 </button>
-                              </div>
-                            </div>
 
-                            {res.locations.length === 0 ? (
-                              <div className="text-xs text-cool-gray-500 pl-1">
-                                0 in stock across matching on-site locations
-                              </div>
-                            ) : (
-                              <div className="space-y-1">
-                                {res.locations.map((loc, idx) => (
-                                  <button
-                                    key={`${loc.containerId}-${idx}`}
-                                    type="button"
-                                    onClick={() => onNavigateToFreezer(loc.containerId)}
-                                    className="w-full min-h-[36px] px-2.5 py-1.5 rounded-lg bg-cool-gray-850/70 hover:bg-cool-gray-800 border border-cool-gray-800 flex items-center justify-between gap-2 text-xs text-left transition cursor-pointer"
-                                  >
-                                    <div className="flex items-center gap-1.5 min-w-0">
-                                      {loc.isDisplay ? (
-                                        <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                                      ) : (
-                                        <MapPin className="w-3.5 h-3.5 text-cool-gray-400 shrink-0" />
-                                      )}
-                                      <span className="text-cool-gray-200 truncate">
-                                        {loc.freezerName} · {loc.containerName}
-                                      </span>
-                                      {loc.notes && (
-                                        <span className="text-cool-gray-500 truncate">({loc.notes})</span>
-                                      )}
+                                <div className="flex items-center gap-2.5 shrink-0">
+                                  <div className="text-right">
+                                    <div className="text-lg font-bold text-cyan-400 tabular-nums leading-none">
+                                      {res.totalQuantity}
                                     </div>
-                                    <span className="font-bold text-white tabular-nums shrink-0">
-                                      {loc.quantity}
-                                    </span>
+                                    <div className="text-[10px] text-cool-gray-400">on-site</div>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => navigateToItem(res.product.id, allLocationsDisplay)}
+                                    title={allLocationsDisplay ? 'Open in Display Case view' : 'Open in Products view'}
+                                    className="min-w-[38px] min-h-[38px] flex items-center justify-center rounded-lg bg-cool-gray-850 hover:bg-cool-gray-800 border border-cool-gray-700 text-cool-gray-300 hover:text-cyan-300 transition cursor-pointer"
+                                  >
+                                    <ExternalLink className="w-3.5 h-3.5" />
                                   </button>
-                                ))}
+                                </div>
                               </div>
-                            )}
-                          </div>
-                        ))}
+
+                              {res.locations.length === 0 ? (
+                                <div className="text-xs text-cool-gray-500 pl-1">
+                                  0 in stock across matching on-site locations
+                                </div>
+                              ) : (
+                                <div className="space-y-1">
+                                  {res.locations.map((loc, idx) => (
+                                    <button
+                                      key={`${loc.containerId}-${idx}`}
+                                      type="button"
+                                      onClick={() =>
+                                        loc.isDisplay && onNavigateToDisplayCase
+                                          ? onNavigateToDisplayCase(res.product.id)
+                                          : onNavigateToFreezer(loc.containerId)
+                                      }
+                                      title={loc.isDisplay ? 'Open in Display Case view' : 'Open container in Freezers view'}
+                                      className="w-full min-h-[36px] px-2.5 py-1.5 rounded-lg bg-cool-gray-850/70 hover:bg-cool-gray-800 border border-cool-gray-800 flex items-center justify-between gap-2 text-xs text-left transition cursor-pointer"
+                                    >
+                                      <div className="flex items-center gap-1.5 min-w-0">
+                                        {loc.isDisplay ? (
+                                          <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                                        ) : (
+                                          <MapPin className="w-3.5 h-3.5 text-cool-gray-400 shrink-0" />
+                                        )}
+                                        <span className="text-cool-gray-200 truncate">
+                                          {loc.freezerName} · {loc.containerName}
+                                        </span>
+                                        {loc.notes && (
+                                          <span className="text-cool-gray-500 truncate">({loc.notes})</span>
+                                        )}
+                                      </div>
+                                      <span className="font-bold text-white tabular-nums shrink-0">
+                                        {loc.quantity}
+                                      </span>
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
                   </div>
@@ -1135,6 +2200,15 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
                 const selectedNewTemplate = (clause.templateCandidates || []).find(
                   t => t.templateId === clause.selectedTemplateId
                 );
+                const selectedListObj = (clause.listCandidates || []).find(
+                  l => l.list.id === clause.selectedListId
+                );
+                const selectedTagObj = (clause.tagCandidates || []).find(
+                  t => t.tag.id === clause.selectedTagId
+                );
+                const selectedReplacementProd = (clause.replacementProductCandidates || []).find(
+                  p => p.product.id === clause.selectedReplacementProductId
+                );
                 const isNewContainerGroupOwner = Boolean(
                   clause.newContainerGroupKey && firstActiveNewContainerClauseIds.has(clause.id)
                 );
@@ -1143,7 +2217,36 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
                   clause.intent === 'empty_container' ||
                   clause.intent === 'move_all' ||
                   clause.intent === 'move_container' ||
-                  clause.intent === 'combine_containers';
+                  clause.intent === 'combine_containers' ||
+                  clause.intent === 'swap_containers' ||
+                  clause.intent === 'rename_container' ||
+                  clause.intent === 'archive_container' ||
+                  clause.intent === 'delete_container';
+
+                const isNewCustomMutationOp =
+                  clause.intent === 'manage_list' ||
+                  clause.intent === 'manage_tag' ||
+                  clause.intent === 'correct_label' ||
+                  clause.intent === 'undo_last';
+
+                const clauseItemIsDisplay =
+                  clause.intent === 'restock_display'
+                    ? true
+                    : clause.intent === 'remove' || clause.intent === 'set_quantity'
+                    ? Boolean(selectedSourceLoc?.isDisplay)
+                    : clause.intent === 'add'
+                    ? Boolean(selectedDestLoc?.isDisplay || selectedNewFreezer?.isDisplay)
+                    : clause.intent === 'move'
+                    ? Boolean(selectedDestLoc?.isDisplay)
+                    : clause.intent === 'manage_tag' || clause.intent === 'correct_label'
+                    ? Boolean(selectedCut?.freezer?.isSpecial || selectedSourceLoc?.isDisplay)
+                    : false;
+
+                const showQuantityStepper =
+                  clause.intent !== 'add_container' &&
+                  !isBulkContainerOp &&
+                  !isNewCustomMutationOp &&
+                  !(clause.intent === 'set_quantity' && !clause.productQuery.trim());
 
                 const isSwitcherOpen = Boolean(expandedSwitcherIds[clause.id]);
                 const hasCombineSlotSelectionNeeded = Boolean(
@@ -1154,6 +2257,9 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
                   clause.requiresSourceLocationSelection ||
                   clause.requiresDestLocationSelection ||
                   clause.requiresCutSelection ||
+                  clause.requiresListSelection ||
+                  clause.requiresTagSelection ||
+                  clause.requiresReplacementProductSelection ||
                   hasCombineSlotSelectionNeeded ||
                   Boolean(
                     (isNewContainerGroupOwner || clause.intent === 'move_container') &&
@@ -1169,10 +2275,23 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
                 const hasCombineSlotSwitcherOptions = Boolean(
                   clause.combineSlots?.some(s => s.candidates.length > 1)
                 );
+                const hasExtraCandidateSwitcherOptions =
+                  (clause.listCandidates?.length || 0) > 1 ||
+                  (clause.tagCandidates?.length || 0) > 1 ||
+                  (clause.replacementProductCandidates?.length || 0) > 1;
 
-                const currentCutQty = selectedCut?.meatCut.quantity ?? null;
+                const currentCutQty =
+                  selectedCut?.meatCut.quantity ??
+                  (clause.intent === 'set_quantity' &&
+                  selectedProduct &&
+                  selectedSourceLoc &&
+                  clause.cutCandidates.length === 0
+                    ? 0
+                    : null);
                 const projectedAfterQty =
-                  currentCutQty !== null && (clause.intent === 'remove' || clause.intent === 'move')
+                  clause.intent === 'set_quantity'
+                    ? clause.quantity
+                    : currentCutQty !== null && (clause.intent === 'remove' || clause.intent === 'move')
                     ? Math.max(0, currentCutQty - clause.quantity)
                     : null;
 
@@ -1220,40 +2339,345 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
                         </div>
                         <div className="text-sm font-bold text-white flex flex-wrap items-center gap-1 mt-0.5">
                           {clause.intent === 'add_container' ? (
-                            <span>
-                              Create "{clause.resolvedNewContainerName || clause.newContainerNameQuery}"
-                            </span>
+                            clause.selectedExistingSpareContainerId ? (
+                              <button
+                                type="button"
+                                onClick={() => onNavigateToFreezer(clause.selectedExistingSpareContainerId!)}
+                                className="text-left hover:text-cyan-300 inline-flex items-center gap-1 transition cursor-pointer"
+                                title="Open container in Freezers view"
+                              >
+                                <span>Create "{clause.resolvedNewContainerName || clause.newContainerNameQuery}"</span>
+                                <ExternalLink className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                              </button>
+                            ) : clause.selectedFreezerId && onNavigateToFreezerUnit ? (
+                              <button
+                                type="button"
+                                onClick={() => onNavigateToFreezerUnit(clause.selectedFreezerId!)}
+                                className="text-left hover:text-cyan-300 inline-flex items-center gap-1 transition cursor-pointer"
+                                title="Open target freezer in Freezers view"
+                              >
+                                <span>Create "{clause.resolvedNewContainerName || clause.newContainerNameQuery}"</span>
+                                <ExternalLink className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                              </button>
+                            ) : (
+                              <span>
+                                Create "{clause.resolvedNewContainerName || clause.newContainerNameQuery}"
+                              </span>
+                            )
                           ) : clause.intent === 'empty_container' ? (
-                            <span>
-                              Empty {selectedSourceLoc ? selectedSourceLoc.label : `"${clause.sourceLocationQuery}"`}
-                            </span>
+                            selectedSourceLoc ? (
+                              <button
+                                type="button"
+                                onClick={() => onNavigateToFreezer(selectedSourceLoc.containerId)}
+                                className="text-left hover:text-cyan-300 inline-flex items-center gap-1 transition cursor-pointer"
+                                title="Open container in Freezers view"
+                              >
+                                <span>Empty {selectedSourceLoc.label}</span>
+                                <ExternalLink className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                              </button>
+                            ) : (
+                              <span>Empty "{clause.sourceLocationQuery}"</span>
+                            )
                           ) : clause.intent === 'move_all' ? (
-                            <span>
-                              Move all contents of{' '}
-                              {selectedSourceLoc ? selectedSourceLoc.label : `"${clause.sourceLocationQuery}"`}
-                            </span>
+                            selectedSourceLoc ? (
+                              <button
+                                type="button"
+                                onClick={() => onNavigateToFreezer(selectedSourceLoc.containerId)}
+                                className="text-left hover:text-cyan-300 inline-flex items-center gap-1 transition cursor-pointer"
+                                title="Open container in Freezers view"
+                              >
+                                <span>Move all contents of {selectedSourceLoc.label}</span>
+                                <ExternalLink className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                              </button>
+                            ) : (
+                              <span>Move all contents of "{clause.sourceLocationQuery}"</span>
+                            )
                           ) : clause.intent === 'move_container' ? (
-                            <span>
-                              Move container{' '}
-                              {selectedSourceLoc ? selectedSourceLoc.label : `"${clause.sourceLocationQuery}"`}
-                            </span>
+                            selectedSourceLoc ? (
+                              <button
+                                type="button"
+                                onClick={() => onNavigateToFreezer(selectedSourceLoc.containerId)}
+                                className="text-left hover:text-cyan-300 inline-flex items-center gap-1 transition cursor-pointer"
+                                title="Open container in Freezers view"
+                              >
+                                <span>Move container {selectedSourceLoc.label}</span>
+                                <ExternalLink className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                              </button>
+                            ) : (
+                              <span>Move container "{clause.sourceLocationQuery}"</span>
+                            )
                           ) : clause.intent === 'combine_containers' ? (
-                            <span>Combine {selectedCombineNames}</span>
+                            <span className="inline-flex flex-wrap items-center gap-1">
+                              <span>Combine</span>
+                              {(clause.combineSlots || []).map((slot, idx) => (
+                                <React.Fragment key={`combine-title-${slot.slotIndex}`}>
+                                  {idx > 0 && <span className="text-cool-gray-400">+</span>}
+                                  {slot.selectedContainerId ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => onNavigateToFreezer(slot.selectedContainerId!)}
+                                      className="hover:text-cyan-300 inline-flex items-center gap-0.5 transition cursor-pointer"
+                                      title="Open container in Freezers view"
+                                    >
+                                      <span>
+                                        {slot.candidates.find(c => c.containerId === slot.selectedContainerId)
+                                          ?.containerName || slot.query}
+                                      </span>
+                                      <ExternalLink className="w-3 h-3 text-cyan-400 shrink-0" />
+                                    </button>
+                                  ) : (
+                                    <span>{slot.query}</span>
+                                  )}
+                                </React.Fragment>
+                              ))}
+                            </span>
+                          ) : clause.intent === 'swap_containers' ? (
+                            <span className="inline-flex flex-wrap items-center gap-1">
+                              <span>Swap</span>
+                              {(clause.combineSlots || []).map((slot, idx) => (
+                                <React.Fragment key={`swap-title-${slot.slotIndex}`}>
+                                  {idx > 0 && <span className="text-cool-gray-400">↔</span>}
+                                  {slot.selectedContainerId ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => onNavigateToFreezer(slot.selectedContainerId!)}
+                                      className="hover:text-cyan-300 inline-flex items-center gap-0.5 transition cursor-pointer"
+                                      title="Open container in Freezers view"
+                                    >
+                                      <span>
+                                        {slot.candidates.find(c => c.containerId === slot.selectedContainerId)
+                                          ?.containerName || slot.query}
+                                      </span>
+                                      <ExternalLink className="w-3 h-3 text-cyan-400 shrink-0" />
+                                    </button>
+                                  ) : (
+                                    <span>{slot.query}</span>
+                                  )}
+                                </React.Fragment>
+                              ))}
+                            </span>
+                          ) : clause.intent === 'rename_container' ? (
+                            selectedSourceLoc ? (
+                              <button
+                                type="button"
+                                onClick={() => onNavigateToFreezer(selectedSourceLoc.containerId)}
+                                className="text-left hover:text-cyan-300 inline-flex items-center gap-1 transition cursor-pointer"
+                                title="Open container in Freezers view"
+                              >
+                                <span>
+                                  Rename {selectedSourceLoc.label} → "{clause.newContainerNameInput}"
+                                </span>
+                                <ExternalLink className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                              </button>
+                            ) : (
+                              <span>
+                                Rename "{clause.sourceLocationQuery}" → "{clause.newContainerNameInput}"
+                              </span>
+                            )
+                          ) : clause.intent === 'archive_container' ? (
+                            selectedSourceLoc ? (
+                              <button
+                                type="button"
+                                onClick={() => onNavigateToFreezer(selectedSourceLoc.containerId)}
+                                className="text-left hover:text-cyan-300 inline-flex items-center gap-1 transition cursor-pointer"
+                                title="Open container in Freezers view"
+                              >
+                                <span>
+                                  {clause.archiveState === false ? 'Restore' : 'Archive'} {selectedSourceLoc.label}
+                                </span>
+                                <ExternalLink className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                              </button>
+                            ) : (
+                              <span>
+                                {clause.archiveState === false ? 'Restore' : 'Archive'} "{clause.sourceLocationQuery}"
+                              </span>
+                            )
+                          ) : clause.intent === 'delete_container' ? (
+                            selectedSourceLoc ? (
+                              <button
+                                type="button"
+                                onClick={() => onNavigateToFreezer(selectedSourceLoc.containerId)}
+                                className="text-left hover:text-cyan-300 inline-flex items-center gap-1 transition cursor-pointer"
+                                title="Open container in Freezers view"
+                              >
+                                <span>Delete container {selectedSourceLoc.label}</span>
+                                <ExternalLink className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                              </button>
+                            ) : (
+                              <span>Delete container "{clause.sourceLocationQuery}"</span>
+                            )
+                          ) : clause.intent === 'undo_last' ? (
+                            onNavigateToHistory ? (
+                              <button
+                                type="button"
+                                onClick={onNavigateToHistory}
+                                className="text-left hover:text-cyan-300 inline-flex items-center gap-1 transition cursor-pointer"
+                                title="Open Audit History"
+                              >
+                                <span>Undo: {clause.undoTargetDescription || 'Last Action'}</span>
+                                <ExternalLink className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                              </button>
+                            ) : (
+                              <span>Undo: {clause.undoTargetDescription || 'Last Action'}</span>
+                            )
+                          ) : clause.intent === 'restock_display' ? (
+                            <>
+                              <span className="tabular-nums text-emerald-300">+{clause.quantity}x</span>
+                              {selectedProduct ? (
+                                <button
+                                  type="button"
+                                  onClick={() => navigateToItem(selectedProduct.product.id, true)}
+                                  className="text-left hover:text-cyan-300 inline-flex items-center gap-1 transition cursor-pointer"
+                                  title="Open in Display Case view"
+                                >
+                                  <span>{selectedProduct.product.name}</span>
+                                  <ExternalLink className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                                </button>
+                              ) : (
+                                <span>{clause.productQuery ? `"${clause.productQuery}"` : 'Restock Item'}</span>
+                              )}
+                            </>
+                          ) : clause.intent === 'manage_list' ? (
+                            <span className="inline-flex flex-wrap items-center gap-1">
+                              <span>
+                                {clause.listAction === 'remove'
+                                  ? 'Remove'
+                                  : clause.listAction === 'set_threshold'
+                                  ? 'Set threshold for'
+                                  : clause.listAction === 'enable_notify'
+                                  ? 'Enable alerts for'
+                                  : clause.listAction === 'disable_notify'
+                                  ? 'Mute alerts for'
+                                  : 'Add'}
+                              </span>
+                              {selectedProduct ? (
+                                <button
+                                  type="button"
+                                  onClick={() => onNavigateToProduct(selectedProduct.product.id)}
+                                  className="hover:text-cyan-300 inline-flex items-center gap-0.5 transition cursor-pointer"
+                                  title="Open product in Products view"
+                                >
+                                  <span>{selectedProduct.product.name}</span>
+                                  <ExternalLink className="w-3 h-3 text-cyan-400 shrink-0" />
+                                </button>
+                              ) : (
+                                <span>{clause.productQuery}</span>
+                              )}
+                              {clause.listAction === 'remove' || !clause.listAction || clause.listAction === 'add' ? (
+                                <>
+                                  <span>{clause.listAction === 'remove' ? 'from' : 'to'}</span>
+                                  {selectedListObj && onNavigateToList ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => onNavigateToList(selectedListObj.list.id)}
+                                      className="hover:text-cyan-300 inline-flex items-center gap-0.5 transition cursor-pointer"
+                                      title="Open Lists in Catalog"
+                                    >
+                                      <span>{selectedListObj.list.name}</span>
+                                      <ExternalLink className="w-3 h-3 text-cyan-400 shrink-0" />
+                                    </button>
+                                  ) : (
+                                    <span>{selectedListObj?.list.name || clause.listQueryText || 'list'}</span>
+                                  )}
+                                </>
+                              ) : clause.listAction === 'set_threshold' ? (
+                                <span>to {clause.listThreshold ?? 0}</span>
+                              ) : null}
+                            </span>
+                          ) : clause.intent === 'manage_tag' ? (
+                            <span className="inline-flex flex-wrap items-center gap-1">
+                              <span>{clause.tagAction === 'remove' ? 'Remove' : 'Add'} tag</span>
+                              {selectedTagObj && onNavigateToTag ? (
+                                <button
+                                  type="button"
+                                  onClick={() => onNavigateToTag(selectedTagObj.tag.id)}
+                                  className="hover:text-cyan-300 inline-flex items-center gap-0.5 transition cursor-pointer"
+                                  title="Filter Products view by this tag"
+                                >
+                                  <span>"{selectedTagObj.tag.name}"</span>
+                                  <ExternalLink className="w-3 h-3 text-cyan-400 shrink-0" />
+                                </button>
+                              ) : (
+                                <span>"{selectedTagObj?.tag.name || clause.tagQueryText}"</span>
+                              )}
+                              <span>{clause.tagAction === 'remove' ? 'from' : 'on'}</span>
+                              {selectedProduct ? (
+                                <button
+                                  type="button"
+                                  onClick={() => navigateToItem(selectedProduct.product.id, clauseItemIsDisplay)}
+                                  className="hover:text-cyan-300 inline-flex items-center gap-0.5 transition cursor-pointer"
+                                  title={clauseItemIsDisplay ? 'Open in Display Case view' : 'Open product in Products view'}
+                                >
+                                  <span>{selectedProduct.product.name}</span>
+                                  <ExternalLink className="w-3 h-3 text-cyan-400 shrink-0" />
+                                </button>
+                              ) : (
+                                <span>{clause.productQuery}</span>
+                              )}
+                            </span>
+                          ) : clause.intent === 'correct_label' ? (
+                            <span className="inline-flex flex-wrap items-center gap-1">
+                              <span>Relabel</span>
+                              {selectedProduct ? (
+                                <button
+                                  type="button"
+                                  onClick={() => navigateToItem(selectedProduct.product.id, clauseItemIsDisplay)}
+                                  className="hover:text-cyan-300 inline-flex items-center gap-0.5 transition cursor-pointer"
+                                  title={clauseItemIsDisplay ? 'Open in Display Case view' : 'Open product in Products view'}
+                                >
+                                  <span>{selectedProduct.product.name}</span>
+                                  <ExternalLink className="w-3 h-3 text-cyan-400 shrink-0" />
+                                </button>
+                              ) : (
+                                <span>{clause.productQuery}</span>
+                              )}
+                              <span>→</span>
+                              {selectedReplacementProd ? (
+                                <button
+                                  type="button"
+                                  onClick={() => navigateToItem(selectedReplacementProd.product.id, clauseItemIsDisplay)}
+                                  className="hover:text-cyan-300 inline-flex items-center gap-0.5 transition cursor-pointer"
+                                  title={clauseItemIsDisplay ? 'Open replacement product in Display Case view' : 'Open replacement product in Products view'}
+                                >
+                                  <span>{selectedReplacementProd.product.name}</span>
+                                  <ExternalLink className="w-3 h-3 text-cyan-400 shrink-0" />
+                                </button>
+                              ) : (
+                                <span>
+                                  {clause.replacementProductQuery
+                                    ? `"${clause.replacementProductQuery}"`
+                                    : 'Select replacement'}
+                                </span>
+                              )}
+                            </span>
                           ) : (
                             <>
                               <span className="tabular-nums">
                                 {clause.intent === 'remove'
-                                  ? `-${clause.quantity}`
+                                  ? `-${clause.quantity}x`
                                   : clause.intent === 'add'
-                                  ? `+${clause.quantity}`
-                                  : clause.quantity}
-                                x
+                                  ? `+${clause.quantity}x`
+                                  : clause.intent === 'set_quantity'
+                                  ? clause.missingTargetQuantity
+                                    ? '?x'
+                                    : `=${clause.quantity}x`
+                                  : `${clause.quantity}x`}
                               </span>
-                              <span>
-                                {selectedProduct
-                                  ? selectedProduct.product.name
-                                  : `"${clause.productQuery}"`}
-                              </span>
+                              {selectedProduct ? (
+                                <button
+                                  type="button"
+                                  onClick={() => navigateToItem(selectedProduct.product.id, clauseItemIsDisplay)}
+                                  className="text-left hover:text-cyan-300 inline-flex items-center gap-1 transition cursor-pointer"
+                                  title={clauseItemIsDisplay ? 'Open in Display Case view' : 'Open product in Products view'}
+                                >
+                                  <span>{selectedProduct.product.name}</span>
+                                  <ExternalLink className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                                </button>
+                              ) : (
+                                <span>
+                                  {clause.productQuery ? `"${clause.productQuery}"` : 'Inventory Adjustment'}
+                                </span>
+                              )}
                             </>
                           )}
                         </div>
@@ -1261,14 +2685,19 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
 
                       {/* Quantity Stepper (item mutations only) + Remove Line */}
                       <div className="flex items-center gap-1 shrink-0">
-                        {clause.intent !== 'add_container' && !isBulkContainerOp && (
+                        {showQuantityStepper && (
                           <>
                             <button
                               type="button"
                               data-action="decrement"
                               aria-label="Decrease quantity"
                               onClick={() =>
-                                updateOverride(clause.id, { quantity: Math.max(1, clause.quantity - 1) })
+                                updateOverride(clause.id, {
+                                  quantity: Math.max(
+                                    clause.intent === 'set_quantity' ? 0 : 1,
+                                    clause.quantity - 1
+                                  ),
+                                })
                               }
                               className="btn-qty-minus min-w-[38px] min-h-[38px] rounded-lg flex items-center justify-center cursor-pointer"
                             >
@@ -1302,61 +2731,519 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
                     </div>
 
                     {/* Resolved Location & Stock Balance */}
-                    {(clause.isValid || isNewContainerGroupOwner || isBulkContainerOp) && (
+                    {(clause.isValid || isNewContainerGroupOwner || isBulkContainerOp || isNewCustomMutationOp || clause.intent === 'restock_display') && (
                       <div className="space-y-1.5 px-2.5 py-2 rounded-lg bg-cool-gray-850/90 border border-cool-gray-800 text-xs">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div className="flex flex-wrap items-center gap-1.5 text-cool-gray-200 min-w-0">
                             {clause.intent === 'remove' && selectedSourceLoc && (
                               <>
                                 <span className="text-cool-gray-400">From:</span>
-                                <span className="font-semibold text-white">{selectedSourceLoc.label}</span>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    selectedSourceLoc.isDisplay && onNavigateToDisplayCase
+                                      ? onNavigateToDisplayCase(selectedProduct?.product.id)
+                                      : onNavigateToFreezer(selectedSourceLoc.containerId)
+                                  }
+                                  className="font-semibold text-white hover:text-cyan-300 inline-flex items-center gap-1 transition cursor-pointer"
+                                  title={selectedSourceLoc.isDisplay ? 'Open in Display Case view' : 'Open container in Freezers view'}
+                                >
+                                  <span>{selectedSourceLoc.label}</span>
+                                  <ExternalLink className="w-3 h-3 text-cyan-400 shrink-0" />
+                                </button>
+                              </>
+                            )}
+                            {clause.intent === 'set_quantity' && selectedSourceLoc && (
+                              <>
+                                <span className="text-cool-gray-400">In:</span>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    selectedSourceLoc.isDisplay && selectedProduct && onNavigateToDisplayCase
+                                      ? onNavigateToDisplayCase(selectedProduct.product.id)
+                                      : onNavigateToFreezer(selectedSourceLoc.containerId)
+                                  }
+                                  className="font-semibold text-white hover:text-cyan-300 inline-flex items-center gap-1 transition cursor-pointer"
+                                  title={
+                                    selectedSourceLoc.isDisplay && selectedProduct
+                                      ? 'Open in Display Case view'
+                                      : 'Open container in Freezers view'
+                                  }
+                                >
+                                  <span>{selectedSourceLoc.label}</span>
+                                  <ExternalLink className="w-3 h-3 text-cyan-400 shrink-0" />
+                                </button>
                               </>
                             )}
                             {clause.intent === 'move' && selectedSourceLoc && selectedDestLoc && (
                               <>
-                                <span className="font-semibold text-white">{selectedSourceLoc.label}</span>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    selectedSourceLoc.isDisplay && onNavigateToDisplayCase
+                                      ? onNavigateToDisplayCase(selectedProduct?.product.id)
+                                      : onNavigateToFreezer(selectedSourceLoc.containerId)
+                                  }
+                                  className="font-semibold text-white hover:text-cyan-300 inline-flex items-center gap-1 transition cursor-pointer"
+                                  title={
+                                    selectedSourceLoc.isDisplay
+                                      ? 'Open in Display Case view'
+                                      : 'Open source container in Freezers view'
+                                  }
+                                >
+                                  <span>{selectedSourceLoc.label}</span>
+                                  <ExternalLink className="w-3 h-3 text-cyan-400 shrink-0" />
+                                </button>
                                 <ArrowRight className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                                <span className="font-semibold text-white">{selectedDestLoc.label}</span>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    selectedDestLoc.isDisplay && onNavigateToDisplayCase
+                                      ? onNavigateToDisplayCase(selectedProduct?.product.id)
+                                      : onNavigateToFreezer(selectedDestLoc.containerId)
+                                  }
+                                  className="font-semibold text-white hover:text-cyan-300 inline-flex items-center gap-1 transition cursor-pointer"
+                                  title={
+                                    selectedDestLoc.isDisplay
+                                      ? 'Open in Display Case view'
+                                      : 'Open destination container in Freezers view'
+                                  }
+                                >
+                                  <span>{selectedDestLoc.label}</span>
+                                  <ExternalLink className="w-3 h-3 text-cyan-400 shrink-0" />
+                                </button>
                               </>
+                            )}
+                            {clause.intent === 'restock_display' && (
+                              <div className="flex flex-col gap-1 min-w-0">
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <span className="text-cool-gray-400">To:</span>
+                                  {selectedDestLoc ? (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        selectedDestLoc.isDisplay && onNavigateToDisplayCase
+                                          ? onNavigateToDisplayCase(selectedProduct?.product.id)
+                                          : onNavigateToFreezer(selectedDestLoc.containerId)
+                                      }
+                                      className="font-semibold text-emerald-300 hover:text-cyan-300 inline-flex items-center gap-1 transition cursor-pointer"
+                                      title={
+                                        selectedDestLoc.isDisplay
+                                          ? 'Open in Display Case view'
+                                          : 'Open destination in Freezers view'
+                                      }
+                                    >
+                                      <span>{selectedDestLoc.label}</span>
+                                      <ExternalLink className="w-3 h-3 shrink-0" />
+                                    </button>
+                                  ) : (
+                                    <span className="font-semibold text-emerald-300">
+                                      {clause.destLocationQuery || 'Display'}
+                                    </span>
+                                  )}
+                                  {clause.restockAllocations && clause.restockAllocations.length > 0 && (
+                                    <span className="text-cool-gray-400 flex flex-wrap items-center gap-1">
+                                      <span>· From</span>
+                                      {clause.restockAllocations.map((a, idx) => (
+                                        <span key={`${a.meatCut.id}-${idx}`} className="inline-flex items-center gap-1">
+                                          <button
+                                            type="button"
+                                            onClick={() => onNavigateToFreezer(a.container.id)}
+                                            className="text-cool-gray-200 hover:text-cyan-300 underline decoration-cool-gray-600 hover:decoration-cyan-400 transition cursor-pointer"
+                                            title="Open source container in Freezers view"
+                                          >
+                                            {a.locationLabel} ({a.moveQty})
+                                          </button>
+                                          {(a.tags || []).map(tag => (
+                                            <span
+                                              key={tag.id}
+                                              className="px-1 py-0.2 rounded text-[10px] font-bold border uppercase"
+                                              style={{
+                                                backgroundColor: `${tag.color || '#f59e0b'}20`,
+                                                borderColor: `${tag.color || '#f59e0b'}45`,
+                                                color: tag.color || '#fbbf24',
+                                              }}
+                                            >
+                                              {tag.excludeFromDisplayRestock ? '🚫 ' : tag.prioritizeItem ? '⚡ ' : ''}
+                                              {tag.name}
+                                            </span>
+                                          ))}
+                                          {idx < clause.restockAllocations!.length - 1 && <span>,</span>}
+                                        </span>
+                                      ))}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                            {clause.restockRuleNote && (clause.intent === 'restock_display' || clause.intent === 'remove' || clause.intent === 'move') && (
+                              <div className="w-full text-[11px] text-cyan-300/90 flex items-center gap-1">
+                                <TagIcon className="w-3 h-3 shrink-0" />
+                                <span>{clause.restockRuleNote}</span>
+                              </div>
                             )}
                             {(clause.intent === 'empty_container' || clause.intent === 'move_all') && (
                               <>
-                                <span className="font-semibold text-white">
-                                  {selectedSourceLoc?.label || clause.sourceLocationQuery || 'Select source'}
-                                </span>
+                                {selectedSourceLoc ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => onNavigateToFreezer(selectedSourceLoc.containerId)}
+                                    className="font-semibold text-white hover:text-cyan-300 inline-flex items-center gap-1 transition cursor-pointer"
+                                    title="Open source container in Freezers view"
+                                  >
+                                    <span>{selectedSourceLoc.label}</span>
+                                    <ExternalLink className="w-3 h-3 text-cyan-400 shrink-0" />
+                                  </button>
+                                ) : (
+                                  <span className="font-semibold text-white">
+                                    {clause.sourceLocationQuery || 'Select source'}
+                                  </span>
+                                )}
                                 <ArrowRight className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                                <span className="font-semibold text-cyan-300">
-                                  {selectedDestLoc?.label ||
-                                    clause.destLocationQuery ||
-                                    'Select destination'}
-                                </span>
+                                {selectedDestLoc ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => onNavigateToFreezer(selectedDestLoc.containerId)}
+                                    className="font-semibold text-cyan-300 hover:text-cyan-200 inline-flex items-center gap-1 transition cursor-pointer"
+                                    title="Open destination container in Freezers view"
+                                  >
+                                    <span>{selectedDestLoc.label}</span>
+                                    <ExternalLink className="w-3 h-3 shrink-0" />
+                                  </button>
+                                ) : (
+                                  <span className="font-semibold text-cyan-300">
+                                    {clause.destLocationQuery || 'Select destination'}
+                                  </span>
+                                )}
                               </>
                             )}
                             {clause.intent === 'move_container' && (
                               <>
-                                <span className="font-semibold text-white">
-                                  {selectedSourceLoc?.label || clause.sourceLocationQuery || 'Select container'}
-                                </span>
+                                {selectedSourceLoc ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => onNavigateToFreezer(selectedSourceLoc.containerId)}
+                                    className="font-semibold text-white hover:text-cyan-300 inline-flex items-center gap-1 transition cursor-pointer"
+                                    title="Open container in Freezers view"
+                                  >
+                                    <span>{selectedSourceLoc.label}</span>
+                                    <ExternalLink className="w-3 h-3 text-cyan-400 shrink-0" />
+                                  </button>
+                                ) : (
+                                  <span className="font-semibold text-white">
+                                    {clause.sourceLocationQuery || 'Select container'}
+                                  </span>
+                                )}
                                 <ArrowRight className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                                <span className="font-semibold text-cyan-300">
-                                  {selectedNewFreezer?.freezerName ||
-                                    clause.destLocationQuery ||
-                                    'Select freezer'}
-                                </span>
+                                {selectedNewFreezer && onNavigateToFreezerUnit ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => onNavigateToFreezerUnit(selectedNewFreezer.freezerId)}
+                                    className="font-semibold text-cyan-300 hover:text-cyan-200 inline-flex items-center gap-1 transition cursor-pointer"
+                                    title="Open target freezer in Freezers view"
+                                  >
+                                    <span>{selectedNewFreezer.freezerName}</span>
+                                    <ExternalLink className="w-3 h-3 shrink-0" />
+                                  </button>
+                                ) : (
+                                  <span className="font-semibold text-cyan-300">
+                                    {selectedNewFreezer?.freezerName ||
+                                      clause.destLocationQuery ||
+                                      'Select freezer'}
+                                  </span>
+                                )}
                               </>
                             )}
                             {clause.intent === 'combine_containers' && (
                               <>
                                 <span className="text-cool-gray-400">Keep into:</span>
+                                {selectedDestLoc ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => onNavigateToFreezer(selectedDestLoc.containerId)}
+                                    className="font-semibold text-purple-300 hover:text-cyan-300 inline-flex items-center gap-1 transition cursor-pointer"
+                                    title="Open surviving container in Freezers view"
+                                  >
+                                    <span>{selectedDestLoc.label}</span>
+                                    <ExternalLink className="w-3 h-3 shrink-0" />
+                                  </button>
+                                ) : (
+                                  <span className="font-semibold text-purple-300">
+                                    Choose surviving container below
+                                  </span>
+                                )}
+                              </>
+                            )}
+                            {clause.intent === 'swap_containers' && (
+                              <>
+                                <ArrowLeftRight className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+                                {clause.combineSlots?.[0]?.selectedContainerId ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => onNavigateToFreezer(clause.combineSlots![0].selectedContainerId!)}
+                                    className="font-semibold text-white hover:text-cyan-300 inline-flex items-center gap-1 transition cursor-pointer"
+                                  >
+                                    <span>
+                                      {clause.combineSlots[0].candidates.find(
+                                        c => c.containerId === clause.combineSlots?.[0]?.selectedContainerId
+                                      )?.label || clause.combineSlots[0].query}
+                                    </span>
+                                    <ExternalLink className="w-3 h-3 text-cyan-400 shrink-0" />
+                                  </button>
+                                ) : (
+                                  <span className="font-semibold text-white">
+                                    {clause.combineSlots?.[0]?.query}
+                                  </span>
+                                )}
+                                <span className="text-cool-gray-400">with</span>
+                                {clause.combineSlots?.[1]?.selectedContainerId ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => onNavigateToFreezer(clause.combineSlots![1].selectedContainerId!)}
+                                    className="font-semibold text-white hover:text-cyan-300 inline-flex items-center gap-1 transition cursor-pointer"
+                                  >
+                                    <span>
+                                      {clause.combineSlots[1].candidates.find(
+                                        c => c.containerId === clause.combineSlots?.[1]?.selectedContainerId
+                                      )?.label || clause.combineSlots[1].query}
+                                    </span>
+                                    <ExternalLink className="w-3 h-3 text-cyan-400 shrink-0" />
+                                  </button>
+                                ) : (
+                                  <span className="font-semibold text-white">
+                                    {clause.combineSlots?.[1]?.query}
+                                  </span>
+                                )}
+                              </>
+                            )}
+                            {clause.intent === 'rename_container' && (
+                              <>
+                                <Edit2 className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+                                {selectedSourceLoc ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => onNavigateToFreezer(selectedSourceLoc.containerId)}
+                                    className="font-semibold text-white hover:text-cyan-300 inline-flex items-center gap-1 transition cursor-pointer"
+                                  >
+                                    <span>{selectedSourceLoc.label}</span>
+                                    <ExternalLink className="w-3 h-3 text-cyan-400 shrink-0" />
+                                  </button>
+                                ) : (
+                                  <span className="font-semibold text-white">
+                                    {clause.sourceLocationQuery}
+                                  </span>
+                                )}
+                                <ArrowRight className="w-3.5 h-3.5 text-purple-400 shrink-0" />
                                 <span className="font-semibold text-purple-300">
-                                  {selectedDestLoc?.label || 'Choose surviving container below'}
+                                  "{clause.newContainerNameInput}"
                                 </span>
+                              </>
+                            )}
+                            {clause.intent === 'archive_container' && (
+                              <>
+                                <Archive className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                                <span className="text-cool-gray-400">
+                                  {clause.archiveState === false ? 'Restore:' : 'Archive:'}
+                                </span>
+                                {selectedSourceLoc ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => onNavigateToFreezer(selectedSourceLoc.containerId)}
+                                    className="font-semibold text-white hover:text-cyan-300 inline-flex items-center gap-1 transition cursor-pointer"
+                                  >
+                                    <span>{selectedSourceLoc.label}</span>
+                                    <ExternalLink className="w-3 h-3 text-cyan-400 shrink-0" />
+                                  </button>
+                                ) : (
+                                  <span className="font-semibold text-white">
+                                    {clause.sourceLocationQuery}
+                                  </span>
+                                )}
+                              </>
+                            )}
+                            {clause.intent === 'delete_container' && (
+                              <>
+                                <Trash2 className="w-3.5 h-3.5 text-red-400 shrink-0" />
+                                <span className="text-cool-gray-400">Delete:</span>
+                                {selectedSourceLoc ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => onNavigateToFreezer(selectedSourceLoc.containerId)}
+                                    className="font-semibold text-red-200 hover:text-cyan-300 inline-flex items-center gap-1 transition cursor-pointer"
+                                  >
+                                    <span>{selectedSourceLoc.label}</span>
+                                    <ExternalLink className="w-3 h-3 text-cyan-400 shrink-0" />
+                                  </button>
+                                ) : (
+                                  <span className="font-semibold text-red-200">
+                                    {clause.sourceLocationQuery}
+                                  </span>
+                                )}
+                              </>
+                            )}
+                            {clause.intent === 'manage_list' && (
+                              <>
+                                {clause.listAction === 'enable_notify' ? (
+                                  <Bell className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                                ) : clause.listAction === 'disable_notify' ? (
+                                  <BellOff className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                                ) : (
+                                  <ListIcon className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                                )}
+                                <span className="text-cool-gray-400">List:</span>
+                                {selectedListObj && onNavigateToList ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => onNavigateToList(selectedListObj.list.id)}
+                                    className="font-semibold text-indigo-300 hover:text-cyan-300 inline-flex items-center gap-1 transition cursor-pointer"
+                                  >
+                                    <span>{selectedListObj.list.name}</span>
+                                    <ExternalLink className="w-3 h-3 shrink-0" />
+                                  </button>
+                                ) : (
+                                  <span className="font-semibold text-indigo-300">
+                                    {selectedListObj?.list.name || clause.listQueryText || 'Choose list'}
+                                  </span>
+                                )}
+                                {clause.listThreshold !== undefined && (
+                                  <span className="px-1.5 py-0.5 rounded bg-cool-gray-900 border border-cool-gray-700 text-[11px] text-cyan-300 font-semibold tabular-nums">
+                                    min {clause.listThreshold}
+                                  </span>
+                                )}
+                              </>
+                            )}
+                            {clause.intent === 'manage_tag' && (
+                              <>
+                                <TagIcon className="w-3.5 h-3.5 text-teal-400 shrink-0" />
+                                {selectedTagObj && onNavigateToTag ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => onNavigateToTag(selectedTagObj.tag.id)}
+                                    className="font-semibold text-teal-300 hover:text-cyan-300 inline-flex items-center gap-1 transition cursor-pointer"
+                                  >
+                                    <span>{selectedTagObj.tag.name}</span>
+                                    <ExternalLink className="w-3 h-3 shrink-0" />
+                                  </button>
+                                ) : (
+                                  <span className="font-semibold text-teal-300">
+                                    {selectedTagObj?.tag.name || clause.tagQueryText}
+                                  </span>
+                                )}
+                                {selectedCut && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      selectedCut.freezer?.isSpecial && onNavigateToDisplayCase
+                                        ? onNavigateToDisplayCase(selectedProduct?.product.id)
+                                        : onNavigateToFreezer(selectedCut.container.id)
+                                    }
+                                    className="text-cool-gray-400 hover:text-cyan-300 inline-flex items-center gap-1 transition cursor-pointer"
+                                    title={selectedCut.freezer?.isSpecial ? 'Open in Display Case view' : 'Open container in Freezers view'}
+                                  >
+                                    <span>· {selectedCut.locationLabel}</span>
+                                    <ExternalLink className="w-3 h-3 shrink-0" />
+                                  </button>
+                                )}
+                              </>
+                            )}
+                            {clause.intent === 'correct_label' && (
+                              <>
+                                <span className="text-cool-gray-400">Stack:</span>
+                                {selectedCut || selectedSourceLoc ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const isDisp = Boolean(
+                                        selectedCut?.freezer?.isSpecial || selectedSourceLoc?.isDisplay
+                                      );
+                                      if (isDisp && onNavigateToDisplayCase) {
+                                        onNavigateToDisplayCase(
+                                          selectedReplacementProd?.product.id || selectedProduct?.product.id
+                                        );
+                                      } else {
+                                        onNavigateToFreezer(
+                                          selectedCut?.container.id || selectedSourceLoc!.containerId
+                                        );
+                                      }
+                                    }}
+                                    className="font-semibold text-white hover:text-cyan-300 inline-flex items-center gap-1 transition cursor-pointer"
+                                    title={
+                                      selectedCut?.freezer?.isSpecial || selectedSourceLoc?.isDisplay
+                                        ? 'Open in Display Case view'
+                                        : 'Open container in Freezers view'
+                                    }
+                                  >
+                                    <span>{selectedCut?.locationLabel || selectedSourceLoc?.label}</span>
+                                    <ExternalLink className="w-3 h-3 text-cyan-400 shrink-0" />
+                                  </button>
+                                ) : (
+                                  <span className="font-semibold text-white">on-site</span>
+                                )}
+                                <ArrowRight className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                                {selectedReplacementProd ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => navigateToItem(selectedReplacementProd.product.id, clauseItemIsDisplay)}
+                                    className="font-semibold text-emerald-300 hover:text-cyan-300 inline-flex items-center gap-1 transition cursor-pointer"
+                                    title={clauseItemIsDisplay ? 'Open in Display Case view' : 'Open in Products view'}
+                                  >
+                                    <span>{selectedReplacementProd.product.name}</span>
+                                    <ExternalLink className="w-3 h-3 shrink-0" />
+                                  </button>
+                                ) : (
+                                  <span className="font-semibold text-emerald-300">
+                                    Choose new product below
+                                  </span>
+                                )}
+                              </>
+                            )}
+                            {clause.intent === 'undo_last' && (
+                              <>
+                                <RotateCcw className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                                {onNavigateToHistory ? (
+                                  <button
+                                    type="button"
+                                    onClick={onNavigateToHistory}
+                                    className="font-semibold text-white hover:text-cyan-300 inline-flex items-center gap-1 transition cursor-pointer"
+                                  >
+                                    <span>{clause.undoTargetDescription || 'Nothing to undo'}</span>
+                                    <ExternalLink className="w-3 h-3 text-cyan-400 shrink-0" />
+                                  </button>
+                                ) : (
+                                  <span className="font-semibold text-white">
+                                    {clause.undoTargetDescription || 'Nothing to undo'}
+                                  </span>
+                                )}
+                                {clause.undoTargetTimestamp && (
+                                  <span className="text-cool-gray-400">
+                                    ({new Date(clause.undoTargetTimestamp).toLocaleTimeString([], {
+                                      hour: '2-digit',
+                                      minute: '2-digit',
+                                    })})
+                                  </span>
+                                )}
                               </>
                             )}
                             {clause.intent === 'add' && !clause.newContainerGroupKey && selectedDestLoc && (
                               <>
                                 <span className="text-cool-gray-400">To:</span>
-                                <span className="font-semibold text-white">{selectedDestLoc.label}</span>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    selectedDestLoc.isDisplay && onNavigateToDisplayCase
+                                      ? onNavigateToDisplayCase(selectedProduct?.product.id)
+                                      : onNavigateToFreezer(selectedDestLoc.containerId)
+                                  }
+                                  className="font-semibold text-white hover:text-cyan-300 inline-flex items-center gap-1 transition cursor-pointer"
+                                  title={
+                                    selectedDestLoc.isDisplay
+                                      ? 'Open in Display Case view'
+                                      : 'Open destination container in Freezers view'
+                                  }
+                                >
+                                  <span>{selectedDestLoc.label}</span>
+                                  <ExternalLink className="w-3 h-3 text-cyan-400 shrink-0" />
+                                </button>
                               </>
                             )}
                             {clause.newContainerGroupKey && (
@@ -1375,16 +3262,27 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
                                     ? 'In:'
                                     : 'New container:'}
                                 </span>
-                                <span className="font-semibold text-white">
-                                  {clause.resolvedNewContainerName || clause.newContainerNameQuery}
-                                  {clause.selectedExistingSpareContainerId
-                                    ? ' (Spare Pool)'
-                                    : clause.newContainerSaveAsTemplate
-                                    ? ' (Save as Template)'
-                                    : selectedNewTemplate && !selectedNewTemplate.isCustom
-                                    ? ' (Template)'
-                                    : ' (Custom)'}
-                                </span>
+                                {clause.selectedExistingSpareContainerId ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => onNavigateToFreezer(clause.selectedExistingSpareContainerId!)}
+                                    className="font-semibold text-white hover:text-cyan-300 inline-flex items-center gap-1 transition cursor-pointer"
+                                  >
+                                    <span>
+                                      {clause.resolvedNewContainerName || clause.newContainerNameQuery} (Spare Pool)
+                                    </span>
+                                    <ExternalLink className="w-3 h-3 text-cyan-400 shrink-0" />
+                                  </button>
+                                ) : (
+                                  <span className="font-semibold text-white">
+                                    {clause.resolvedNewContainerName || clause.newContainerNameQuery}
+                                    {clause.newContainerSaveAsTemplate
+                                      ? ' (Save as Template)'
+                                      : selectedNewTemplate && !selectedNewTemplate.isCustom
+                                      ? ' (Template)'
+                                      : ' (Custom)'}
+                                  </span>
+                                )}
                                 {clause.newContainerImageUrl && (
                                   <span className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-cyan-300">
                                     <ImageIcon className="w-3 h-3" />
@@ -1392,9 +3290,37 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
                                   </span>
                                 )}
                                 <ArrowRight className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                                <span className="font-semibold text-cyan-300">
-                                  {selectedNewFreezer?.freezerName || 'Staging Area'}
-                                </span>
+                                {selectedNewFreezer ? (
+                                  clause.intent !== 'add_container' &&
+                                  selectedNewFreezer.isDisplay &&
+                                  onNavigateToDisplayCase ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => onNavigateToDisplayCase(selectedProduct?.product.id)}
+                                      className="font-semibold text-cyan-300 hover:text-cyan-200 inline-flex items-center gap-1 transition cursor-pointer"
+                                      title="Open in Display Case view"
+                                    >
+                                      <span>{selectedNewFreezer.freezerName}</span>
+                                      <ExternalLink className="w-3 h-3 shrink-0" />
+                                    </button>
+                                  ) : onNavigateToFreezerUnit ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => onNavigateToFreezerUnit(selectedNewFreezer.freezerId)}
+                                      className="font-semibold text-cyan-300 hover:text-cyan-200 inline-flex items-center gap-1 transition cursor-pointer"
+                                      title="Open freezer in Freezers view"
+                                    >
+                                      <span>{selectedNewFreezer.freezerName}</span>
+                                      <ExternalLink className="w-3 h-3 shrink-0" />
+                                    </button>
+                                  ) : (
+                                    <span className="font-semibold text-cyan-300">
+                                      {selectedNewFreezer.freezerName}
+                                    </span>
+                                  )
+                                ) : (
+                                  <span className="font-semibold text-cyan-300">Staging Area</span>
+                                )}
                               </>
                             )}
                           </div>
@@ -1429,7 +3355,8 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
                               clause.destLocationCandidates.length > 1 ||
                               clause.cutCandidates.length > 1 ||
                               hasContainerSwitcherOptions ||
-                              hasCombineSlotSwitcherOptions) && (
+                              hasCombineSlotSwitcherOptions ||
+                              hasExtraCandidateSwitcherOptions) && (
                               <button
                                 type="button"
                                 onClick={() =>
@@ -1457,25 +3384,61 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
                           clause.containerCutPreviews.length > 0 && (
                             <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-cool-gray-800/80">
                               <span className="text-[11px] text-cool-gray-400">
-                                {clause.intent === 'move_container' ? 'Carrying:' : 'Moving:'}
+                                {clause.intent === 'move_container' ||
+                                clause.intent === 'archive_container' ||
+                                clause.intent === 'delete_container'
+                                  ? 'Inside:'
+                                  : 'Moving:'}
                               </span>
-                              {clause.containerCutPreviews.map((item, idx) => (
-                                <span
-                                  key={`${item.meatCut.id}-${idx}`}
-                                  className="px-2 py-0.5 rounded bg-cool-gray-900 border border-cool-gray-750 text-[11px] text-cool-gray-200 tabular-nums"
-                                >
-                                  <strong className="text-white">{item.quantity}x</strong> {item.product.name}
-                                </span>
-                              ))}
+                              {clause.containerCutPreviews.map((item, idx) => {
+                                const chipIsDisplay = isDisplayContainerId(item.containerId);
+                                return (
+                                  <button
+                                    key={`${item.meatCut.id}-${idx}`}
+                                    type="button"
+                                    onClick={() => navigateToItem(item.product.id, chipIsDisplay)}
+                                    title={chipIsDisplay ? 'Open in Display Case view' : 'Open product in Products view'}
+                                    className="px-2 py-0.5 rounded bg-cool-gray-900 hover:bg-cool-gray-800 border border-cool-gray-750 hover:border-cyan-500/40 text-[11px] text-cool-gray-200 hover:text-cyan-300 tabular-nums transition cursor-pointer inline-flex items-center gap-1"
+                                  >
+                                    <strong className="text-white">{item.quantity}x</strong>
+                                    <span>{item.product.name}</span>
+                                  </button>
+                                );
+                              })}
                             </div>
                           )}
+
+                        {/* Excluded items indicator for empty_container / move_all */}
+                        {clause.exceptProductQueries && clause.exceptProductQueries.length > 0 && (
+                          <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-cool-gray-800/80 text-[11px]">
+                            <span className="text-amber-300 font-semibold">Keeping behind (excluded):</span>
+                            {clause.exceptProductQueries.map((q, idx) => (
+                              <span
+                                key={`${q}-${idx}`}
+                                className="px-2 py-0.5 rounded bg-amber-950/40 border border-amber-500/35 text-amber-200"
+                              >
+                                {q}
+                              </span>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     )}
 
                     {/* Duplicate / Non-blocking Warning Banner */}
                     {clause.warningMessage &&
                       !clause.errorMessage &&
-                      (isNewContainerGroupOwner || clause.intent === 'move_container') && (
+                      (isNewContainerGroupOwner ||
+                        clause.intent === 'move' ||
+                        clause.intent === 'restock_display' ||
+                        clause.intent === 'empty_container' ||
+                        clause.intent === 'move_all' ||
+                        clause.intent === 'move_container' ||
+                        clause.intent === 'set_quantity' ||
+                        clause.intent === 'archive_container' ||
+                        clause.intent === 'delete_container' ||
+                        clause.intent === 'manage_list' ||
+                        clause.intent === 'manage_tag') && (
                         <div className="p-2.5 rounded-lg bg-amber-950/30 border border-amber-500/40 text-xs text-amber-200 flex items-start gap-2">
                           <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
                           <span>{clause.warningMessage}</span>
@@ -1607,8 +3570,9 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
                                     }`}
                                   >
                                     <div className="min-w-0">
-                                      <div className="text-xs font-semibold truncate">
-                                        {loc.containerName}
+                                      <div className="text-xs font-semibold truncate flex items-center gap-1.5">
+                                        {loc.hasPrioritized && <span className="text-amber-400 shrink-0" title="Prioritized stock">⚡</span>}
+                                        <span className="truncate">{loc.containerName}</span>
                                       </div>
                                       <div className="text-[11px] text-cool-gray-400 truncate">
                                         {loc.freezerName}
@@ -1622,8 +3586,8 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
                           </div>
                         )}
 
-                        {/* 2b. Combine Container Slot Disambiguation */}
-                        {clause.intent === 'combine_containers' &&
+                        {/* 2b. Combine / Swap Container Slot Disambiguation */}
+                        {(clause.intent === 'combine_containers' || clause.intent === 'swap_containers') &&
                           clause.combineSlots?.map(slot => {
                             if (!slot.requiresSelection && !(isSwitcherOpen && slot.candidates.length > 1)) {
                               return null;
@@ -1737,12 +3701,15 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
                             <div className="text-xs font-semibold text-amber-300 flex items-center gap-1.5">
                               <Package className="w-3.5 h-3.5 shrink-0" />
                               <span>
-                                Select package stack ({clause.cutCandidates.length} variants in location)
+                                {clause.intent === 'restock_display'
+                                  ? `Prefer backstock source stack (${clause.cutCandidates.length} available)`
+                                  : `Select package stack (${clause.cutCandidates.length} variants in location)`}
                               </span>
                             </div>
                             <div className="grid grid-cols-1 gap-1.5">
                               {clause.cutCandidates.map(cc => {
                                 const isSelected = clause.selectedMeatCutId === cc.meatCut.id;
+                                const isPrioritizedStack = cc.tags.some(t => t.prioritizeItem);
                                 return (
                                   <button
                                     key={cc.meatCut.id}
@@ -1753,12 +3720,17 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
                                     className={`min-h-[44px] px-3 py-2 rounded-lg border text-left transition cursor-pointer flex items-center justify-between gap-3 ${
                                       isSelected
                                         ? 'bg-cyan-950/40 border-cyan-400 text-white'
+                                        : isPrioritizedStack
+                                        ? 'bg-amber-950/20 hover:bg-amber-950/35 border-amber-500/40 text-cool-gray-100'
                                         : 'bg-cool-gray-850 hover:bg-cool-gray-800 border-cool-gray-700 text-cool-gray-200'
                                     }`}
                                   >
                                     <div className="min-w-0">
-                                      <div className="text-xs font-semibold truncate">
-                                        {cc.locationLabel}
+                                      <div className="text-xs font-semibold truncate flex items-center gap-1.5">
+                                        {isPrioritizedStack && (
+                                          <span className="text-amber-300 shrink-0" title="Prioritized item">⚡</span>
+                                        )}
+                                        <span className="truncate">{cc.locationLabel}</span>
                                       </div>
                                       <div className="text-[11px] text-cool-gray-400 truncate">
                                         {cc.meatCut.notes ? `Notes: ${cc.meatCut.notes}` : 'Standard stack'}
@@ -1776,6 +3748,128 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
                             </div>
                           </div>
                         )}
+
+                        {/* 4b. Custom List Selection */}
+                        {(clause.requiresListSelection ||
+                          (isSwitcherOpen && (clause.listCandidates?.length || 0) > 1)) && (
+                          <div className="space-y-1.5">
+                            <div className="text-xs font-semibold text-amber-300 flex items-center gap-1.5">
+                              <ListIcon className="w-3.5 h-3.5 shrink-0" />
+                              <span>
+                                {clause.requiresListSelection
+                                  ? `Select custom list (${clause.listCandidates?.length || 0} options)`
+                                  : 'Switch custom list'}
+                              </span>
+                            </div>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                              {(clause.listCandidates || []).map(cand => {
+                                const isSelected = clause.selectedListId === cand.list.id;
+                                return (
+                                  <button
+                                    key={cand.list.id}
+                                    type="button"
+                                    onClick={() => updateOverride(clause.id, { listId: cand.list.id })}
+                                    className={`min-h-[44px] px-3 py-2 rounded-lg border text-left transition cursor-pointer flex items-center justify-between gap-2 ${
+                                      isSelected
+                                        ? 'bg-cyan-950/40 border-cyan-400 text-white'
+                                        : 'bg-cool-gray-850 hover:bg-cool-gray-800 border-cool-gray-700 text-cool-gray-200'
+                                    }`}
+                                  >
+                                    <div className="min-w-0">
+                                      <div className="text-xs font-semibold truncate">{cand.list.name}</div>
+                                      <div className="text-[11px] text-cool-gray-400 truncate">
+                                        {cand.list.items.length} item{cand.list.items.length === 1 ? '' : 's'}
+                                      </div>
+                                    </div>
+                                    {isSelected && <Check className="w-4 h-4 text-cyan-400 shrink-0" />}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* 4c. Tag Selection */}
+                        {(clause.requiresTagSelection ||
+                          (isSwitcherOpen && (clause.tagCandidates?.length || 0) > 1)) && (
+                          <div className="space-y-1.5">
+                            <div className="text-xs font-semibold text-amber-300 flex items-center gap-1.5">
+                              <TagIcon className="w-3.5 h-3.5 shrink-0" />
+                              <span>
+                                {clause.requiresTagSelection
+                                  ? `Select tag (${clause.tagCandidates?.length || 0} matches)`
+                                  : 'Switch tag'}
+                              </span>
+                            </div>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                              {(clause.tagCandidates || []).map(cand => {
+                                const isSelected = clause.selectedTagId === cand.tag.id;
+                                return (
+                                  <button
+                                    key={cand.tag.id}
+                                    type="button"
+                                    onClick={() => updateOverride(clause.id, { tagId: cand.tag.id })}
+                                    className={`min-h-[44px] px-3 py-2 rounded-lg border text-left transition cursor-pointer flex items-center justify-between gap-2 ${
+                                      isSelected
+                                        ? 'bg-cyan-950/40 border-cyan-400 text-white'
+                                        : 'bg-cool-gray-850 hover:bg-cool-gray-800 border-cool-gray-700 text-cool-gray-200'
+                                    }`}
+                                  >
+                                    <span className="text-xs font-semibold truncate">{cand.tag.name}</span>
+                                    {isSelected && <Check className="w-4 h-4 text-cyan-400 shrink-0" />}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* 4d. Replacement Product Selection (Correct Label) */}
+                        {clause.intent === 'correct_label' &&
+                          (clause.requiresReplacementProductSelection ||
+                            (isSwitcherOpen && (clause.replacementProductCandidates?.length || 0) > 1)) && (
+                            <div className="space-y-1.5">
+                              <div className="text-xs font-semibold text-amber-300 flex items-center gap-1.5">
+                                <Package className="w-3.5 h-3.5 shrink-0" />
+                                <span>
+                                  {clause.replacementProductQuery
+                                    ? `Select replacement product for "${clause.replacementProductQuery}"`
+                                    : 'Select correct replacement product label'}
+                                </span>
+                              </div>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-56 overflow-y-auto pr-0.5">
+                                {(clause.replacementProductCandidates || []).map(cand => {
+                                  const isSelected = clause.selectedReplacementProductId === cand.product.id;
+                                  return (
+                                    <button
+                                      key={cand.product.id}
+                                      type="button"
+                                      onClick={() =>
+                                        updateOverride(clause.id, {
+                                          replacementProductId: cand.product.id,
+                                        })
+                                      }
+                                      className={`min-h-[44px] px-3 py-2 rounded-lg border text-left transition cursor-pointer flex items-center justify-between gap-2 ${
+                                        isSelected
+                                          ? 'bg-cyan-950/40 border-cyan-400 text-white'
+                                          : 'bg-cool-gray-850 hover:bg-cool-gray-800 border-cool-gray-700 text-cool-gray-200'
+                                      }`}
+                                    >
+                                      <div className="min-w-0">
+                                        <div className="text-xs font-semibold truncate">
+                                          {cand.product.name}
+                                        </div>
+                                        <div className="text-[11px] text-cool-gray-400 truncate">
+                                          {cand.product.primaryCategory} · {cand.product.subCategory}
+                                        </div>
+                                      </div>
+                                      {isSelected && <Check className="w-4 h-4 text-cyan-400 shrink-0" />}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
                         {/* 5. New Container Template vs Custom Selection */}
                         {isNewContainerGroupOwner &&
                           (clause.requiresTemplateSelection ||
@@ -1916,6 +4010,14 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
           </div>
         )}
 
+        {/* [TEMP] Temporary button to save the prompt box text + optional notes (just above Sample phrases) */}
+        <TempVoicePromptRecorder
+          promptText={effectiveTranscript}
+          parserSummary={tempPromptStatus.summary}
+          hasFailureOrWarning={tempPromptStatus.hasIssue}
+          onLoadPrompt={handleSelectExample}
+        />
+
         <div className="bg-cool-gray-900/60 border border-cool-gray-800 rounded-xl p-3">
           <button
             type="button"
@@ -2031,7 +4133,10 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
 
       {/* Mobile Sticky Bottom Confirmation Bar (<= 15% mobile height) */}
       {activeMutationClauses.length > 0 && (
-        <div className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-cool-gray-900/95 border-t border-cool-gray-700 px-4 py-2 flex items-center justify-between gap-3">
+        <div
+          id="voice-mobile-confirm-bar"
+          className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-gray-900 bg-[var(--ha-bg-card,#1f2937)] border-t border-cool-gray-700 shadow-[0_-8px_24px_rgba(0,0,0,0.35)] px-4 py-2 flex items-center justify-between gap-3"
+        >
           <div className="text-xs text-cool-gray-300 tabular-nums">
             <span className="font-bold text-white">{parsedResult.readyMutationCount}</span>/{activeMutationClauses.length} ready
             {parsedResult.pendingSelectionCount > 0 && (

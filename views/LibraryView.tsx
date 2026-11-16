@@ -22,9 +22,11 @@ import { PhotoManagerView } from "./PhotoManagerView";
 import { MediaSelector } from "../components/MediaSelector";
 import { SearchableProductSelect } from "../components/SearchableProductSelect";
 import { PWAInstallButton } from "../components/PWAInstallButton";
-import { PwaDeviceManagerCard } from "../components/PwaDeviceManagerCard";
+import { UsersAndDevicesPanel } from "../components/UsersAndDevicesPanel";
 import { VoiceDictionaryManager } from "../components/VoiceDictionaryManager";
 import { ManagementForms, ManageFreezers } from "../components/ManagementForms";
+import { CatalogSearchFilterBar } from "../components/CatalogSearchFilterBar";
+import { getTagActionIcon } from "../utils/tagRestockRules";
 import {
   getContainerIcon,
   CONTAINER_ICONS,
@@ -38,6 +40,7 @@ import {
   FileText,
   CheckCircle2,
   ChevronRight,
+  ChevronDown,
   HelpCircle,
   MapPin,
   Phone,
@@ -73,9 +76,39 @@ import {
   QrCode,
   Layers,
   Shield,
-  KeyRound
+  KeyRound,
+  Menu,
+  ArrowLeft,
+  Tag as TagIcon,
+  Images,
+  Database,
+  Users,
+  Mic
 } from "lucide-react";
 import { isCloudflareTokenRefreshEnabled, setCloudflareTokenRefreshEnabled, CF_TOKEN_REFRESH_ENABLED_KEY } from "../utils/authSecurity";
+import { authFetch } from "../utils/clientDevice";
+import { useUserAuth } from "../hooks/useUserAuth";
+import { OffSiteSettingsPanel } from "../components/OffSiteSettingsPanel";
+import {
+  LibraryTab,
+  LibrarySectionMeta,
+  getVisibleLibraryGroups,
+  getLibrarySectionMeta,
+  normalizeLibraryTab,
+  isSectionAdminOnly,
+} from "../utils/libraryNavigation";
+import {
+  NotificationCenterPanel,
+  NotificationCenterSubTab,
+} from "../components/NotificationCenterPanel";
+import {
+  WEEKDAY_LABELS,
+  formatListNotificationSummary,
+  getChannelTypeLabel,
+  resolveEffectiveDailyDigestMode,
+} from "../utils/notifications";
+
+export type { LibraryTab };
 
 export const FreezerAppLogoIcon: React.FC<{ className?: string }> = ({ className = 'w-5 h-5' }) => (
   <svg className={className} viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -94,8 +127,6 @@ export const FreezerAppLogoIcon: React.FC<{ className?: string }> = ({ className
     </g>
   </svg>
 );
-
-export type LibraryTab = "products" | "containers" | "freezers" | "pallets" | "lists" | "settings" | "import" | "tags" | "locations" | "photos" | "pwa" | "voice_dictionary";
 
 const InlineEdit: React.FC<{
   value: string;
@@ -356,6 +387,7 @@ const LibraryView: React.FC<{
   theme?: string;
   onThemeChange?: (newTheme: string) => void;
   onNavigateToView?: (view: any) => void;
+  onRefreshState?: () => Promise<void> | void;
   isLoading?: boolean;
 }> = ({
   state,
@@ -367,17 +399,47 @@ const LibraryView: React.FC<{
   theme: parentTheme,
   onThemeChange,
   onNavigateToView,
+  onRefreshState,
   isLoading = false,
 }) => {
-  const [activeTab, setActiveTab] = useState<LibraryTab>(initialTab || "products");
+  const { authLoaded, usersConfigured, isAuthenticated, isAdmin, canAccessAdmin, requireLoginForEdits, openAccountModal } = useUserAuth();
+  const isAdminGated = usersConfigured && !isAdmin;
+
+  const [activeTab, setActiveTab] = useState<LibraryTab>(() => normalizeLibraryTab(initialTab));
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
+  // Unified internal segmented mode states controlled from Section Header
+  const [listsViewMode, setListsViewMode] = useState<'overview' | 'matrix'>('overview');
+  const [photosSubTab, setPhotosSubTab] = useState<'library' | 'missing'>('library');
+  const [importSubTab, setImportSubTab] = useState<'backup' | 'wipe'>('backup');
+  const [notificationsSubTab, setNotificationsSubTab] = useState<NotificationCenterSubTab>('channels');
+  const [listCreateTrigger, setListCreateTrigger] = useState(0);
+  const [tagCreateTrigger, setTagCreateTrigger] = useState(0);
+  const [locationCreateTrigger, setLocationCreateTrigger] = useState(0);
+  const [channelCreateTrigger, setChannelCreateTrigger] = useState(0);
+  const [activeListItemView, setActiveListItemView] = useState(false);
+  const [activeTagDetailView, setActiveTagDetailView] = useState(false);
+
+  useEffect(() => {
+    const normalized = normalizeLibraryTab(initialTab);
+    if (initialTab && normalized !== activeTab) {
+      setActiveTab(normalized);
+    }
+  }, [initialTab]);
 
   const handleSwitchTab = (tab: LibraryTab) => {
-    setActiveTab(tab);
+    const normalized = normalizeLibraryTab(tab);
+    setActiveTab(normalized);
+    setMobileNavOpen(false);
+    setShowAddForm(false);
     if (onTabChange) {
-      onTabChange(tab);
+      onTabChange(normalized);
     }
   };
   const [productArchiveFilter, setProductArchiveFilter] = useState<'active' | 'archived' | 'all'>('active');
+  const [showProductFilters, setShowProductFilters] = useState(false);
+  const [showTemplateFilters, setShowTemplateFilters] = useState(false);
+  const [showContainerFilters, setShowContainerFilters] = useState(false);
   const [localTheme, setLocalThemeState] = useState<string>(
     () => localStorage.getItem("freezer-theme") || "dark",
   );
@@ -391,11 +453,13 @@ const LibraryView: React.FC<{
   React.useEffect(() => {
     const handleSubTabEvent = (e: any) => {
       if (e?.detail === "voice_dictionary") {
-        setActiveTab("voice_dictionary");
-      } else if (e?.detail === "pwa") {
-        setActiveTab("pwa");
+        handleSwitchTab("voice_dictionary");
+      } else if (e?.detail === "pwa" || e?.detail === "users_devices") {
+        handleSwitchTab("users_devices");
+      } else if (e?.detail === "offsite_settings") {
+        handleSwitchTab("offsite_settings");
       } else if (e?.detail === "general") {
-        setActiveTab("settings");
+        handleSwitchTab("settings");
       }
     };
     window.addEventListener("freezer-switch-settings-subtab", handleSubTabEvent);
@@ -416,24 +480,6 @@ const LibraryView: React.FC<{
   const [pwaCustomImage, setPwaCustomImage] = useState<string | null>(null);
   const [isSavingPwaBranding, setIsSavingPwaBranding] = useState(false);
   const [pwaBrandingMessage, setPwaBrandingMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
-
-  // Application Version & Update state management
-  const [autoPwaUpdate, setAutoPwaUpdate] = useState<boolean>(() => {
-    return localStorage.getItem("pwa_auto_update") !== "false";
-  });
-
-  React.useEffect(() => {
-    const cfg = (state.appConfig || []).find(i => i.key === 'pwa_auto_update');
-    if (cfg?.value !== undefined) {
-      setAutoPwaUpdate(cfg.value !== 'false');
-    }
-  }, [state.appConfig]);
-
-  const handleToggleAutoPwaUpdate = (enabled: boolean) => {
-    setAutoPwaUpdate(enabled);
-    localStorage.setItem("pwa_auto_update", String(enabled));
-    saveAppConfigKey("pwa_auto_update", String(enabled));
-  };
 
   // Cloudflare Access Security Token Refresh preference
   const [cfTokenRefreshEnabled, setCfTokenRefreshEnabled] = useState<boolean>(() => {
@@ -458,7 +504,7 @@ const LibraryView: React.FC<{
   const checkAppVersion = async () => {
     setIsCheckingUpdate(true);
     try {
-      const res = await fetch(getApiUrl("api/version?_t=" + Date.now()), {
+      const res = await authFetch(getApiUrl("api/version?_t=" + Date.now()), {
         signal: AbortSignal.timeout(3500)
       });
       if (res.ok) {
@@ -499,7 +545,7 @@ const LibraryView: React.FC<{
           await reg.update().catch(() => {});
         }
       }
-      const res = await fetch(getApiUrl("api/version?_t=" + Date.now()), {
+      const res = await authFetch(getApiUrl("api/version?_t=" + Date.now()), {
         headers: { 'Cache-Control': 'no-cache, no-store' },
         signal: AbortSignal.timeout(4000)
       });
@@ -717,7 +763,7 @@ const LibraryView: React.FC<{
         }
       };
 
-      const res = await fetch(getApiUrl('api/app-config'), {
+      const res = await authFetch(getApiUrl('api/app-config'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -800,7 +846,7 @@ const LibraryView: React.FC<{
         }
       };
 
-      const res = await fetch(getApiUrl('api/app-config'), {
+      const res = await authFetch(getApiUrl('api/app-config'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -871,7 +917,7 @@ const LibraryView: React.FC<{
 
   // Helper to persist preferences directly to database app_config table
   const saveAppConfigKey = (key: string, value: string) => {
-    fetch(getApiUrl('api/app-config'), {
+    authFetch(getApiUrl('api/app-config'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ key, value })
@@ -899,7 +945,7 @@ const LibraryView: React.FC<{
   // Synchronize preferences from database app_config table on mount, migrating any local data seamlessly
   React.useEffect(() => {
     let isMounted = true;
-    fetch('/api/app-config')
+    authFetch(getApiUrl('api/app-config'))
       .then(res => res.ok ? res.json() : null)
       .then(data => {
         if (!isMounted || !data || !data.configs) return;
@@ -947,8 +993,9 @@ const LibraryView: React.FC<{
           }
         }
 
-        if (needsMigration) {
-          fetch('/api/app-config', {
+        const canWriteOffsiteConfig = canAccessAdmin || !usersConfigured || !requireLoginForEdits || isAuthenticated;
+        if (needsMigration && authLoaded && canWriteOffsiteConfig) {
+          authFetch(getApiUrl('api/app-config'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ configs: toMigrate })
@@ -958,7 +1005,7 @@ const LibraryView: React.FC<{
       .catch(err => console.warn('Could not load app_config on mount:', err));
 
     return () => { isMounted = false; };
-  }, []);
+  }, [authLoaded, canAccessAdmin, usersConfigured, requireLoginForEdits, isAuthenticated]);
 
   const [showDemoStartConfirm, setShowDemoStartConfirm] = useState(false);
   const [showDemoEndConfirm, setShowDemoEndConfirm] = useState(false);
@@ -2128,135 +2175,86 @@ const LibraryView: React.FC<{
     const nonArchivedActive = activeContainers.filter(c => !c.isArchived);
 
     return (
-      <div className="space-y-4 mt-4 font-sans">
-        {/* Container Catalog Sub-Tabs Navigation */}
-        <div className="flex items-center justify-between border-b border-cool-gray-700/80 pb-3 flex-wrap gap-3">
-          <div className="flex items-center gap-1.5 bg-cool-gray-850 p-1 rounded-xl border border-cool-gray-750">
-            <button
-              type="button"
-              onClick={() => setContainerSubTab('templates')}
-              className={`px-4 py-2 text-xs font-bold rounded-lg transition-all flex items-center gap-2 cursor-pointer ${
-                containerSubTab === 'templates'
-                  ? 'bg-cyan-600 text-white shadow-md'
-                  : 'text-cool-gray-400 hover:text-white hover:bg-cool-gray-800'
-              }`}
-            >
-              📋 Container Templates ({templates.length})
-            </button>
-            <button
-              type="button"
-              onClick={() => setContainerSubTab('active')}
-              className={`px-4 py-2 text-xs font-bold rounded-lg transition-all flex items-center gap-2 cursor-pointer ${
-                containerSubTab === 'active'
-                  ? 'bg-cyan-600 text-white shadow-md'
-                  : 'text-cool-gray-400 hover:text-white hover:bg-cool-gray-800'
-              }`}
-            >
-              📦 Active Containers ({nonArchivedActive.length})
-            </button>
-          </div>
-
-          {containerSubTab === 'templates' && (
-            <button
-              type="button"
-              onClick={() => {
-                setTemplateNameInput('');
-                setTemplateImageInput('');
-                setShowAddTemplateModal(true);
-              }}
-              className="px-3.5 py-2 bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs rounded-lg transition shadow flex items-center gap-1.5 cursor-pointer"
-            >
-              <PlusIcon className="w-4 h-4" /> Add Template to Catalog
-            </button>
-          )}
-        </div>
-
+      <div className="space-y-4 font-sans">
         {/* SUB-TAB 1: TEMPLATES CATALOG */}
         {containerSubTab === 'templates' && (
           <div className="space-y-4">
-            <div className="bg-cool-gray-850/60 p-3.5 rounded-xl border border-cool-gray-750/70 text-xs text-cool-gray-300 flex items-center justify-between gap-2">
-              <p>
-                📋 <strong>Container Templates Catalog:</strong> Templates store reusable container definitions (e.g. Purple Basket, Meat Toter, 1/2 Sheet Pan, Bag). Active containers created from a template inherit properties and stay linked so updates apply automatically.
-              </p>
-            </div>
-
-            {/* Template Catalog Query Filters Bar */}
-            {templates.length > 0 && (
-              <div className="bg-cool-gray-850/65 rounded-xl border border-cool-gray-750/70 p-4 shadow-sm space-y-3">
-                <div className="flex items-center justify-between flex-wrap gap-2 pb-2 border-b border-cool-gray-750/40">
-                  <h4 className="text-xs font-extrabold text-cool-gray-400 uppercase tracking-wider flex items-center gap-1.5 select-none">
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      viewBox="0 0 20 20"
-                      fill="currentColor"
-                      className="w-4 h-4 text-cyan-400"
-                    >
-                      <path
-                        fillRule="evenodd"
-                        d="M2.628 1.601C5.028 1.206 7.49 1 10 1s4.973.206 7.372.601a.75.75 0 01.628.74v2.288a2.25 2.25 0 01-.659 1.59l-4.682 4.683a2.25 2.25 0 00-.659 1.59v3.037c0 .684-.408 1.307-1.037 1.574l-2.25.95a.75.75 0 01-1.037-.696v-4.865a2.25 2.25 0 00-.659-1.59L3.288 6.22a2.25 2.25 0 01-.659-1.59V2.34a.75.75 0 01.628-.74z"
-                        clipRule="evenodd"
-                      />
-                    </svg>
-                    Template Catalog Filters & Sort
-                  </h4>
-                  <span className="text-xs font-bold text-cool-gray-300">
-                    Matching: <span className="text-cyan-400 font-black">{filteredTemplates.length}</span> / {templates.length}
-                  </span>
+            <CatalogSearchFilterBar
+              searchValue={searchTerm}
+              onSearchChange={setSearchTerm}
+              searchPlaceholder="Search container templates by name..."
+              isFiltersOpen={showTemplateFilters}
+              onToggleFilters={() => setShowTemplateFilters(prev => !prev)}
+              activeFilterCount={
+                (templateUsageFilter !== 'all' ? 1 : 0) +
+                (templateImageFilter !== 'all' ? 1 : 0) +
+                (templateSortBy !== 'name_asc' ? 1 : 0)
+              }
+              onResetFilters={() => {
+                setSearchTerm('');
+                setTemplateUsageFilter('all');
+                setTemplateImageFilter('all');
+                setTemplateSortBy('name_asc');
+              }}
+            >
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                <div className="space-y-1">
+                  <label className="text-[11px] font-bold text-cool-gray-400 uppercase tracking-wider block">
+                    Active Usage
+                  </label>
+                  <select
+                    value={templateUsageFilter}
+                    onChange={(e) => setTemplateUsageFilter(e.target.value as any)}
+                    className="w-full h-9 bg-cool-gray-900 border border-cool-gray-750 rounded-lg px-2.5 text-xs text-white outline-none focus:border-cyan-500 cursor-pointer font-sans"
+                  >
+                    <option value="all">All Templates ({templates.length})</option>
+                    <option value="in_use">In Use ({templates.filter(t => nonArchivedActive.some(c => c.templateId === t.id || c.name.toLowerCase().trim() === t.name.toLowerCase().trim())).length})</option>
+                    <option value="unused">Unused ({templates.filter(t => !nonArchivedActive.some(c => c.templateId === t.id || c.name.toLowerCase().trim() === t.name.toLowerCase().trim())).length})</option>
+                  </select>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
-                  {/* Usage Filter */}
-                  <div className="space-y-1">
-                    <label className="text-[11px] font-bold text-cool-gray-400 uppercase tracking-wider block">
-                      Active Usage
-                    </label>
-                    <select
-                      value={templateUsageFilter}
-                      onChange={(e) => setTemplateUsageFilter(e.target.value as any)}
-                      className="w-full bg-cool-gray-900 border border-cool-gray-700 rounded-md px-2.5 py-1.5 text-xs text-white outline-none focus:ring-1 focus:ring-cyan-500 cursor-pointer font-sans"
-                    >
-                      <option value="all">All Templates</option>
-                      <option value="in_use">In Use ({templates.filter(t => nonArchivedActive.some(c => c.templateId === t.id || c.name.toLowerCase().trim() === t.name.toLowerCase().trim())).length})</option>
-                      <option value="unused">Unused ({templates.filter(t => !nonArchivedActive.some(c => c.templateId === t.id || c.name.toLowerCase().trim() === t.name.toLowerCase().trim())).length})</option>
-                    </select>
-                  </div>
+                <div className="space-y-1">
+                  <label className="text-[11px] font-bold text-cool-gray-400 uppercase tracking-wider block">
+                    Photo Asset
+                  </label>
+                  <select
+                    value={templateImageFilter}
+                    onChange={(e) => setTemplateImageFilter(e.target.value as any)}
+                    className="w-full h-9 bg-cool-gray-900 border border-cool-gray-750 rounded-lg px-2.5 text-xs text-white outline-none focus:border-cyan-500 cursor-pointer font-sans"
+                  >
+                    <option value="all">All Templates</option>
+                    <option value="has_image">Has Custom Photo</option>
+                    <option value="no_image">No Photo Attached</option>
+                  </select>
+                </div>
 
-                  {/* Photo/Image Filter */}
-                  <div className="space-y-1">
-                    <label className="text-[11px] font-bold text-cool-gray-400 uppercase tracking-wider block">
-                      Photo Asset
-                    </label>
-                    <select
-                      value={templateImageFilter}
-                      onChange={(e) => setTemplateImageFilter(e.target.value as any)}
-                      className="w-full bg-cool-gray-900 border border-cool-gray-700 rounded-md px-2.5 py-1.5 text-xs text-white outline-none focus:ring-1 focus:ring-cyan-500 cursor-pointer font-sans"
-                    >
-                      <option value="all">All Templates</option>
-                      <option value="has_image">Has Custom Photo</option>
-                      <option value="no_image">No Photo Attached</option>
-                    </select>
-                  </div>
-
-                  {/* Sorting */}
-                  <div className="space-y-1">
-                    <label className="text-[11px] font-bold text-cool-gray-400 uppercase tracking-wider block">
-                      Sort Order
-                    </label>
-                    <select
-                      value={templateSortBy}
-                      onChange={(e) => setTemplateSortBy(e.target.value as any)}
-                      className="w-full bg-cool-gray-900 border border-cool-gray-700 rounded-md px-2.5 py-1.5 text-xs text-white outline-none focus:ring-1 focus:ring-cyan-500 cursor-pointer font-sans"
-                    >
-                      <option value="name_asc">Name: A to Z</option>
-                      <option value="name_desc">Name: Z to A</option>
-                      <option value="usage_desc">Most Active Containers First</option>
-                      <option value="usage_asc">Least Active Containers First</option>
-                      <option value="newest">Recently Added First</option>
-                    </select>
-                  </div>
+                <div className="space-y-1">
+                  <label className="text-[11px] font-bold text-cool-gray-400 uppercase tracking-wider block">
+                    Sort Order
+                  </label>
+                  <select
+                    value={templateSortBy}
+                    onChange={(e) => setTemplateSortBy(e.target.value as any)}
+                    className="w-full h-9 bg-cool-gray-900 border border-cool-gray-750 rounded-lg px-2.5 text-xs text-white outline-none focus:border-cyan-500 cursor-pointer font-sans"
+                  >
+                    <option value="name_asc">Name: A to Z</option>
+                    <option value="name_desc">Name: Z to A</option>
+                    <option value="usage_desc">Most Active Containers First</option>
+                    <option value="usage_asc">Least Active Containers First</option>
+                    <option value="newest">Recently Added First</option>
+                  </select>
                 </div>
               </div>
-            )}
+            </CatalogSearchFilterBar>
+
+            <div className="bg-cool-gray-850/60 p-3 rounded-xl border border-cool-gray-750/70 text-xs text-cool-gray-300 flex items-center justify-between gap-2">
+              <p>
+                📋 <strong>Container Templates Catalog:</strong> Templates store reusable container definitions. Active containers linked to a template inherit updates automatically.
+              </p>
+              <span className="text-[11px] font-bold text-cool-gray-400 shrink-0 tabular-nums">
+                {filteredTemplates.length} / {templates.length}
+              </span>
+            </div>
 
             {templates.length === 0 ? (
               <div className="text-center py-12 bg-cool-gray-900/20 rounded-xl border-2 border-dashed border-cool-gray-800">
@@ -2360,47 +2358,31 @@ const LibraryView: React.FC<{
   };
 
   const renderUnifiedContainers = (containersList?: Container[]) => {
-    return (
-      <div className="space-y-4 mt-4">
-        {/* Filter & Sorting Controls Card */}
-        <div className="bg-cool-gray-850/65 rounded-xl border border-cool-gray-750/70 p-4 shadow-sm space-y-4">
-          <div className="flex items-center justify-between flex-wrap gap-2 pb-2.5 border-b border-cool-gray-750/40">
-            <h4 className="text-xs font-extrabold text-cool-gray-400 uppercase tracking-wider flex items-center gap-1.5 select-none">
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                viewBox="0 0 20 20"
-                fill="currentColor"
-                className="w-4 h-4 text-cyan-400"
-              >
-                <path
-                  fillRule="evenodd"
-                  d="M2.628 1.601C5.028 1.206 7.49 1 10 1s4.973.206 7.372.601a.75.75 0 01.628.74v2.288a2.25 2.25 0 01-.659 1.59l-4.682 4.683a2.25 2.25 0 00-.659 1.59v3.037c0 .684-.408 1.307-1.037 1.574l-2.25.95a.75.75 0 01-1.037-.696v-4.865a2.25 2.25 0 00-.659-1.59L3.288 6.22a2.25 2.25 0 01-.659-1.59V2.34a.75.75 0 01.628-.74z"
-                  clipRule="evenodd"
-                />
-              </svg>
-              Catalog Query Filters & Arrangement
-            </h4>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={handleSelectAllMatched}
-                className="text-[11px] px-2.5 py-1 bg-cyan-950/45 hover:bg-cyan-900/40 text-cyan-300 rounded font-bold border border-cyan-800/35 transition-all select-none cursor-pointer"
-                title="Select all active filtered containers"
-              >
-                Select All Matching ({filteredContainers.length})
-              </button>
-              {selectedCount > 0 && (
-                <button
-                  onClick={handleDeselectAll}
-                  className="text-[11px] px-2.5 py-1 bg-cool-gray-750 hover:bg-cool-gray-700 text-cool-gray-300 rounded font-semibold border border-cool-gray-700 transition-all select-none cursor-pointer"
-                >
-                  Deselect All ({selectedCount})
-                </button>
-              )}
-            </div>
-          </div>
+    const activeContainerFilterCount =
+      (containerStatusFilter !== 'all' ? 1 : 0) +
+      (containerRetireFilter !== 'all' ? 1 : 0) +
+      (containerLocFilter !== 'all' ? 1 : 0) +
+      (containerSortBy !== 'name_asc' ? 1 : 0);
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
-            {/* Status Filter */}
+    return (
+      <div className="space-y-4">
+        <CatalogSearchFilterBar
+          searchValue={searchTerm}
+          onSearchChange={setSearchTerm}
+          searchPlaceholder="Search containers or freezer placements..."
+          isFiltersOpen={showContainerFilters}
+          onToggleFilters={() => setShowContainerFilters(prev => !prev)}
+          activeFilterCount={activeContainerFilterCount}
+          onResetFilters={() => {
+            setSearchTerm('');
+            setContainerStatusFilter('all');
+            setContainerRetireFilter('all');
+            setContainerLocFilter('all');
+            setContainerSortBy('name_asc');
+            setSelectedContainers({});
+          }}
+        >
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
             <div className="space-y-1">
               <label className="text-[11px] font-bold text-cool-gray-400 uppercase tracking-wider block">
                 Placement Status
@@ -2411,7 +2393,7 @@ const LibraryView: React.FC<{
                   setContainerStatusFilter(e.target.value as any);
                   setSelectedContainers({});
                 }}
-                className="w-full bg-cool-gray-900 border border-cool-gray-700 rounded-md px-2.5 py-1.5 text-xs text-white outline-none focus:ring-1 focus:ring-cyan-500 cursor-pointer font-sans"
+                className="w-full h-9 bg-cool-gray-900 border border-cool-gray-750 rounded-lg px-2.5 text-xs text-white outline-none focus:border-cyan-500 cursor-pointer font-sans"
               >
                 <option value="all">All Statuses</option>
                 <option value="placed">Active Placements Only</option>
@@ -2419,7 +2401,6 @@ const LibraryView: React.FC<{
               </select>
             </div>
 
-            {/* Container type / behavior filter */}
             <div className="space-y-1">
               <label className="text-[11px] font-bold text-cool-gray-400 uppercase tracking-wider block">
                 Type / Rule Filter
@@ -2430,15 +2411,14 @@ const LibraryView: React.FC<{
                   setContainerRetireFilter(e.target.value as any);
                   setSelectedContainers({});
                 }}
-                className="w-full bg-cool-gray-900 border border-cool-gray-700 rounded-md px-2.5 py-1.5 text-xs text-white outline-none focus:ring-1 focus:ring-cyan-500 cursor-pointer font-sans"
+                className="w-full h-9 bg-cool-gray-900 border border-cool-gray-750 rounded-lg px-2.5 text-xs text-white outline-none focus:border-cyan-500 cursor-pointer font-sans"
               >
                 <option value="all">All Containers</option>
-                <option value="from_template">📋 From Template</option>
-                <option value="retire_on_empty">🗑️ Retire on Empty</option>
+                <option value="from_template">From Template</option>
+                <option value="retire_on_empty">Retire on Empty</option>
               </select>
             </div>
 
-            {/* Location filter */}
             <div className="space-y-1">
               <label className="text-[11px] font-bold text-cool-gray-400 uppercase tracking-wider block">
                 Location Freezer
@@ -2449,7 +2429,7 @@ const LibraryView: React.FC<{
                   setContainerLocFilter(e.target.value);
                   setSelectedContainers({});
                 }}
-                className="w-full bg-cool-gray-900 border border-cool-gray-700 rounded-md px-2.5 py-1.5 text-xs text-white outline-none focus:ring-1 focus:ring-cyan-500 cursor-pointer font-sans"
+                className="w-full h-9 bg-cool-gray-900 border border-cool-gray-750 rounded-lg px-2.5 text-xs text-white outline-none focus:border-cyan-500 cursor-pointer font-sans"
               >
                 <option value="all">All Locations</option>
                 <option value="unassigned">Spare Blueprints</option>
@@ -2461,7 +2441,6 @@ const LibraryView: React.FC<{
               </select>
             </div>
 
-            {/* Sorting */}
             <div className="space-y-1">
               <label className="text-[11px] font-bold text-cool-gray-400 uppercase tracking-wider block">
                 Arrangement Sort
@@ -2469,7 +2448,7 @@ const LibraryView: React.FC<{
               <select
                 value={containerSortBy}
                 onChange={(e) => setContainerSortBy(e.target.value as any)}
-                className="w-full bg-cool-gray-900 border border-cool-gray-700 rounded-md px-2.5 py-1.5 text-xs text-white outline-none focus:ring-1 focus:ring-cyan-500 cursor-pointer font-sans"
+                className="w-full h-9 bg-cool-gray-900 border border-cool-gray-750 rounded-lg px-2.5 text-xs text-white outline-none focus:border-cyan-500 cursor-pointer font-sans"
               >
                 <option value="name_asc">Name: A to Z</option>
                 <option value="name_desc">Name: Z to A</option>
@@ -2479,7 +2458,34 @@ const LibraryView: React.FC<{
               </select>
             </div>
           </div>
-        </div>
+        </CatalogSearchFilterBar>
+
+        {filteredContainers.length > 0 && (
+          <div className="flex flex-wrap items-center justify-between gap-2 p-2 bg-cool-gray-900/40 border border-cool-gray-750/30 rounded-xl text-xs select-none">
+            <span className="text-cool-gray-400 font-semibold">
+              Showing <strong className="text-cool-gray-200 tabular-nums">{filteredContainers.length}</strong> container{filteredContainers.length === 1 ? '' : 's'}
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleSelectAllMatched}
+                className="text-[11px] px-2.5 py-1 bg-cyan-950/45 hover:bg-cyan-900/40 text-cyan-300 rounded font-bold border border-cyan-800/35 transition-all cursor-pointer"
+                title="Select all active filtered containers"
+              >
+                Select All Matching ({filteredContainers.length})
+              </button>
+              {selectedCount > 0 && (
+                <button
+                  type="button"
+                  onClick={handleDeselectAll}
+                  className="text-[11px] px-2.5 py-1 bg-cool-gray-750 hover:bg-cool-gray-700 text-cool-gray-300 rounded font-semibold border border-cool-gray-700 transition-all cursor-pointer"
+                >
+                  Deselect All ({selectedCount})
+                </button>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Main dynamic container list */}
         {renderUnifiedContainerGroups()}
@@ -2583,7 +2589,7 @@ const LibraryView: React.FC<{
       case "products": {
         if (state.products.length === 0) {
           return (
-            <div className="text-center py-12 bg-cool-gray-900/10 rounded-xl border-2 border-dashed border-cool-gray-800 mt-4">
+            <div className="text-center py-12 bg-cool-gray-900/10 rounded-xl border-2 border-dashed border-cool-gray-800">
               {isLoading ? (
                 <div className="flex flex-col items-center justify-center space-y-3 py-4">
                   <div className="w-8 h-8 rounded-full border-2 border-cyan-500/20 border-t-cyan-400 animate-spin" />
@@ -2591,25 +2597,143 @@ const LibraryView: React.FC<{
                 </div>
               ) : (
                 <p className="text-cool-gray-400 text-sm">
-                  No products found. Click "+ Product" to create one.
+                  No products found. Click "+ Add Product" to create one.
                 </p>
               )}
             </div>
           );
         }
 
-        if (Object.keys(sortedCategoriesMap).length === 0) {
-          return (
-            <div className="text-center py-12 bg-cool-gray-900/10 rounded-xl border-2 border-dashed border-cool-gray-800 mt-4">
-              <p className="text-cool-gray-400 text-sm">
-                No products or categories found matching your search.
-              </p>
-            </div>
-          );
-        }
+        const activeProductFilterCount =
+          (categoryFilter !== "all" ? 1 : 0) +
+          (stockLocationFilter !== "all" ? 1 : 0) +
+          (sortBy !== "name_asc" ? 1 : 0);
 
         return (
-          <div className="space-y-4 mt-4">
+          <div className="space-y-4">
+            <CatalogSearchFilterBar
+              searchValue={searchTerm}
+              onSearchChange={setSearchTerm}
+              searchPlaceholder="Search products, categories, SKU, or barcode..."
+              isFiltersOpen={showProductFilters}
+              onToggleFilters={() => setShowProductFilters((prev) => !prev)}
+              activeFilterCount={activeProductFilterCount}
+              onResetFilters={() => {
+                setCategoryFilter('all');
+                setSubCategoryFilter('all');
+                setStockLocationFilter('all');
+                setSortBy('name_asc');
+                setSearchTerm('');
+              }}
+            >
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                <div className="space-y-1">
+                  <label className="text-[11px] font-bold text-cool-gray-400 uppercase tracking-wider block">
+                    Category / Subcategory
+                  </label>
+                  <select
+                    value={
+                      categoryFilter === "all"
+                        ? "all"
+                        : subCategoryFilter === "all"
+                        ? `cat:${categoryFilter}`
+                        : `sub:${categoryFilter}|${subCategoryFilter}`
+                    }
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (val === "all") {
+                        setCategoryFilter("all");
+                        setSubCategoryFilter("all");
+                      } else if (val.startsWith("cat:")) {
+                        setCategoryFilter(val.slice(4));
+                        setSubCategoryFilter("all");
+                      } else if (val.startsWith("sub:")) {
+                        const [pCat, sCat] = val.slice(4).split("|");
+                        setCategoryFilter(pCat);
+                        setSubCategoryFilter(sCat);
+                      }
+                    }}
+                    className="w-full h-9 bg-cool-gray-900 border border-cool-gray-750 rounded-lg px-2.5 text-xs text-white font-semibold outline-none focus:border-cyan-500 cursor-pointer"
+                  >
+                    <option value="all" className="bg-cool-gray-900 text-white font-bold">
+                      All Categories &amp; Subcategories
+                    </option>
+                    {availableCategoryHierarchy.map(({ primary, subs }) => (
+                      <optgroup key={primary} label={primary} className="bg-cool-gray-900 text-cyan-400 font-bold">
+                        <option value={`cat:${primary}`} className="bg-cool-gray-900 text-white font-bold">
+                          {primary} (All)
+                        </option>
+                        {subs.map((sub) => (
+                          <option key={`${primary}|${sub}`} value={`sub:${primary}|${sub}`} className="bg-cool-gray-900 text-cool-gray-200 font-normal">
+                            {primary} / {sub}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[11px] font-bold text-cool-gray-400 uppercase tracking-wider block">
+                    Stock Location
+                  </label>
+                  <select
+                    value={stockLocationFilter}
+                    onChange={(e) => setStockLocationFilter(e.target.value as any)}
+                    className="w-full h-9 bg-cool-gray-900 border border-cool-gray-750 rounded-lg px-2.5 text-xs text-white font-semibold outline-none focus:border-cyan-500 cursor-pointer"
+                  >
+                    <option value="all" className="bg-cool-gray-900 text-white">All Stock Locations</option>
+                    <option value="onsite" className="bg-cool-gray-900 text-emerald-300">On-Site Stock (&gt;0 pkgs)</option>
+                    <option value="offsite" className="bg-cool-gray-900 text-indigo-300">Off-Site Stock (&gt;0 pkgs/lbs)</option>
+                    <option value="both" className="bg-cool-gray-900 text-cyan-300">Both On &amp; Off-Site (&gt;0)</option>
+                    <option value="instock" className="bg-cool-gray-900 text-emerald-400">In Stock Anywhere (&gt;0)</option>
+                    <option value="out_of_stock" className="bg-cool-gray-900 text-rose-300">Out of Stock / Neither (0)</option>
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[11px] font-bold text-cool-gray-400 uppercase tracking-wider block">
+                    Sort Order
+                  </label>
+                  <select
+                    value={sortBy}
+                    onChange={(e) => setSortBy(e.target.value as any)}
+                    className="w-full h-9 bg-cool-gray-900 border border-cool-gray-750 rounded-lg px-2.5 text-xs text-white font-semibold outline-none focus:border-cyan-500 cursor-pointer"
+                  >
+                    <option value="name_asc">Name: A to Z</option>
+                    <option value="name_desc">Name: Z to A</option>
+                    <option value="stock_asc">Stock: Low to High</option>
+                    <option value="stock_desc">Stock: High to Low</option>
+                    <option value="understock">Understocked First</option>
+                  </select>
+                </div>
+              </div>
+            </CatalogSearchFilterBar>
+
+            {Object.keys(sortedCategoriesMap).length === 0 ? (
+              <div className="text-center py-12 bg-cool-gray-900/10 rounded-xl border-2 border-dashed border-cool-gray-800 space-y-3">
+                <p className="text-cool-gray-400 text-sm">
+                  No products or categories found matching your current filters.
+                </p>
+                {catalogTotals.isFiltered && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCategoryFilter('all');
+                      setSubCategoryFilter('all');
+                      setStockLocationFilter('all');
+                      setProductArchiveFilter('active');
+                      setSortBy('name_asc');
+                      setSearchTerm('');
+                    }}
+                    className="px-3.5 py-1.5 bg-cool-gray-800 hover:bg-cool-gray-750 text-cyan-300 border border-cool-gray-700 rounded-lg text-xs font-semibold transition cursor-pointer"
+                  >
+                    Reset Filters
+                  </button>
+                )}
+              </div>
+            ) : (
+              <>
             {/* Catalog-Wide Cumulative Quantities Summary Strip */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 bg-cool-gray-850/40 p-3.5 border border-cool-gray-750/70 rounded-xl">
               {/* On-Site Stock */}
@@ -2695,170 +2819,7 @@ const LibraryView: React.FC<{
               </div>
             </div>
 
-            {/* Tool controls & Multi-Filter Bar */}
-            <div className="space-y-2.5 bg-cool-gray-850/50 p-3 rounded-xl border border-cool-gray-750/60 text-xs">
-              {/* Category, Subcategory & Stock Location Filter Row */}
-              <div className="flex flex-wrap items-center justify-between gap-2.5">
-                <div className="flex flex-wrap items-center gap-2 flex-grow">
-                  {/* Unified Category / Subcategory Filter */}
-                  <div className="flex items-center gap-1.5 bg-cool-gray-900 border border-cool-gray-700/70 rounded-lg px-2.5 py-1.5 shrink-0">
-                    <span className="text-[11px] font-bold text-cool-gray-400 uppercase tracking-wider">Category / Subcategory:</span>
-                    <select
-                      value={
-                        categoryFilter === "all"
-                          ? "all"
-                          : subCategoryFilter === "all"
-                          ? `cat:${categoryFilter}`
-                          : `sub:${categoryFilter}|${subCategoryFilter}`
-                      }
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        if (val === "all") {
-                          setCategoryFilter("all");
-                          setSubCategoryFilter("all");
-                        } else if (val.startsWith("cat:")) {
-                          setCategoryFilter(val.slice(4));
-                          setSubCategoryFilter("all");
-                        } else if (val.startsWith("sub:")) {
-                          const [pCat, sCat] = val.slice(4).split("|");
-                          setCategoryFilter(pCat);
-                          setSubCategoryFilter(sCat);
-                        }
-                      }}
-                      className="bg-transparent text-white font-semibold outline-none text-xs cursor-pointer max-w-[280px] sm:max-w-[340px]"
-                    >
-                      <option value="all" className="bg-cool-gray-900 text-white font-bold">
-                        📁 All Categories &amp; Subcategories
-                      </option>
-                      {availableCategoryHierarchy.map(({ primary, subs }) => (
-                        <optgroup key={primary} label={primary} className="bg-cool-gray-900 text-cyan-400 font-bold">
-                          <option value={`cat:${primary}`} className="bg-cool-gray-900 text-white font-bold">
-                            📁 {primary} (All)
-                          </option>
-                          {subs.map((sub) => (
-                            <option key={`${primary}|${sub}`} value={`sub:${primary}|${sub}`} className="bg-cool-gray-900 text-cool-gray-200 font-normal">
-                              └ {primary} / {sub}
-                            </option>
-                          ))}
-                        </optgroup>
-                      ))}
-                    </select>
-                  </div>
-
-                  {/* Stock / Location Filter */}
-                  <div className="flex items-center gap-1.5 bg-cool-gray-900 border border-cool-gray-700/70 rounded-lg px-2.5 py-1.5 shrink-0">
-                    <span className="text-[11px] font-bold text-cool-gray-400 uppercase tracking-wider">Stock Location:</span>
-                    <select
-                      value={stockLocationFilter}
-                      onChange={(e) => setStockLocationFilter(e.target.value as any)}
-                      className="bg-transparent text-white font-semibold outline-none text-xs cursor-pointer"
-                    >
-                      <option value="all" className="bg-cool-gray-900 text-white">📍 All Stock Locations</option>
-                      <option value="onsite" className="bg-cool-gray-900 text-emerald-300">🏠 On-Site Stock (&gt;0 pkgs)</option>
-                      <option value="offsite" className="bg-cool-gray-900 text-indigo-300">🏭 Off-Site Stock (&gt;0 pkgs/lbs)</option>
-                      <option value="both" className="bg-cool-gray-900 text-cyan-300">⚡ Both On & Off-Site (&gt;0)</option>
-                      <option value="instock" className="bg-cool-gray-900 text-emerald-400">✅ In Stock Anywhere (&gt;0)</option>
-                      <option value="out_of_stock" className="bg-cool-gray-900 text-rose-300">⚠️ Out of Stock / Neither (0)</option>
-                    </select>
-                  </div>
-
-                  {/* Clear Filters Button */}
-                  {catalogTotals.isFiltered && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setCategoryFilter('all');
-                        setSubCategoryFilter('all');
-                        setStockLocationFilter('all');
-                        setProductArchiveFilter('active');
-                        setSearchTerm('');
-                      }}
-                      className="px-2.5 py-1.5 bg-rose-950/60 hover:bg-rose-900 text-rose-300 border border-rose-800/60 rounded-lg text-xs font-bold transition flex items-center gap-1 cursor-pointer shrink-0"
-                      title="Reset all search, category, location, and status filters"
-                    >
-                      <span>✕ Reset Filters</span>
-                    </button>
-                  )}
-                </div>
-
-                {/* Sort Order */}
-                <div className="flex items-center gap-2 shrink-0 select-none">
-                  <span className="font-semibold text-cool-gray-400">Sort:</span>
-                  <select
-                    value={sortBy}
-                    onChange={(e) => setSortBy(e.target.value as any)}
-                    className="bg-cool-gray-900 border border-cool-gray-700 rounded-lg px-2.5 py-1.5 text-xs text-white font-semibold outline-none focus:ring-1 focus:ring-cyan-500 cursor-pointer"
-                  >
-                    <option value="name_asc">Name: A to Z</option>
-                    <option value="name_desc">Name: Z to A</option>
-                    <option value="stock_asc">Stock: Low to High</option>
-                    <option value="stock_desc">Stock: High to Low</option>
-                    <option value="understock">Understocked First</option>
-                  </select>
-                </div>
-              </div>
-
-              {/* Archive Status Pills & Expand/Collapse Controls Row */}
-              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-cool-gray-750/50 pt-2">
-                <div className="flex items-center gap-1 bg-cool-gray-950 p-1 rounded-md border border-cool-gray-700/80">
-                  <button
-                    type="button"
-                    onClick={() => setProductArchiveFilter('active')}
-                    className={`px-2.5 py-1 rounded text-xs font-bold transition cursor-pointer ${
-                      productArchiveFilter === 'active'
-                        ? 'bg-cyan-600 text-white shadow-xs'
-                        : 'text-cool-gray-400 hover:text-cool-gray-200 hover:bg-cool-gray-850'
-                    }`}
-                  >
-                    Active Catalog
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setProductArchiveFilter('archived')}
-                    className={`px-2.5 py-1 rounded text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
-                      productArchiveFilter === 'archived'
-                        ? 'bg-amber-600 text-white shadow-xs'
-                        : 'text-cool-gray-400 hover:text-cool-gray-200 hover:bg-cool-gray-850'
-                    }`}
-                  >
-                    <span>Archived Items</span>
-                    {state.products.filter(p => p.isArchived).length > 0 && (
-                      <span className="text-[10px] bg-amber-950 text-amber-300 px-1.5 py-0.2 rounded-full border border-amber-800/80 font-mono">
-                        {state.products.filter(p => p.isArchived).length}
-                      </span>
-                    )}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setProductArchiveFilter('all')}
-                    className={`px-2.5 py-1 rounded text-xs font-bold transition cursor-pointer ${
-                      productArchiveFilter === 'all'
-                        ? 'bg-cool-gray-700 text-white shadow-xs'
-                        : 'text-cool-gray-400 hover:text-cool-gray-200 hover:bg-cool-gray-850'
-                    }`}
-                  >
-                    Show All
-                  </button>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={handleExpandAll}
-                    className="px-2.5 py-1 bg-cool-gray-750 hover:bg-cool-gray-700 text-cool-gray-200 hover:text-white rounded transition font-semibold cursor-pointer"
-                  >
-                    Expand All
-                  </button>
-                  <button
-                    onClick={handleCollapseAll}
-                    className="px-2.5 py-1 bg-cool-gray-750 hover:bg-cool-gray-700 text-cool-gray-200 hover:text-white rounded transition font-semibold cursor-pointer"
-                  >
-                    Collapse All
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* Dynamic Selection Header/Toolbar for Catalog */}
+            {/* Dynamic Selection & Collapse Header/Toolbar for Catalog */}
             {allVisibleProducts.length > 0 && (
               <div className="flex flex-wrap items-center justify-between gap-2 p-2 bg-cool-gray-900/40 border border-cool-gray-750/30 rounded-xl text-xs select-none">
                 <div className="flex items-center gap-2">
@@ -2871,14 +2832,30 @@ const LibraryView: React.FC<{
                     </span>
                   )}
                 </div>
-                
-                <button
-                  type="button"
-                  onClick={handleProductToggleAllMatched}
-                  className="px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider text-cyan-400 hover:text-cyan-300 bg-cool-gray-850 hover:bg-cool-gray-750 border border-cool-gray-700/60 rounded-md transition cursor-pointer"
-                >
-                  {allVisibleProducts.every(p => selectedProductIds[p.id]) ? '⬜ Deselect All' : '☑️ Select All Matching'}
-                </button>
+
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={handleExpandAll}
+                    className="px-2.5 py-1 bg-cool-gray-850 hover:bg-cool-gray-750 border border-cool-gray-700/60 text-cool-gray-200 hover:text-white rounded-md text-[11px] font-semibold transition cursor-pointer"
+                  >
+                    Expand All
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCollapseAll}
+                    className="px-2.5 py-1 bg-cool-gray-850 hover:bg-cool-gray-750 border border-cool-gray-700/60 text-cool-gray-200 hover:text-white rounded-md text-[11px] font-semibold transition cursor-pointer"
+                  >
+                    Collapse All
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleProductToggleAllMatched}
+                    className="px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider text-cyan-400 hover:text-cyan-300 bg-cool-gray-850 hover:bg-cool-gray-750 border border-cool-gray-700/60 rounded-md transition cursor-pointer"
+                  >
+                    {allVisibleProducts.every(p => selectedProductIds[p.id]) ? 'Deselect All' : 'Select All Matching'}
+                  </button>
+                </div>
               </div>
             )}
 
@@ -3400,66 +3377,128 @@ const LibraryView: React.FC<{
                 );
               })}
             </div>
+              </>
+            )}
           </div>
         );
       }
       case "containers":
         return renderContainersTab();
       case "freezers":
-        return (
-          <div className="mt-4">
-            <ManageFreezers state={state} dispatch={dispatch} type="freezers" />
-          </div>
-        );
-      case "lists":
-        return <ManageLists state={state} dispatch={dispatch} offSiteQuantityMap={offSiteQuantityMap} offSiteWeightMap={offSiteWeightMap} />;
+        return <ManageFreezers state={state} dispatch={dispatch} type="freezers" />;
       case "pwa":
-      case "settings": {
-        const isPwaTab = activeTab === "pwa";
-        return (
-          <div className="space-y-6 mt-4 max-w-4xl font-sans">
-            {/* Page Header */}
-            <div className="bg-cool-gray-850 p-3 sm:p-4 rounded-xl border border-cool-gray-750 shadow-sm space-y-3">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <div>
-                  <h3 className="text-sm sm:text-base font-bold text-cool-gray-100 flex items-center gap-2">
-                    {isPwaTab ? (
-                      <>
-                        <Smartphone className="w-4.5 h-4.5 text-cyan-400" />
-                        PWA & Connected Devices
-                      </>
-                    ) : (
-                      <>
-                        <Settings className="w-4.5 h-4.5 text-cyan-400" />
-                        Application & System Settings
-                      </>
-                    )}
-                  </h3>
-                  <p className="text-xs text-cool-gray-400 mt-0.5 font-medium">
-                    {isPwaTab
-                      ? "Configure standalone mobile application parameters, customize icons, and manage connected clients."
-                      : "Configure general application preferences and manage sandbox duplicates."}
-                  </p>
-                </div>
+      case "users_devices": {
+        if (!authLoaded) {
+          return (
+            <div className="mt-6 bg-cool-gray-850 border border-cool-gray-750 rounded-xl p-8 text-center text-cool-gray-400 text-xs">
+              Verifying administrator permissions...
+            </div>
+          );
+        }
+        if (isAdminGated) {
+          return (
+            <div className="mt-6 max-w-xl mx-auto bg-cool-gray-850 border border-amber-500/40 rounded-2xl p-6 text-center space-y-4 shadow-xl animate-fade-in">
+              <div className="w-14 h-14 mx-auto rounded-full bg-amber-950/70 border border-amber-500/40 flex items-center justify-center text-amber-300">
+                <Shield className="w-7 h-7" />
+              </div>
+              <div className="space-y-1.5">
+                <h3 className="text-lg font-extrabold text-white">Administrator Access Required</h3>
+                <p className="text-xs text-cool-gray-300 leading-relaxed">
+                  Users &amp; Connected Devices management is restricted to administrators.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center justify-center gap-2.5 pt-1">
+                <button
+                  type="button"
+                  onClick={() => openAccountModal('signin')}
+                  className="px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-extrabold transition cursor-pointer flex items-center gap-1.5 shadow"
+                >
+                  <KeyRound className="w-3.5 h-3.5" />
+                  <span>Sign In as Admin</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSwitchTab("products")}
+                  className="px-4 py-2 rounded-lg bg-cool-gray-800 hover:bg-cool-gray-750 border border-cool-gray-700 text-cool-gray-300 text-xs font-bold transition cursor-pointer"
+                >
+                  Return to Catalog
+                </button>
               </div>
             </div>
-
-            {isPwaTab ? (
-              <div className="space-y-6 animate-fade-in">
-                {/* Standalone PWA / Open in Chrome Card */}
-                <div className="bg-gradient-to-br from-cool-gray-850 to-cool-gray-900 rounded-xl border border-cyan-500/30 p-5 shadow-sm space-y-4">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-cool-gray-750/70">
+          );
+        }
+        return <UsersAndDevicesPanel hideInternalHeader />;
+      }
+      case "offsite_settings": {
+        return (
+          <OffSiteSettingsPanel
+            state={state}
+            dispatch={dispatch}
+            fromName={defaultFromName}
+            setFromName={setDefaultFromName}
+            fromAddress={defaultFromAddress}
+            setFromAddress={setDefaultFromAddress}
+            theoreticalBoxWeight={theoreticalBoxWeight}
+            setTheoreticalBoxWeight={setTheoreticalBoxWeight}
+          />
+        );
+      }
+      case "settings": {
+        if (!authLoaded) {
+          return (
+            <div className="bg-cool-gray-850 border border-cool-gray-750 rounded-xl p-8 text-center text-cool-gray-400 text-xs">
+              Verifying administrator permissions...
+            </div>
+          );
+        }
+        if (isAdminGated) {
+          return (
+            <div className="max-w-xl mx-auto bg-cool-gray-850 border border-amber-500/40 rounded-2xl p-6 text-center space-y-4 shadow-xl animate-fade-in">
+              <div className="w-14 h-14 mx-auto rounded-full bg-amber-950/70 border border-amber-500/40 flex items-center justify-center text-amber-300">
+                <Shield className="w-7 h-7" />
+              </div>
+              <div className="space-y-1.5">
+                <h3 className="text-lg font-extrabold text-white">Administrator Access Required</h3>
+                <p className="text-xs text-cool-gray-300 leading-relaxed">
+                  General Settings are restricted to administrators.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center justify-center gap-2.5 pt-1">
+                <button
+                  type="button"
+                  onClick={() => openAccountModal('signin')}
+                  className="px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-extrabold transition cursor-pointer flex items-center gap-1.5 shadow"
+                >
+                  <KeyRound className="w-3.5 h-3.5" />
+                  <span>Sign In as Admin</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSwitchTab("products")}
+                  className="px-4 py-2 rounded-lg bg-cool-gray-800 hover:bg-cool-gray-750 border border-cool-gray-700 text-cool-gray-300 text-xs font-bold transition cursor-pointer"
+                >
+                  Return to Catalog
+                </button>
+              </div>
+            </div>
+          );
+        }
+        return (
+          <div className="space-y-6 max-w-4xl font-sans">
+            <div className="space-y-6 animate-fade-in">
+              {/* Standalone PWA / Open in Chrome & Home Screen Branding Card */}
+              <div className="bg-cool-gray-850 rounded-xl border border-cool-gray-750 p-5 space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-cool-gray-800">
                     <div>
-                      <h3 className="text-base font-bold text-cyan-300 flex items-center gap-2">
-                        <Smartphone className="w-5 h-5 text-cyan-400" />
+                      <h3 className="text-sm font-bold text-cool-gray-100 flex items-center gap-2">
+                        <Smartphone className="w-4 h-4 text-cyan-400" />
                         Offline App Installation & Browser Launch
                       </h3>
                       <p className="text-xs text-cool-gray-400 mt-1 leading-relaxed">
                         To install the tracker as a standalone home-screen app for true offline freezer usage, open it in an external browser window (<span className="text-cool-gray-200 font-semibold">Google Chrome</span> or <span className="text-cool-gray-200 font-semibold">Safari</span>) rather than inside the Home Assistant Companion App.
                       </p>
                     </div>
-                    <span className="self-start sm:self-auto text-[10px] font-extrabold text-cyan-400 bg-cyan-950/40 border border-cyan-500/30 px-2.5 py-1 rounded-full uppercase tracking-wider shrink-0 flex items-center gap-1.5">
-                      <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></span>
+                    <span className="self-start sm:self-auto text-[11px] font-semibold text-cyan-300 bg-cyan-950/50 border border-cyan-500/30 px-2.5 py-0.5 rounded-full shrink-0 whitespace-nowrap">
                       PWA Ready
                     </span>
                   </div>
@@ -3578,7 +3617,7 @@ const LibraryView: React.FC<{
                                 onClick={async () => {
                                   setIsSavingPwaUrl(true);
                                   try {
-                                    const res = await fetch(getApiUrl('api/app-config/pwa_custom_url'), {
+                                    const res = await authFetch(getApiUrl('api/app-config/pwa_custom_url'), {
                                       method: 'DELETE',
                                       headers: { 'Content-Type': 'application/json' }
                                     });
@@ -3649,7 +3688,7 @@ const LibraryView: React.FC<{
 
                                   setIsSavingPwaUrl(true);
                                   try {
-                                    const res = await fetch(getApiUrl('api/app-config'), {
+                                    const res = await authFetch(getApiUrl('api/app-config'), {
                                       method: 'POST',
                                       headers: { 'Content-Type': 'application/json' },
                                       body: JSON.stringify({ key: 'pwa_custom_url', value: trimmed })
@@ -3979,25 +4018,10 @@ const LibraryView: React.FC<{
                   </div>
                 </div>
 
-                {/* Cloudflare Access & Security Token Helper */}
-                <CloudflareTokenHelperCard
-                  enabled={cfTokenRefreshEnabled}
-                  onToggle={handleToggleCfTokenRefresh}
-                />
-
-                {/* PWA & Connected Devices Manager Card */}
-                <PwaDeviceManagerCard />
-              </div>
-            ) : (
-              <div className="space-y-6 animate-fade-in">
                 {/* Demo Sandbox Playground Card */}
-                <div className="bg-gradient-to-br from-amber-950/20 to-cool-gray-850 rounded-xl border border-amber-500/25 p-5 shadow-sm space-y-4">
+                <div className="bg-cool-gray-850 rounded-xl border border-amber-500/30 p-5 space-y-4">
                   <div>
-                    <h3 className="text-base font-bold text-amber-400 mb-1 flex items-center gap-2">
-                      <span className="flex h-2.5 w-2.5 relative">
-                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
-                        <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-amber-500"></span>
-                      </span>
+                    <h3 className="text-sm font-bold text-amber-300 mb-1 flex items-center gap-2">
                       Demo Sandbox Playground
                     </h3>
                     <p className="text-xs text-cool-gray-400 leading-relaxed font-medium">
@@ -4012,7 +4036,6 @@ const LibraryView: React.FC<{
                           <span className="text-xs font-bold text-cool-gray-300">Playground Status:</span>
                           {state.isDemoMode ? (
                             <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20 uppercase tracking-wide">
-                              <span className="h-1.5 w-1.5 rounded-full bg-amber-400 animate-ping"></span>
                               Active
                             </span>
                           ) : (
@@ -4107,94 +4130,39 @@ const LibraryView: React.FC<{
                   </div>
                 </div>
 
-                <div className="bg-cool-gray-850 rounded-xl border border-cool-gray-750 p-5 shadow-sm space-y-5">
+                <div className="bg-cool-gray-850 rounded-xl border border-cool-gray-750 p-5 space-y-5">
                   <div>
-                    <h3 className="text-base font-bold text-cool-gray-100 mb-1 flex items-center gap-2">
-                      ⚙️ Application Preferences
+                    <h3 className="text-sm font-bold text-cool-gray-100 mb-1 flex items-center gap-2">
+                      Application Preferences &amp; Diagnostics
                     </h3>
                     <p className="text-xs text-cool-gray-400 font-medium">
-                      Customize your local application and display preferences.
+                      Check system update status, manage Cloudflare token re-authentication, or jump to shared Off-Site settings.
                     </p>
                   </div>
 
-                  <div className="border-t border-cool-gray-750/50 pt-4 space-y-4">
-                    <span className="text-xs font-bold text-cool-gray-300 block uppercase tracking-wider">
-                      Default Movement Report Shipper (From Address)
-                    </span>
-                    <p className="text-[11px] text-cool-gray-400 font-medium leading-relaxed">
-                      Set the default origin details printed on your Delivery Slips and Transfer Manifests. These can still be customized live inside each report form.
-                    </p>
-                    <div className="space-y-3">
-                      <div>
-                        <label className="block text-[10px] font-extrabold text-cool-gray-400 mb-1 uppercase tracking-wider">Default Shipper Name</label>
-                        <input
-                          type="text"
-                          value={defaultFromName}
-                          onChange={(e) => {
-                            setDefaultFromName(e.target.value);
-                            localStorage.setItem("report-from-name", e.target.value);
-                            saveAppConfigKey("report-from-name", e.target.value);
-                          }}
-                          className="w-full max-w-md bg-cool-gray-900 border border-cool-gray-750 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:border-cyan-500 font-semibold"
-                          placeholder="Shipper or farm name (e.g. My Ranch)"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-[10px] font-extrabold text-cool-gray-400 mb-1 uppercase tracking-wider">Default Shipper Address</label>
-                        <textarea
-                          value={defaultFromAddress}
-                          onChange={(e) => {
-                            setDefaultFromAddress(e.target.value);
-                            localStorage.setItem("report-from-address", e.target.value);
-                            saveAppConfigKey("report-from-address", e.target.value);
-                          }}
-                          rows={3}
-                          className="w-full max-w-md bg-cool-gray-900 border border-cool-gray-750 rounded-xl px-4 py-2 text-white text-sm focus:outline-none focus:border-cyan-500 font-semibold"
-                          placeholder="Street address, City, State, Zip"
-                        />
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="border-t border-cool-gray-750/50 pt-4 space-y-4">
-                    <span className="text-xs font-bold text-cool-gray-300 block uppercase tracking-wider">
-                      Off-Site Storage Settings
-                    </span>
-                    <p className="text-[11px] text-cool-gray-400 font-medium leading-relaxed">
-                      Specify the theoretical box weight (lbs) used in simulated box count calculations inside the Off-Site view.
-                    </p>
+                  {/* Quick shortcut to Off-Site Settings */}
+                  <div className="border-t border-cool-gray-800 pt-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                     <div>
-                      <label className="block text-[10px] font-extrabold text-cool-gray-400 mb-1 uppercase tracking-wider">Theoretical Box Weight (lbs)</label>
-                      <input
-                        type="number"
-                        value={theoreticalBoxWeight === 0 ? '' : theoreticalBoxWeight}
-                        onChange={(e) => {
-                          const val = parseFloat(e.target.value);
-                          setTheoreticalBoxWeight(isNaN(val) ? 0 : val);
-                          if (!isNaN(val) && val > 0) {
-                            localStorage.setItem("offsite-theoretical-box-weight", val.toString());
-                            saveAppConfigKey("offsite-theoretical-box-weight", val.toString());
-                          }
-                        }}
-                        onBlur={() => {
-                          if (!theoreticalBoxWeight || theoreticalBoxWeight <= 0) {
-                            setTheoreticalBoxWeight(40);
-                            localStorage.setItem("offsite-theoretical-box-weight", "40");
-                            saveAppConfigKey("offsite-theoretical-box-weight", "40");
-                          }
-                        }}
-                        className="w-full max-w-xs bg-cool-gray-900 border border-cool-gray-750 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:border-cyan-500 font-semibold"
-                        placeholder="40"
-                        min="1"
-                        step="0.1"
-                      />
+                      <span className="text-xs font-bold text-cool-gray-200 block">
+                        Off-Site Shipper &amp; Simulated Box Weight
+                      </span>
+                      <p className="text-[11px] text-cool-gray-400 mt-0.5 leading-relaxed">
+                        Default Movement Report Shipper address and simulated box weight now live in Operations → Off-Site Settings for all team members.
+                      </p>
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => handleSwitchTab("offsite_settings")}
+                      className="px-3 py-1.5 bg-cool-gray-800 hover:bg-cool-gray-750 text-cyan-300 border border-cool-gray-700 rounded-lg text-xs font-semibold transition cursor-pointer shrink-0 whitespace-nowrap"
+                    >
+                      Open Off-Site Settings ➔
+                    </button>
                   </div>
 
                   {/* System Version & Update Status */}
                   <div className="border-t border-cool-gray-750/50 pt-4 space-y-3">
                     <span className="text-xs font-bold text-cool-gray-300 block uppercase tracking-wider">
-                      Application Version & Update Status
+                      Application Version &amp; Update Status
                     </span>
                     <div className="bg-cool-gray-900/80 p-3.5 rounded-xl border border-cool-gray-800 space-y-3">
                       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
@@ -4225,28 +4193,26 @@ const LibraryView: React.FC<{
                         </div>
                       )}
 
-                      {/* Automatic PWA Updates & Push Cache Invalidation Toggle */}
+                      {/* Per-Device Automatic PWA Updates Info */}
                       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2.5 border-t border-cool-gray-800">
                         <div className="space-y-0.5">
                           <div className="flex items-center gap-2">
-                            <span className="text-xs font-bold text-cool-gray-200">Automatic PWA Updates & Cache Refresh</span>
-                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-500/15 text-sky-300 border border-sky-500/30">
-                              SW Push Active
+                            <span className="text-xs font-bold text-cool-gray-200">Automatic PWA Updates &amp; Cache Refresh</span>
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                              Auto by Default
                             </span>
                           </div>
                           <p className="text-[11px] text-cool-gray-400 leading-relaxed font-medium">
-                            Automatically detects server releases on launch, window focus, network reconnection, and SSE stream. Seamlessly refreshes local caches and reloads when idle.
+                            All devices automatically refresh caches and apply releases when idle by default. Admins can switch individual devices to Manual under <strong className="text-cool-gray-200">Users &amp; Devices</strong>.
                           </p>
                         </div>
-                        <label className="relative inline-flex items-center cursor-pointer shrink-0">
-                          <input
-                            type="checkbox"
-                            checked={autoPwaUpdate}
-                            onChange={(e) => handleToggleAutoPwaUpdate(e.target.checked)}
-                            className="sr-only peer"
-                          />
-                          <div className="w-9 h-5 bg-cool-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-cool-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-cyan-600"></div>
-                        </label>
+                        <button
+                          type="button"
+                          onClick={() => handleSwitchTab("users_devices")}
+                          className="px-3 py-1.5 bg-cool-gray-800 hover:bg-cool-gray-750 text-cyan-300 border border-cool-gray-700 rounded-lg text-xs font-semibold transition cursor-pointer shrink-0"
+                        >
+                          Manage Per Device ➔
+                        </button>
                       </div>
 
                       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2 border-t border-cool-gray-800 text-[11px] text-cool-gray-450">
@@ -4297,37 +4263,169 @@ const LibraryView: React.FC<{
                     </p>
                   </div>
                 </div>
-              </div>
-            )}
+            </div>
           </div>
         );
       }
-      case "tags":
-        return <ManageTags state={state} dispatch={dispatch} />;
-      case "locations":
-        return <ManageLocations state={state} dispatch={dispatch} />;
-      case "photos":
-        return <PhotoManagerView state={state} dispatch={dispatch} />;
-      case "import":
+      case "lists":
         return (
-          <div className="mt-4">
-            <DataImportView
-              state={state}
-              dispatch={dispatch}
-              onNavigateToView={(view) => {
-                if (onNavigateToView) {
-                  onNavigateToView(view);
-                } else {
-                  setActiveTab("products");
-                }
-              }}
-            />
-          </div>
+          <ManageLists
+            state={state}
+            dispatch={dispatch}
+            offSiteQuantityMap={offSiteQuantityMap}
+            offSiteWeightMap={offSiteWeightMap}
+            mode={listsViewMode}
+            onModeChange={setListsViewMode}
+            hideInternalHeader
+            createRequestCount={listCreateTrigger}
+            onStepChange={setActiveListItemView}
+            onNavigateToNotifications={() => handleSwitchTab("notifications")}
+          />
+        );
+      case "notifications":
+        if (!authLoaded) {
+          return (
+            <div className="bg-cool-gray-850 border border-cool-gray-750 rounded-xl p-8 text-center text-cool-gray-400 text-xs">
+              Verifying administrator permissions...
+            </div>
+          );
+        }
+        if (isAdminGated) {
+          return (
+            <div className="max-w-xl mx-auto bg-cool-gray-850 border border-amber-500/40 rounded-2xl p-6 text-center space-y-4 shadow-xl animate-fade-in">
+              <div className="w-14 h-14 mx-auto rounded-full bg-amber-950/70 border border-amber-500/40 flex items-center justify-center text-amber-300">
+                <Shield className="w-7 h-7" />
+              </div>
+              <div className="space-y-1.5">
+                <h3 className="text-lg font-extrabold text-white">Administrator Access Required</h3>
+                <p className="text-xs text-cool-gray-300 leading-relaxed">
+                  Notification channels, gateways, and schedules are restricted to administrators. Sign in with an administrator PIN to continue.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center justify-center gap-2.5 pt-1">
+                <button
+                  type="button"
+                  onClick={() => openAccountModal('signin')}
+                  className="px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-extrabold transition cursor-pointer flex items-center gap-1.5 shadow"
+                >
+                  <KeyRound className="w-3.5 h-3.5" />
+                  <span>Sign In as Admin</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSwitchTab("products")}
+                  className="px-4 py-2 rounded-lg bg-cool-gray-800 hover:bg-cool-gray-750 border border-cool-gray-700 text-cool-gray-300 text-xs font-bold transition cursor-pointer"
+                >
+                  Return to Catalog
+                </button>
+              </div>
+            </div>
+          );
+        }
+        return (
+          <NotificationCenterPanel
+            state={state}
+            dispatch={dispatch}
+            activeSubTab={notificationsSubTab}
+            onSubTabChange={setNotificationsSubTab}
+            hideInternalHeader
+            createChannelRequestCount={channelCreateTrigger}
+          />
+        );
+      case "tags":
+        return (
+          <ManageTags
+            state={state}
+            dispatch={dispatch}
+            hideInternalHeader
+            createRequestCount={tagCreateTrigger}
+            onStepChange={setActiveTagDetailView}
+          />
+        );
+      case "locations":
+        return (
+          <ManageLocations
+            state={state}
+            dispatch={dispatch}
+            hideInternalHeader
+            createRequestCount={locationCreateTrigger}
+          />
+        );
+      case "photos":
+        return (
+          <PhotoManagerView
+            state={state}
+            dispatch={dispatch}
+            onRefreshState={onRefreshState}
+            activeSubTab={photosSubTab}
+            onSubTabChange={setPhotosSubTab}
+            hideInternalHeader
+          />
+        );
+      case "import":
+        if (!authLoaded) {
+          return (
+            <div className="bg-cool-gray-850 border border-cool-gray-750 rounded-xl p-8 text-center text-cool-gray-400 text-xs">
+              Verifying administrator permissions...
+            </div>
+          );
+        }
+        if (isAdminGated) {
+          return (
+            <div className="max-w-xl mx-auto bg-cool-gray-850 border border-amber-500/40 rounded-2xl p-6 text-center space-y-4 shadow-xl animate-fade-in">
+              <div className="w-14 h-14 mx-auto rounded-full bg-amber-950/70 border border-amber-500/40 flex items-center justify-center text-amber-300">
+                <Shield className="w-7 h-7" />
+              </div>
+              <div className="space-y-1.5">
+                <h3 className="text-lg font-extrabold text-white">Administrator Access Required</h3>
+                <p className="text-xs text-cool-gray-300 leading-relaxed">
+                  Data Import &amp; Backup management is restricted to administrators. Sign in with an administrator PIN to continue.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center justify-center gap-2.5 pt-1">
+                <button
+                  type="button"
+                  onClick={() => openAccountModal('signin')}
+                  className="px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-extrabold transition cursor-pointer flex items-center gap-1.5 shadow"
+                >
+                  <KeyRound className="w-3.5 h-3.5" />
+                  <span>Sign In as Admin</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSwitchTab("products")}
+                  className="px-4 py-2 rounded-lg bg-cool-gray-800 hover:bg-cool-gray-750 border border-cool-gray-700 text-cool-gray-300 text-xs font-bold transition cursor-pointer"
+                >
+                  Return to Catalog
+                </button>
+              </div>
+            </div>
+          );
+        }
+        return (
+          <DataImportView
+            state={state}
+            dispatch={dispatch}
+            activeSubTab={importSubTab}
+            onSubTabChange={setImportSubTab}
+            hideInternalHeader
+            onNavigateToView={(view) => {
+              if (onNavigateToView) {
+                onNavigateToView(view);
+              } else {
+                handleSwitchTab("products");
+              }
+            }}
+          />
         );
       case "voice_dictionary":
         return (
-          <div className="mt-4 max-w-4xl font-sans">
-            <VoiceDictionaryManager state={state} dispatch={dispatch} />
+          <div className="max-w-4xl font-sans">
+            <VoiceDictionaryManager
+              state={state}
+              dispatch={dispatch}
+              onSaveAppConfigKey={saveAppConfigKey}
+            />
           </div>
         );
       default:
@@ -4335,134 +4433,451 @@ const LibraryView: React.FC<{
     }
   };
 
+  const visibleGroups = useMemo(
+    () => getVisibleLibraryGroups(isAdminGated),
+    [isAdminGated],
+  );
+  const currentSectionMeta = useMemo(
+    () => getLibrarySectionMeta(activeTab),
+    [activeTab],
+  );
+  const currentGroupLabel = useMemo(
+    () => visibleGroups.find((g) => g.group.id === currentSectionMeta.groupId)?.group.label || 'Catalog',
+    [visibleGroups, currentSectionMeta.groupId],
+  );
+
+  const renderSectionNavIcon = (id: LibrarySectionMeta['id']) => {
+    switch (id) {
+      case 'products': return <Package className="w-4 h-4 shrink-0" />;
+      case 'containers': return <Layers className="w-4 h-4 shrink-0" />;
+      case 'freezers': return <Snowflake className="w-4 h-4 shrink-0" />;
+      case 'lists': return <ClipboardList className="w-4 h-4 shrink-0" />;
+      case 'tags': return <TagIcon className="w-4 h-4 shrink-0" />;
+      case 'locations': return <MapPin className="w-4 h-4 shrink-0" />;
+      case 'photos': return <Images className="w-4 h-4 shrink-0" />;
+      case 'offsite_settings': return <Truck className="w-4 h-4 shrink-0" />;
+      case 'voice_dictionary': return <Mic className="w-4 h-4 shrink-0" />;
+      case 'import': return <Database className="w-4 h-4 shrink-0" />;
+      case 'users_devices': return <Users className="w-4 h-4 shrink-0" />;
+      case 'notifications': return <Bell className="w-4 h-4 shrink-0" />;
+      case 'settings': return <Settings className="w-4 h-4 shrink-0" />;
+    }
+  };
+
+  const activeProductsCount = (state.products || []).filter((p) => !p.isArchived).length;
+  const archivedProductsCount = (state.products || []).filter((p) => p.isArchived).length;
+  const containerTemplatesCount = (state.containerTemplates || []).length;
+  const activeContainersCount = (state.containers || []).filter(
+    (c) => c.id !== "staging_loose" && !c.id.endsWith("_loose") && !c.isArchived,
+  ).length;
+  const normalizedActiveTab = normalizeLibraryTab(activeTab);
+
   return (
-    <div className="bg-cool-gray-800/50 p-4 sm:p-6 rounded-lg border border-cool-gray-700 animate-fade-in relative">
-      <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 mb-5 pb-5 border-b border-cool-gray-700/60 font-sans">
-        <div className="flex border-b border-cool-gray-700 overflow-x-auto w-full lg:w-auto pb-1 gap-1">
-          <button
-            onClick={() => {
-              handleSwitchTab("products");
-            }}
-            className={`px-3 py-2 text-sm font-semibold rounded-t-md transition-all whitespace-nowrap ${activeTab === "products" ? "border-b-2 border-cyan-500 bg-cool-gray-800 text-cyan-300" : "text-cool-gray-400 hover:text-white hover:bg-cool-gray-800/40"}`}
-          >
-            Products & Categories
-          </button>
-          <button
-            onClick={() => {
-              handleSwitchTab("containers");
-            }}
-            className={`px-3 py-2 text-sm font-semibold rounded-t-md transition-all whitespace-nowrap ${activeTab === "containers" ? "border-b-2 border-cyan-500 bg-cool-gray-800 text-cyan-300" : "text-cool-gray-400 hover:text-white hover:bg-cool-gray-800/40"}`}
-          >
-            Containers
-          </button>
-          <button
-            onClick={() => {
-              handleSwitchTab("freezers");
-            }}
-            className={`px-3 py-2 text-sm font-semibold rounded-t-md transition-all whitespace-nowrap ${activeTab === "freezers" ? "border-b-2 border-cyan-500 bg-cool-gray-800 text-cyan-300" : "text-cool-gray-400 hover:text-white hover:bg-cool-gray-800/40"}`}
-          >
-            Freezers
-          </button>
-          <button
-            onClick={() => {
-              handleSwitchTab("lists");
-            }}
-            className={`px-3 py-2 text-sm font-semibold rounded-t-md transition-all whitespace-nowrap ${activeTab === "lists" ? "border-b-2 border-cyan-500 bg-cool-gray-800 text-cyan-300" : "text-cool-gray-400 hover:text-white hover:bg-cool-gray-800/40"}`}
-          >
-            Lists
-          </button>
-          <button
-            onClick={() => {
-              handleSwitchTab("tags");
-            }}
-            className={`px-3 py-2 text-sm font-semibold rounded-t-md transition-all whitespace-nowrap ${activeTab === "tags" ? "border-b-2 border-cyan-500 bg-cool-gray-800 text-cyan-300" : "text-cool-gray-400 hover:text-white hover:bg-cool-gray-800/40"}`}
-          >
-            Tags
-          </button>
-          <button
-            onClick={() => {
-              handleSwitchTab("locations");
-            }}
-            className={`px-3 py-2 text-sm font-semibold rounded-t-md transition-all whitespace-nowrap ${activeTab === "locations" ? "border-b-2 border-cyan-500 bg-cool-gray-800 text-cyan-300" : "text-cool-gray-400 hover:text-white hover:bg-cool-gray-800/40"}`}
-          >
-            Locations
-          </button>
-          <button
-            onClick={() => {
-              handleSwitchTab("photos");
-            }}
-            className={`px-3 py-2 text-sm font-semibold rounded-t-md transition-all whitespace-nowrap ${activeTab === "photos" ? "border-b-2 border-cyan-500 bg-cool-gray-800 text-cyan-300" : "text-cool-gray-400 hover:text-white hover:bg-cool-gray-800/40"}`}
-          >
-            Photo Manager
-          </button>
-          <button
-            onClick={() => {
-              handleSwitchTab("import");
-            }}
-            className={`px-3 py-2 text-sm font-semibold rounded-t-md transition-all whitespace-nowrap ${activeTab === "import" ? "border-b-2 border-cyan-500 bg-cool-gray-800 text-cyan-300" : "text-cool-gray-400 hover:text-white hover:bg-cool-gray-800/40"}`}
-          >
-            Import / Manage Data
-          </button>
-          <button
-            onClick={() => {
-              handleSwitchTab("voice_dictionary");
-            }}
-            className={`px-3 py-2 text-sm font-semibold rounded-t-md transition-all whitespace-nowrap ${activeTab === "voice_dictionary" ? "border-b-2 border-cyan-500 bg-cool-gray-800 text-cyan-300" : "text-cool-gray-400 hover:text-white hover:bg-cool-gray-800/40"}`}
-          >
-            Voice Dictionary
-          </button>
-          <button
-            onClick={() => {
-              handleSwitchTab("pwa");
-            }}
-            className={`px-3 py-2 text-sm font-semibold rounded-t-md transition-all whitespace-nowrap ${activeTab === "pwa" ? "border-b-2 border-cyan-500 bg-cool-gray-800 text-cyan-300" : "text-cool-gray-400 hover:text-white hover:bg-cool-gray-800/40"}`}
-          >
-            PWA & Devices
-          </button>
-          <button
-            onClick={() => {
-              handleSwitchTab("settings");
-            }}
-            className={`px-3 py-2 text-sm font-semibold rounded-t-md transition-all whitespace-nowrap ${activeTab === "settings" || activeTab === "connectors" ? "border-b-2 border-cyan-500 bg-cool-gray-800 text-cyan-300" : "text-cool-gray-400 hover:text-white hover:bg-cool-gray-800/40"}`}
-          >
-            Settings
-          </button>
-        </div>
-        <div className="w-full lg:w-auto flex select-none gap-2 flex-grow lg:flex-none">
-          {(activeTab === "products" || activeTab === "containers") && (
-            <div className="relative flex-grow min-w-[200px]">
-              <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
-                <SearchIcon className="h-5 w-5 text-cool-gray-400" />
+    <div className="bg-cool-gray-800/40 p-3 sm:p-5 rounded-xl border border-cool-gray-750 animate-fade-in relative font-sans">
+      {/* Mobile (< lg) Sticky Active Section Header & Slide-Down Grouped Drawer */}
+      <div className="lg:hidden mb-4">
+        <div className="flex items-center justify-between gap-2 bg-cool-gray-850 border border-cool-gray-750 rounded-xl px-3.5 py-2.5">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <span className="text-cyan-400 shrink-0">{renderSectionNavIcon(currentSectionMeta.id)}</span>
+            <div className="min-w-0">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-cool-gray-400 truncate">
+                {currentGroupLabel}
               </div>
-              <input
-                type="text"
-                placeholder="Search..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="block w-full rounded-md border-0 bg-cool-gray-850 py-2 pl-10 pr-3 text-cool-gray-100 ring-1 ring-inset ring-cool-gray-700 placeholder:text-cool-gray-400 focus:ring-2 focus:ring-inset focus:ring-cyan-500 sm:text-sm"
-              />
+              <div className="text-sm font-bold text-white truncate">
+                {currentSectionMeta.label}
+              </div>
             </div>
-          )}
-          {activeTab === "products" && !showAddForm && (
-            <button
-              onClick={() => setShowAddForm(true)}
-              className="flex-shrink-0 flex items-center gap-2 px-3 py-2 bg-cyan-600 text-white font-semibold rounded-lg shadow-md hover:bg-cyan-700 transition"
-            >
-              <PlusIcon /> Product
-            </button>
-          )}
-          {activeTab === "containers" && (
-            <button
-              onClick={() => openModal({ type: "ADD_CONTAINER" })}
-              className="flex-shrink-0 flex items-center gap-2 px-3 py-2 bg-cyan-600 text-white font-semibold rounded-lg shadow-md hover:bg-cyan-700 transition"
-            >
-              <PlusIcon /> Container
-            </button>
-          )}
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setMobileNavOpen((prev) => !prev)}
+            aria-expanded={mobileNavOpen}
+            aria-label="Toggle Catalog and Settings sections"
+            className="min-h-[44px] px-3.5 py-2 rounded-lg bg-cool-gray-800 hover:bg-cool-gray-750 border border-cool-gray-700 text-xs font-bold text-cool-gray-100 flex items-center gap-1.5 shrink-0 whitespace-nowrap cursor-pointer"
+          >
+            <Menu className="w-4 h-4 text-cyan-400" />
+            <span>Sections</span>
+            <ChevronDown className={`w-3.5 h-3.5 text-cool-gray-400 transition-transform ${mobileNavOpen ? 'rotate-180' : ''}`} />
+          </button>
         </div>
+
+        {mobileNavOpen && (
+          <div
+            className="mt-2 p-3 bg-cool-gray-900 border border-cool-gray-750 rounded-xl space-y-4 shadow-xl animate-fade-in"
+            role="navigation"
+            aria-label="Catalog and Settings sections"
+          >
+            {visibleGroups.map(({ group, sections }) => (
+              <div key={group.id} className="space-y-1">
+                <div className="px-2 text-[10px] font-bold uppercase tracking-wider text-cool-gray-400">
+                  {group.label}
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
+                  {sections.map((section) => {
+                    const isActive = normalizedActiveTab === section.id;
+                    return (
+                      <button
+                        key={section.id}
+                        type="button"
+                        onClick={() => handleSwitchTab(section.id)}
+                        className={`min-h-[44px] w-full px-3 py-2 rounded-lg text-xs font-semibold flex items-center gap-2.5 text-left transition cursor-pointer ${
+                          isActive
+                            ? 'bg-cyan-950/60 text-cyan-200 border border-cyan-500/40 font-bold'
+                            : 'text-cool-gray-300 hover:text-white hover:bg-cool-gray-850 border border-transparent'
+                        }`}
+                      >
+                        <span className={isActive ? 'text-cyan-400' : 'text-cool-gray-400'}>
+                          {renderSectionNavIcon(section.id)}
+                        </span>
+                        <span className="truncate">{section.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
-      {renderContent()}
+      {/* Desktop (lg+) Grouped Sidebar + Content Column Layout */}
+      <div className="flex flex-col lg:flex-row items-start gap-6">
+        <aside
+          className="hidden lg:block w-60 shrink-0 bg-cool-gray-850/90 border border-cool-gray-750 rounded-xl p-3 space-y-5 sticky top-4"
+          aria-label="Catalog and Settings navigation"
+        >
+          {visibleGroups.map(({ group, sections }) => (
+            <div key={group.id} className="space-y-1">
+              <div className="px-2.5 pb-1 text-[10px] font-bold uppercase tracking-wider text-cool-gray-400">
+                {group.label}
+              </div>
+              {sections.map((section) => {
+                const isActive = normalizedActiveTab === section.id;
+                return (
+                  <button
+                    key={section.id}
+                    type="button"
+                    onClick={() => handleSwitchTab(section.id)}
+                    className={`w-full px-2.5 py-2 rounded-lg text-xs font-semibold flex items-center gap-2.5 text-left transition cursor-pointer whitespace-nowrap ${
+                      isActive
+                        ? 'bg-cyan-950/55 text-cyan-200 border border-cyan-500/40 font-bold'
+                        : 'text-cool-gray-300 hover:text-white hover:bg-cool-gray-800/70 border border-transparent'
+                    }`}
+                  >
+                    <span className={isActive ? 'text-cyan-400' : 'text-cool-gray-400'}>
+                      {renderSectionNavIcon(section.id)}
+                    </span>
+                    <span className="truncate">{section.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          ))}
+        </aside>
+
+        {/* Active Section Workspace */}
+        <main className="flex-1 min-w-0 w-full space-y-5">
+          {/* Uniform Section Header */}
+          <header className="pb-4 border-b border-cool-gray-750 space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="min-w-0">
+                <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                  <span className="text-cyan-400">{renderSectionNavIcon(currentSectionMeta.id)}</span>
+                  <span className="truncate">{currentSectionMeta.label}</span>
+                </h2>
+                <p className="text-xs text-cool-gray-400 mt-0.5 leading-relaxed">
+                  {currentSectionMeta.description}
+                </p>
+              </div>
+
+              {/* Section Primary Controls (Primary CTA) */}
+              <div className="flex flex-wrap items-center gap-2 shrink-0 select-none">
+
+                {normalizedActiveTab === "products" && !showAddForm && (
+                  <button
+                    type="button"
+                    onClick={() => setShowAddForm(true)}
+                    className="flex items-center gap-1.5 px-3.5 py-2 bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs rounded-lg transition whitespace-nowrap cursor-pointer"
+                  >
+                    <PlusIcon className="w-3.5 h-3.5" /> Add Product
+                  </button>
+                )}
+
+                {normalizedActiveTab === "containers" && containerSubTab === "templates" && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTemplateNameInput('');
+                      setTemplateImageInput('');
+                      setShowAddTemplateModal(true);
+                    }}
+                    className="flex items-center gap-1.5 px-3.5 py-2 bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs rounded-lg transition whitespace-nowrap cursor-pointer"
+                  >
+                    <PlusIcon className="w-3.5 h-3.5" /> Add Template
+                  </button>
+                )}
+
+                {normalizedActiveTab === "containers" && containerSubTab === "active" && (
+                  <button
+                    type="button"
+                    onClick={() => openModal({ type: "ADD_CONTAINER" })}
+                    className="flex items-center gap-1.5 px-3.5 py-2 bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs rounded-lg transition whitespace-nowrap cursor-pointer"
+                  >
+                    <PlusIcon className="w-3.5 h-3.5" /> Container
+                  </button>
+                )}
+
+                {normalizedActiveTab === "lists" && listsViewMode === "overview" && !activeListItemView && (
+                  <button
+                    type="button"
+                    onClick={() => setListCreateTrigger((n) => n + 1)}
+                    className="flex items-center gap-1.5 px-3.5 py-2 bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs rounded-lg transition whitespace-nowrap cursor-pointer"
+                  >
+                    <PlusIcon className="w-3.5 h-3.5" /> Create List
+                  </button>
+                )}
+
+                {normalizedActiveTab === "tags" && !activeTagDetailView && (
+                  <button
+                    type="button"
+                    onClick={() => setTagCreateTrigger((n) => n + 1)}
+                    className="flex items-center gap-1.5 px-3.5 py-2 bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs rounded-lg transition whitespace-nowrap cursor-pointer"
+                  >
+                    <PlusIcon className="w-3.5 h-3.5" /> Create Tag
+                  </button>
+                )}
+
+                {normalizedActiveTab === "locations" && (
+                  <button
+                    type="button"
+                    onClick={() => setLocationCreateTrigger((n) => n + 1)}
+                    className="flex items-center gap-1.5 px-3.5 py-2 bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs rounded-lg transition whitespace-nowrap cursor-pointer"
+                  >
+                    <PlusIcon className="w-3.5 h-3.5" /> Add Location
+                  </button>
+                )}
+
+                {normalizedActiveTab === "import" && !isAdminGated && (
+                  <button
+                    type="button"
+                    onClick={() => onNavigateToView ? onNavigateToView('freezer') : handleSwitchTab('products')}
+                    className="px-3.5 py-2 rounded-lg bg-cool-gray-800 hover:bg-cool-gray-750 border border-cool-gray-700 text-cool-gray-200 text-xs font-semibold transition whitespace-nowrap cursor-pointer"
+                  >
+                    Back to Freezer Map
+                  </button>
+                )}
+
+                {normalizedActiveTab === "notifications" && !isAdminGated && notificationsSubTab === "channels" && (
+                  <button
+                    type="button"
+                    onClick={() => setChannelCreateTrigger((n) => n + 1)}
+                    className="flex items-center gap-1.5 px-3.5 py-2 bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs rounded-lg transition whitespace-nowrap cursor-pointer"
+                  >
+                    <PlusIcon className="w-3.5 h-3.5" /> Add Channel
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Unified Segmented Mode Switcher for multi-mode sections */}
+            {normalizedActiveTab === "products" && (
+              <div className="inline-flex flex-wrap items-center gap-1 p-1 bg-cool-gray-900 border border-cool-gray-750 rounded-lg">
+                <button
+                  type="button"
+                  onClick={() => setProductArchiveFilter('active')}
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-md transition whitespace-nowrap cursor-pointer tabular-nums ${
+                    productArchiveFilter === 'active'
+                      ? 'bg-cyan-600 text-white'
+                      : 'text-cool-gray-400 hover:text-white hover:bg-cool-gray-850'
+                  }`}
+                >
+                  Active Catalog ({activeProductsCount})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setProductArchiveFilter('archived')}
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-md transition whitespace-nowrap cursor-pointer tabular-nums flex items-center gap-1.5 ${
+                    productArchiveFilter === 'archived'
+                      ? 'bg-amber-600 text-white'
+                      : 'text-cool-gray-400 hover:text-white hover:bg-cool-gray-850'
+                  }`}
+                >
+                  <span>Archived</span>
+                  {archivedProductsCount > 0 && (
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono ${
+                      productArchiveFilter === 'archived'
+                        ? 'bg-amber-950/60 text-white border border-amber-400/30'
+                        : 'bg-amber-950/70 text-amber-300 border border-amber-800/70'
+                    }`}>
+                      {archivedProductsCount}
+                    </span>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setProductArchiveFilter('all')}
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-md transition whitespace-nowrap cursor-pointer tabular-nums ${
+                    productArchiveFilter === 'all'
+                      ? 'bg-cyan-600 text-white'
+                      : 'text-cool-gray-400 hover:text-white hover:bg-cool-gray-850'
+                  }`}
+                >
+                  Show All ({(state.products || []).length})
+                </button>
+              </div>
+            )}
+
+            {normalizedActiveTab === "containers" && (
+              <div className="inline-flex flex-wrap items-center gap-1 p-1 bg-cool-gray-900 border border-cool-gray-750 rounded-lg">
+                <button
+                  type="button"
+                  onClick={() => setContainerSubTab('templates')}
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-md transition whitespace-nowrap cursor-pointer tabular-nums ${
+                    containerSubTab === 'templates'
+                      ? 'bg-cyan-600 text-white'
+                      : 'text-cool-gray-400 hover:text-white hover:bg-cool-gray-850'
+                  }`}
+                >
+                  Templates ({containerTemplatesCount})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setContainerSubTab('active')}
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-md transition whitespace-nowrap cursor-pointer tabular-nums ${
+                    containerSubTab === 'active'
+                      ? 'bg-cyan-600 text-white'
+                      : 'text-cool-gray-400 hover:text-white hover:bg-cool-gray-850'
+                  }`}
+                >
+                  Active Containers ({activeContainersCount})
+                </button>
+              </div>
+            )}
+
+            {normalizedActiveTab === "lists" && (
+              <div className="inline-flex flex-wrap items-center gap-1 p-1 bg-cool-gray-900 border border-cool-gray-750 rounded-lg">
+                <button
+                  type="button"
+                  onClick={() => setListsViewMode('overview')}
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-md transition whitespace-nowrap cursor-pointer tabular-nums ${
+                    listsViewMode === 'overview'
+                      ? 'bg-cyan-600 text-white'
+                      : 'text-cool-gray-400 hover:text-white hover:bg-cool-gray-850'
+                  }`}
+                >
+                  Lists Overview ({(state.customLists || []).length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setListsViewMode('matrix')}
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-md transition whitespace-nowrap cursor-pointer ${
+                    listsViewMode === 'matrix'
+                      ? 'bg-cyan-600 text-white'
+                      : 'text-cool-gray-400 hover:text-white hover:bg-cool-gray-850'
+                  }`}
+                >
+                  Bulk Matrix
+                </button>
+              </div>
+            )}
+
+            {normalizedActiveTab === "notifications" && !isAdminGated && (
+              <div className="inline-flex flex-wrap items-center gap-1 p-1 bg-cool-gray-900 border border-cool-gray-750 rounded-lg">
+                <button
+                  type="button"
+                  onClick={() => setNotificationsSubTab('channels')}
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-md transition whitespace-nowrap cursor-pointer tabular-nums ${
+                    notificationsSubTab === 'channels'
+                      ? 'bg-cyan-600 text-white'
+                      : 'text-cool-gray-400 hover:text-white hover:bg-cool-gray-850'
+                  }`}
+                >
+                  Channels ({(state.notificationChannels || []).length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setNotificationsSubTab('schedules')}
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-md transition whitespace-nowrap cursor-pointer ${
+                    notificationsSubTab === 'schedules'
+                      ? 'bg-cyan-600 text-white'
+                      : 'text-cool-gray-400 hover:text-white hover:bg-cool-gray-850'
+                  }`}
+                >
+                  Digest &amp; Schedules
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setNotificationsSubTab('logs')}
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-md transition whitespace-nowrap cursor-pointer tabular-nums ${
+                    notificationsSubTab === 'logs'
+                      ? 'bg-cyan-600 text-white'
+                      : 'text-cool-gray-400 hover:text-white hover:bg-cool-gray-850'
+                  }`}
+                >
+                  Delivery Logs ({(state.notificationLogs || []).length})
+                </button>
+              </div>
+            )}
+
+            {normalizedActiveTab === "photos" && (
+              <div className="inline-flex flex-wrap items-center gap-1 p-1 bg-cool-gray-900 border border-cool-gray-750 rounded-lg">
+                <button
+                  type="button"
+                  onClick={() => setPhotosSubTab('library')}
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-md transition whitespace-nowrap cursor-pointer ${
+                    photosSubTab === 'library'
+                      ? 'bg-cyan-600 text-white'
+                      : 'text-cool-gray-400 hover:text-white hover:bg-cool-gray-850'
+                  }`}
+                >
+                  Photo Files
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPhotosSubTab('missing')}
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-md transition whitespace-nowrap cursor-pointer ${
+                    photosSubTab === 'missing'
+                      ? 'bg-cyan-600 text-white'
+                      : 'text-cool-gray-400 hover:text-white hover:bg-cool-gray-850'
+                  }`}
+                >
+                  Missing Photos
+                </button>
+              </div>
+            )}
+
+            {normalizedActiveTab === "import" && !isAdminGated && (
+              <div className="inline-flex flex-wrap items-center gap-1 p-1 bg-cool-gray-900 border border-cool-gray-750 rounded-lg">
+                <button
+                  type="button"
+                  onClick={() => setImportSubTab('backup')}
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-md transition whitespace-nowrap cursor-pointer ${
+                    importSubTab === 'backup'
+                      ? 'bg-cyan-600 text-white'
+                      : 'text-cool-gray-400 hover:text-white hover:bg-cool-gray-850'
+                  }`}
+                >
+                  Snapshots &amp; Backups
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setImportSubTab('wipe')}
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-md transition whitespace-nowrap cursor-pointer ${
+                    importSubTab === 'wipe'
+                      ? 'bg-rose-600 text-white'
+                      : 'text-cool-gray-400 hover:text-white hover:bg-cool-gray-850'
+                  }`}
+                >
+                  Reset Database
+                </button>
+              </div>
+            )}
+          </header>
+
+          {renderContent()}
+        </main>
+      </div>
 
       {/* Sub-modals inside LibraryView */}
       {confirmDelete && (
@@ -4864,7 +5279,7 @@ const LibraryView: React.FC<{
                               }}
                               className="text-[10px] uppercase font-bold py-1 px-2.5 rounded-full border transition-all active:scale-95 flex items-center gap-1 cursor-pointer"
                             >
-                              <span>{tag.id === 'use-first' ? '⚡' : tag.id === 'not-for-sale' ? '🛑' : '🏷️'}</span>
+                              <span>{getTagActionIcon(tag)}</span>
                               <span>{tag.name}</span>
                             </button>
                           );
@@ -5153,19 +5568,56 @@ const LibraryView: React.FC<{
   );
 };
 
+export type ListsViewMode = "overview" | "matrix";
+
 export const ManageLists: React.FC<{
   state: InventoryState;
   dispatch: React.Dispatch<Action>;
   offSiteQuantityMap?: Record<string, number>;
   offSiteWeightMap?: Record<string, number>;
-}> = ({ state, dispatch, offSiteQuantityMap = {}, offSiteWeightMap = {} }) => {
+  mode?: ListsViewMode;
+  onModeChange?: (mode: ListsViewMode) => void;
+  hideInternalHeader?: boolean;
+  createRequestCount?: number;
+  onStepChange?: (inDetailStep: boolean) => void;
+  onNavigateToNotifications?: () => void;
+}> = ({
+  state,
+  dispatch,
+  offSiteQuantityMap = {},
+  offSiteWeightMap = {},
+  mode,
+  onModeChange,
+  hideInternalHeader = false,
+  createRequestCount = 0,
+  onStepChange,
+  onNavigateToNotifications,
+}) => {
   const customLists = state.customLists || [];
-  const [listCatalogSubTab, setListCatalogSubTab] = useState<"lists" | "bulk_matrix">("lists");
-  const [expandedListId, setExpandedListId] = useState<string>(
-    customLists[0]?.id || "",
-  );
+  const configuredChannels = state.notificationChannels || [];
+  const [internalMode, setInternalMode] = useState<ListsViewMode>("overview");
+  const effectiveMode: ListsViewMode = mode ?? internalMode;
+  const setEffectiveMode = (next: ListsViewMode) => {
+    if (onModeChange) {
+      onModeChange(next);
+    } else {
+      setInternalMode(next);
+    }
+  };
 
-  // Form trigger & editing fields
+  // Two-step Overview (null) -> Item Manager (list id)
+  const [selectedListId, setSelectedListId] = useState<string | null>(null);
+
+  // Overview search & condensed filters
+  const [listOverviewSearch, setListOverviewSearch] = useState("");
+  const [showOverviewFilters, setShowOverviewFilters] = useState(false);
+  const [listControlFilter, setListControlFilter] = useState<"all" | "controlled" | "static">("all");
+  const [listDigestFilter, setListDigestFilter] = useState<"all" | "enabled" | "disabled">("all");
+  const [listOverviewSort, setListOverviewSort] = useState<
+    "default" | "name_asc" | "name_desc" | "items_desc" | "items_asc"
+  >("default");
+
+  // Configuration Modal fields
   const [isFormVisible, setFormVisible] = useState(false);
   const [editingListId, setEditingListId] = useState<string | null>(null);
   const [listName, setListName] = useState("");
@@ -5173,31 +5625,199 @@ export const ManageLists: React.FC<{
   const [allowNotes, setAllowNotes] = useState(true);
   const [isInventoryControlled, setIsInventoryControlled] = useState(false);
   const [controlType, setControlType] = useState<"prompt" | "auto">("prompt");
-  const [controlCondition, setControlCondition] = useState<"min" | "max">(
-    "min",
-  );
-
-  // Notification states
-  const [showNotificationCenter, setShowNotificationCenter] = useState(false);
+  const [controlCondition, setControlCondition] = useState<"min" | "max">("min");
   const [listNotificationEnabled, setListNotificationEnabled] = useState(false);
-  const [listNotificationType, setListNotificationType] = useState<"all_items" | "newly_added_only" | "item_specific">("all_items");
+  const [listNotificationType, setListNotificationType] = useState<
+    "all_items" | "newly_added_only" | "item_specific" | "threshold_breaches"
+  >("all_items");
+  const [listChannelIds, setListChannelIds] = useState<string[]>([]);
+  const [listRecipientOverride, setListRecipientOverride] = useState("");
+  const [listDailyDigestMode, setListDailyDigestMode] = useState<"none" | "combined" | "separate">("combined");
+  const [listDigestChannelOverrideEnabled, setListDigestChannelOverrideEnabled] = useState(false);
+  const [listDigestChannelIds, setListDigestChannelIds] = useState<string[]>([]);
+  const [listCustomSchedEnabled, setListCustomSchedEnabled] = useState(false);
+  const [listCustomSchedCadence, setListCustomSchedCadence] = useState<"daily" | "weekly" | "interval">("daily");
+  const [listCustomSchedTime, setListCustomSchedTime] = useState("09:00");
+  const [listCustomSchedDays, setListCustomSchedDays] = useState<number[]>([1]);
+  const [listCustomSchedIntervalHours, setListCustomSchedIntervalHours] = useState<number>(4);
+  const [listCustomSchedChannelOverrideEnabled, setListCustomSchedChannelOverrideEnabled] = useState(false);
+  const [listCustomSchedChannelIds, setListCustomSchedChannelIds] = useState<string[]>([]);
+  const [listImmediateOnItemAdded, setListImmediateOnItemAdded] = useState(false);
+  const [listImmediateOnThresholdBreach, setListImmediateOnThresholdBreach] = useState(false);
+  const [listImmediateChannelOverrideEnabled, setListImmediateChannelOverrideEnabled] = useState(false);
+  const [listImmediateChannelIds, setListImmediateChannelIds] = useState<string[]>([]);
 
-  // Product search selector to add item to expanded list
+  // Delete confirmation modal
+  const [listToDelete, setListToDelete] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
+
+  // Product search selector to add item inside Item Manager
   const [addProductId, setAddProductId] = useState("");
   const [addNote, setAddNote] = useState("");
 
-  const activeList =
-    customLists.find((cl) => cl.id === expandedListId) || customLists[0];
+  const activeList = useMemo(
+    () => (selectedListId ? customLists.find((cl) => cl.id === selectedListId) || null : null),
+    [customLists, selectedListId],
+  );
 
+  const filteredOverviewLists = useMemo(() => {
+    const q = listOverviewSearch.trim().toLowerCase();
+    const filtered = customLists.filter((cl) => {
+      if (q) {
+        const nameHit = (cl.name || "").toLowerCase().includes(q);
+        const descHit = (cl.description || "").toLowerCase().includes(q);
+        if (!nameHit && !descHit) return false;
+      }
+      if (listControlFilter === "controlled" && !cl.isInventoryControlled) return false;
+      if (listControlFilter === "static" && cl.isInventoryControlled) return false;
+      if (listDigestFilter === "enabled" && !cl.notificationEnabled) return false;
+      if (listDigestFilter === "disabled" && cl.notificationEnabled) return false;
+      return true;
+    });
+
+    if (listOverviewSort === "default") return filtered;
+
+    return [...filtered].sort((a, b) => {
+      if (listOverviewSort === "name_asc") {
+        return (a.name || "").localeCompare(b.name || "", undefined, { numeric: true, sensitivity: "base" });
+      }
+      if (listOverviewSort === "name_desc") {
+        return (b.name || "").localeCompare(a.name || "", undefined, { numeric: true, sensitivity: "base" });
+      }
+      if (listOverviewSort === "items_desc") {
+        return (b.items?.length || 0) - (a.items?.length || 0);
+      }
+      if (listOverviewSort === "items_asc") {
+        return (a.items?.length || 0) - (b.items?.length || 0);
+      }
+      return 0;
+    });
+  }, [customLists, listOverviewSearch, listControlFilter, listDigestFilter, listOverviewSort]);
+
+  const activeListOverviewFilterCount =
+    (listControlFilter !== "all" ? 1 : 0) +
+    (listDigestFilter !== "all" ? 1 : 0) +
+    (listOverviewSort !== "default" ? 1 : 0);
+
+  // Clear stale selectedListId if deleted externally
   useEffect(() => {
-    if (!activeList && customLists.length > 0) {
-      setExpandedListId(customLists[0].id);
+    if (selectedListId && !activeList) {
+      setSelectedListId(null);
     }
-  }, [customLists, activeList]);
+  }, [selectedListId, activeList]);
+
+  // Notify parent shell whether Item Manager step is active
+  useEffect(() => {
+    onStepChange?.(effectiveMode === "overview" && Boolean(activeList));
+    return () => {
+      onStepChange?.(false);
+    };
+  }, [effectiveMode, activeList, onStepChange]);
+
+  const resetFormFields = () => {
+    const defaultChannels = state.notificationSettings?.[0]?.defaultChannelIds || [];
+    setListName("");
+    setListDesc("");
+    setAllowNotes(true);
+    setIsInventoryControlled(false);
+    setControlType("prompt");
+    setControlCondition("min");
+    setListNotificationEnabled(false);
+    setListNotificationType("all_items");
+    setListChannelIds([...defaultChannels]);
+    setListRecipientOverride("");
+    setListDailyDigestMode("combined");
+    setListDigestChannelOverrideEnabled(false);
+    setListDigestChannelIds([]);
+    setListCustomSchedEnabled(false);
+    setListCustomSchedCadence("daily");
+    setListCustomSchedTime("09:00");
+    setListCustomSchedDays([1]);
+    setListCustomSchedIntervalHours(4);
+    setListCustomSchedChannelOverrideEnabled(false);
+    setListCustomSchedChannelIds([]);
+    setListImmediateOnItemAdded(false);
+    setListImmediateOnThresholdBreach(false);
+    setListImmediateChannelOverrideEnabled(false);
+    setListImmediateChannelIds([]);
+    setEditingListId(null);
+  };
+
+  const openCreateModal = () => {
+    resetFormFields();
+    setFormVisible(true);
+  };
+
+  // Triggered by parent LibraryView header "+ Create List" button
+  const lastCreateCountRef = React.useRef(createRequestCount);
+  useEffect(() => {
+    if (createRequestCount > lastCreateCountRef.current) {
+      lastCreateCountRef.current = createRequestCount;
+      openCreateModal();
+    }
+  }, [createRequestCount]);
+
+  const toggleChannelSelection = (
+    setter: React.Dispatch<React.SetStateAction<string[]>>,
+    channelId: string,
+  ) => {
+    setter((prev) =>
+      prev.includes(channelId) ? prev.filter((id) => id !== channelId) : [...prev, channelId],
+    );
+  };
 
   const handleCreateOrEditList = (e: React.FormEvent) => {
     e.preventDefault();
     if (!listName.trim()) return;
+
+    const existingList = editingListId
+      ? customLists.find((cl) => cl.id === editingListId)
+      : undefined;
+
+    const immediateEnabled = Boolean(
+      listImmediateOnItemAdded || (isInventoryControlled && listImmediateOnThresholdBreach),
+    );
+    const notificationImmediatePayload = {
+      enabled: immediateEnabled,
+      onItemAdded: listImmediateOnItemAdded,
+      onThresholdBreach: isInventoryControlled ? listImmediateOnThresholdBreach : false,
+      ...(listImmediateChannelOverrideEnabled && listImmediateChannelIds.length > 0
+        ? { channelIds: listImmediateChannelIds }
+        : {}),
+    };
+
+    const notificationCustomSchedulePayload = {
+      enabled: listCustomSchedEnabled,
+      cadence: listCustomSchedCadence,
+      time: listCustomSchedTime || "09:00",
+      daysOfWeek: listCustomSchedDays.length > 0 ? listCustomSchedDays : [1],
+      intervalHours: Math.max(1, Number(listCustomSchedIntervalHours) || 1),
+      ...(listCustomSchedChannelOverrideEnabled && listCustomSchedChannelIds.length > 0
+        ? { channelIds: listCustomSchedChannelIds }
+        : {}),
+      ...(existingList?.notificationCustomSchedule?.lastSentAt
+        ? { lastSentAt: existingList.notificationCustomSchedule.lastSentAt }
+        : {}),
+    };
+
+    const notificationConfigFields = {
+      notificationEnabled: listNotificationEnabled,
+      notificationType:
+        !isInventoryControlled && listNotificationType === "threshold_breaches"
+          ? ("all_items" as const)
+          : listNotificationType,
+      notificationChannelIds: listChannelIds,
+      notificationRecipientOverride: listRecipientOverride.trim() || undefined,
+      notificationDailyDigestMode: listDailyDigestMode,
+      notificationDigestChannelIds:
+        listDigestChannelOverrideEnabled && listDigestChannelIds.length > 0
+          ? listDigestChannelIds
+          : undefined,
+      notificationCustomSchedule: notificationCustomSchedulePayload,
+      notificationImmediate: notificationImmediatePayload,
+    };
 
     if (editingListId) {
       dispatch({
@@ -5210,11 +5830,8 @@ export const ManageLists: React.FC<{
             allowNotes,
             isInventoryControlled,
             controlType: isInventoryControlled ? controlType : undefined,
-            controlCondition: isInventoryControlled
-              ? controlCondition
-              : undefined,
-            notificationEnabled: listNotificationEnabled,
-            notificationType: listNotificationType,
+            controlCondition: isInventoryControlled ? controlCondition : undefined,
+            ...notificationConfigFields,
           },
         },
       });
@@ -5222,32 +5839,22 @@ export const ManageLists: React.FC<{
       dispatch({
         type: "ADD_CUSTOM_LIST",
         payload: {
-          name: listName,
-          description: listDesc,
+          name: listName.trim(),
+          description: listDesc.trim(),
           allowNotes,
           isInventoryControlled,
           controlType,
           controlCondition,
-          notificationEnabled: listNotificationEnabled,
-          notificationType: listNotificationType,
+          ...notificationConfigFields,
         },
       });
     }
 
-    // Reset
-    setListName("");
-    setListDesc("");
-    setAllowNotes(true);
-    setIsInventoryControlled(false);
-    setControlType("prompt");
-    setControlCondition("min");
-    setListNotificationEnabled(false);
-    setListNotificationType("all_items");
-    setEditingListId(null);
+    resetFormFields();
     setFormVisible(false);
   };
 
-  const handleEditClick = (cl: any) => {
+  const handleEditClick = (cl: CustomList) => {
     setEditingListId(cl.id);
     setListName(cl.name);
     setListDesc(cl.description || "");
@@ -5257,19 +5864,54 @@ export const ManageLists: React.FC<{
     setControlCondition(cl.controlCondition || "min");
     setListNotificationEnabled(!!cl.notificationEnabled);
     setListNotificationType(cl.notificationType || "all_items");
+
+    const defaultChannels = state.notificationSettings?.[0]?.defaultChannelIds || [];
+    setListChannelIds(
+      Array.isArray(cl.notificationChannelIds) && cl.notificationChannelIds.length > 0
+        ? [...cl.notificationChannelIds]
+        : cl.notificationEnabled
+        ? [...defaultChannels]
+        : [],
+    );
+    setListRecipientOverride(cl.notificationRecipientOverride || "");
+
+    const effectiveDigestMode = cl.notificationEnabled
+      ? resolveEffectiveDailyDigestMode(cl)
+      : cl.notificationDailyDigestMode || "combined";
+    setListDailyDigestMode(effectiveDigestMode);
+
+    const hasDigestOverride =
+      Array.isArray(cl.notificationDigestChannelIds) && cl.notificationDigestChannelIds.length > 0;
+    setListDigestChannelOverrideEnabled(hasDigestOverride);
+    setListDigestChannelIds(hasDigestOverride ? [...cl.notificationDigestChannelIds!] : []);
+
+    const sched = cl.notificationCustomSchedule;
+    setListCustomSchedEnabled(Boolean(sched?.enabled));
+    setListCustomSchedCadence(sched?.cadence || "daily");
+    setListCustomSchedTime(sched?.time || "09:00");
+    setListCustomSchedDays(
+      Array.isArray(sched?.daysOfWeek) && sched!.daysOfWeek!.length > 0
+        ? [...sched!.daysOfWeek!]
+        : [1],
+    );
+    setListCustomSchedIntervalHours(sched?.intervalHours || 4);
+    const hasCustomOverride =
+      Array.isArray(sched?.channelIds) && sched!.channelIds!.length > 0;
+    setListCustomSchedChannelOverrideEnabled(hasCustomOverride);
+    setListCustomSchedChannelIds(hasCustomOverride ? [...sched!.channelIds!] : []);
+
+    const imm = cl.notificationImmediate;
+    setListImmediateOnItemAdded(Boolean(imm?.enabled && imm?.onItemAdded));
+    setListImmediateOnThresholdBreach(Boolean(imm?.enabled && imm?.onThresholdBreach));
+    const hasImmOverride = Array.isArray(imm?.channelIds) && imm!.channelIds!.length > 0;
+    setListImmediateChannelOverrideEnabled(hasImmOverride);
+    setListImmediateChannelIds(hasImmOverride ? [...imm!.channelIds!] : []);
+
     setFormVisible(true);
   };
 
   const handleCancelForm = () => {
-    setListName("");
-    setListDesc("");
-    setAllowNotes(true);
-    setIsInventoryControlled(false);
-    setControlType("prompt");
-    setControlCondition("min");
-    setListNotificationEnabled(false);
-    setListNotificationType("all_items");
-    setEditingListId(null);
+    resetFormFields();
     setFormVisible(false);
   };
 
@@ -5288,21 +5930,15 @@ export const ManageLists: React.FC<{
     setAddNote("");
   };
 
-  const handleDeleteList = (listId: string) => {
-    if (
-      confirm(
-        `Are you sure you want to delete the list "${customLists.find((cl) => cl.id === listId)?.name}"?`,
-      )
-    ) {
-      dispatch({ type: "DELETE_CUSTOM_LIST", payload: { listId } });
-      if (expandedListId === listId) {
-        const remaining = customLists.filter((cl) => cl.id !== listId);
-        setExpandedListId(remaining[0]?.id || "");
-      }
+  const confirmDeleteList = () => {
+    if (!listToDelete) return;
+    dispatch({ type: "DELETE_CUSTOM_LIST", payload: { listId: listToDelete.id } });
+    if (selectedListId === listToDelete.id) {
+      setSelectedListId(null);
     }
+    setListToDelete(null);
   };
 
-  // Calculate current quantities per product ID
   const productQuantities = useMemo(() => {
     return state.meatCuts.reduce(
       (acc, mc) => {
@@ -5313,15 +5949,14 @@ export const ManageLists: React.FC<{
     );
   }, [state.meatCuts]);
 
-  // Gather products that are NOT already on the active list
   const availableProducts = useMemo(() => {
     if (!activeList) return [];
-    const existingOnList = new Set(
-      activeList.items?.map((i) => i.productId) || [],
-    );
+    const existingOnList = new Set(activeList.items?.map((i) => i.productId) || []);
     return state.products
       .filter((p) => !existingOnList.has(p.id))
-      .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+      .sort((a, b) =>
+        a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }),
+      );
   }, [state.products, activeList]);
 
   const [listSearch, setListSearch] = useState("");
@@ -5331,11 +5966,11 @@ export const ManageLists: React.FC<{
   const categories = useMemo(() => {
     const cats = new Set<string>();
     state.products.forEach((p) => {
-      if (p.primaryCategory) {
-        cats.add(p.primaryCategory);
-      }
+      if (p.primaryCategory) cats.add(p.primaryCategory);
     });
-    return Array.from(cats).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+    return Array.from(cats).sort((a, b) =>
+      a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }),
+    );
   }, [state.products]);
 
   const filteredListItems = useMemo(() => {
@@ -5343,17 +5978,11 @@ export const ManageLists: React.FC<{
     return activeList.items.filter((item) => {
       const prod = state.products.find((p) => p.id === item.productId);
       if (!prod) return false;
-
       const matchesSearch =
         prod.name.toLowerCase().includes(listSearch.toLowerCase()) ||
-        (prod.subCategory &&
-          prod.subCategory.toLowerCase().includes(listSearch.toLowerCase())) ||
-        (item.notes &&
-          item.notes.toLowerCase().includes(listSearch.toLowerCase()));
-
-      const matchesCategory =
-        listCategory === "all" || prod.primaryCategory === listCategory;
-
+        (prod.subCategory && prod.subCategory.toLowerCase().includes(listSearch.toLowerCase())) ||
+        (item.notes && item.notes.toLowerCase().includes(listSearch.toLowerCase()));
+      const matchesCategory = listCategory === "all" || prod.primaryCategory === listCategory;
       return matchesSearch && matchesCategory;
     });
   }, [activeList, state.products, listSearch, listCategory]);
@@ -5363,9 +5992,7 @@ export const ManageLists: React.FC<{
     filteredListItems.forEach((item) => {
       const prod = state.products.find((p) => p.id === item.productId);
       const cat = prod?.primaryCategory || "Uncategorized";
-      if (!groups[cat]) {
-        groups[cat] = [];
-      }
+      if (!groups[cat]) groups[cat] = [];
       groups[cat].push(item);
     });
     return groups;
@@ -5373,21 +6000,35 @@ export const ManageLists: React.FC<{
 
   // --- Bulk Matrix Spreadsheet Grid States ---
   const [matrixSearch, setMatrixSearch] = useState("");
+  const [showMatrixFilters, setShowMatrixFilters] = useState(false);
   const [matrixCategory, setMatrixCategory] = useState("all");
   const [matrixSubCategory, setMatrixSubCategory] = useState("all");
   const [matrixListFilter, setMatrixListFilter] = useState<string>("all");
-  const [matrixMembershipFilter, setMatrixMembershipFilter] = useState<"all" | "in_any" | "in_none" | "controlled_only">("all");
-  const [matrixSortBy, setMatrixSortBy] = useState<"name_asc" | "name_desc" | "category_asc" | "stock_desc">("category_asc");
+  const [matrixMembershipFilter, setMatrixMembershipFilter] = useState<
+    "all" | "in_any" | "in_none" | "controlled_only"
+  >("all");
+  const [matrixSortBy, setMatrixSortBy] = useState<
+    "name_asc" | "name_desc" | "category_asc" | "stock_desc"
+  >("category_asc");
   const [matrixSelectedProds, setMatrixSelectedProds] = useState<Record<string, boolean>>({});
-
-  // Batch control modal / popover toolbar state
   const [bulkListTarget, setBulkListTarget] = useState<string>(customLists[0]?.id || "");
-  const [bulkActionType, setBulkActionType] = useState<"include" | "exclude" | "set_source" | "set_threshold" | "clear_threshold">("include");
-  const [bulkControlSourceVal, setBulkControlSourceVal] = useState<ControlSourceType>("onsite_count");
+  const [bulkActionType, setBulkActionType] = useState<
+    "include" | "exclude" | "set_source" | "set_threshold" | "clear_threshold"
+  >("include");
+  const [bulkControlSourceVal, setBulkControlSourceVal] =
+    useState<ControlSourceType>("onsite_count");
   const [bulkThresholdVal, setBulkThresholdVal] = useState<string>("5");
-  const [matrixToastMsg, setMatrixToastMsg] = useState<string | null>(null);
+  const [matrixToastMsg, setMatrixToastMsg] = useState<{
+    type: "success" | "error";
+    text: string;
+  } | null>(null);
 
-  // Auto-dismiss toast
+  useEffect(() => {
+    if (!bulkListTarget && customLists.length > 0) {
+      setBulkListTarget(customLists[0].id);
+    }
+  }, [customLists, bulkListTarget]);
+
   useEffect(() => {
     if (matrixToastMsg) {
       const timer = setTimeout(() => setMatrixToastMsg(null), 3500);
@@ -5400,102 +6041,84 @@ export const ManageLists: React.FC<{
     (state.products || []).forEach((p) => {
       const primary = p.primaryCategory || "Uncategorized";
       const sub = p.subCategory || "General";
-      if (!map.has(primary)) {
-        map.set(primary, new Set<string>());
-      }
+      if (!map.has(primary)) map.set(primary, new Set<string>());
       map.get(primary)!.add(sub);
     });
-
-    const sortedPrimaries = Array.from(map.keys()).sort((a, b) =>
-      a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" })
-    );
-
-    return sortedPrimaries.map((primary) => {
-      const subs = Array.from(map.get(primary)!).sort((a, b) =>
-        a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" })
-      );
-      return { primary, subs };
-    });
+    return Array.from(map.keys())
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }))
+      .map((primary) => ({
+        primary,
+        subs: Array.from(map.get(primary)!).sort((a, b) =>
+          a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }),
+        ),
+      }));
   }, [state.products]);
 
-  // Available sub-categories for matrix filter
-  const matrixSubCategories = useMemo(() => {
-    const subs = new Set<string>();
-    state.products.forEach((p) => {
-      if (matrixCategory === "all" || p.primaryCategory === matrixCategory) {
-        if (p.subCategory) subs.add(p.subCategory);
-      }
-    });
-    return Array.from(subs).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
-  }, [state.products, matrixCategory]);
-
-  // Filtered & sorted products for the Matrix Grid
   const matrixFilteredProducts = useMemo(() => {
     const listMap = new Map<string, CustomList>();
     customLists.forEach((cl) => listMap.set(cl.id, cl));
 
-    return state.products.filter((p) => {
-      // 1. Search Query
-      if (matrixSearch.trim()) {
-        const q = matrixSearch.toLowerCase();
-        const matchesName = p.name.toLowerCase().includes(q);
-        const matchesCat = p.primaryCategory?.toLowerCase().includes(q);
-        const matchesSub = p.subCategory?.toLowerCase().includes(q);
-        const matchesNum = p.productNumbers?.some(num => num.toLowerCase().includes(q));
-        const matchesBarcode = p.barcode?.toLowerCase().includes(q);
-        if (!matchesName && !matchesCat && !matchesSub && !matchesNum && !matchesBarcode) return false;
-      }
-
-      // 2. Primary Category
-      if (matrixCategory !== "all" && p.primaryCategory !== matrixCategory) {
-        return false;
-      }
-
-      // 3. Sub Category
-      if (matrixSubCategory !== "all" && p.subCategory !== matrixSubCategory) {
-        return false;
-      }
-
-      // 4. List Membership / Status
-      if (matrixListFilter !== "all") {
-        const targetList = listMap.get(matrixListFilter);
-        const onThisList = targetList?.items?.some(i => i.productId === p.id);
-        if (!onThisList) return false;
-      }
-
-      if (matrixMembershipFilter === "in_any") {
-        const inAny = customLists.some(cl => cl.items?.some(i => i.productId === p.id));
-        if (!inAny) return false;
-      } else if (matrixMembershipFilter === "in_none") {
-        const inAny = customLists.some(cl => cl.items?.some(i => i.productId === p.id));
-        if (inAny) return false;
-      } else if (matrixMembershipFilter === "controlled_only") {
-        const inControlled = customLists.some(cl => cl.isInventoryControlled && cl.items?.some(i => i.productId === p.id));
-        if (!inControlled) return false;
-      }
-
-      return true;
-    }).sort((a, b) => {
-      if (matrixSortBy === "name_asc") {
-        return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
-      }
-      if (matrixSortBy === "name_desc") {
-        return b.name.localeCompare(a.name, undefined, { numeric: true, sensitivity: 'base' });
-      }
-      if (matrixSortBy === "category_asc") {
-        const catCmp = (a.primaryCategory || "").localeCompare(b.primaryCategory || "", undefined, { numeric: true, sensitivity: 'base' });
-        if (catCmp !== 0) return catCmp;
-        const subCmp = (a.subCategory || "").localeCompare(b.subCategory || "", undefined, { numeric: true, sensitivity: 'base' });
-        if (subCmp !== 0) return subCmp;
-        return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
-      }
-      if (matrixSortBy === "stock_desc") {
-        const stockA = (productQuantities[a.id] || 0) + (offSiteQuantityMap[a.id] || 0);
-        const stockB = (productQuantities[b.id] || 0) + (offSiteQuantityMap[b.id] || 0);
-        return stockB - stockA;
-      }
-      return 0;
-    });
+    return state.products
+      .filter((p) => {
+        if (matrixSearch.trim()) {
+          const q = matrixSearch.toLowerCase();
+          const matchesName = p.name.toLowerCase().includes(q);
+          const matchesCat = p.primaryCategory?.toLowerCase().includes(q);
+          const matchesSub = p.subCategory?.toLowerCase().includes(q);
+          const matchesNum = p.productNumbers?.some((num) => num.toLowerCase().includes(q));
+          const matchesBarcode = p.barcode?.toLowerCase().includes(q);
+          if (!matchesName && !matchesCat && !matchesSub && !matchesNum && !matchesBarcode) {
+            return false;
+          }
+        }
+        if (matrixCategory !== "all" && p.primaryCategory !== matrixCategory) return false;
+        if (matrixSubCategory !== "all" && p.subCategory !== matrixSubCategory) return false;
+        if (matrixListFilter !== "all") {
+          const targetList = listMap.get(matrixListFilter);
+          if (!targetList?.items?.some((i) => i.productId === p.id)) return false;
+        }
+        if (matrixMembershipFilter === "in_any") {
+          if (!customLists.some((cl) => cl.items?.some((i) => i.productId === p.id))) return false;
+        } else if (matrixMembershipFilter === "in_none") {
+          if (customLists.some((cl) => cl.items?.some((i) => i.productId === p.id))) return false;
+        } else if (matrixMembershipFilter === "controlled_only") {
+          if (
+            !customLists.some(
+              (cl) => cl.isInventoryControlled && cl.items?.some((i) => i.productId === p.id),
+            )
+          ) {
+            return false;
+          }
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        if (matrixSortBy === "name_asc") {
+          return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+        }
+        if (matrixSortBy === "name_desc") {
+          return b.name.localeCompare(a.name, undefined, { numeric: true, sensitivity: "base" });
+        }
+        if (matrixSortBy === "category_asc") {
+          const catCmp = (a.primaryCategory || "").localeCompare(b.primaryCategory || "", undefined, {
+            numeric: true,
+            sensitivity: "base",
+          });
+          if (catCmp !== 0) return catCmp;
+          const subCmp = (a.subCategory || "").localeCompare(b.subCategory || "", undefined, {
+            numeric: true,
+            sensitivity: "base",
+          });
+          if (subCmp !== 0) return subCmp;
+          return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+        }
+        if (matrixSortBy === "stock_desc") {
+          const stockA = (productQuantities[a.id] || 0) + (offSiteQuantityMap[a.id] || 0);
+          const stockB = (productQuantities[b.id] || 0) + (offSiteQuantityMap[b.id] || 0);
+          return stockB - stockA;
+        }
+        return 0;
+      });
   }, [
     state.products,
     customLists,
@@ -5509,14 +6132,17 @@ export const ManageLists: React.FC<{
     offSiteQuantityMap,
   ]);
 
-  const selectedMatrixProdCount = useMemo(() => {
-    return Object.keys(matrixSelectedProds).filter(id => matrixSelectedProds[id]).length;
-  }, [matrixSelectedProds]);
+  const selectedMatrixProdCount = useMemo(
+    () => Object.keys(matrixSelectedProds).filter((id) => matrixSelectedProds[id]).length,
+    [matrixSelectedProds],
+  );
 
   const handleSelectAllMatrix = (checkAll: boolean) => {
     if (checkAll) {
       const next: Record<string, boolean> = {};
-      matrixFilteredProducts.forEach(p => { next[p.id] = true; });
+      matrixFilteredProducts.forEach((p) => {
+        next[p.id] = true;
+      });
       setMatrixSelectedProds(next);
     } else {
       setMatrixSelectedProds({});
@@ -5524,70 +6150,88 @@ export const ManageLists: React.FC<{
   };
 
   const executeBulkMatrixAction = () => {
-    const selectedIds = Object.keys(matrixSelectedProds).filter(id => matrixSelectedProds[id]);
+    const selectedIds = Object.keys(matrixSelectedProds).filter((id) => matrixSelectedProds[id]);
     if (selectedIds.length === 0) {
-      alert("Please select one or more products using the checkboxes before applying a bulk edit.");
+      setMatrixToastMsg({
+        type: "error",
+        text: "Select one or more products before applying a bulk edit.",
+      });
       return;
     }
     if (!bulkListTarget) {
-      alert("Please select a target list.");
+      setMatrixToastMsg({ type: "error", text: "Select a target list first." });
       return;
     }
 
-    const targetList = customLists.find(cl => cl.id === bulkListTarget);
+    const targetList = customLists.find((cl) => cl.id === bulkListTarget);
     if (!targetList) return;
 
     if (bulkActionType === "include") {
       const numericVal = bulkThresholdVal.trim() !== "" ? parseFloat(bulkThresholdVal) : undefined;
-      const updates = selectedIds.map(pid => ({
+      const updates = selectedIds.map((pid) => ({
         listId: targetList.id,
         productId: pid,
         forceState: true,
         ...(numericVal !== undefined && !isNaN(numericVal) ? { threshold: numericVal } : {}),
       }));
       dispatch({ type: "BATCH_TOGGLE_PRODUCTS_ON_LIST", payload: { updates } });
-      setMatrixToastMsg(`Added ${selectedIds.length} item(s) to "${targetList.name}"${numericVal !== undefined && !isNaN(numericVal) ? ` with threshold ${numericVal}` : ""}`);
+      setMatrixToastMsg({
+        type: "success",
+        text: `Added ${selectedIds.length} item(s) to "${targetList.name}"${numericVal !== undefined && !isNaN(numericVal) ? ` with threshold ${numericVal}` : ""}`,
+      });
     } else if (bulkActionType === "exclude") {
-      const updates = selectedIds.map(pid => ({
+      const updates = selectedIds.map((pid) => ({
         listId: targetList.id,
         productId: pid,
         forceState: false,
       }));
       dispatch({ type: "BATCH_TOGGLE_PRODUCTS_ON_LIST", payload: { updates } });
-      setMatrixToastMsg(`Removed ${selectedIds.length} item(s) from "${targetList.name}"`);
+      setMatrixToastMsg({
+        type: "success",
+        text: `Removed ${selectedIds.length} item(s) from "${targetList.name}"`,
+      });
     } else if (bulkActionType === "set_source") {
-      const updates = selectedIds.map(pid => ({
+      const updates = selectedIds.map((pid) => ({
         listId: targetList.id,
         productId: pid,
         controlSource: bulkControlSourceVal,
       }));
       dispatch({ type: "BATCH_TOGGLE_PRODUCTS_ON_LIST", payload: { updates } });
-      setMatrixToastMsg(`Updated inventory source to ${bulkControlSourceVal.replace('_', ' ')} for ${selectedIds.length} item(s) on "${targetList.name}"`);
+      setMatrixToastMsg({
+        type: "success",
+        text: `Updated inventory source to ${bulkControlSourceVal.replace("_", " ")} for ${selectedIds.length} item(s) on "${targetList.name}"`,
+      });
     } else if (bulkActionType === "set_threshold") {
       const numericVal = parseFloat(bulkThresholdVal);
       if (isNaN(numericVal)) {
-        alert("Please enter a valid numeric threshold.");
+        setMatrixToastMsg({ type: "error", text: "Enter a valid numeric threshold." });
         return;
       }
-      const updates = selectedIds.map(pid => ({
+      const updates = selectedIds.map((pid) => ({
         listId: targetList.id,
         productId: pid,
         threshold: numericVal,
       }));
       dispatch({ type: "BATCH_TOGGLE_PRODUCTS_ON_LIST", payload: { updates } });
-      setMatrixToastMsg(`Updated inventory threshold to ${numericVal} for ${selectedIds.length} item(s) on "${targetList.name}"`);
+      setMatrixToastMsg({
+        type: "success",
+        text: `Updated threshold to ${numericVal} for ${selectedIds.length} item(s) on "${targetList.name}"`,
+      });
     } else if (bulkActionType === "clear_threshold") {
-      const updates = selectedIds.map(pid => ({
+      const updates = selectedIds.map((pid) => ({
         listId: targetList.id,
         productId: pid,
         threshold: null,
       }));
       dispatch({ type: "BATCH_TOGGLE_PRODUCTS_ON_LIST", payload: { updates } });
-      setMatrixToastMsg(`Cleared custom threshold for ${selectedIds.length} item(s) on "${targetList.name}"`);
+      setMatrixToastMsg({
+        type: "success",
+        text: `Cleared custom threshold for ${selectedIds.length} item(s) on "${targetList.name}"`,
+      });
     }
   };
 
-  const renderTableRows = (itemsToRender: typeof activeList.items) => {
+  const renderTableRows = (itemsToRender: CustomList["items"], currentList: CustomList) => {
     return itemsToRender.map((item) => {
       const prod = state.products.find((p) => p.id === item.productId);
       if (!prod) return null;
@@ -5612,12 +6256,12 @@ export const ManageLists: React.FC<{
         unitLabel = "total";
       }
 
-      const threshold = prod.listThresholds?.[activeList.id];
+      const threshold = prod.listThresholds?.[currentList.id];
       const hasThreshold = threshold !== undefined && threshold !== null;
       let isTriggered = false;
 
-      if (hasThreshold && activeList.isInventoryControlled) {
-        if (activeList.controlCondition === "max") {
+      if (hasThreshold && currentList.isInventoryControlled) {
+        if (currentList.controlCondition === "max") {
           isTriggered = curValue >= (threshold || 0);
         } else {
           isTriggered = curValue <= (threshold || 0);
@@ -5625,26 +6269,21 @@ export const ManageLists: React.FC<{
       }
 
       return (
-        <tr
-          key={item.productId}
-          className="hover:bg-cool-gray-900/35 transition-all animate-fade-in"
-        >
+        <tr key={item.productId} className="hover:bg-cool-gray-900/35 transition-all">
           <td className="py-3 px-3">
-            <div className="font-extrabold text-cool-gray-200 text-sm">
-              {prod.name}
-            </div>
-            <div className="text-[10px] text-cool-gray-400 font-medium">
+            <div className="font-bold text-cool-gray-100 text-sm">{prod.name}</div>
+            <div className="text-[11px] text-cool-gray-400">
               {prod.primaryCategory} &gt; {prod.subCategory}
             </div>
           </td>
-          <td className="py-3 px-3 animate-fade-in text-center">
+          <td className="py-3 px-3 text-center">
             <div className="flex flex-col items-center justify-center gap-1.5">
               <span
-                className={`text-xs font-black px-2 py-0.5 rounded ${
-                  !hasThreshold || !activeList.isInventoryControlled
+                className={`text-xs font-bold px-2 py-0.5 rounded tabular-nums ${
+                  !hasThreshold || !currentList.isInventoryControlled
                     ? "text-cool-gray-300 bg-cool-gray-800"
                     : isTriggered
-                      ? activeList.controlCondition === "max"
+                      ? currentList.controlCondition === "max"
                         ? "text-cyan-400 bg-cyan-950/25 border border-cyan-500/25"
                         : "text-amber-400 bg-amber-950/25 border border-amber-900/30"
                       : "text-green-400 bg-green-950/20 border border-green-900/20"
@@ -5653,22 +6292,21 @@ export const ManageLists: React.FC<{
                 {curValue.toFixed(controlSource === "offsite_weight" ? 2 : 0)} {unitLabel}
               </span>
 
-              {activeList.isInventoryControlled && (
-                <div className="flex flex-col gap-1 w-full max-w-[125px] mt-1">
-                  {/* Control Source Dropdown */}
+              {currentList.isInventoryControlled && (
+                <div className="flex flex-col gap-1 w-full max-w-[135px] mt-1">
                   <select
                     value={controlSource}
                     onChange={(e) => {
                       dispatch({
                         type: "UPDATE_LIST_ITEM_CONTROL_SOURCE",
                         payload: {
-                          listId: activeList.id,
+                          listId: currentList.id,
                           productId: prod.id,
-                          controlSource: e.target.value as any
-                        }
+                          controlSource: e.target.value as ControlSourceType,
+                        },
                       });
                     }}
-                    className="w-full bg-cool-gray-950 border border-cool-gray-850 rounded px-1.5 py-0.5 text-[9px] font-bold text-cool-gray-300 focus:outline-none focus:border-cyan-500 cursor-pointer"
+                    className="w-full bg-cool-gray-950 border border-cool-gray-800 rounded px-1.5 py-0.5 text-[10px] font-semibold text-cool-gray-300 focus:outline-none focus:border-cyan-500 cursor-pointer"
                   >
                     <option value="onsite_count">On-Site Count</option>
                     <option value="offsite_count">Off-Site Count</option>
@@ -5676,10 +6314,9 @@ export const ManageLists: React.FC<{
                     <option value="total_count">Total Count</option>
                   </select>
 
-                  {/* Threshold Input */}
-                  <div className="flex items-center justify-between gap-1 bg-cool-gray-950 border border-cool-gray-850 rounded px-1.5 py-0.5 text-[9px]">
-                    <span className="text-[9px] text-cool-gray-450 font-bold uppercase tracking-wider">
-                      {activeList.controlCondition === "max" ? "Max" : "Min"}:
+                  <div className="flex items-center justify-between gap-1 bg-cool-gray-950 border border-cool-gray-800 rounded px-1.5 py-0.5 text-[10px]">
+                    <span className="text-[10px] text-cool-gray-400 font-bold uppercase tracking-wider">
+                      {currentList.controlCondition === "max" ? "Max" : "Min"}:
                     </span>
                     <input
                       type="number"
@@ -5691,44 +6328,43 @@ export const ManageLists: React.FC<{
                         dispatch({
                           type: "UPDATE_LIST_ITEM_THRESHOLD",
                           payload: {
-                            listId: activeList.id,
+                            listId: currentList.id,
                             productId: prod.id,
-                            threshold: val
-                          }
+                            threshold: val,
+                          },
                         });
                       }}
-                      className="w-12 bg-transparent text-right font-black text-white focus:outline-none focus:text-cyan-400 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                      className="w-12 bg-transparent text-right font-bold text-white focus:outline-none focus:text-cyan-400 tabular-nums [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                     />
                   </div>
                 </div>
               )}
             </div>
           </td>
-          {activeList.allowNotes && (
+          {currentList.allowNotes && (
             <td className="py-3 px-3">
-              <div className="flex items-center gap-1">
+              <div className="flex items-center gap-1.5">
                 <FileText className="w-3.5 h-3.5 text-cool-gray-500 shrink-0" />
                 <input
                   type="text"
                   value={item.notes || ""}
                   onChange={(e) => {
-                    const txt = e.target.value;
                     dispatch({
                       type: "UPDATE_LIST_ITEM_NOTE",
                       payload: {
-                        listId: activeList.id,
+                        listId: currentList.id,
                         productId: prod.id,
-                        notes: txt,
+                        notes: e.target.value,
                       },
                     });
                   }}
-                  placeholder="Set specific status description..."
-                  className="w-full bg-cool-gray-905 border border-cool-gray-800 hover:border-cool-gray-700 rounded-md px-2.5 py-1.5 text-white placeholder-cool-gray-650 focus:outline-none focus:border-cyan-500 transition-colors text-xs"
+                  placeholder="Set specific status note..."
+                  className="w-full bg-cool-gray-950 border border-cool-gray-800 hover:border-cool-gray-700 rounded-md px-2.5 py-1.5 text-white placeholder-cool-gray-600 focus:outline-none focus:border-cyan-500 transition-colors text-xs"
                 />
               </div>
             </td>
           )}
-          {activeList.notificationEnabled && (
+          {currentList.notificationEnabled && (
             <td className="py-3 px-3 text-center">
               <button
                 type="button"
@@ -5736,18 +6372,22 @@ export const ManageLists: React.FC<{
                   dispatch({
                     type: "TOGGLE_LIST_ITEM_NOTIFICATION",
                     payload: {
-                      listId: activeList.id,
+                      listId: currentList.id,
                       productId: prod.id,
-                      notifyEnabled: !(item.notifyEnabled !== false)
-                    }
+                      notifyEnabled: !(item.notifyEnabled !== false),
+                    },
                   });
                 }}
                 className={`p-1.5 rounded-full border transition-all cursor-pointer ${
                   item.notifyEnabled !== false
                     ? "bg-amber-950/40 text-amber-400 border-amber-900/30"
-                    : "bg-cool-gray-900 text-cool-gray-650 border-cool-gray-800"
+                    : "bg-cool-gray-900 text-cool-gray-600 border-cool-gray-800"
                 }`}
-                title={item.notifyEnabled !== false ? "Click to disable daily digest for this item" : "Click to enable daily digest for this item"}
+                title={
+                  item.notifyEnabled !== false
+                    ? "Disable daily digest for this item"
+                    : "Enable daily digest for this item"
+                }
               >
                 <Bell className="w-3.5 h-3.5" />
               </button>
@@ -5760,14 +6400,14 @@ export const ManageLists: React.FC<{
                 dispatch({
                   type: "TOGGLE_PRODUCT_ON_LIST",
                   payload: {
-                    listId: activeList.id,
+                    listId: currentList.id,
                     productId: prod.id,
                     forceState: false,
                   },
                 });
               }}
-              className="p-1.5 text-rose-450 hover:bg-rose-950/30 hover:text-rose-350 rounded transition cursor-pointer"
-              title="Delete item from this configuration list"
+              className="p-1.5 text-rose-400 hover:bg-rose-950/30 hover:text-rose-300 rounded transition cursor-pointer"
+              title="Remove product from list"
             >
               <Trash2 className="w-4 h-4" />
             </button>
@@ -5777,538 +6417,291 @@ export const ManageLists: React.FC<{
     });
   };
 
+  const formatListMeta = (cl: CustomList) => {
+    const count = cl.items?.length || 0;
+    const parts: string[] = [`${count} ${count === 1 ? "item" : "items"}`];
+    parts.push(cl.allowNotes ? "Notes on" : "Notes off");
+    if (cl.isInventoryControlled) {
+      parts.push(
+        `${cl.controlType === "auto" ? "Auto-Stock" : "Alert-Stock"} (${cl.controlCondition || "min"})`,
+      );
+    } else {
+      parts.push("Static");
+    }
+    if (cl.notificationEnabled) {
+      parts.push(formatListNotificationSummary(cl, configuredChannels));
+    }
+    return parts.join(" · ");
+  };
+
   return (
-    <div className="space-y-4 mt-4 font-sans text-sm pb-8">
-      {/* Sub-Tab Navigation Header */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 bg-cool-gray-850/80 p-2.5 rounded-xl border border-cool-gray-750/70 shadow-sm">
-        <div className="flex items-center gap-1.5 p-1 bg-cool-gray-900/90 rounded-lg border border-cool-gray-800">
-          <button
-            type="button"
-            onClick={() => setListCatalogSubTab("lists")}
-            className={`px-3.5 py-1.5 rounded-md text-xs font-bold transition flex items-center gap-2 cursor-pointer ${
-              listCatalogSubTab === "lists"
-                ? "bg-cyan-600 text-white shadow-sm"
-                : "text-cool-gray-400 hover:text-white hover:bg-cool-gray-800/60"
-            }`}
-          >
-            <ClipboardList className="w-3.5 h-3.5" />
-            List Catalog & Items
-            <span className="ml-1 px-1.5 py-0.2 rounded-full text-[10px] bg-cool-gray-950/60 text-cyan-200">
-              {customLists.length}
-            </span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setListCatalogSubTab("bulk_matrix")}
-            className={`px-3.5 py-1.5 rounded-md text-xs font-bold transition flex items-center gap-2 cursor-pointer ${
-              listCatalogSubTab === "bulk_matrix"
-                ? "bg-cyan-600 text-white shadow-sm"
-                : "text-cool-gray-400 hover:text-white hover:bg-cool-gray-800/60"
-            }`}
-          >
-            <Table className="w-3.5 h-3.5 text-amber-400" />
-            Bulk Matrix & Inventory Control
-            <span className="ml-1 px-1.5 py-0.2 rounded-full text-[10px] bg-amber-500/20 text-amber-300 font-extrabold">
-              Spreadsheet
-            </span>
-          </button>
-        </div>
-
-        <div className="flex items-center gap-2 text-xs text-cool-gray-400">
-          {listCatalogSubTab === "bulk_matrix" ? (
-            <span className="flex items-center gap-1.5 bg-cool-gray-900/80 px-2.5 py-1 rounded border border-cool-gray-800 text-[11px] text-cool-gray-300">
-              <Sliders className="w-3 h-3 text-cyan-400" />
-              Showing <strong>{matrixFilteredProducts.length}</strong> products across <strong>{customLists.length}</strong> list(s)
-            </span>
-          ) : (
-            <span className="text-[11px] text-cool-gray-450 hidden sm:inline">
-              Configure list memberships, item notes, and custom inventory alerts.
-            </span>
-          )}
-        </div>
-      </div>
-
-      {/* RENDER VIEW 1: Standard List Catalog */}
-      {listCatalogSubTab === "lists" ? (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-          {/* LEFT SIDEBAR: List Directory */}
-          <div className="lg:col-span-1 space-y-3.5">
-            <div className="flex items-center justify-between">
-              <h3 className="text-xs font-bold text-cool-gray-300 uppercase tracking-widest flex items-center gap-2">
-                <ClipboardList className="w-4.5 h-4.5 text-cyan-400" /> Active Lists
-              </h3>
-              {!isFormVisible && (
+    <div className="space-y-4 font-sans text-sm pb-8">
+      {/* Standalone Mode Switcher when embedded outside LibraryView (e.g. #restock) */}
+      {!hideInternalHeader && (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-cool-gray-750">
+          <div className="inline-flex flex-wrap items-center gap-1 p-1 bg-cool-gray-900 border border-cool-gray-750 rounded-lg">
             <button
               type="button"
-              onClick={() => {
-                setEditingListId(null);
-                setFormVisible(true);
-              }}
-              className="text-xs bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-1 px-3 rounded-md transition shadow-md flex items-center gap-1 select-none cursor-pointer"
+              onClick={() => setEffectiveMode("overview")}
+              className={`px-3 py-1.5 rounded-md text-xs font-semibold transition cursor-pointer tabular-nums ${
+                effectiveMode === "overview"
+                  ? "bg-cyan-600 text-white"
+                  : "text-cool-gray-400 hover:text-white hover:bg-cool-gray-850"
+              }`}
             >
-              + Create List
+              Lists Overview ({customLists.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setEffectiveMode("matrix")}
+              className={`px-3 py-1.5 rounded-md text-xs font-semibold transition cursor-pointer ${
+                effectiveMode === "matrix"
+                  ? "bg-cyan-600 text-white"
+                  : "text-cool-gray-400 hover:text-white hover:bg-cool-gray-850"
+              }`}
+            >
+              Bulk Matrix
+            </button>
+          </div>
+
+          {effectiveMode === "overview" && !activeList && (
+            <button
+              type="button"
+              onClick={openCreateModal}
+              className="px-3.5 py-2 bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs rounded-lg transition flex items-center gap-1.5 cursor-pointer self-start sm:self-auto"
+            >
+              <PlusIcon className="w-3.5 h-3.5" /> Create List
             </button>
           )}
         </div>
+      )}
 
-        <div className="space-y-2.5">
-          {customLists.map((cl) => {
-            const isExpanded = activeList?.id === cl.id && !showNotificationCenter;
-            const itemsCount = cl.items?.length || 0;
-            return (
-              <div
-                key={cl.id}
-                onClick={() => {
-                  setShowNotificationCenter(false);
-                  if (!isExpanded) {
-                    setExpandedListId(cl.id);
-                    setAddProductId("");
-                  }
-                }}
-                className={`p-3.5 rounded-xl border transition-all cursor-pointer flex flex-col gap-2 relative ${
-                  isExpanded
-                    ? "bg-cool-gray-800 border-cyan-500/70 shadow-lg"
-                    : "bg-cool-gray-850/45 border-cool-gray-800/85 hover:border-cool-gray-700"
-                }`}
-              >
-                <div className="flex justify-between items-start">
-                  <div className="min-w-0 pr-6">
-                    <div className="font-extrabold text-cool-gray-150 text-base truncate flex items-center gap-1.5">
-                      {cl.name}
-                    </div>
-                    {cl.description && (
-                      <p className="text-xs text-cool-gray-400 truncate mt-0.5">
-                        {cl.description}
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="absolute top-3.5 right-3.5 flex items-center gap-1">
-                    <span className="text-[10px] bg-cool-gray-700/80 text-cool-gray-300 px-2.5 py-0.5 rounded-full font-bold">
-                      {itemsCount} {itemsCount === 1 ? "item" : "items"}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="flex gap-2 flex-wrap pt-1.5 border-t border-cool-gray-850 text-[10px] uppercase font-mono font-bold tracking-wider text-cool-gray-400">
-                  {cl.allowNotes && (
-                    <span className="bg-cool-gray-905 px-2 py-0.5 rounded border border-cool-gray-800">
-                      📝 Notes Enabled
-                    </span>
-                  )}
-                  {cl.isInventoryControlled ? (
-                    <span className="bg-amber-950/40 text-amber-400 px-2 py-0.5 rounded border border-amber-900/40">
-                      🤖{" "}
-                      {cl.controlType === "auto" ? "Auto-Stock" : "Alert-Stock"}{" "}
-                      ({cl.controlCondition})
-                    </span>
-                  ) : (
-                    <span className="bg-cool-gray-901 text-cool-gray-500 px-2 py-0.5 rounded border border-cool-gray-850">
-                      Static List
-                    </span>
-                  )}
-                  {cl.notificationEnabled && (
-                    <span className="bg-purple-950/40 text-purple-400 px-2 py-0.5 rounded border border-purple-900/40">
-                      🔔 {cl.notificationType === "all_items" ? "All" : cl.notificationType === "newly_added_only" ? "New" : "Specific"}
-                    </span>
-                  )}
-                </div>
-
-                {isExpanded && (
-                  <div
-                    className="flex justify-end gap-2 pt-2 border-t border-cool-gray-700 mt-1"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleEditClick(cl);
-                      }}
-                      className="text-[11px] bg-cool-gray-700 hover:bg-cool-gray-650 text-cool-gray-200 hover:text-white px-2 py-1 rounded transition flex items-center gap-1 cursor-pointer"
-                    >
-                      <Edit2 className="w-2.5 h-2.5 text-teal-400" /> Configure
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDeleteList(cl.id);
-                      }}
-                      className="text-[11px] bg-red-950/20 hover:bg-red-900/40 text-red-400 hover:text-red-300 px-2 py-1 rounded border border-red-950/45 hover:border-red-500/30 transition flex items-center gap-1 cursor-pointer"
-                    >
-                      <Trash2 className="w-2.5 h-2.5" /> Delete
-                    </button>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-
-          <div className="pt-2 border-t border-cool-gray-800 mt-2">
-            <div
-              onClick={() => {
-                setShowNotificationCenter(true);
-                setFormVisible(false);
+      {effectiveMode === "overview" ? (
+        !activeList ? (
+          /* STEP 1: LISTS OVERVIEW */
+          <div className="space-y-3.5">
+            <CatalogSearchFilterBar
+              searchValue={listOverviewSearch}
+              onSearchChange={setListOverviewSearch}
+              searchPlaceholder="Search custom lists by name or description..."
+              isFiltersOpen={showOverviewFilters}
+              onToggleFilters={() => setShowOverviewFilters((prev) => !prev)}
+              activeFilterCount={activeListOverviewFilterCount}
+              onResetFilters={() => {
+                setListOverviewSearch("");
+                setListControlFilter("all");
+                setListDigestFilter("all");
+                setListOverviewSort("default");
               }}
-              className={`p-3.5 rounded-xl border transition-all cursor-pointer flex items-center justify-between ${
-                showNotificationCenter
-                  ? "bg-amber-950/20 border-amber-500 text-amber-300 shadow-lg"
-                  : "bg-cool-gray-850/45 border-cool-gray-800/85 hover:border-cool-gray-700 text-cool-gray-300"
-              }`}
             >
-              <div className="flex items-center gap-2.5">
-                <Bell className={`w-4.5 h-4.5 ${showNotificationCenter ? 'text-amber-400' : 'text-cool-gray-400'}`} />
-                <div className="text-left">
-                  <span className="font-extrabold text-sm block">Notification Center</span>
-                  <span className="text-[10px] text-cool-gray-450 block font-semibold mt-0.5">Configure digests, email, SMTP & HA</span>
-                </div>
-              </div>
-              <ChevronRight className="w-4 h-4 text-cool-gray-500" />
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* RIGHT WORKPLACE: Selected List Items vs Config Form */}
-      <div className="lg:col-span-2 space-y-4">
-        {showNotificationCenter ? (
-          <NotificationCenterComponent state={state} dispatch={dispatch} />
-        ) : isFormVisible ? (
-          <form
-            onSubmit={handleCreateOrEditList}
-            className="bg-cool-gray-850 p-5 rounded-xl border border-cool-gray-750 shadow-md space-y-4.5 animate-fade-in"
-          >
-            <div className="border-b border-cool-gray-700 pb-3 flex items-center justify-between">
-              <h4 className="text-base font-extrabold text-cool-gray-100">
-                {editingListId
-                  ? `Configure List: ${customLists.find((cl) => cl.id === editingListId)?.name}`
-                  : "Create Customizable List"}
-              </h4>
-              <span className="text-[10px] font-bold text-cyan-400 bg-cyan-950/20 border border-cyan-500/20 px-2 py-0.5 rounded font-mono uppercase tracking-widest">
-                Settings
-              </span>
-            </div>
-
-            <div className="space-y-1">
-              <label className="text-xs font-semibold text-cool-gray-300">
-                List Name
-              </label>
-              <input
-                type="text"
-                required
-                value={listName}
-                onChange={(e) => setListName(e.target.value)}
-                placeholder="e.g. Printing Shelf Tags, Remove from Store, Price Audit"
-                className="w-full bg-cool-gray-900 border border-cool-gray-700 rounded-md px-3 py-2 text-white placeholder-cool-gray-550 focus:outline-none focus:ring-1 focus:ring-cyan-500 text-xs"
-              />
-            </div>
-
-            <div className="space-y-1">
-              <label className="text-xs font-semibold text-cool-gray-300">
-                Description / Scope & Focus
-              </label>
-              <input
-                type="text"
-                value={listDesc}
-                onChange={(e) => setListDesc(e.target.value)}
-                placeholder="e.g. Items requiring printed visual tags before going on shelves"
-                className="w-full bg-cool-gray-900 border border-cool-gray-700 rounded-md px-3 py-2 text-white placeholder-cool-gray-550 focus:outline-none focus:ring-1 focus:ring-cyan-500 text-xs"
-              />
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1.5">
-              <div className="bg-cool-gray-900 rounded-lg p-3 border border-cool-gray-750 flex items-start gap-3">
-                <input
-                  type="checkbox"
-                  id="allowNotesCheck"
-                  checked={allowNotes}
-                  onChange={(e) => setAllowNotes(e.target.checked)}
-                  className="w-4 h-4 mt-0.5 rounded bg-cool-gray-950 border-cool-gray-700 text-cyan-500 focus:ring-1 focus:ring-cyan-500"
-                />
-                <div className="text-xs leading-normal">
-                  <label
-                    htmlFor="allowNotesCheck"
-                    className="font-bold text-cool-gray-200 block cursor-pointer select-none"
-                  >
-                    Allow Individual Item Notes
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                <div className="space-y-1">
+                  <label className="text-[11px] font-bold text-cool-gray-400 uppercase tracking-wider block">
+                    Stock Control
                   </label>
-                  <span className="text-cool-gray-400 block mt-0.5">
-                    Permit custom notes per item on the active checklists.
-                  </span>
-                </div>
-              </div>
-
-              <div className="bg-cool-gray-900 rounded-lg p-3 border border-cool-gray-750 flex items-start gap-3">
-                <input
-                  type="checkbox"
-                  id="isInventoryControlledCheck"
-                  checked={isInventoryControlled}
-                  onChange={(e) => setIsInventoryControlled(e.target.checked)}
-                  className="w-4 h-4 mt-0.5 rounded bg-cool-gray-950 border-cool-gray-700 text-cyan-500 focus:ring-1 focus:ring-cyan-500"
-                />
-                <div className="text-xs leading-normal">
-                  <label
-                    htmlFor="isInventoryControlledCheck"
-                    className="font-bold text-cool-gray-200 block cursor-pointer select-none"
+                  <select
+                    value={listControlFilter}
+                    onChange={(e) => setListControlFilter(e.target.value as any)}
+                    className="w-full h-9 bg-cool-gray-900 border border-cool-gray-750 rounded-lg px-2.5 text-xs text-white outline-none focus:border-cyan-500 cursor-pointer"
                   >
-                    Inventory Level Controlled
+                    <option value="all">All Lists ({customLists.length})</option>
+                    <option value="controlled">Inventory-Controlled Only</option>
+                    <option value="static">Static Checklists Only</option>
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[11px] font-bold text-cool-gray-400 uppercase tracking-wider block">
+                    Digest Alerts
                   </label>
-                  <span className="text-cool-gray-400 block mt-0.5">
-                    Configure automatic thresholds based on active storefront
-                    quantities.
-                  </span>
+                  <select
+                    value={listDigestFilter}
+                    onChange={(e) => setListDigestFilter(e.target.value as any)}
+                    className="w-full h-9 bg-cool-gray-900 border border-cool-gray-750 rounded-lg px-2.5 text-xs text-white outline-none focus:border-cyan-500 cursor-pointer"
+                  >
+                    <option value="all">All Digest Settings</option>
+                    <option value="enabled">Digest Enabled</option>
+                    <option value="disabled">Digest Off</option>
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[11px] font-bold text-cool-gray-400 uppercase tracking-wider block">
+                    Sort Order
+                  </label>
+                  <select
+                    value={listOverviewSort}
+                    onChange={(e) => setListOverviewSort(e.target.value as any)}
+                    className="w-full h-9 bg-cool-gray-900 border border-cool-gray-750 rounded-lg px-2.5 text-xs text-white outline-none focus:border-cyan-500 cursor-pointer"
+                  >
+                    <option value="default">Saved Order</option>
+                    <option value="name_asc">Name: A to Z</option>
+                    <option value="name_desc">Name: Z to A</option>
+                    <option value="items_desc">Most Items First</option>
+                    <option value="items_asc">Fewest Items First</option>
+                  </select>
                 </div>
               </div>
-            </div>
+            </CatalogSearchFilterBar>
 
-            {isInventoryControlled && (
-              <div className="p-4 bg-cool-gray-900/65 rounded-lg border border-cool-gray-750 space-y-4 animate-scale-up">
-                <h5 className="text-xs font-bold text-cyan-400 uppercase tracking-wider pb-1 ml-0.5 flex items-center gap-1.5 border-b border-cool-gray-800">
-                  🤖 Inventory Control Triggers & Behaviors
-                </h5>
+            {customLists.length === 0 ? (
+              <div className="bg-cool-gray-850/60 border border-cool-gray-750 rounded-xl p-10 text-center space-y-3">
+                <ClipboardList className="w-8 h-8 text-cool-gray-500 mx-auto" />
+                <div className="space-y-1">
+                  <h3 className="text-sm font-bold text-white">No Custom Lists Created</h3>
+                  <p className="text-xs text-cool-gray-400 max-w-md mx-auto">
+                    Create checklists or inventory-controlled threshold lists to monitor display restocking, alerts, or daily digests.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={openCreateModal}
+                  className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs rounded-lg transition cursor-pointer inline-flex items-center gap-1.5"
+                >
+                  <PlusIcon className="w-3.5 h-3.5" /> Create First List
+                </button>
+              </div>
+            ) : filteredOverviewLists.length === 0 ? (
+              <div className="bg-cool-gray-850/50 border border-cool-gray-750 rounded-xl p-8 text-center space-y-2.5">
+                <p className="text-sm font-semibold text-cool-gray-300">No custom lists match your search or filters.</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setListOverviewSearch("");
+                    setListControlFilter("all");
+                    setListDigestFilter("all");
+                    setListOverviewSort("default");
+                  }}
+                  className="px-3 py-1.5 bg-cool-gray-800 hover:bg-cool-gray-750 border border-cool-gray-700 text-cyan-300 text-xs font-semibold rounded-lg transition cursor-pointer"
+                >
+                  Reset Filters
+                </button>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 gap-3">
+                {filteredOverviewLists.map((cl) => (
+                  <div
+                    key={cl.id}
+                    className="bg-cool-gray-850/75 border border-cool-gray-750 hover:border-cool-gray-600 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 transition"
+                  >
+                    <div className="space-y-1 min-w-0 flex-1">
+                      <h3 className="text-sm font-bold text-white truncate">{cl.name}</h3>
+                      {cl.description ? (
+                        <p className="text-xs text-cool-gray-400 line-clamp-2">{cl.description}</p>
+                      ) : (
+                        <p className="text-xs text-cool-gray-500 italic">No description</p>
+                      )}
+                      <div className="pt-0.5 text-[11px] text-cool-gray-400 font-medium tabular-nums">
+                        {formatListMeta(cl)}
+                      </div>
+                    </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-semibold text-cool-gray-400 block">
-                      Addition / Removal Style
-                    </label>
-                    <div className="flex gap-2.5">
-                      <label className="flex items-center gap-2 bg-cool-gray-950 p-2 border border-cool-gray-750 flex-grow rounded cursor-pointer select-none">
-                        <input
-                          type="radio"
-                          name="controlType"
-                          value="prompt"
-                          checked={controlType === "prompt"}
-                          onChange={() => setControlType("prompt")}
-                          className="w-3.5 h-3.5 text-cyan-500"
-                        />
-                        <div className="text-xs">
-                          <span className="font-bold text-cool-gray-100 block">
-                            Popup Alert
-                          </span>
-                          <span className="text-[10px] text-cool-gray-450 block">
-                            Prompt first in stock alerts
-                          </span>
-                        </div>
-                      </label>
+                    <div className="flex flex-wrap items-center gap-2 shrink-0 self-start sm:self-center">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedListId(cl.id);
+                          setAddProductId("");
+                          setAddNote("");
+                          setListSearch("");
+                          setListCategory("all");
+                        }}
+                        className="px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold rounded-lg transition flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <ClipboardList className="w-3.5 h-3.5" /> Manage Items
+                      </button>
 
-                      <label className="flex items-center gap-2 bg-cool-gray-950 p-2 border border-cool-gray-750 flex-grow rounded cursor-pointer select-none">
-                        <input
-                          type="radio"
-                          name="controlType"
-                          value="auto"
-                          checked={controlType === "auto"}
-                          onChange={() => setControlType("auto")}
-                          className="w-3.5 h-3.5 text-cyan-500"
-                        />
-                        <div className="text-xs">
-                          <span className="font-bold text-cool-gray-100 block">
-                            Auto Movement
-                          </span>
-                          <span className="text-[10px] text-cool-gray-450 block">
-                            Move immediately on list
-                          </span>
-                        </div>
-                      </label>
+                      <button
+                        type="button"
+                        onClick={() => handleEditClick(cl)}
+                        className="px-2.5 py-1.5 bg-cool-gray-800 hover:bg-cool-gray-750 border border-cool-gray-700 text-cool-gray-200 text-xs font-semibold rounded-lg transition flex items-center gap-1 cursor-pointer"
+                      >
+                        <Edit2 className="w-3 h-3 text-cyan-400" /> Edit Settings
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setListToDelete({ id: cl.id, name: cl.name })}
+                        className="p-1.5 bg-cool-gray-800 hover:bg-rose-950/40 border border-cool-gray-700 hover:border-rose-500/40 text-cool-gray-400 hover:text-rose-300 rounded-lg transition cursor-pointer"
+                        title="Delete List"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   </div>
-
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-semibold text-cool-gray-400 block">
-                      Target Threshold Rule
-                    </label>
-                    <div className="flex gap-2.5">
-                      <label className="flex items-center gap-2 bg-cool-gray-950 p-2 border border-cool-gray-750 flex-grow rounded cursor-pointer select-none">
-                        <input
-                          type="radio"
-                          name="controlCondition"
-                          value="min"
-                          checked={controlCondition === "min"}
-                          onChange={() => setControlCondition("min")}
-                          className="w-3.5 h-3.5 text-cyan-500"
-                        />
-                        <div className="text-xs">
-                          <span className="font-bold text-cool-gray-100 block">
-                            Understocked (Min)
-                          </span>
-                          <span className="text-[10px] text-cool-gray-450 block">
-                            At or below threshold
-                          </span>
-                        </div>
-                      </label>
-
-                      <label className="flex items-center gap-2 bg-cool-gray-955 p-2 border border-cool-gray-750 flex-grow rounded cursor-pointer select-none">
-                        <input
-                          type="radio"
-                          name="controlCondition"
-                          value="max"
-                          checked={controlCondition === "max"}
-                          onChange={() => setControlCondition("max")}
-                          className="w-3.5 h-3.5 text-cyan-500"
-                        />
-                        <div className="text-xs">
-                          <span className="font-bold text-cool-gray-100 block">
-                            Overstocked (Max)
-                          </span>
-                          <span className="text-[10px] text-cool-gray-450 block">
-                            At or above threshold
-                          </span>
-                        </div>
-                      </label>
-                    </div>
-                  </div>
-                </div>
+                ))}
               </div>
             )}
-
-            <div className="bg-cool-gray-900 rounded-lg p-4 border border-cool-gray-750/70 space-y-3">
-              <h5 className="text-xs font-bold text-amber-400 uppercase tracking-wider pb-1 ml-0.5 flex items-center gap-1.5 border-b border-cool-gray-800">
-                <Bell size={14} className="text-amber-500" /> List Notifications Settings
-              </h5>
-              <div className="flex items-start gap-3">
-                <input
-                  type="checkbox"
-                  id="listNotificationEnabledCheck"
-                  checked={listNotificationEnabled}
-                  onChange={(e) => setListNotificationEnabled(e.target.checked)}
-                  className="w-4 h-4 mt-0.5 rounded bg-cool-gray-950 border-cool-gray-700 text-cyan-500 focus:ring-1 focus:ring-cyan-500"
-                />
-                <div className="text-xs leading-normal">
-                  <label
-                    htmlFor="listNotificationEnabledCheck"
-                    className="font-bold text-cool-gray-200 block cursor-pointer select-none"
-                  >
-                    Enable List Digest Notifications
-                  </label>
-                  <span className="text-cool-gray-400 block mt-0.5">
-                    Include everything on this list in daily digest notifications.
-                  </span>
-                </div>
-              </div>
-
-              {listNotificationEnabled && (
-                <div className="p-3 bg-cool-gray-950 rounded border border-cool-gray-800 space-y-2.5 animate-scale-up">
-                  <label className="text-xs font-bold text-cool-gray-300 block">
-                    What should be included?
-                  </label>
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                    <label className="flex items-center gap-2 bg-cool-gray-900 p-2 border border-cool-gray-750 rounded cursor-pointer select-none">
-                      <input
-                        type="radio"
-                        name="listNotificationType"
-                        value="all_items"
-                        checked={listNotificationType === "all_items"}
-                        onChange={() => setListNotificationType("all_items")}
-                        className="w-3.5 h-3.5 text-cyan-500"
-                      />
-                      <span className="text-xs font-semibold text-cool-gray-200">All Items</span>
-                    </label>
-
-                    <label className="flex items-center gap-2 bg-cool-gray-900 p-2 border border-cool-gray-750 rounded cursor-pointer select-none">
-                      <input
-                        type="radio"
-                        name="listNotificationType"
-                        value="newly_added_only"
-                        checked={listNotificationType === "newly_added_only"}
-                        onChange={() => setListNotificationType("newly_added_only")}
-                        className="w-3.5 h-3.5 text-cyan-500"
-                      />
-                      <span className="text-xs font-semibold text-cool-gray-200">Newly Added Only</span>
-                    </label>
-
-                    <label className="flex items-center gap-2 bg-cool-gray-900 p-2 border border-cool-gray-750 rounded cursor-pointer select-none">
-                      <input
-                        type="radio"
-                        name="listNotificationType"
-                        value="item_specific"
-                        checked={listNotificationType === "item_specific"}
-                        onChange={() => setListNotificationType("item_specific")}
-                        className="w-3.5 h-3.5 text-cyan-500"
-                      />
-                      <span className="text-xs font-semibold text-cool-gray-200">Item-Specific Only</span>
-                    </label>
-                  </div>
-                  <span className="text-[10px] text-cool-gray-450 block leading-relaxed mt-1">
-                    {listNotificationType === "all_items" && "• Every single active product on this list is sent in each daily digest."}
-                    {listNotificationType === "newly_added_only" && "• Only products added to the list since the last daily digest notification run are sent."}
-                    {listNotificationType === "item_specific" && "• Only products on the list that have their individual 'Notify' toggles switched ON are sent."}
-                  </span>
-                </div>
-              )}
-            </div>
-
-            <div className="flex justify-end gap-3 pt-3.5 border-t border-cool-gray-700 mt-2">
-              <button
-                type="button"
-                onClick={handleCancelForm}
-                className="px-4 py-2 bg-cool-gray-700 hover:bg-cool-gray-650 text-white font-semibold rounded-lg transition text-xs select-none cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                className="px-5 py-2 bg-cyan-600 hover:bg-cyan-700 text-white font-bold rounded-lg transition text-xs shadow-md select-none cursor-pointer"
-              >
-                {editingListId ? "Apply Rules" : "Save Customizable List"}
-              </button>
-            </div>
-          </form>
-        ) : activeList ? (
-          <div className="bg-cool-gray-855 p-4.5 rounded-xl border border-cool-gray-750 shadow-sm space-y-4 animate-fade-in">
-            <div className="border-b border-cool-gray-700/80 pb-3 flex items-start justify-between gap-3">
-              <div>
-                <h4 className="text-lg font-extrabold text-cool-gray-100 flex items-center gap-2">
-                  {activeList.name}
-                </h4>
+          </div>
+        ) : (
+          /* STEP 2: DEDICATED LIST ITEM MANAGER */
+          <div className="bg-cool-gray-850/75 border border-cool-gray-750 rounded-xl p-4 sm:p-5 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-cool-gray-750">
+              <div className="space-y-1 min-w-0">
+                <button
+                  type="button"
+                  onClick={() => setSelectedListId(null)}
+                  className="text-xs font-semibold text-cyan-400 hover:text-cyan-300 inline-flex items-center gap-1.5 cursor-pointer mb-1"
+                >
+                  <ArrowLeft className="w-3.5 h-3.5" /> Back to Lists
+                </button>
+                <h3 className="text-base font-bold text-white truncate">{activeList.name}</h3>
                 {activeList.description && (
-                  <p className="text-xs text-cool-gray-400 mt-0.5">
-                    {activeList.description}
-                  </p>
+                  <p className="text-xs text-cool-gray-400">{activeList.description}</p>
                 )}
+                <p className="text-[11px] text-cool-gray-400 font-medium tabular-nums">
+                  {formatListMeta(activeList)}
+                </p>
               </div>
 
-              <button
-                type="button"
-                onClick={() => handleEditClick(activeList)}
-                className="text-xs border border-cool-gray-700 font-bold hover:bg-cool-gray-700 text-cool-gray-300 hover:text-white px-3 py-1.5 rounded-md transition select-none flex items-center gap-1 shrink-0 cursor-pointer"
-              >
-                <Edit2 className="w-3.5 h-3.5 text-cyan-400" /> Rules
-                Configuration
-              </button>
+              <div className="flex items-center gap-2 shrink-0 self-start sm:self-center">
+                <button
+                  type="button"
+                  onClick={() => handleEditClick(activeList)}
+                  className="px-3 py-1.5 bg-cool-gray-800 hover:bg-cool-gray-750 border border-cool-gray-700 text-cool-gray-200 text-xs font-semibold rounded-lg transition flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Edit2 className="w-3.5 h-3.5 text-cyan-400" /> Edit Settings
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setListToDelete({ id: activeList.id, name: activeList.name })}
+                  className="px-2.5 py-1.5 bg-cool-gray-800 hover:bg-rose-950/40 border border-cool-gray-700 hover:border-rose-500/40 text-cool-gray-400 hover:text-rose-300 text-xs font-semibold rounded-lg transition flex items-center gap-1 cursor-pointer"
+                >
+                  <Trash2 className="w-3.5 h-3.5" /> Delete
+                </button>
+              </div>
             </div>
 
-            {/* Direct Addition form to add item on expanded list */}
+            {/* Inline Add Product Bar */}
             <div className="p-3 bg-cool-gray-900 rounded-lg border border-cool-gray-800 flex flex-col md:flex-row md:items-end gap-3">
               <div className="flex-grow min-w-0">
                 <label className="text-[10px] font-bold text-cool-gray-400 uppercase tracking-wider block mb-1">
-                  Add product manually to active list
+                  Add Product to List
                 </label>
                 {availableProducts.length === 0 ? (
                   <span className="text-xs text-cool-gray-500 font-medium block h-9 bg-cool-gray-950 border border-cool-gray-800 leading-[34px] px-3.5 rounded-md">
-                    All items are already in this list configuration.
+                    All catalog items are already on this list.
                   </span>
                 ) : (
                   <SearchableProductSelect
                     products={availableProducts}
                     value={addProductId}
                     onChange={setAddProductId}
-                    placeholder="Search product by name, SKU or category to add..."
+                    placeholder="Search product by name, SKU or category..."
                     includeArchived={true}
                   />
                 )}
               </div>
 
               {activeList.allowNotes && addProductId && (
-                <div className="flex-grow min-w-0 animate-fade-in">
+                <div className="flex-grow min-w-0">
                   <label className="text-[10px] font-bold text-cool-gray-400 uppercase tracking-wider block mb-1">
-                    Target Note (Optional)
+                    Note (Optional)
                   </label>
                   <input
                     type="text"
                     value={addNote}
                     onChange={(e) => setAddNote(e.target.value)}
-                    placeholder="Add label / pricing notes..."
+                    placeholder="Add status note..."
                     className="w-full h-9 bg-cool-gray-950 border border-cool-gray-750 text-xs rounded-md text-white px-3 focus:outline-none focus:border-cyan-500"
                   />
                 </div>
@@ -6320,68 +6713,58 @@ export const ManageLists: React.FC<{
                 onClick={handleAddProductToList}
                 className={`h-9 px-4 rounded-md font-bold text-xs transition flex items-center justify-center gap-1 whitespace-nowrap shrink-0 ${
                   addProductId
-                    ? "bg-cyan-600 hover:bg-cyan-700 text-white cursor-pointer shadow"
+                    ? "bg-cyan-600 hover:bg-cyan-500 text-white cursor-pointer"
                     : "bg-cool-gray-800 text-cool-gray-600 cursor-not-allowed border border-cool-gray-800"
                 }`}
               >
-                <PlusIcon /> Add to List
+                <PlusIcon className="w-3.5 h-3.5" /> Add to List
               </button>
             </div>
 
-            {/* Search, Filter & Organize Row */}
+            {/* Search, Category Filter & Plain / By Category Mode */}
             {activeList.items && activeList.items.length > 0 && (
-              <div className="flex flex-col sm:flex-row gap-3 items-center justify-between bg-cool-gray-900/50 p-3 rounded-lg border border-cool-gray-800/85">
+              <div className="flex flex-col sm:flex-row gap-3 items-center justify-between bg-cool-gray-900/50 p-3 rounded-lg border border-cool-gray-800">
                 <div className="flex flex-col sm:flex-row gap-2.5 items-stretch sm:items-center w-full sm:w-auto flex-grow max-w-xl">
-                  {/* Search Input */}
                   <div className="relative flex-grow">
-                    <span className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                      <svg className="h-4 w-4 text-cool-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                      </svg>
-                    </span>
+                    <SearchIcon className="h-4 w-4 text-cool-gray-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                     <input
                       type="text"
                       value={listSearch}
                       onChange={(e) => setListSearch(e.target.value)}
                       placeholder="Search items by name, category or note..."
-                      className="w-full h-8 pl-9 pr-8 bg-cool-gray-950 border border-cool-gray-750 rounded-md text-xs text-white placeholder-cool-gray-550 focus:outline-none focus:border-cyan-500 transition-colors"
+                      className="w-full h-8 pl-9 pr-8 bg-cool-gray-950 border border-cool-gray-750 rounded-md text-xs text-white placeholder-cool-gray-550 focus:outline-none focus:border-cyan-500"
                     />
                     {listSearch && (
                       <button
+                        type="button"
                         onClick={() => setListSearch("")}
-                        className="absolute inset-y-0 right-0 pr-2.5 flex items-center text-cool-gray-500 hover:text-white text-sm"
+                        className="absolute inset-y-0 right-0 pr-2.5 flex items-center text-cool-gray-500 hover:text-white text-sm cursor-pointer"
                       >
                         &times;
                       </button>
                     )}
                   </div>
 
-                  {/* Category Filter */}
-                  <div className="min-w-[140px]">
-                    <select
-                      value={listCategory}
-                      onChange={(e) => setListCategory(e.target.value)}
-                      className="w-full h-8 py-1 px-2.5 bg-cool-gray-950 border border-cool-gray-750 text-xs rounded-md text-white focus:outline-none focus:border-cyan-500 cursor-pointer"
-                    >
-                      <option value="all">All Categories</option>
-                      {categories.map((cat) => (
-                        <option key={cat} value={cat}>
-                          {cat}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+                  <select
+                    value={listCategory}
+                    onChange={(e) => setListCategory(e.target.value)}
+                    className="min-w-[140px] h-8 py-1 px-2.5 bg-cool-gray-950 border border-cool-gray-750 text-xs rounded-md text-white focus:outline-none focus:border-cyan-500 cursor-pointer"
+                  >
+                    <option value="all">All Categories</option>
+                    {categories.map((cat) => (
+                      <option key={cat} value={cat}>
+                        {cat}
+                      </option>
+                    ))}
+                  </select>
                 </div>
 
-                {/* Organize Mode Buttons */}
-                <div className="flex items-center gap-1 self-end sm:self-auto shrink-0 bg-cool-gray-950 p-0.5 rounded-lg border border-cool-gray-850">
+                <div className="inline-flex items-center gap-1 self-end sm:self-auto shrink-0 bg-cool-gray-950 p-0.5 rounded-lg border border-cool-gray-800">
                   <button
                     type="button"
                     onClick={() => setOrganizeMode("list")}
-                    className={`px-3 py-1.5 rounded-md text-[10px] font-bold uppercase tracking-wider transition cursor-pointer select-none ${
-                      organizeMode === "list"
-                        ? "bg-cyan-600 text-white font-black"
-                        : "text-cool-gray-400 hover:text-white"
+                    className={`px-3 py-1.5 rounded-md text-[11px] font-semibold transition cursor-pointer ${
+                      organizeMode === "list" ? "bg-cyan-600 text-white" : "text-cool-gray-400 hover:text-white"
                     }`}
                   >
                     Plain List
@@ -6389,10 +6772,8 @@ export const ManageLists: React.FC<{
                   <button
                     type="button"
                     onClick={() => setOrganizeMode("category")}
-                    className={`px-3 py-1.5 rounded-md text-[10px] font-bold uppercase tracking-wider transition cursor-pointer select-none ${
-                      organizeMode === "category"
-                        ? "bg-cyan-600 text-white font-black"
-                        : "text-cool-gray-400 hover:text-white"
+                    className={`px-3 py-1.5 rounded-md text-[11px] font-semibold transition cursor-pointer ${
+                      organizeMode === "category" ? "bg-cyan-600 text-white" : "text-cool-gray-400 hover:text-white"
                     }`}
                   >
                     By Category
@@ -6401,27 +6782,24 @@ export const ManageLists: React.FC<{
               </div>
             )}
 
-            {/* List items grid */}
+            {/* Full-Width List Items Table */}
             <div className="overflow-x-auto">
               {!activeList.items || activeList.items.length === 0 ? (
-                <div className="text-center py-12 text-cool-gray-450 bg-cool-gray-900/60 border border-dashed border-cool-gray-800 rounded-xl space-y-1">
-                  <AlertCircle className="w-8 h-8 text-cool-gray-650 mx-auto" />
-                  <p className="font-bold text-xs">
-                    This customizable list is currently empty.
+                <div className="text-center py-10 text-cool-gray-400 bg-cool-gray-900/50 border border-dashed border-cool-gray-800 rounded-xl space-y-1">
+                  <AlertCircle className="w-7 h-7 text-cool-gray-600 mx-auto" />
+                  <p className="font-semibold text-xs text-cool-gray-300">
+                    This list does not have any items yet.
                   </p>
-                  <p className="text-[10px] text-cool-gray-500">
-                    Add catalog items using the dropdown selector above or
-                    inline product menus.
+                  <p className="text-[11px] text-cool-gray-500">
+                    Use the product selector above to add catalog items.
                   </p>
                 </div>
               ) : filteredListItems.length === 0 ? (
-                <div className="text-center py-10 text-cool-gray-450 bg-cool-gray-900/40 border border-dashed border-cool-gray-800 rounded-xl space-y-1.5">
-                  <AlertCircle className="w-6 h-6 text-cool-gray-650 mx-auto animate-pulse" />
-                  <p className="font-bold text-xs text-cool-gray-300">
-                    No matching items found.
-                  </p>
-                  <p className="text-[10px] text-cool-gray-500">
-                    Try adjusting your search criteria or changing the category filter.
+                <div className="text-center py-8 text-cool-gray-400 bg-cool-gray-900/40 border border-dashed border-cool-gray-800 rounded-xl space-y-1">
+                  <AlertCircle className="w-6 h-6 text-cool-gray-600 mx-auto" />
+                  <p className="font-semibold text-xs text-cool-gray-300">No matching items found.</p>
+                  <p className="text-[11px] text-cool-gray-500">
+                    Adjust your search text or category filter.
                   </p>
                 </div>
               ) : organizeMode === "category" ? (
@@ -6430,35 +6808,41 @@ export const ManageLists: React.FC<{
                     const items = groupedFilteredItems[category];
                     if (items.length === 0) return null;
                     return (
-                      <div key={category} className="bg-cool-gray-900/30 p-3.5 rounded-xl border border-cool-gray-800/85 space-y-2.5 animate-fade-in">
-                        <div className="flex items-center justify-between border-b border-cool-gray-800 pb-1.5 px-0.5">
-                          <h5 className="text-[11px] font-extrabold text-cyan-400 uppercase tracking-widest flex items-center gap-1.5">
-                            <span className="w-1.5 h-1.5 bg-cyan-400 rounded-full"></span>
+                      <div
+                        key={category}
+                        className="bg-cool-gray-900/35 p-3.5 rounded-xl border border-cool-gray-800 space-y-2.5"
+                      >
+                        <div className="flex items-center justify-between border-b border-cool-gray-800 pb-1.5">
+                          <h4 className="text-xs font-bold text-cyan-400 uppercase tracking-wider">
                             {category}
-                          </h5>
-                          <span className="text-[10px] bg-cool-gray-800 text-cool-gray-300 px-2 py-0.5 rounded-full font-mono font-bold border border-cool-gray-750">
+                          </h4>
+                          <span className="text-[11px] text-cool-gray-400 font-medium tabular-nums">
                             {items.length} {items.length === 1 ? "item" : "items"}
                           </span>
                         </div>
                         <div className="overflow-x-auto">
-                          <table className="w-full text-xs text-left text-cool-gray-350">
-                            <thead className="text-[10px] uppercase text-cool-gray-500 bg-cool-gray-955/60 tracking-wider">
+                          <table className="w-full text-xs text-left text-cool-gray-300">
+                            <thead className="text-[10px] uppercase text-cool-gray-400 bg-cool-gray-950/60 tracking-wider">
                               <tr>
-                                <th className="py-2.5 px-3 rounded-l-md font-extrabold">Product Details</th>
-                                <th className="py-2.5 px-3 font-extrabold text-center">
-                                  {activeList.isInventoryControlled ? "Controlled Level & Rule" : "In-Store Quantity"}
+                                <th className="py-2.5 px-3 rounded-l-md font-bold">Product</th>
+                                <th className="py-2.5 px-3 font-bold text-center">
+                                  {activeList.isInventoryControlled
+                                    ? "Controlled Level & Rule"
+                                    : "On-Site Qty"}
                                 </th>
                                 {activeList.allowNotes && (
-                                  <th className="py-2.5 px-3 font-extrabold">Item Notes & Checklist Action</th>
+                                  <th className="py-2.5 px-3 font-bold">Item Note</th>
                                 )}
                                 {activeList.notificationEnabled && (
-                                  <th className="py-2.5 px-3 font-extrabold text-center">Notify</th>
+                                  <th className="py-2.5 px-3 font-bold text-center">Notify</th>
                                 )}
-                                <th className="py-2.5 px-3 rounded-r-md font-extrabold text-right">Delete</th>
+                                <th className="py-2.5 px-3 rounded-r-md font-bold text-right">
+                                  Remove
+                                </th>
                               </tr>
                             </thead>
-                            <tbody className="divide-y divide-cool-gray-800/40 font-sans">
-                              {renderTableRows(items)}
+                            <tbody className="divide-y divide-cool-gray-800/50">
+                              {renderTableRows(items, activeList)}
                             </tbody>
                           </table>
                         </div>
@@ -6467,574 +6851,1221 @@ export const ManageLists: React.FC<{
                   })}
                 </div>
               ) : (
-                <table className="w-full text-xs text-left text-cool-gray-350 bg-cool-gray-900/10 rounded-xl border border-cool-gray-800/60 p-1">
+                <table className="w-full text-xs text-left text-cool-gray-300 bg-cool-gray-900/20 rounded-xl border border-cool-gray-800">
                   <thead className="text-[10px] uppercase text-cool-gray-400 bg-cool-gray-900 tracking-wider">
                     <tr>
-                      <th className="py-2.5 px-3.5 rounded-l-md font-extrabold">
-                        Product Details
-                      </th>
-                      <th className="py-2.5 px-3.5 font-extrabold text-center">
-                        {activeList.isInventoryControlled ? "Controlled Level & Rule" : "In-Store Quantity"}
+                      <th className="py-2.5 px-3 rounded-l-md font-bold">Product</th>
+                      <th className="py-2.5 px-3 font-bold text-center">
+                        {activeList.isInventoryControlled
+                          ? "Controlled Level & Rule"
+                          : "On-Site Qty"}
                       </th>
                       {activeList.allowNotes && (
-                        <th className="py-2.5 px-3.5 font-extrabold">
-                          Item Notes & Checklist Action
-                        </th>
+                        <th className="py-2.5 px-3 font-bold">Item Note</th>
                       )}
                       {activeList.notificationEnabled && (
-                        <th className="py-2.5 px-3.5 font-extrabold text-center">
-                          Notify
-                        </th>
+                        <th className="py-2.5 px-3 font-bold text-center">Notify</th>
                       )}
-                      <th className="py-2.5 px-3 rounded-r-md font-extrabold text-right">
-                        Delete
-                      </th>
+                      <th className="py-2.5 px-3 rounded-r-md font-bold text-right">Remove</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-cool-gray-800/65 font-sans">
-                    {renderTableRows(filteredListItems)}
+                  <tbody className="divide-y divide-cool-gray-800/60">
+                    {renderTableRows(filteredListItems, activeList)}
                   </tbody>
                 </table>
               )}
             </div>
           </div>
-        ) : (
-          <div className="bg-cool-gray-800 p-8 rounded-xl text-center text-cool-gray-450 font-semibold border border-cool-gray-750 animate-pulse">
-            Please select an active list from the left directory column.
-          </div>
-        )}
-      </div>
-    </div>
-  ) : (
-    /* RENDER VIEW 2: Bulk Matrix & Inventory Control Spreadsheet Grid */
-    <div className="space-y-4">
-      {/* Matrix Controls & Search Toolbar */}
-      <div className="bg-cool-gray-850 p-4 rounded-xl border border-cool-gray-750/80 shadow-md space-y-3.5">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b border-cool-gray-800/80 pb-3">
-          <div className="space-y-1">
-            <h4 className="text-sm font-extrabold text-cool-gray-150 flex items-center gap-2">
-              <Table className="w-4.5 h-4.5 text-cyan-400" />
-              All-Item Inventory Control & List Membership Matrix
-            </h4>
-            <p className="text-xs text-cool-gray-400">
-              Directly toggle item membership, switch inventory tracking control sources, and tune threshold alerts for all products across all custom lists in one central spreadsheet grid.
-            </p>
-          </div>
+        )
+      ) : (
+        /* BULK MATRIX SPREADSHEET GRID */
+        <div className="space-y-4">
+          <CatalogSearchFilterBar
+            searchValue={matrixSearch}
+            onSearchChange={setMatrixSearch}
+            searchPlaceholder="Search product, category, SKU, or barcode..."
+            isFiltersOpen={showMatrixFilters}
+            onToggleFilters={() => setShowMatrixFilters((prev) => !prev)}
+            activeFilterCount={
+              (matrixCategory !== "all" ? 1 : 0) +
+              (matrixMembershipFilter !== "all" ? 1 : 0) +
+              (matrixListFilter !== "all" ? 1 : 0) +
+              (matrixSortBy !== "category_asc" ? 1 : 0)
+            }
+            onResetFilters={() => {
+              setMatrixSearch("");
+              setMatrixCategory("all");
+              setMatrixSubCategory("all");
+              setMatrixMembershipFilter("all");
+              setMatrixListFilter("all");
+              setMatrixSortBy("category_asc");
+            }}
+          >
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+              <div className="space-y-1">
+                <label className="text-[11px] font-bold text-cool-gray-400 uppercase tracking-wider block">
+                  Category / Subcategory
+                </label>
+                <select
+                  value={
+                    matrixCategory === "all"
+                      ? "all"
+                      : matrixSubCategory === "all"
+                        ? `cat:${matrixCategory}`
+                        : `sub:${matrixCategory}|${matrixSubCategory}`
+                  }
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (val === "all") {
+                      setMatrixCategory("all");
+                      setMatrixSubCategory("all");
+                    } else if (val.startsWith("cat:")) {
+                      setMatrixCategory(val.slice(4));
+                      setMatrixSubCategory("all");
+                    } else if (val.startsWith("sub:")) {
+                      const [pCat, sCat] = val.slice(4).split("|");
+                      setMatrixCategory(pCat);
+                      setMatrixSubCategory(sCat);
+                    }
+                  }}
+                  className="w-full h-9 bg-cool-gray-900 border border-cool-gray-750 text-cool-gray-200 text-xs px-2.5 rounded-lg focus:outline-none focus:border-cyan-500 cursor-pointer"
+                >
+                  <option value="all">All Categories &amp; Subcategories</option>
+                  {availableCategoryHierarchy.map(({ primary, subs }) => (
+                    <optgroup key={primary} label={primary}>
+                      <option value={`cat:${primary}`}>{primary} (All)</option>
+                      {subs.map((sub) => (
+                        <option key={`${primary}|${sub}`} value={`sub:${primary}|${sub}`}>
+                          {primary} / {sub}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+              </div>
 
-          {/* Toast feedback */}
-          {matrixToastMsg && (
-            <div className="px-3 py-1.5 rounded-lg bg-emerald-950/60 border border-emerald-500/40 text-emerald-300 text-xs font-semibold flex items-center gap-1.5 animate-fadeIn">
-              <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-              {matrixToastMsg}
-            </div>
-          )}
-        </div>
+              <div className="space-y-1">
+                <label className="text-[11px] font-bold text-cool-gray-400 uppercase tracking-wider block">
+                  List Status
+                </label>
+                <select
+                  value={matrixMembershipFilter}
+                  onChange={(e) => setMatrixMembershipFilter(e.target.value as any)}
+                  className="w-full h-9 bg-cool-gray-900 border border-cool-gray-750 text-cool-gray-200 text-xs px-2.5 rounded-lg focus:outline-none focus:border-cyan-500 cursor-pointer"
+                >
+                  <option value="all">Any List Status</option>
+                  <option value="in_any">In at least 1 list</option>
+                  <option value="in_none">Not in any list</option>
+                  <option value="controlled_only">In inventory-controlled lists</option>
+                </select>
+              </div>
 
-        {/* Filter / Search Bar */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2.5 pt-1">
-          {/* Search */}
-          <div className="relative">
-            <SearchIcon className="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-cool-gray-500" />
-            <input
-              type="text"
-              placeholder="Search product, category, SKU..."
-              value={matrixSearch}
-              onChange={(e) => setMatrixSearch(e.target.value)}
-              className="w-full bg-cool-gray-900 border border-cool-gray-700/80 text-cool-gray-200 text-xs pl-8 pr-2.5 py-1.5 rounded-lg focus:outline-none focus:border-cyan-500 placeholder-cool-gray-500"
-            />
-          </div>
-
-          {/* Unified Category / Subcategory Filter */}
-          <div>
-            <select
-              value={
-                matrixCategory === "all"
-                  ? "all"
-                  : matrixSubCategory === "all"
-                  ? `cat:${matrixCategory}`
-                  : `sub:${matrixCategory}|${matrixSubCategory}`
-              }
-              onChange={(e) => {
-                const val = e.target.value;
-                if (val === "all") {
-                  setMatrixCategory("all");
-                  setMatrixSubCategory("all");
-                } else if (val.startsWith("cat:")) {
-                  setMatrixCategory(val.slice(4));
-                  setMatrixSubCategory("all");
-                } else if (val.startsWith("sub:")) {
-                  const [pCat, sCat] = val.slice(4).split("|");
-                  setMatrixCategory(pCat);
-                  setMatrixSubCategory(sCat);
-                }
-              }}
-              className="w-full bg-cool-gray-900 border border-cool-gray-700/80 text-cool-gray-200 text-xs px-2.5 py-1.5 rounded-lg focus:outline-none focus:border-cyan-500 cursor-pointer"
-            >
-              <option value="all" className="bg-cool-gray-900 text-white font-bold">
-                📁 All Categories &amp; Subcategories
-              </option>
-              {availableCategoryHierarchy.map(({ primary, subs }) => (
-                <optgroup key={primary} label={primary} className="bg-cool-gray-900 text-cyan-400 font-bold">
-                  <option value={`cat:${primary}`} className="bg-cool-gray-900 text-white font-bold">
-                    📁 {primary} (All)
-                  </option>
-                  {subs.map((sub) => (
-                    <option key={`${primary}|${sub}`} value={`sub:${primary}|${sub}`} className="bg-cool-gray-900 text-cool-gray-200">
-                      └ {primary} / {sub}
+              <div className="space-y-1">
+                <label className="text-[11px] font-bold text-cool-gray-400 uppercase tracking-wider block">
+                  Target List
+                </label>
+                <select
+                  value={matrixListFilter}
+                  onChange={(e) => setMatrixListFilter(e.target.value)}
+                  className="w-full h-9 bg-cool-gray-900 border border-cool-gray-750 text-cool-gray-200 text-xs px-2.5 rounded-lg focus:outline-none focus:border-cyan-500 cursor-pointer"
+                >
+                  <option value="all">All Lists (Full Matrix)</option>
+                  {customLists.map((cl) => (
+                    <option key={cl.id} value={cl.id}>
+                      Only on: {cl.name}
                     </option>
                   ))}
-                </optgroup>
-              ))}
-            </select>
-          </div>
-
-          {/* List Membership Filter */}
-          <div>
-            <select
-              value={matrixMembershipFilter}
-              onChange={(e) => setMatrixMembershipFilter(e.target.value as any)}
-              className="w-full bg-cool-gray-900 border border-cool-gray-700/80 text-cool-gray-200 text-xs px-2.5 py-1.5 rounded-lg focus:outline-none focus:border-cyan-500 cursor-pointer"
-            >
-              <option value="all">Any List Status</option>
-              <option value="in_any">In at least 1 list</option>
-              <option value="in_none">Not in any list</option>
-              <option value="controlled_only">In inventory-controlled lists</option>
-            </select>
-          </div>
-
-          {/* Filter by Specific List */}
-          <div>
-            <select
-              value={matrixListFilter}
-              onChange={(e) => setMatrixListFilter(e.target.value)}
-              className="w-full bg-cool-gray-900 border border-cool-gray-700/80 text-cool-gray-200 text-xs px-2.5 py-1.5 rounded-lg focus:outline-none focus:border-cyan-500 cursor-pointer"
-            >
-              <option value="all">All Lists (Full Matrix)</option>
-              {customLists.map((cl) => (
-                <option key={cl.id} value={cl.id}>Only on: {cl.name}</option>
-              ))}
-            </select>
-          </div>
-
-          {/* Sort By */}
-          <div>
-            <select
-              value={matrixSortBy}
-              onChange={(e) => setMatrixSortBy(e.target.value as any)}
-              className="w-full bg-cool-gray-900 border border-cool-gray-700/80 text-cool-gray-200 text-xs px-2.5 py-1.5 rounded-lg focus:outline-none focus:border-cyan-500 cursor-pointer"
-            >
-              <option value="category_asc">Sort: Category & Name</option>
-              <option value="name_asc">Sort: Product Name (A-Z)</option>
-              <option value="name_desc">Sort: Product Name (Z-A)</option>
-              <option value="stock_desc">Sort: Total Inventory Stock</option>
-            </select>
-          </div>
-        </div>
-
-        {/* Multi-Select Bulk Actions Toolbar */}
-        <div className="bg-cool-gray-900/90 rounded-lg p-2.5 border border-cool-gray-800 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <label className="flex items-center gap-2 text-xs font-semibold text-cool-gray-300 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={matrixFilteredProducts.length > 0 && selectedMatrixProdCount === matrixFilteredProducts.length}
-                onChange={(e) => handleSelectAllMatrix(e.target.checked)}
-                className="w-3.5 h-3.5 rounded bg-cool-gray-950 border-cool-gray-700 text-cyan-600 focus:ring-0 focus:ring-offset-0 cursor-pointer"
-              />
-              Select All Filtered ({matrixFilteredProducts.length})
-            </label>
-            {selectedMatrixProdCount > 0 && (
-              <span className="px-2 py-0.5 rounded-full text-[11px] bg-cyan-950/60 text-cyan-300 font-bold border border-cyan-800/40">
-                {selectedMatrixProdCount} selected
-              </span>
-            )}
-          </div>
-
-          {/* Bulk Update Controls */}
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs font-bold text-cool-gray-400">Batch Edit:</span>
-
-            {/* Target List */}
-            <select
-              value={bulkListTarget}
-              onChange={(e) => setBulkListTarget(e.target.value)}
-              className="bg-cool-gray-950 border border-cool-gray-700 text-cool-gray-200 text-xs px-2 py-1 rounded focus:outline-none focus:border-cyan-500 cursor-pointer"
-            >
-              {customLists.map((cl) => (
-                <option key={cl.id} value={cl.id}>Target: {cl.name}</option>
-              ))}
-            </select>
-
-            {/* Action Type */}
-            <select
-              value={bulkActionType}
-              onChange={(e) => setBulkActionType(e.target.value as any)}
-              className="bg-cool-gray-950 border border-cool-gray-700 text-cool-gray-200 text-xs px-2 py-1 rounded focus:outline-none focus:border-cyan-500 cursor-pointer"
-            >
-              <option value="include">Add to List</option>
-              <option value="exclude">Remove from List</option>
-              <option value="set_source">Set Inventory Source...</option>
-              <option value="set_threshold">Set Threshold Level...</option>
-              <option value="clear_threshold">Clear Custom Threshold</option>
-            </select>
-
-            {/* Parameter for source or threshold */}
-            {bulkActionType === "set_source" && (
-              <select
-                value={bulkControlSourceVal}
-                onChange={(e) => setBulkControlSourceVal(e.target.value as ControlSourceType)}
-                className="bg-cool-gray-950 border border-cyan-600/70 text-cyan-300 text-xs px-2 py-1 rounded focus:outline-none cursor-pointer font-semibold"
-              >
-                <option value="onsite_count">On-Site Cut Count</option>
-                <option value="onsite_weight">On-Site Weight (lbs)</option>
-                <option value="offsite_count">Off-Site Boxed Cut Count</option>
-                <option value="offsite_weight">Off-Site Weight (lbs)</option>
-                <option value="total_count">Total Overall Cut Count</option>
-                <option value="total_weight">Total Overall Weight (lbs)</option>
-              </select>
-            )}
-
-            {(bulkActionType === "set_threshold" || bulkActionType === "include") && (
-              <div className="flex items-center gap-1.5 bg-cool-gray-950 px-2 py-1 rounded border border-cool-gray-700">
-                <span className="text-xs font-bold text-cool-gray-300">Threshold:</span>
-                <input
-                  type="number"
-                  min="0"
-                  step="any"
-                  value={bulkThresholdVal}
-                  onChange={(e) => setBulkThresholdVal(e.target.value)}
-                  placeholder="Threshold"
-                  className="w-20 bg-cool-gray-900 border border-cyan-600/70 text-cyan-300 text-xs px-2 py-0.5 rounded focus:outline-none text-center font-bold"
-                  title="Bulk threshold number for list items"
-                />
+                </select>
               </div>
-            )}
 
-            <button
-              type="button"
-              onClick={executeBulkMatrixAction}
-              disabled={selectedMatrixProdCount === 0 || !bulkListTarget}
-              className="px-3 py-1 bg-cyan-600 hover:bg-cyan-500 disabled:opacity-40 text-white rounded text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-sm"
-            >
-              <Check className="w-3.5 h-3.5" />
-              Apply to Selected ({selectedMatrixProdCount})
-            </button>
-          </div>
-        </div>
-      </div>
+              <div className="space-y-1">
+                <label className="text-[11px] font-bold text-cool-gray-400 uppercase tracking-wider block">
+                  Sort Order
+                </label>
+                <select
+                  value={matrixSortBy}
+                  onChange={(e) => setMatrixSortBy(e.target.value as any)}
+                  className="w-full h-9 bg-cool-gray-900 border border-cool-gray-750 text-cool-gray-200 text-xs px-2.5 rounded-lg focus:outline-none focus:border-cyan-500 cursor-pointer"
+                >
+                  <option value="category_asc">Category &amp; Name</option>
+                  <option value="name_asc">Product Name (A-Z)</option>
+                  <option value="name_desc">Product Name (Z-A)</option>
+                  <option value="stock_desc">Total Inventory Stock</option>
+                </select>
+              </div>
+            </div>
+          </CatalogSearchFilterBar>
 
-      {/* Spreadsheet Matrix Table */}
-      <div className="bg-cool-gray-850 rounded-xl border border-cool-gray-750/90 shadow-md overflow-hidden">
-        {customLists.length === 0 ? (
-          <div className="p-12 text-center text-cool-gray-400 space-y-2">
-            <AlertCircle className="w-8 h-8 text-amber-400 mx-auto" />
-            <p className="font-semibold text-sm">No custom lists found.</p>
-            <p className="text-xs text-cool-gray-500">Create a custom list in the "List Catalog & Items" tab before using the matrix spreadsheet.</p>
-          </div>
-        ) : matrixFilteredProducts.length === 0 ? (
-          <div className="p-12 text-center text-cool-gray-400 space-y-2">
-            <SearchIcon className="w-8 h-8 text-cool-gray-500 mx-auto" />
-            <p className="font-semibold text-sm">No products match your current search and filter criteria.</p>
-            <button
-              type="button"
-              onClick={() => {
-                setMatrixSearch("");
-                setMatrixCategory("all");
-                setMatrixSubCategory("all");
-                setMatrixListFilter("all");
-                setMatrixMembershipFilter("all");
-              }}
-              className="px-3 py-1.5 rounded-lg bg-cool-gray-800 text-cyan-400 hover:bg-cool-gray-750 text-xs font-semibold transition"
-            >
-              Reset All Filters
-            </button>
-          </div>
-        ) : (
-          <div className="overflow-x-auto max-h-[70vh]">
-            <table className="w-full text-xs text-left text-cool-gray-300 border-collapse">
-              {/* Table Header */}
-              <thead className="text-[10px] uppercase text-cool-gray-400 bg-cool-gray-950 sticky top-0 z-20 shadow-sm">
-                <tr className="border-b border-cool-gray-800 divide-x divide-cool-gray-800/60">
-                  {/* Selection Checkbox */}
-                  <th className="py-3 px-3 w-10 text-center bg-cool-gray-950 sticky left-0 z-30 shadow-r">
-                    <input
-                      type="checkbox"
-                      checked={selectedMatrixProdCount > 0 && selectedMatrixProdCount === matrixFilteredProducts.length}
-                      onChange={(e) => handleSelectAllMatrix(e.target.checked)}
-                      className="w-3.5 h-3.5 rounded bg-cool-gray-900 border-cool-gray-700 text-cyan-600 focus:ring-0 cursor-pointer"
-                    />
-                  </th>
-                  {/* Product Details Column */}
-                  <th className="py-3 px-3.5 min-w-[200px] font-extrabold text-cool-gray-200 bg-cool-gray-950 sticky left-10 z-30">
-                    Product Details & Category
-                  </th>
-                  {/* Current Inventory Live Levels */}
-                  <th className="py-3 px-3 text-center min-w-[140px] font-extrabold text-cool-gray-300 bg-cool-gray-950">
-                    Live Stock
-                  </th>
-                  {/* Dynamic Column for each Custom List */}
+          <div className="bg-cool-gray-850 p-4 rounded-xl border border-cool-gray-750 space-y-3.5">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b border-cool-gray-800 pb-3">
+              <div className="space-y-0.5">
+                <h3 className="text-sm font-bold text-cool-gray-100 flex items-center gap-2">
+                  <Table className="w-4 h-4 text-cyan-400" />
+                  Bulk Matrix &amp; Inventory Control
+                </h3>
+                <p className="text-xs text-cool-gray-400">
+                  Showing {matrixFilteredProducts.length} products across {customLists.length} list(s).
+                </p>
+              </div>
+
+              {matrixToastMsg && (
+                <div
+                  className={`px-3 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-1.5 ${
+                    matrixToastMsg.type === "error"
+                      ? "bg-rose-950/60 border-rose-500/40 text-rose-300"
+                      : "bg-emerald-950/60 border-emerald-500/40 text-emerald-300"
+                  }`}
+                >
+                  {matrixToastMsg.type === "error" ? (
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                  ) : (
+                    <Check className="w-4 h-4 shrink-0" />
+                  )}
+                  <span>{matrixToastMsg.text}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="bg-cool-gray-900/90 rounded-lg p-2.5 border border-cool-gray-800 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <label className="flex items-center gap-2 text-xs font-semibold text-cool-gray-300 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={
+                      matrixFilteredProducts.length > 0 &&
+                      selectedMatrixProdCount === matrixFilteredProducts.length
+                    }
+                    onChange={(e) => handleSelectAllMatrix(e.target.checked)}
+                    className="w-3.5 h-3.5 rounded bg-cool-gray-950 border-cool-gray-700 text-cyan-600 focus:ring-0 cursor-pointer"
+                  />
+                  Select All Filtered ({matrixFilteredProducts.length})
+                </label>
+                {selectedMatrixProdCount > 0 && (
+                  <span className="px-2 py-0.5 rounded-full text-[11px] bg-cyan-950/60 text-cyan-300 font-bold border border-cyan-800/40">
+                    {selectedMatrixProdCount} selected
+                  </span>
+                )}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-bold text-cool-gray-400">Batch Edit:</span>
+                <select
+                  value={bulkListTarget}
+                  onChange={(e) => setBulkListTarget(e.target.value)}
+                  className="bg-cool-gray-950 border border-cool-gray-700 text-cool-gray-200 text-xs px-2 py-1 rounded focus:outline-none focus:border-cyan-500 cursor-pointer"
+                >
                   {customLists.map((cl) => (
-                    <th key={cl.id} className="py-2.5 px-3 min-w-[260px] text-left font-extrabold bg-cool-gray-950">
-                      <div className="flex items-center justify-between gap-1.5">
-                        <span className="truncate text-cyan-300 max-w-[160px]" title={cl.name}>
-                          {cl.name}
-                        </span>
-                        <div className="flex items-center gap-1 shrink-0">
-                          {cl.isInventoryControlled && (
-                            <span className="px-1 py-0.2 rounded text-[9px] font-black bg-amber-950/60 text-amber-300 border border-amber-800/40">
-                              Controlled
-                            </span>
-                          )}
-                          <span className="px-1.5 py-0.2 rounded text-[9px] bg-cool-gray-850 text-cool-gray-400">
-                            {cl.items?.length || 0} items
-                          </span>
-                        </div>
-                      </div>
-                      <div className="text-[9px] text-cool-gray-500 font-normal lowercase tracking-normal flex items-center gap-2 mt-0.5">
-                        <span>include</span>
-                        <span>•</span>
-                        <span>tracking source</span>
-                        <span>•</span>
-                        <span>threshold</span>
-                      </div>
-                    </th>
+                    <option key={cl.id} value={cl.id}>
+                      Target: {cl.name}
+                    </option>
                   ))}
-                </tr>
-              </thead>
+                </select>
 
-              {/* Table Body */}
-              <tbody className="divide-y divide-cool-gray-800/70 font-sans">
-                {matrixFilteredProducts.map((prod, idx) => {
-                  const onsiteCount = productQuantities[prod.id] || 0;
-                  const offsiteCount = offSiteQuantityMap[prod.id] || 0;
-                  const totalCount = onsiteCount + offsiteCount;
-                  const isRowSelected = !!matrixSelectedProds[prod.id];
+                <select
+                  value={bulkActionType}
+                  onChange={(e) => setBulkActionType(e.target.value as any)}
+                  className="bg-cool-gray-950 border border-cool-gray-700 text-cool-gray-200 text-xs px-2 py-1 rounded focus:outline-none focus:border-cyan-500 cursor-pointer"
+                >
+                  <option value="include">Add to List</option>
+                  <option value="exclude">Remove from List</option>
+                  <option value="set_source">Set Inventory Source...</option>
+                  <option value="set_threshold">Set Threshold Level...</option>
+                  <option value="clear_threshold">Clear Custom Threshold</option>
+                </select>
 
-                  return (
-                    <tr
-                      key={prod.id}
-                      className={`transition-colors divide-x divide-cool-gray-800/40 ${
-                        isRowSelected
-                          ? "bg-cyan-950/20 hover:bg-cyan-950/30"
-                          : idx % 2 === 0
-                          ? "bg-cool-gray-900/30 hover:bg-cool-gray-800/50"
-                          : "bg-cool-gray-900/60 hover:bg-cool-gray-800/50"
-                      }`}
-                    >
-                      {/* Checkbox cell (Sticky) */}
-                      <td className="py-2.5 px-3 text-center bg-inherit sticky left-0 z-10">
+                {bulkActionType === "set_source" && (
+                  <select
+                    value={bulkControlSourceVal}
+                    onChange={(e) => setBulkControlSourceVal(e.target.value as ControlSourceType)}
+                    className="bg-cool-gray-950 border border-cyan-600/70 text-cyan-300 text-xs px-2 py-1 rounded focus:outline-none cursor-pointer font-semibold"
+                  >
+                    <option value="onsite_count">On-Site Cut Count</option>
+                    <option value="onsite_weight">On-Site Weight (lbs)</option>
+                    <option value="offsite_count">Off-Site Boxed Cut Count</option>
+                    <option value="offsite_weight">Off-Site Weight (lbs)</option>
+                    <option value="total_count">Total Overall Cut Count</option>
+                    <option value="total_weight">Total Overall Weight (lbs)</option>
+                  </select>
+                )}
+
+                {(bulkActionType === "set_threshold" || bulkActionType === "include") && (
+                  <div className="flex items-center gap-1.5 bg-cool-gray-950 px-2 py-1 rounded border border-cool-gray-700">
+                    <span className="text-xs font-bold text-cool-gray-300">Threshold:</span>
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={bulkThresholdVal}
+                      onChange={(e) => setBulkThresholdVal(e.target.value)}
+                      placeholder="Threshold"
+                      className="w-20 bg-cool-gray-900 border border-cyan-600/70 text-cyan-300 text-xs px-2 py-0.5 rounded focus:outline-none text-center font-bold"
+                    />
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  onClick={executeBulkMatrixAction}
+                  disabled={selectedMatrixProdCount === 0 || !bulkListTarget}
+                  className="px-3 py-1 bg-cyan-600 hover:bg-cyan-500 disabled:opacity-40 text-white rounded text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                  Apply ({selectedMatrixProdCount})
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-cool-gray-850 rounded-xl border border-cool-gray-750 overflow-hidden">
+            {customLists.length === 0 ? (
+              <div className="p-10 text-center text-cool-gray-400 space-y-2">
+                <AlertCircle className="w-7 h-7 text-amber-400 mx-auto" />
+                <p className="font-semibold text-sm">No custom lists found.</p>
+                <p className="text-xs text-cool-gray-500">
+                  Switch to Lists Overview to create a list before using the Bulk Matrix.
+                </p>
+              </div>
+            ) : matrixFilteredProducts.length === 0 ? (
+              <div className="p-10 text-center text-cool-gray-400 space-y-2">
+                <SearchIcon className="w-7 h-7 text-cool-gray-500 mx-auto" />
+                <p className="font-semibold text-sm">No products match your search or filters.</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMatrixSearch("");
+                    setMatrixCategory("all");
+                    setMatrixSubCategory("all");
+                    setMatrixListFilter("all");
+                    setMatrixMembershipFilter("all");
+                  }}
+                  className="px-3 py-1.5 rounded-lg bg-cool-gray-800 text-cyan-400 hover:bg-cool-gray-750 text-xs font-semibold transition cursor-pointer"
+                >
+                  Reset Filters
+                </button>
+              </div>
+            ) : (
+              <div className="overflow-x-auto max-h-[70vh]">
+                <table className="w-full text-xs text-left text-cool-gray-300 border-collapse">
+                  <thead className="text-[10px] uppercase text-cool-gray-400 bg-cool-gray-950 sticky top-0 z-20">
+                    <tr className="border-b border-cool-gray-800 divide-x divide-cool-gray-800/60">
+                      <th className="py-3 px-3 w-10 text-center bg-cool-gray-950 sticky left-0 z-30">
                         <input
                           type="checkbox"
-                          checked={isRowSelected}
-                          onChange={(e) => {
-                            setMatrixSelectedProds((prev) => ({
-                              ...prev,
-                              [prod.id]: e.target.checked,
-                            }));
-                          }}
+                          checked={
+                            selectedMatrixProdCount > 0 &&
+                            selectedMatrixProdCount === matrixFilteredProducts.length
+                          }
+                          onChange={(e) => handleSelectAllMatrix(e.target.checked)}
                           className="w-3.5 h-3.5 rounded bg-cool-gray-900 border-cool-gray-700 text-cyan-600 focus:ring-0 cursor-pointer"
                         />
-                      </td>
-
-                      {/* Product Name & Category (Sticky) */}
-                      <td className="py-2.5 px-3.5 bg-inherit sticky left-10 z-10">
-                        <div className="font-bold text-cool-gray-150 text-xs">
-                          {prod.name}
-                        </div>
-                        <div className="flex items-center gap-1.5 text-[10px] text-cool-gray-400 mt-0.5">
-                          <span className="font-semibold text-cyan-400">
-                            {prod.primaryCategory || "Uncategorized"}
-                          </span>
-                          {prod.subCategory && (
-                            <>
-                              <span>›</span>
-                              <span>{prod.subCategory}</span>
-                            </>
-                          )}
-                        </div>
-                        {prod.productNumbers && prod.productNumbers.length > 0 && (
-                          <div className="text-[9px] text-cool-gray-500 mt-0.5 font-mono">
-                            SKU: {prod.productNumbers[0]}
+                      </th>
+                      <th className="py-3 px-3.5 min-w-[200px] font-bold text-cool-gray-200 bg-cool-gray-950 sticky left-10 z-30">
+                        Product Details
+                      </th>
+                      <th className="py-3 px-3 text-center min-w-[140px] font-bold text-cool-gray-300 bg-cool-gray-950">
+                        Live Stock
+                      </th>
+                      {customLists.map((cl) => (
+                        <th key={cl.id} className="py-2.5 px-3 min-w-[250px] text-left font-bold bg-cool-gray-950">
+                          <div className="flex items-center justify-between gap-1.5">
+                            <span className="truncate text-cyan-300 max-w-[160px]" title={cl.name}>
+                              {cl.name}
+                            </span>
+                            <span className="text-[10px] text-cool-gray-400 font-medium tabular-nums shrink-0">
+                              {cl.items?.length || 0} items
+                            </span>
                           </div>
-                        )}
-                        {prod.barcode && (
-                          <div className="text-[9px] text-cool-gray-400 mt-0.5 font-mono">
-                            UPC: {prod.barcode}
-                          </div>
-                        )}
-                      </td>
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-cool-gray-800/70">
+                    {matrixFilteredProducts.map((prod, idx) => {
+                      const onsiteCount = productQuantities[prod.id] || 0;
+                      const offsiteCount = offSiteQuantityMap[prod.id] || 0;
+                      const totalCount = onsiteCount + offsiteCount;
+                      const isRowSelected = !!matrixSelectedProds[prod.id];
 
-                      {/* Live Stock Summary */}
-                      <td className="py-2.5 px-3 text-center">
-                        <div className="text-xs font-black text-cool-gray-200">
-                          {totalCount} <span className="text-[10px] font-normal text-cool-gray-400">total</span>
-                        </div>
-                        <div className="text-[10px] text-cool-gray-400 flex items-center justify-center gap-2 mt-0.5">
-                          <span>🏠 {onsiteCount} on-site</span>
-                          <span>🏢 {offsiteCount} off-site</span>
-                        </div>
-                      </td>
+                      return (
+                        <tr
+                          key={prod.id}
+                          className={`transition-colors divide-x divide-cool-gray-800/40 ${
+                            isRowSelected
+                              ? "bg-cyan-950/20 hover:bg-cyan-950/30"
+                              : idx % 2 === 0
+                                ? "bg-cool-gray-900/30 hover:bg-cool-gray-800/50"
+                                : "bg-cool-gray-900/60 hover:bg-cool-gray-800/50"
+                          }`}
+                        >
+                          <td className="py-2.5 px-3 text-center bg-inherit sticky left-0 z-10">
+                            <input
+                              type="checkbox"
+                              checked={isRowSelected}
+                              onChange={(e) => {
+                                setMatrixSelectedProds((prev) => ({
+                                  ...prev,
+                                  [prod.id]: e.target.checked,
+                                }));
+                              }}
+                              className="w-3.5 h-3.5 rounded bg-cool-gray-900 border-cool-gray-700 text-cyan-600 focus:ring-0 cursor-pointer"
+                            />
+                          </td>
+                          <td className="py-2.5 px-3.5 bg-inherit sticky left-10 z-10">
+                            <div className="font-bold text-cool-gray-100 text-xs">{prod.name}</div>
+                            <div className="text-[10px] text-cool-gray-400 mt-0.5">
+                              {prod.primaryCategory || "Uncategorized"}
+                              {prod.subCategory ? ` › ${prod.subCategory}` : ""}
+                            </div>
+                          </td>
+                          <td className="py-2.5 px-3 text-center tabular-nums">
+                            <div className="text-xs font-bold text-cool-gray-200">
+                              {totalCount} <span className="text-[10px] font-normal text-cool-gray-400">total</span>
+                            </div>
+                            <div className="text-[10px] text-cool-gray-400 mt-0.5">
+                              {onsiteCount} on · {offsiteCount} off
+                            </div>
+                          </td>
+                          {customLists.map((cl) => {
+                            const listItem = cl.items?.find((item) => item.productId === prod.id);
+                            const isIncluded = !!listItem;
+                            const currentCS: ControlSourceType =
+                              listItem?.controlSource ||
+                              prod.listControlSources?.[cl.id] ||
+                              "onsite_count";
+                            const currentThreshold =
+                              listItem?.threshold !== undefined
+                                ? listItem.threshold
+                                : prod.listThresholds?.[cl.id];
 
-                      {/* Columns for each custom list */}
-                      {customLists.map((cl) => {
-                        const listItem = cl.items?.find((item) => item.productId === prod.id);
-                        const isIncluded = !!listItem;
-
-                        // Default threshold / control source fallback from product definition or item definition
-                        const currentCS: ControlSourceType =
-                          listItem?.controlSource ||
-                          prod.listControlSources?.[cl.id] ||
-                          "onsite_count";
-
-                        const currentThreshold =
-                          listItem?.threshold !== undefined
-                            ? listItem.threshold
-                            : prod.listThresholds?.[cl.id];
-
-                        return (
-                          <td key={cl.id} className="py-2 px-3 align-middle">
-                            <div className="flex items-center gap-2">
-                              {/* Toggle Checkbox */}
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  dispatch({
-                                    type: "TOGGLE_PRODUCT_ON_LIST",
-                                    payload: {
-                                      listId: cl.id,
-                                      productId: prod.id,
-                                      forceState: !isIncluded,
-                                    },
-                                  });
-                                }}
-                                className={`px-2 py-1 rounded text-[11px] font-bold transition flex items-center gap-1 cursor-pointer shrink-0 ${
-                                  isIncluded
-                                    ? "bg-cyan-600/30 text-cyan-300 border border-cyan-500/50 hover:bg-cyan-600/40"
-                                    : "bg-cool-gray-950 text-cool-gray-550 border border-cool-gray-800 hover:text-cool-gray-300"
-                                }`}
-                                title={isIncluded ? "Click to remove from list" : "Click to add to list"}
-                              >
-                                {isIncluded ? (
-                                  <>
-                                    <Check className="w-3 h-3 text-cyan-400" />
-                                    <span>On List</span>
-                                  </>
-                                ) : (
-                                  <span>+ Add</span>
-                                )}
-                              </button>
-
-                              {/* If list is inventory controlled or included, allow editing control source and threshold */}
-                              {isIncluded && (
-                                <div className="flex items-center gap-1.5 grow">
-                                  {/* Control Source Dropdown */}
-                                  <select
-                                    value={currentCS}
-                                    onChange={(e) => {
-                                      const nextCS = e.target.value as ControlSourceType;
+                            return (
+                              <td key={cl.id} className="py-2 px-3 align-middle">
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
                                       dispatch({
-                                        type: "UPDATE_LIST_ITEM_CONTROL_SOURCE",
+                                        type: "TOGGLE_PRODUCT_ON_LIST",
                                         payload: {
                                           listId: cl.id,
                                           productId: prod.id,
-                                          controlSource: nextCS,
+                                          forceState: !isIncluded,
                                         },
                                       });
                                     }}
-                                    className="bg-cool-gray-950 border border-cool-gray-800 hover:border-cool-gray-700 text-cool-gray-300 text-[10px] py-1 px-1.5 rounded focus:outline-none focus:border-cyan-500 cursor-pointer max-w-[110px] truncate"
-                                    title="Choose inventory tracking source for threshold evaluations"
+                                    className={`px-2 py-1 rounded text-[11px] font-bold transition flex items-center gap-1 cursor-pointer shrink-0 ${
+                                      isIncluded
+                                        ? "bg-cyan-600/30 text-cyan-300 border border-cyan-500/50 hover:bg-cyan-600/40"
+                                        : "bg-cool-gray-950 text-cool-gray-400 border border-cool-gray-800 hover:text-cool-gray-200"
+                                    }`}
                                   >
-                                    <option value="onsite_count">🏠 On-Site Count</option>
-                                    <option value="onsite_weight">🏠 On-Site Weight</option>
-                                    <option value="offsite_count">🏢 Off-Site Count</option>
-                                    <option value="offsite_weight">🏢 Off-Site Weight</option>
-                                    <option value="total_count">🌐 Total Count</option>
-                                    <option value="total_weight">🌐 Total Weight</option>
-                                  </select>
+                                    {isIncluded ? (
+                                      <>
+                                        <Check className="w-3 h-3 text-cyan-400" />
+                                        <span>On List</span>
+                                      </>
+                                    ) : (
+                                      <span>+ Add</span>
+                                    )}
+                                  </button>
 
-                                  {/* Threshold Number Input */}
-                                  <div className="flex items-center gap-1">
-                                    <input
-                                      type="number"
-                                      min="0"
-                                      step="any"
-                                      placeholder="Def"
-                                      value={currentThreshold !== undefined && currentThreshold !== null ? currentThreshold : ""}
-                                      onChange={(e) => {
-                                        const valStr = e.target.value;
-                                        const num = valStr === "" ? null : parseFloat(valStr);
-                                        dispatch({
-                                          type: "UPDATE_LIST_ITEM_THRESHOLD",
-                                          payload: {
-                                            listId: cl.id,
-                                            productId: prod.id,
-                                            threshold: num,
-                                          },
-                                        });
-                                      }}
-                                      className="w-14 bg-cool-gray-950 border border-cool-gray-800 hover:border-cool-gray-700 focus:border-cyan-500 text-amber-300 font-extrabold text-[10px] py-1 px-1 rounded text-center focus:outline-none"
-                                      title="Custom threshold limit for this list. Leave blank for default list threshold."
-                                    />
-                                    {currentThreshold !== undefined && currentThreshold !== null && (
-                                      <button
-                                        type="button"
-                                        onClick={() => {
+                                  {isIncluded && (
+                                    <div className="flex items-center gap-1.5 grow">
+                                      <select
+                                        value={currentCS}
+                                        onChange={(e) => {
+                                          dispatch({
+                                            type: "UPDATE_LIST_ITEM_CONTROL_SOURCE",
+                                            payload: {
+                                              listId: cl.id,
+                                              productId: prod.id,
+                                              controlSource: e.target.value as ControlSourceType,
+                                            },
+                                          });
+                                        }}
+                                        className="bg-cool-gray-950 border border-cool-gray-800 hover:border-cool-gray-700 text-cool-gray-300 text-[10px] py-1 px-1.5 rounded focus:outline-none focus:border-cyan-500 cursor-pointer max-w-[110px] truncate"
+                                      >
+                                        <option value="onsite_count">On-Site Count</option>
+                                        <option value="onsite_weight">On-Site Weight</option>
+                                        <option value="offsite_count">Off-Site Count</option>
+                                        <option value="offsite_weight">Off-Site Weight</option>
+                                        <option value="total_count">Total Count</option>
+                                        <option value="total_weight">Total Weight</option>
+                                      </select>
+
+                                      <input
+                                        type="number"
+                                        min="0"
+                                        step="any"
+                                        placeholder="Def"
+                                        value={
+                                          currentThreshold !== undefined && currentThreshold !== null
+                                            ? currentThreshold
+                                            : ""
+                                        }
+                                        onChange={(e) => {
+                                          const num =
+                                            e.target.value === "" ? null : parseFloat(e.target.value);
                                           dispatch({
                                             type: "UPDATE_LIST_ITEM_THRESHOLD",
                                             payload: {
                                               listId: cl.id,
                                               productId: prod.id,
-                                              threshold: null,
+                                              threshold: num,
                                             },
                                           });
                                         }}
-                                        className="text-cool-gray-550 hover:text-rose-400 text-[10px] p-0.5 cursor-pointer"
-                                        title="Clear custom threshold"
-                                      >
-                                        ×
-                                      </button>
-                                    )}
-                                  </div>
+                                        className="w-14 bg-cool-gray-950 border border-cool-gray-800 focus:border-cyan-500 text-amber-300 font-bold text-[10px] py-1 px-1 rounded text-center focus:outline-none tabular-nums"
+                                      />
+                                    </div>
+                                  )}
+                                </div>
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* List Configuration Modal */}
+      {isFormVisible && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs"
+          onClick={handleCancelForm}
+        >
+          <form
+            onSubmit={handleCreateOrEditList}
+            onClick={(e) => e.stopPropagation()}
+            className="bg-cool-gray-850 border border-cool-gray-700 rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto p-5 sm:p-6 shadow-2xl space-y-4 animate-scale-up"
+          >
+            <div className="border-b border-cool-gray-750 pb-3 flex items-center justify-between">
+              <h3 className="text-base font-bold text-white">
+                {editingListId ? "Edit List Settings" : "Create New List"}
+              </h3>
+              <button
+                type="button"
+                onClick={handleCancelForm}
+                className="text-cool-gray-400 hover:text-white cursor-pointer p-1"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs font-semibold text-cool-gray-300">List Name</label>
+              <input
+                type="text"
+                required
+                value={listName}
+                onChange={(e) => setListName(e.target.value)}
+                placeholder="e.g. Display Restock Watchlist, Price Audit"
+                className="w-full bg-cool-gray-900 border border-cool-gray-700 rounded-lg px-3 py-2 text-white placeholder-cool-gray-500 focus:outline-none focus:ring-1 focus:ring-cyan-500 text-xs"
+                autoFocus
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs font-semibold text-cool-gray-300">Description</label>
+              <input
+                type="text"
+                value={listDesc}
+                onChange={(e) => setListDesc(e.target.value)}
+                placeholder="Purpose or instructions for this list..."
+                className="w-full bg-cool-gray-900 border border-cool-gray-700 rounded-lg px-3 py-2 text-white placeholder-cool-gray-500 focus:outline-none focus:ring-1 focus:ring-cyan-500 text-xs"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <label className="bg-cool-gray-900 rounded-lg p-3 border border-cool-gray-750 flex items-start gap-2.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={allowNotes}
+                  onChange={(e) => setAllowNotes(e.target.checked)}
+                  className="w-4 h-4 mt-0.5 rounded bg-cool-gray-950 border-cool-gray-700 text-cyan-500"
+                />
+                <div className="text-xs">
+                  <span className="font-bold text-cool-gray-200 block">Allow Item Notes</span>
+                  <span className="text-cool-gray-400 block mt-0.5">
+                    Enable per-item status notes on this list.
+                  </span>
+                </div>
+              </label>
+
+              <label className="bg-cool-gray-900 rounded-lg p-3 border border-cool-gray-750 flex items-start gap-2.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={isInventoryControlled}
+                  onChange={(e) => setIsInventoryControlled(e.target.checked)}
+                  className="w-4 h-4 mt-0.5 rounded bg-cool-gray-950 border-cool-gray-700 text-cyan-500"
+                />
+                <div className="text-xs">
+                  <span className="font-bold text-cool-gray-200 block">
+                    Inventory Level Controlled
+                  </span>
+                  <span className="text-cool-gray-400 block mt-0.5">
+                    Track product thresholds against stock counts/weights.
+                  </span>
+                </div>
+              </label>
+            </div>
+
+            {isInventoryControlled && (
+              <div className="p-4 bg-cool-gray-900/70 rounded-xl border border-cool-gray-750 space-y-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-cool-gray-400 block">
+                      Behavior
+                    </label>
+                    <div className="flex gap-2">
+                      <label className="flex items-center gap-2 bg-cool-gray-950 p-2 border border-cool-gray-750 flex-1 rounded cursor-pointer text-xs">
+                        <input
+                          type="radio"
+                          name="controlType"
+                          checked={controlType === "prompt"}
+                          onChange={() => setControlType("prompt")}
+                        />
+                        <span className="font-semibold text-cool-gray-200">Popup Alert</span>
+                      </label>
+                      <label className="flex items-center gap-2 bg-cool-gray-950 p-2 border border-cool-gray-750 flex-1 rounded cursor-pointer text-xs">
+                        <input
+                          type="radio"
+                          name="controlType"
+                          checked={controlType === "auto"}
+                          onChange={() => setControlType("auto")}
+                        />
+                        <span className="font-semibold text-cool-gray-200">Auto Move</span>
+                      </label>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-cool-gray-400 block">
+                      Threshold Condition
+                    </label>
+                    <div className="flex gap-2">
+                      <label className="flex items-center gap-2 bg-cool-gray-950 p-2 border border-cool-gray-750 flex-1 rounded cursor-pointer text-xs">
+                        <input
+                          type="radio"
+                          name="controlCondition"
+                          checked={controlCondition === "min"}
+                          onChange={() => setControlCondition("min")}
+                        />
+                        <span className="font-semibold text-cool-gray-200">Min (Low)</span>
+                      </label>
+                      <label className="flex items-center gap-2 bg-cool-gray-950 p-2 border border-cool-gray-750 flex-1 rounded cursor-pointer text-xs">
+                        <input
+                          type="radio"
+                          name="controlCondition"
+                          checked={controlCondition === "max"}
+                          onChange={() => setControlCondition("max")}
+                        />
+                        <span className="font-semibold text-cool-gray-200">Max (High)</span>
+                      </label>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div className="bg-cool-gray-900 rounded-xl p-4 border border-cool-gray-750 space-y-4">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <label className="flex items-start gap-2.5 cursor-pointer flex-1 min-w-0">
+                  <input
+                    type="checkbox"
+                    checked={listNotificationEnabled}
+                    onChange={(e) => setListNotificationEnabled(e.target.checked)}
+                    className="w-4 h-4 mt-0.5 rounded bg-cool-gray-950 border-cool-gray-700 text-cyan-500"
+                  />
+                  <div className="text-xs">
+                    <span className="font-bold text-cool-gray-100 block">
+                      Enable List Notifications
+                    </span>
+                    <span className="text-cool-gray-400 block mt-0.5">
+                      Choose delivery channels and combine multiple schedules or immediate triggers.
+                    </span>
+                  </div>
+                </label>
+
+                {onNavigateToNotifications && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFormVisible(false);
+                      onNavigateToNotifications();
+                    }}
+                    className="text-[11px] font-semibold text-cyan-400 hover:text-cyan-300 transition whitespace-nowrap cursor-pointer"
+                  >
+                    Manage Channels &rarr;
+                  </button>
+                )}
+              </div>
+
+              {listNotificationEnabled && (
+                <div className="space-y-4 pt-3 border-t border-cool-gray-800">
+                  {/* 1. Primary Multi-Select Delivery Channels */}
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="text-xs font-semibold text-cool-gray-300">
+                        Delivery Channels (Multi-Select)
+                      </label>
+                      <span className="text-[11px] text-cool-gray-400 tabular-nums">
+                        {listChannelIds.length > 0
+                          ? `${listChannelIds.length} selected`
+                          : "Uses system default channel"}
+                      </span>
+                    </div>
+
+                    {configuredChannels.length === 0 ? (
+                      <div className="p-3 bg-cool-gray-950 border border-cool-gray-800 rounded-lg text-xs text-cool-gray-400 flex flex-wrap items-center justify-between gap-2">
+                        <span>No channels configured yet. Configure SMTP or Webhook channels in System &amp; Admin &rarr; Notifications.</span>
+                        {onNavigateToNotifications && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setFormVisible(false);
+                              onNavigateToNotifications();
+                            }}
+                            className="px-2.5 py-1 bg-cool-gray-800 hover:bg-cool-gray-750 text-cyan-300 rounded text-[11px] font-semibold cursor-pointer whitespace-nowrap"
+                          >
+                            Open Notification Center
+                          </button>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {configuredChannels.map((ch) => {
+                          const selected = listChannelIds.includes(ch.id);
+                          return (
+                            <label
+                              key={ch.id}
+                              className={`flex items-start gap-2.5 p-2.5 rounded-lg border cursor-pointer transition ${
+                                selected
+                                  ? "bg-cyan-950/25 border-cyan-500/60 text-white"
+                                  : "bg-cool-gray-950 border-cool-gray-800 text-cool-gray-300 hover:border-cool-gray-700"
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={selected}
+                                onChange={() => toggleChannelSelection(setListChannelIds, ch.id)}
+                                className="w-3.5 h-3.5 mt-0.5 rounded bg-cool-gray-900 border-cool-gray-700 text-cyan-500"
+                              />
+                              <div className="min-w-0 text-xs">
+                                <div className="font-semibold truncate flex items-center gap-1.5">
+                                  <span className="truncate">{ch.name}</span>
+                                  {!ch.enabled && (
+                                    <span className="text-[10px] text-amber-400 font-normal">(Paused)</span>
+                                  )}
+                                </div>
+                                <div className="text-[11px] text-cool-gray-400 truncate">
+                                  {getChannelTypeLabel(ch.type)}
+                                </div>
+                              </div>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {configuredChannels.some((c) => c.type === "smtp_email") && (
+                      <div className="pt-1">
+                        <label className="text-[11px] font-semibold text-cool-gray-400 block mb-1">
+                          Email Recipient Override (&ldquo;To&rdquo;, optional)
+                        </label>
+                        <input
+                          type="text"
+                          value={listRecipientOverride}
+                          onChange={(e) => setListRecipientOverride(e.target.value)}
+                          placeholder="Leave blank to use the SMTP channel default recipient"
+                          className="w-full bg-cool-gray-950 border border-cool-gray-800 rounded-lg px-3 py-1.5 text-xs text-white placeholder-cool-gray-600 focus:outline-none focus:border-cyan-500"
+                        />
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 2. Multi-Frequency Delivery Schedules & Immediate Triggers */}
+                  <div className="space-y-2.5 pt-2 border-t border-cool-gray-800">
+                    <div>
+                      <span className="text-xs font-semibold text-cool-gray-300 block">
+                        Delivery Frequencies &amp; Triggers (Combine Any)
+                      </span>
+                      <span className="text-[11px] text-cool-gray-400">
+                        You can enable Daily Digest, a Custom Schedule, and Immediate Alerts at the same time.
+                      </span>
+                    </div>
+
+                    {/* A. Daily Digest */}
+                    <div className="p-3 bg-cool-gray-950 border border-cool-gray-800 rounded-lg space-y-2.5">
+                      <div className="text-xs font-bold text-cool-gray-200">Daily Digest</div>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                        <label className="flex items-center gap-2 bg-cool-gray-900 p-2 border border-cool-gray-800 rounded cursor-pointer text-xs">
+                          <input
+                            type="radio"
+                            name="listDailyDigestMode"
+                            checked={listDailyDigestMode === "none"}
+                            onChange={() => setListDailyDigestMode("none")}
+                          />
+                          <span className="font-semibold text-cool-gray-300">Off</span>
+                        </label>
+                        <label className="flex items-center gap-2 bg-cool-gray-900 p-2 border border-cool-gray-800 rounded cursor-pointer text-xs">
+                          <input
+                            type="radio"
+                            name="listDailyDigestMode"
+                            checked={listDailyDigestMode === "combined"}
+                            onChange={() => setListDailyDigestMode("combined")}
+                          />
+                          <span className="font-semibold text-cool-gray-200">Combined Digest</span>
+                        </label>
+                        <label className="flex items-center gap-2 bg-cool-gray-900 p-2 border border-cool-gray-800 rounded cursor-pointer text-xs">
+                          <input
+                            type="radio"
+                            name="listDailyDigestMode"
+                            checked={listDailyDigestMode === "separate"}
+                            onChange={() => setListDailyDigestMode("separate")}
+                          />
+                          <span className="font-semibold text-cool-gray-200">Separate Notification</span>
+                        </label>
+                      </div>
+
+                      {listDailyDigestMode !== "none" && configuredChannels.length > 0 && (
+                        <div className="space-y-1.5">
+                          <label className="inline-flex items-center gap-2 text-[11px] text-cool-gray-400 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={listDigestChannelOverrideEnabled}
+                              onChange={(e) => setListDigestChannelOverrideEnabled(e.target.checked)}
+                              className="w-3.5 h-3.5 rounded bg-cool-gray-900 border-cool-gray-700 text-cyan-500"
+                            />
+                            <span>Use specific channels only for Daily Digest</span>
+                          </label>
+                          {listDigestChannelOverrideEnabled && (
+                            <div className="flex flex-wrap gap-2 pl-5">
+                              {configuredChannels.map((ch) => (
+                                <label key={ch.id} className="inline-flex items-center gap-1.5 text-[11px] text-cool-gray-300 bg-cool-gray-900 border border-cool-gray-800 px-2 py-1 rounded cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={listDigestChannelIds.includes(ch.id)}
+                                    onChange={() => toggleChannelSelection(setListDigestChannelIds, ch.id)}
+                                    className="w-3 h-3 rounded text-cyan-500"
+                                  />
+                                  <span>{ch.name}</span>
+                                </label>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* B. Custom Recurring Schedule */}
+                    <div className="p-3 bg-cool-gray-950 border border-cool-gray-800 rounded-lg space-y-2.5">
+                      <label className="flex items-center gap-2 cursor-pointer text-xs font-bold text-cool-gray-200">
+                        <input
+                          type="checkbox"
+                          checked={listCustomSchedEnabled}
+                          onChange={(e) => setListCustomSchedEnabled(e.target.checked)}
+                          className="w-3.5 h-3.5 rounded bg-cool-gray-900 border-cool-gray-700 text-cyan-500"
+                        />
+                        <span>Custom Schedule</span>
+                      </label>
+
+                      {listCustomSchedEnabled && (
+                        <div className="space-y-2.5 pt-1 pl-5">
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                            <label className="flex items-center gap-2 bg-cool-gray-900 p-2 border border-cool-gray-800 rounded cursor-pointer text-xs">
+                              <input
+                                type="radio"
+                                name="listCustomSchedCadence"
+                                checked={listCustomSchedCadence === "daily"}
+                                onChange={() => setListCustomSchedCadence("daily")}
+                              />
+                              <span className="font-semibold text-cool-gray-200">Daily Time</span>
+                            </label>
+                            <label className="flex items-center gap-2 bg-cool-gray-900 p-2 border border-cool-gray-800 rounded cursor-pointer text-xs">
+                              <input
+                                type="radio"
+                                name="listCustomSchedCadence"
+                                checked={listCustomSchedCadence === "weekly"}
+                                onChange={() => setListCustomSchedCadence("weekly")}
+                              />
+                              <span className="font-semibold text-cool-gray-200">Weekly Days</span>
+                            </label>
+                            <label className="flex items-center gap-2 bg-cool-gray-900 p-2 border border-cool-gray-800 rounded cursor-pointer text-xs">
+                              <input
+                                type="radio"
+                                name="listCustomSchedCadence"
+                                checked={listCustomSchedCadence === "interval"}
+                                onChange={() => setListCustomSchedCadence("interval")}
+                              />
+                              <span className="font-semibold text-cool-gray-200">Every N Hours</span>
+                            </label>
+                          </div>
+
+                          {listCustomSchedCadence === "weekly" && (
+                            <div className="flex flex-wrap gap-1.5">
+                              {WEEKDAY_LABELS.map((dayLabel, dayIdx) => {
+                                const active = listCustomSchedDays.includes(dayIdx);
+                                return (
+                                  <button
+                                    key={dayLabel}
+                                    type="button"
+                                    onClick={() =>
+                                      setListCustomSchedDays((prev) =>
+                                        prev.includes(dayIdx)
+                                          ? prev.length > 1
+                                            ? prev.filter((d) => d !== dayIdx)
+                                            : prev
+                                          : [...prev, dayIdx].sort(),
+                                      )
+                                    }
+                                    className={`px-2.5 py-1 rounded text-[11px] font-semibold border transition cursor-pointer ${
+                                      active
+                                        ? "bg-cyan-600/30 border-cyan-500 text-cyan-200"
+                                        : "bg-cool-gray-900 border-cool-gray-800 text-cool-gray-400 hover:text-white"
+                                    }`}
+                                  >
+                                    {dayLabel}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
+
+                          {listCustomSchedCadence === "interval" ? (
+                            <div className="flex items-center gap-2 text-xs">
+                              <span className="text-cool-gray-400">Check &amp; notify every</span>
+                              <input
+                                type="number"
+                                min={1}
+                                max={168}
+                                value={listCustomSchedIntervalHours}
+                                onChange={(e) =>
+                                  setListCustomSchedIntervalHours(Math.max(1, Number(e.target.value) || 1))
+                                }
+                                className="w-20 bg-cool-gray-900 border border-cool-gray-800 rounded px-2.5 py-1 text-white tabular-nums focus:outline-none focus:border-cyan-500"
+                              />
+                              <span className="text-cool-gray-400">hour(s)</span>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-2 text-xs">
+                              <span className="text-cool-gray-400">Dispatch time</span>
+                              <input
+                                type="time"
+                                value={listCustomSchedTime}
+                                onChange={(e) => setListCustomSchedTime(e.target.value)}
+                                className="bg-cool-gray-900 border border-cool-gray-800 rounded px-2.5 py-1 text-white font-mono tabular-nums focus:outline-none focus:border-cyan-500"
+                              />
+                            </div>
+                          )}
+
+                          {configuredChannels.length > 0 && (
+                            <div className="space-y-1.5">
+                              <label className="inline-flex items-center gap-2 text-[11px] text-cool-gray-400 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={listCustomSchedChannelOverrideEnabled}
+                                  onChange={(e) => setListCustomSchedChannelOverrideEnabled(e.target.checked)}
+                                  className="w-3.5 h-3.5 rounded bg-cool-gray-900 border-cool-gray-700 text-cyan-500"
+                                />
+                                <span>Use specific channels only for Custom Schedule</span>
+                              </label>
+                              {listCustomSchedChannelOverrideEnabled && (
+                                <div className="flex flex-wrap gap-2 pl-5">
+                                  {configuredChannels.map((ch) => (
+                                    <label key={ch.id} className="inline-flex items-center gap-1.5 text-[11px] text-cool-gray-300 bg-cool-gray-900 border border-cool-gray-800 px-2 py-1 rounded cursor-pointer">
+                                      <input
+                                        type="checkbox"
+                                        checked={listCustomSchedChannelIds.includes(ch.id)}
+                                        onChange={() => toggleChannelSelection(setListCustomSchedChannelIds, ch.id)}
+                                        className="w-3 h-3 rounded text-cyan-500"
+                                      />
+                                      <span>{ch.name}</span>
+                                    </label>
+                                  ))}
                                 </div>
                               )}
                             </div>
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* C. Immediate Event Alerts */}
+                    <div className="p-3 bg-cool-gray-950 border border-cool-gray-800 rounded-lg space-y-2.5">
+                      <div className="text-xs font-bold text-cool-gray-200">Immediate Alerts</div>
+                      <div className="space-y-1.5">
+                        <label className="flex items-center gap-2 cursor-pointer text-xs text-cool-gray-300">
+                          <input
+                            type="checkbox"
+                            checked={listImmediateOnItemAdded}
+                            onChange={(e) => setListImmediateOnItemAdded(e.target.checked)}
+                            className="w-3.5 h-3.5 rounded bg-cool-gray-900 border-cool-gray-700 text-cyan-500"
+                          />
+                          <span>Send immediately when an item is added to this list</span>
+                        </label>
+
+                        {isInventoryControlled && (
+                          <label className="flex items-center gap-2 cursor-pointer text-xs text-cool-gray-300">
+                            <input
+                              type="checkbox"
+                              checked={listImmediateOnThresholdBreach}
+                              onChange={(e) => setListImmediateOnThresholdBreach(e.target.checked)}
+                              className="w-3.5 h-3.5 rounded bg-cool-gray-900 border-cool-gray-700 text-cyan-500"
+                            />
+                            <span>Send immediately when an inventory threshold is breached</span>
+                          </label>
+                        )}
+                      </div>
+
+                      {(listImmediateOnItemAdded || (isInventoryControlled && listImmediateOnThresholdBreach)) &&
+                        configuredChannels.length > 0 && (
+                          <div className="space-y-1.5 pt-1">
+                            <label className="inline-flex items-center gap-2 text-[11px] text-cool-gray-400 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={listImmediateChannelOverrideEnabled}
+                                onChange={(e) => setListImmediateChannelOverrideEnabled(e.target.checked)}
+                                className="w-3.5 h-3.5 rounded bg-cool-gray-900 border-cool-gray-700 text-cyan-500"
+                              />
+                              <span>Use specific channels only for Immediate Alerts (e.g., Email immediately, Digest elsewhere)</span>
+                            </label>
+                            {listImmediateChannelOverrideEnabled && (
+                              <div className="flex flex-wrap gap-2 pl-5">
+                                {configuredChannels.map((ch) => (
+                                  <label key={ch.id} className="inline-flex items-center gap-1.5 text-[11px] text-cool-gray-300 bg-cool-gray-900 border border-cool-gray-800 px-2 py-1 rounded cursor-pointer">
+                                    <input
+                                      type="checkbox"
+                                      checked={listImmediateChannelIds.includes(ch.id)}
+                                      onChange={() => toggleChannelSelection(setListImmediateChannelIds, ch.id)}
+                                      className="w-3 h-3 rounded text-cyan-500"
+                                    />
+                                    <span>{ch.name}</span>
+                                  </label>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                    </div>
+                  </div>
+
+                  {/* 3. Report Item Scope */}
+                  <div className="space-y-1.5 pt-2 border-t border-cool-gray-800">
+                    <label className="text-xs font-semibold text-cool-gray-300 block">
+                      Included Items Scope (Digest &amp; Scheduled Reports)
+                    </label>
+                    <div className={`grid grid-cols-1 ${isInventoryControlled ? "sm:grid-cols-4" : "sm:grid-cols-3"} gap-2`}>
+                      <label className="flex items-center gap-2 bg-cool-gray-950 p-2 border border-cool-gray-800 rounded cursor-pointer text-xs">
+                        <input
+                          type="radio"
+                          name="listNotificationType"
+                          checked={listNotificationType === "all_items"}
+                          onChange={() => setListNotificationType("all_items")}
+                        />
+                        <span className="font-semibold text-cool-gray-200">All Items</span>
+                      </label>
+                      <label className="flex items-center gap-2 bg-cool-gray-950 p-2 border border-cool-gray-800 rounded cursor-pointer text-xs">
+                        <input
+                          type="radio"
+                          name="listNotificationType"
+                          checked={listNotificationType === "newly_added_only"}
+                          onChange={() => setListNotificationType("newly_added_only")}
+                        />
+                        <span className="font-semibold text-cool-gray-200">Newly Added</span>
+                      </label>
+                      <label className="flex items-center gap-2 bg-cool-gray-950 p-2 border border-cool-gray-800 rounded cursor-pointer text-xs">
+                        <input
+                          type="radio"
+                          name="listNotificationType"
+                          checked={listNotificationType === "item_specific"}
+                          onChange={() => setListNotificationType("item_specific")}
+                        />
+                        <span className="font-semibold text-cool-gray-200">Item-Specific</span>
+                      </label>
+                      {isInventoryControlled && (
+                        <label className="flex items-center gap-2 bg-cool-gray-950 p-2 border border-cool-gray-800 rounded cursor-pointer text-xs">
+                          <input
+                            type="radio"
+                            name="listNotificationType"
+                            checked={listNotificationType === "threshold_breaches"}
+                            onChange={() => setListNotificationType("threshold_breaches")}
+                          />
+                          <span className="font-semibold text-cool-gray-200">Breached Only</span>
+                        </label>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-2 pt-3 border-t border-cool-gray-750">
+              <button
+                type="button"
+                onClick={handleCancelForm}
+                className="px-4 py-2 bg-cool-gray-800 hover:bg-cool-gray-750 text-cool-gray-300 font-semibold rounded-lg transition text-xs cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="px-5 py-2 bg-cyan-600 hover:bg-cyan-500 text-white font-bold rounded-lg transition text-xs cursor-pointer"
+              >
+                {editingListId ? "Save Settings" : "Create List"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* In-App Delete List Confirmation Modal */}
+      {listToDelete && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs"
+          onClick={() => setListToDelete(null)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-cool-gray-850 border border-cool-gray-700 p-6 rounded-2xl max-w-sm w-full shadow-2xl space-y-4 animate-scale-up"
+          >
+            <div className="flex items-center gap-2.5 text-rose-400">
+              <AlertCircle className="w-5 h-5 shrink-0" />
+              <h3 className="text-base font-bold text-white">Delete List?</h3>
+            </div>
+            <p className="text-xs text-cool-gray-300 leading-relaxed">
+              Delete <strong className="text-white">"{listToDelete.name}"</strong>? List memberships and rule settings for this list will be removed.
+            </p>
+            <div className="flex justify-end gap-2 pt-2 border-t border-cool-gray-750">
+              <button
+                type="button"
+                onClick={() => setListToDelete(null)}
+                className="px-4 py-2 bg-cool-gray-800 hover:bg-cool-gray-750 text-cool-gray-300 text-xs font-bold rounded-lg transition cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmDeleteList}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold rounded-lg transition cursor-pointer"
+              >
+                Delete List
+              </button>
+            </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
-  )}
-</div>
-);
+  );
 };
 
 interface ManageTagsProps {
   state: InventoryState;
   dispatch: React.Dispatch<Action>;
+  hideInternalHeader?: boolean;
+  createRequestCount?: number;
+  onStepChange?: (inDetailStep: boolean) => void;
 }
 
-export const ManageTags: React.FC<ManageTagsProps> = ({ state, dispatch }) => {
+export const ManageTags: React.FC<ManageTagsProps> = ({
+  state,
+  dispatch,
+  hideInternalHeader = false,
+  createRequestCount = 0,
+  onStepChange,
+}) => {
   const tags = state.tags || [];
-  
-  // Tag fields state
+
+  // Two-step Overview (null) -> Default Product Manager (tag id)
   const [selectedTagId, setSelectedTagId] = useState<string | null>(null);
+  const [tagSearch, setTagSearch] = useState("");
+  const [showTagFilters, setShowTagFilters] = useState(false);
+  const [tagRuleFilter, setTagRuleFilter] = useState<"all" | "exclude_restock" | "prioritize" | "standard">("all");
+  const [tagSortBy, setTagSortBy] = useState<"default" | "name_asc" | "name_desc" | "cuts_desc" | "products_desc">("default");
   const [isFormVisible, setFormVisible] = useState(false);
   const [editingTagId, setEditingTagId] = useState<string | null>(null);
   const [tagName, setTagName] = useState("");
   const [tagDesc, setTagDesc] = useState("");
-  const [tagColor, setTagColor] = useState("#06b6d4"); // Default Cyan
+  const [tagColor, setTagColor] = useState("#06b6d4");
   const [tagExcludeRestock, setTagExcludeRestock] = useState(false);
+  const [tagPrioritizeItem, setTagPrioritizeItem] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
+  const [tagToDelete, setTagToDelete] = useState<{ id: string; name: string } | null>(null);
 
-  const activeTagId = selectedTagId || (tags.length > 0 ? tags[0].id : null);
-  const activeTag = tags.find(t => t.id === activeTagId);
+  const activeTag = useMemo(
+    () => (selectedTagId ? tags.find((t) => t.id === selectedTagId) || null : null),
+    [tags, selectedTagId],
+  );
+
+  const tagUsageStats = useMemo(() => {
+    const cutsCounts: Record<string, number> = {};
+    const productCounts: Record<string, number> = {};
+    (state.meatCuts || []).forEach((mc) => {
+      (mc.tagIds || []).forEach((tid) => {
+        cutsCounts[tid] = (cutsCounts[tid] || 0) + 1;
+      });
+    });
+    (state.products || []).forEach((p) => {
+      (p.defaultTagIds || []).forEach((tid) => {
+        productCounts[tid] = (productCounts[tid] || 0) + 1;
+      });
+    });
+    return { cutsCounts, productCounts };
+  }, [state.meatCuts, state.products]);
+
+  const filteredTags = useMemo(() => {
+    const q = tagSearch.trim().toLowerCase();
+    const filtered = tags.filter((tag) => {
+      if (q) {
+        const nameHit = (tag.name || "").toLowerCase().includes(q);
+        const descHit = (tag.description || "").toLowerCase().includes(q);
+        if (!nameHit && !descHit) return false;
+      }
+      if (tagRuleFilter === "exclude_restock" && !tag.excludeFromDisplayRestock) return false;
+      if (tagRuleFilter === "prioritize" && !tag.prioritizeItem) return false;
+      if (tagRuleFilter === "standard" && (tag.excludeFromDisplayRestock || tag.prioritizeItem)) return false;
+      return true;
+    });
+
+    if (tagSortBy === "default") return filtered;
+
+    return [...filtered].sort((a, b) => {
+      if (tagSortBy === "name_asc") {
+        return (a.name || "").localeCompare(b.name || "", undefined, { numeric: true, sensitivity: "base" });
+      }
+      if (tagSortBy === "name_desc") {
+        return (b.name || "").localeCompare(a.name || "", undefined, { numeric: true, sensitivity: "base" });
+      }
+      if (tagSortBy === "cuts_desc") {
+        return (tagUsageStats.cutsCounts[b.id] || 0) - (tagUsageStats.cutsCounts[a.id] || 0);
+      }
+      if (tagSortBy === "products_desc") {
+        return (tagUsageStats.productCounts[b.id] || 0) - (tagUsageStats.productCounts[a.id] || 0);
+      }
+      return 0;
+    });
+  }, [tags, tagSearch, tagRuleFilter, tagSortBy, tagUsageStats]);
+
+  const activeTagFilterCount =
+    (tagRuleFilter !== "all" ? 1 : 0) + (tagSortBy !== "default" ? 1 : 0);
+
+  useEffect(() => {
+    if (selectedTagId && !activeTag) {
+      setSelectedTagId(null);
+    }
+  }, [selectedTagId, activeTag]);
+
+  useEffect(() => {
+    onStepChange?.(Boolean(activeTag));
+    return () => {
+      onStepChange?.(false);
+    };
+  }, [activeTag, onStepChange]);
 
   const presetColors = [
     { value: "#06b6d4", name: "Cyan" },
@@ -7046,8 +8077,32 @@ export const ManageTags: React.FC<ManageTagsProps> = ({ state, dispatch }) => {
     { value: "#f97316", name: "Orange" },
     { value: "#ec4899", name: "Pink" },
     { value: "#8b5cf6", name: "Indigo" },
-    { value: "#64748b", name: "Slate" }
+    { value: "#64748b", name: "Slate" },
   ];
+
+  const resetForm = () => {
+    setFormVisible(false);
+    setEditingTagId(null);
+    setTagName("");
+    setTagDesc("");
+    setTagColor("#06b6d4");
+    setTagExcludeRestock(false);
+    setTagPrioritizeItem(false);
+    setErrorMsg("");
+  };
+
+  const openCreateModal = () => {
+    resetForm();
+    setFormVisible(true);
+  };
+
+  const lastCreateCountRef = React.useRef(createRequestCount);
+  useEffect(() => {
+    if (createRequestCount > lastCreateCountRef.current) {
+      lastCreateCountRef.current = createRequestCount;
+      openCreateModal();
+    }
+  }, [createRequestCount]);
 
   const handleCreateOrEdit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -7059,63 +8114,54 @@ export const ManageTags: React.FC<ManageTagsProps> = ({ state, dispatch }) => {
     }
 
     const cleanName = tagName.trim();
-    // Id generation / cleaning
-    const derivedId = editingTagId || cleanName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+    const derivedId =
+      editingTagId ||
+      cleanName
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/(^-|-$)/g, "");
 
     if (!derivedId) {
       setErrorMsg("Valid tag ID could not be generated from the name.");
       return;
     }
 
-    // Check conflict (only for creating new tags)
-    if (!editingTagId && tags.some(t => t.id === derivedId)) {
-      setErrorMsg(`A tag with reference ID "${derivedId}" already exists. Try a different name.`);
+    if (!editingTagId && tags.some((t) => t.id === derivedId)) {
+      setErrorMsg(`A tag with ID "${derivedId}" already exists. Choose a different name.`);
       return;
     }
 
     if (editingTagId) {
-      // Edit tag action
       dispatch({
-        type: 'EDIT_TAG',
+        type: "EDIT_TAG",
         payload: {
           tagId: editingTagId,
           updates: {
             name: cleanName,
             description: tagDesc.trim(),
             color: tagColor,
-            excludeFromDisplayRestock: tagExcludeRestock
-          }
-        }
+            excludeFromDisplayRestock: tagExcludeRestock,
+            prioritizeItem: tagPrioritizeItem,
+          },
+        },
       });
     } else {
-      // Create tag action
       dispatch({
-        type: 'ADD_TAG',
+        type: "ADD_TAG",
         payload: {
           tag: {
             id: derivedId,
             name: cleanName,
             description: tagDesc.trim(),
             color: tagColor,
-            excludeFromDisplayRestock: tagExcludeRestock
-          }
-        }
+            excludeFromDisplayRestock: tagExcludeRestock,
+            prioritizeItem: tagPrioritizeItem,
+          },
+        },
       });
-      setSelectedTagId(derivedId);
     }
 
-    // Reset Form
     resetForm();
-  };
-
-  const resetForm = () => {
-    setFormVisible(false);
-    setEditingTagId(null);
-    setTagName("");
-    setTagDesc("");
-    setTagColor("#06b6d4");
-    setTagExcludeRestock(false);
-    setErrorMsg("");
   };
 
   const startEdit = (tag: any) => {
@@ -7124,369 +8170,553 @@ export const ManageTags: React.FC<ManageTagsProps> = ({ state, dispatch }) => {
     setTagDesc(tag.description || "");
     setTagColor(tag.color || "#06b6d4");
     setTagExcludeRestock(!!tag.excludeFromDisplayRestock);
+    setTagPrioritizeItem(!!tag.prioritizeItem);
+    setErrorMsg("");
     setFormVisible(true);
   };
 
-  const handleDelete = (tagId: string, name: string) => {
-    if (confirm(`Are you sure you want to delete the tag "${name}"? It will be removed from all inventory state.`)) {
-      dispatch({
-        type: 'DELETE_TAG',
-        payload: { tagId }
-      });
-      if (activeTagId === tagId) {
-        const remaining = tags.filter(t => t.id !== tagId);
-        setSelectedTagId(remaining[0]?.id || null);
-      }
+  const confirmDeleteTag = () => {
+    if (!tagToDelete) return;
+    dispatch({
+      type: "DELETE_TAG",
+      payload: { tagId: tagToDelete.id },
+    });
+    if (selectedTagId === tagToDelete.id) {
+      setSelectedTagId(null);
     }
+    setTagToDelete(null);
   };
 
   return (
-    <div className="mt-4 font-sans space-y-6 text-cool-gray-100">
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* List Column */}
-        <div className="lg:col-span-2 space-y-4">
-          <div className="flex justify-between items-center bg-cool-gray-850 p-4 rounded-xl border border-cool-gray-750/70">
-            <div>
-              <h2 className="text-sm font-extrabold uppercase tracking-widest text-cool-gray-300">Configured Tags</h2>
-              <p className="text-xs text-cool-gray-400 mt-0.5">Manage custom labels to categorize freezer and pantry inventory items. Select a tag to configure its default products below.</p>
-            </div>
-            {!isFormVisible && (
-              <button
-                onClick={() => { resetForm(); setFormVisible(true); }}
-                className="px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 transition text-white font-semibold text-xs rounded shadow flex items-center gap-1 cursor-pointer select-none"
-              >
-                <span>+ Tag</span>
-              </button>
-            )}
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {tags.map(tag => {
-              const isSelected = activeTagId === tag.id;
-              // Count matching meat cuts or default products
-              const cutsCount = (state.meatCuts || []).filter(mc => (mc.tagIds || []).includes(tag.id)).length;
-              const defaultProdsCount = (state.products || []).filter(p => (p.defaultTagIds || []).includes(tag.id)).length;
-
-              return (
-                <div 
-                  key={tag.id}
-                  onClick={() => setSelectedTagId(tag.id)}
-                  className={`transition-all duration-200 p-4 rounded-xl flex flex-col justify-between gap-3 h-full relative cursor-pointer group border-2 ${
-                    isSelected 
-                      ? 'bg-cool-gray-850/85 border-cyan-500/80 shadow-[0_0_15px_-3px_rgba(6,182,212,0.15)] ring-1 ring-cyan-500/35'
-                      : 'bg-cool-gray-900/50 hover:bg-cool-gray-850/60 border-cool-gray-850/40 hover:border-cool-gray-700/60'
-                  }`}
-                >
-                  <div className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <span className="text-[10px] text-cyan-400 bg-cyan-500/10 border border-cyan-500/20 px-1.5 py-0.5 rounded font-black uppercase tracking-wider select-none">
-                      Selected
-                    </span>
-                  </div>
-
-                  <div>
-                    <div className="flex justify-between items-start gap-2">
-                      <span 
-                        style={{ 
-                          color: tag.color, 
-                          borderColor: tag.color ? `${tag.color}35` : '#3b82f635',
-                          backgroundColor: tag.color ? `${tag.color}20` : '#3b82f620'
-                        }}
-                        className="px-2 py-0.5 rounded text-xs font-black border uppercase tracking-wider inline-flex items-center gap-1 select-none"
-                      >
-                        <span>{tag.id === 'use-first' ? '⚡' : tag.id === 'not-for-sale' ? '🛑' : '🏷️'}</span>
-                        <span>{tag.name}</span>
-                      </span>
-                    </div>
-
-                    <p className="text-xs text-cool-gray-350 font-medium mt-2 leading-relaxed">
-                      {tag.description || <span className="text-cool-gray-500 italic">No description provided.</span>}
-                    </p>
-                    {tag.excludeFromDisplayRestock && (
-                      <div className="mt-2">
-                        <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-300 bg-amber-950/60 border border-amber-800/60 px-2 py-0.5 rounded-md">
-                          🚫 Excluded from Display Restock
-                        </span>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="border-t border-cool-gray-800/60 pt-3 flex items-center justify-between mt-auto">
-                    <div className="flex gap-2 text-[10px] text-cool-gray-400 font-bold">
-                      <span className="bg-cool-gray-950 px-2 py-0.5 rounded flex items-center gap-1 border border-cool-gray-800">
-                        📦 {cutsCount} item{cutsCount !== 1 ? 's' : ''}
-                      </span>
-                      <span className="bg-cool-gray-950 px-2 py-0.5 rounded flex items-center gap-1 border border-cool-gray-800">
-                        🏷️ {defaultProdsCount} default{defaultProdsCount !== 1 ? 's' : ''}
-                      </span>
-                    </div>
-
-                    <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
-                      <button 
-                        onClick={() => startEdit(tag)}
-                        className="p-1 px-1.5 text-xs text-cool-gray-400 hover:text-white hover:bg-cool-gray-800 transition rounded cursor-pointer font-bold border border-cool-gray-800"
-                        title="Edit Tag"
-                      >
-                        ✏️ Edit
-                      </button>
-                      {tag.id !== 'use-first' && tag.id !== 'not-for-sale' && (
-                        <button 
-                          onClick={() => handleDelete(tag.id, tag.name)}
-                          className="p-1 px-1.5 text-xs text-cool-gray-400 hover:text-rose-400 hover:bg-cool-gray-800 transition rounded cursor-pointer font-bold border border-cool-gray-800"
-                          title="Delete Tag"
-                        >
-                          🗑️ Delete
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-
-            {tags.length === 0 && (
-              <div className="col-span-full text-center py-12 bg-cool-gray-900/10 rounded-xl border border-cool-gray-800">
-                <p className="text-cool-gray-400 text-sm">No tags found. Click "+ Tag" to configure some.</p>
-              </div>
-            )}
-          </div>
+    <div className="font-sans space-y-4 text-cool-gray-100 pb-8">
+      {!hideInternalHeader && !activeTag && (
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={openCreateModal}
+            className="px-3.5 py-2 bg-cyan-600 hover:bg-cyan-500 transition text-white font-bold text-xs rounded-lg flex items-center gap-1.5 cursor-pointer"
+          >
+            <PlusIcon className="w-3.5 h-3.5" /> Create Tag
+          </button>
         </div>
+      )}
 
-        {/* Form Column */}
-        <div className="bg-cool-gray-850 p-5 rounded-xl border border-cool-gray-750/70 h-fit space-y-4">
-          {isFormVisible ? (
-            <form onSubmit={handleCreateOrEdit} className="space-y-4" onClick={e => e.stopPropagation()}>
-              <div>
-                <h3 className="text-sm font-extrabold uppercase tracking-wider text-cool-gray-300">
-                  {editingTagId ? "Edit Tag Settings" : "Create New Tag"}
-                </h3>
-                <p className="text-xs text-cool-gray-400 mt-1">
-                  Configure visual settings for custom labels in the freezers.
+      {!activeTag ? (
+        /* STEP 1: TAGS OVERVIEW */
+        <div className="space-y-3.5">
+          <CatalogSearchFilterBar
+            searchValue={tagSearch}
+            onSearchChange={setTagSearch}
+            searchPlaceholder="Search tags by name or description..."
+            isFiltersOpen={showTagFilters}
+            onToggleFilters={() => setShowTagFilters((prev) => !prev)}
+            activeFilterCount={activeTagFilterCount}
+            onResetFilters={() => {
+              setTagSearch("");
+              setTagRuleFilter("all");
+              setTagSortBy("default");
+            }}
+          >
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <div className="space-y-1">
+                <label className="text-[11px] font-bold text-cool-gray-400 uppercase tracking-wider block">
+                  Behavior Rule
+                </label>
+                <select
+                  value={tagRuleFilter}
+                  onChange={(e) => setTagRuleFilter(e.target.value as any)}
+                  className="w-full h-9 bg-cool-gray-900 border border-cool-gray-750 rounded-lg px-2.5 text-xs text-white outline-none focus:border-cyan-500 cursor-pointer"
+                >
+                  <option value="all">All Tags ({tags.length})</option>
+                  <option value="exclude_restock">Excluded from Display Restock</option>
+                  <option value="prioritize">Prioritize Item</option>
+                  <option value="standard">Standard Label Only</option>
+                </select>
+              </div>
+              <div className="space-y-1">
+                <label className="text-[11px] font-bold text-cool-gray-400 uppercase tracking-wider block">
+                  Sort Order
+                </label>
+                <select
+                  value={tagSortBy}
+                  onChange={(e) => setTagSortBy(e.target.value as any)}
+                  className="w-full h-9 bg-cool-gray-900 border border-cool-gray-750 rounded-lg px-2.5 text-xs text-white outline-none focus:border-cyan-500 cursor-pointer"
+                >
+                  <option value="default">Saved Order</option>
+                  <option value="name_asc">Name: A to Z</option>
+                  <option value="name_desc">Name: Z to A</option>
+                  <option value="cuts_desc">Most Tagged Cuts First</option>
+                  <option value="products_desc">Most Default Products First</option>
+                </select>
+              </div>
+            </div>
+          </CatalogSearchFilterBar>
+
+          {tags.length === 0 ? (
+            <div className="bg-cool-gray-850/60 border border-cool-gray-750 rounded-xl p-10 text-center space-y-3">
+              <TagIcon className="w-8 h-8 text-cool-gray-500 mx-auto" />
+              <div className="space-y-1">
+                <h3 className="text-sm font-bold text-white">No Tags Configured</h3>
+                <p className="text-xs text-cool-gray-400 max-w-md mx-auto">
+                  Create custom labels to classify meat cuts, exclude reserve items from display restocking, or set pull priorities.
                 </p>
               </div>
+              <button
+                type="button"
+                onClick={openCreateModal}
+                className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs rounded-lg transition cursor-pointer inline-flex items-center gap-1.5"
+              >
+                <PlusIcon className="w-3.5 h-3.5" /> Create First Tag
+              </button>
+            </div>
+          ) : filteredTags.length === 0 ? (
+            <div className="bg-cool-gray-850/50 border border-cool-gray-750 rounded-xl p-8 text-center space-y-2.5">
+              <p className="text-sm font-semibold text-cool-gray-300">No tags match your search or filters.</p>
+              <button
+                type="button"
+                onClick={() => {
+                  setTagSearch("");
+                  setTagRuleFilter("all");
+                  setTagSortBy("default");
+                }}
+                className="px-3 py-1.5 bg-cool-gray-800 hover:bg-cool-gray-750 border border-cool-gray-700 text-cyan-300 text-xs font-semibold rounded-lg transition cursor-pointer"
+              >
+                Reset Filters
+              </button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-3">
+              {filteredTags.map((tag) => {
+                const cutsCount = tagUsageStats.cutsCounts[tag.id] || 0;
+                const defaultProdsCount = tagUsageStats.productCounts[tag.id] || 0;
+                const iconPrefix = getTagActionIcon(tag);
 
-              {errorMsg && (
-                <div className="bg-rose-500/10 border border-rose-500/20 text-rose-300 p-2.5 rounded text-xs leading-normal">
-                  {errorMsg}
-                </div>
-              )}
+                return (
+                  <div
+                    key={tag.id}
+                    className="bg-cool-gray-850/75 border border-cool-gray-750 hover:border-cool-gray-600 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 transition"
+                  >
+                    <div className="space-y-1.5 min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span
+                          style={{
+                            color: tag.color || "#06b6d4",
+                            borderColor: tag.color ? `${tag.color}40` : "#06b6d440",
+                            backgroundColor: tag.color ? `${tag.color}20` : "#06b6d420",
+                          }}
+                          className="px-2.5 py-0.5 rounded text-xs font-bold border uppercase tracking-wider inline-flex items-center gap-1 truncate max-w-full"
+                        >
+                          {iconPrefix && <span>{iconPrefix}</span>}
+                          <span className="truncate">{tag.name}</span>
+                        </span>
 
-              <div className="space-y-1.5">
-                <label className="text-[10px] uppercase font-bold text-cool-gray-400">Tag Display Name</label>
-                <input 
-                  type="text" 
-                  value={tagName}
-                  onChange={(e) => setTagName(e.target.value)}
-                  placeholder="e.g. For Personal Consumption"
-                  className="w-full px-3 py-2 text-xs bg-cool-gray-900 border border-cool-gray-700/60 rounded focus:outline-none focus:ring-1 focus:ring-cyan-500 text-cool-gray-150"
-                  required
-                  autoFocus
-                />
-              </div>
+                        {tag.excludeFromDisplayRestock && (
+                          <span className="text-[10px] font-bold text-amber-300 bg-amber-950/60 border border-amber-800/60 px-2 py-0.5 rounded">
+                            Excluded from Display Restock
+                          </span>
+                        )}
+                        {tag.prioritizeItem && (
+                          <span className="text-[10px] font-bold text-cyan-300 bg-cyan-950/60 border border-cyan-700/60 px-2 py-0.5 rounded">
+                            Prioritize Item
+                          </span>
+                        )}
+                      </div>
 
-              <div className="space-y-1.5">
-                <label className="text-[10px] uppercase font-bold text-cool-gray-400">Description</label>
-                <textarea 
-                  value={tagDesc}
-                  onChange={(e) => setTagDesc(e.target.value)}
-                  placeholder="Briefly state the goal of this tag..."
-                  rows={3}
-                  className="w-full px-3 py-2 text-xs bg-cool-gray-900 border border-cool-gray-700/60 rounded focus:outline-none focus:ring-1 focus:ring-cyan-500 text-cool-gray-150 leading-relaxed resize-none"
-                />
-              </div>
+                      {tag.description ? (
+                        <p className="text-xs text-cool-gray-300 leading-relaxed line-clamp-2">
+                          {tag.description}
+                        </p>
+                      ) : (
+                        <p className="text-xs text-cool-gray-500 italic">No description</p>
+                      )}
 
-              <div className="space-y-1.5">
-                <label className="text-[10px] uppercase font-bold text-cool-gray-400">Label Color Accent</label>
-                <div className="grid grid-cols-5 gap-1.5 mt-1">
-                  {presetColors.map(color => {
-                    const isSelected = tagColor === color.value;
-                    return (
+                      <div className="text-[11px] text-cool-gray-400 font-medium tabular-nums">
+                        {cutsCount} {cutsCount === 1 ? "cut" : "cuts"} · {defaultProdsCount}{" "}
+                        {defaultProdsCount === 1 ? "default product" : "default products"}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2 shrink-0 self-start sm:self-center">
                       <button
                         type="button"
-                        key={color.value}
-                        onClick={() => setTagColor(color.value)}
-                        style={{ backgroundColor: color.value }}
-                        className={`h-7 rounded border transition flex items-center justify-center select-none cursor-pointer ${isSelected ? 'border-white scale-105 shadow' : 'border-transparent hover:scale-105'}`}
-                        title={color.name}
+                        onClick={() => setSelectedTagId(tag.id)}
+                        className="px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold rounded-lg transition flex items-center gap-1.5 cursor-pointer"
                       >
-                        {isSelected && <span className="text-[10px] font-bold text-cool-gray-950">✓</span>}
+                        <Package className="w-3.5 h-3.5" /> Manage Products
                       </button>
-                    );
-                  })}
-                </div>
-              </div>
 
-              <div className="pt-1">
-                <label className="flex items-start gap-2.5 cursor-pointer bg-cool-gray-900/80 p-2.5 rounded-lg border border-cool-gray-750 hover:border-amber-500/50 transition">
-                  <input 
-                    type="checkbox"
-                    checked={tagExcludeRestock}
-                    onChange={(e) => setTagExcludeRestock(e.target.checked)}
-                    className="mt-0.5 h-4 w-4 rounded border-cool-gray-600 bg-cool-gray-800 text-amber-500 focus:ring-amber-500 cursor-pointer"
-                  />
-                  <div className="min-w-0 flex-1">
-                    <span className="block text-xs font-bold text-amber-300">
-                      Exclude from Display Restock
-                    </span>
-                    <span className="block text-[11px] text-cool-gray-400 leading-tight mt-0.5">
-                      Items with this tag will NOT count as available backstock for restocking the Display Case or trigger 0-quantity restock alerts.
-                    </span>
+                      <button
+                        type="button"
+                        onClick={() => startEdit(tag)}
+                        className="px-2.5 py-1.5 bg-cool-gray-800 hover:bg-cool-gray-750 border border-cool-gray-700 text-cool-gray-200 text-xs font-semibold rounded-lg transition flex items-center gap-1 cursor-pointer"
+                      >
+                        <Edit2 className="w-3 h-3 text-cyan-400" /> Edit Settings
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setTagToDelete({ id: tag.id, name: tag.name })}
+                        className="p-1.5 bg-cool-gray-800 hover:bg-rose-950/40 border border-cool-gray-700 hover:border-rose-500/40 text-cool-gray-400 hover:text-rose-300 rounded-lg transition cursor-pointer"
+                        title="Delete Tag"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
-                </label>
-              </div>
-
-              <div className="space-y-1 bg-cool-gray-950 p-2 rounded border border-cool-gray-800">
-                <label className="text-[9px] uppercase font-bold text-cool-gray-500">Preview Layout</label>
-                <div className="flex items-center gap-1.5 mt-1">
-                  <span 
-                    style={{ color: tagColor, borderColor: `${tagColor}35`, backgroundColor: `${tagColor}15`}}
-                    className="px-2 py-0.5 rounded text-[10px] font-bold border uppercase inline-block max-w-[150px] truncate"
-                  >
-                    ⚡ {tagName || "Tag Preview"}
-                  </span>
-                </div>
-              </div>
-
-              <div className="flex gap-2 pt-2">
-                <button
-                  type="submit"
-                  className="flex-1 py-1.5 bg-cyan-600 hover:bg-cyan-500 transition text-white font-semibold text-xs rounded shadow select-none cursor-pointer"
-                >
-                  {editingTagId ? "Save Changes" : "Create Tag"}
-                </button>
-                <button
-                  type="button"
-                  onClick={resetForm}
-                  className="flex-1 py-1.5 bg-cool-gray-800 hover:bg-cool-gray-750 transition text-cool-gray-300 font-semibold text-xs rounded shadow border border-cool-gray-700/60 select-none cursor-pointer"
-                >
-                  Cancel
-                </button>
-              </div>
-            </form>
-          ) : (
-            <div className="text-center py-6">
-              <span className="text-xl">🏷️</span>
-              <h4 className="text-xs font-bold uppercase tracking-wider text-cool-gray-400 mt-2">Tag Settings</h4>
-              <p className="text-[11px] text-cool-gray-400 mt-1 max-w-[200px] mx-auto leading-normal">
-                Select any tag from the list to modify its options, assign it to products below, or click "+ Tag" to write a brand new general classification.
-              </p>
+                );
+              })}
             </div>
           )}
         </div>
-      </div>
-
-      {/* Dynamic default products configuration for selected tag */}
-      {activeTag && (
-        <div className="bg-cool-gray-850 rounded-xl p-5 border border-cool-gray-750/70 space-y-4 animate-fade-in">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-cool-gray-750/40">
-            <div>
-              <h3 className="text-sm font-extrabold uppercase tracking-widest text-cool-gray-300 flex items-center gap-2">
-                <span>Default assignment for:</span>
-                <span 
-                  style={{ color: activeTag.color, borderColor: `${activeTag.color}45`, backgroundColor: `${activeTag.color}15` }}
-                  className="px-2.5 py-0.5 rounded text-xs font-black border uppercase tracking-wider select-none inline-flex items-center gap-1"
+      ) : (
+        /* STEP 2: DEDICATED DEFAULT PRODUCT MANAGER */
+        <div className="bg-cool-gray-850/75 border border-cool-gray-750 rounded-xl p-4 sm:p-5 space-y-5">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-cool-gray-750">
+            <div className="space-y-1.5 min-w-0">
+              <button
+                type="button"
+                onClick={() => setSelectedTagId(null)}
+                className="text-xs font-semibold text-cyan-400 hover:text-cyan-300 inline-flex items-center gap-1.5 cursor-pointer"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" /> Back to Tags
+              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                <span
+                  style={{
+                    color: activeTag.color || "#06b6d4",
+                    borderColor: activeTag.color ? `${activeTag.color}45` : "#06b6d445",
+                    backgroundColor: activeTag.color ? `${activeTag.color}20` : "#06b6d420",
+                  }}
+                  className="px-2.5 py-0.5 rounded text-xs font-bold border uppercase tracking-wider inline-flex items-center gap-1"
                 >
-                  <span>{activeTag.id === 'use-first' ? '⚡' : activeTag.id === 'not-for-sale' ? '🛑' : '🏷️'}</span>
+                  {getTagActionIcon(activeTag) && <span>{getTagActionIcon(activeTag)}</span>}
                   <span>{activeTag.name}</span>
                 </span>
-              </h3>
-              <p className="text-xs text-cool-gray-400 mt-1">
-                Products linked to this tag will automatically be assigned "{activeTag.name}" when added to any freezer or pantry.
+                {activeTag.excludeFromDisplayRestock && (
+                  <span className="text-[10px] font-bold text-amber-300 bg-amber-950/60 border border-amber-800/60 px-2 py-0.5 rounded">
+                    Excluded from Display Restock
+                  </span>
+                )}
+                {activeTag.prioritizeItem && (
+                  <span className="text-[10px] font-bold text-cyan-300 bg-cyan-950/60 border border-cyan-700/60 px-2 py-0.5 rounded">
+                    Prioritize Item
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-cool-gray-400">
+                {activeTag.description
+                  ? `${activeTag.description} · `
+                  : ""}
+                Products listed below automatically receive "{activeTag.name}" when added to inventory.
               </p>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0 self-start sm:self-center">
+              <button
+                type="button"
+                onClick={() => startEdit(activeTag)}
+                className="px-3 py-1.5 bg-cool-gray-800 hover:bg-cool-gray-750 border border-cool-gray-700 text-cool-gray-200 text-xs font-semibold rounded-lg transition flex items-center gap-1.5 cursor-pointer"
+              >
+                <Edit2 className="w-3.5 h-3.5 text-cyan-400" /> Edit Settings
+              </button>
+              <button
+                type="button"
+                onClick={() => setTagToDelete({ id: activeTag.id, name: activeTag.name })}
+                className="px-2.5 py-1.5 bg-cool-gray-800 hover:bg-rose-950/40 border border-cool-gray-700 hover:border-rose-500/40 text-cool-gray-400 hover:text-rose-300 text-xs font-semibold rounded-lg transition flex items-center gap-1 cursor-pointer"
+              >
+                <Trash2 className="w-3.5 h-3.5" /> Delete
+              </button>
             </div>
           </div>
 
-          <div className="space-y-3">
-            <div className="max-w-xl space-y-1.5">
-              <label className="text-[10px] font-bold text-cool-gray-400 uppercase tracking-wider block">
-                Assign Default Tag to Product
-              </label>
-              {(() => {
-                const availableProds = (state.products || []).filter(p => !(p.defaultTagIds || []).includes(activeTag.id));
-                if (availableProds.length === 0) {
-                  return (
-                    <span className="text-xs text-cool-gray-500 font-medium block h-9 bg-cool-gray-950 border border-cool-gray-800 leading-[34px] px-3.5 rounded-md">
-                      All products already have this dynamic default assignment.
-                    </span>
-                  );
-                }
-                return (
-                  <SearchableProductSelect
-                    products={availableProds}
-                    value=""
-                    onChange={(pid) => {
-                      if (!pid) return;
-                      const prod = state.products.find(p => p.id === pid);
-                      if (prod) {
-                        const current = prod.defaultTagIds || [];
-                        dispatch({
-                          type: 'EDIT_PRODUCT',
-                          payload: {
-                            productId: prod.id,
-                            updates: { defaultTagIds: [...current, activeTag.id] }
-                          }
-                        });
-                      }
-                    }}
-                    placeholder="Search product to assign default tag..."
-                    includeArchived={true}
-                  />
-                );
-              })()}
-            </div>
-
-            {/* List of default products */}
+          <div className="max-w-xl space-y-1.5">
+            <label className="text-[10px] font-bold text-cool-gray-400 uppercase tracking-wider block">
+              Assign Default Tag to Product
+            </label>
             {(() => {
-              const assignedProds = (state.products || []).filter(p => (p.defaultTagIds || []).includes(activeTag.id));
-              if (assignedProds.length === 0) {
+              const availableProds = (state.products || []).filter(
+                (p) => !(p.defaultTagIds || []).includes(activeTag.id),
+              );
+              if (availableProds.length === 0) {
                 return (
-                  <div className="text-center py-8 bg-cool-gray-900/10 rounded-lg border border-cool-gray-800">
-                    <p className="text-cool-gray-500 text-xs">No products are currently configured to receive this default tag.</p>
-                  </div>
+                  <span className="text-xs text-cool-gray-500 font-medium block h-9 bg-cool-gray-950 border border-cool-gray-800 leading-[34px] px-3.5 rounded-md">
+                    All catalog products already include this default tag.
+                  </span>
                 );
               }
               return (
-                <div className="overflow-x-auto rounded-lg border border-cool-gray-750/70 max-w-4xl">
-                  <table className="w-full text-left border-collapse text-xs">
-                    <thead>
-                      <tr className="bg-cool-gray-900 text-cool-gray-400 font-black uppercase text-[9px] tracking-wider border-b border-cool-gray-750">
-                        <th className="py-2.5 px-3">Product Name</th>
-                        <th className="py-2.5 px-3">Category Classification</th>
-                        <th className="py-2.5 px-3 text-right">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-cool-gray-750/30">
-                      {assignedProds.map(p => (
-                        <tr key={p.id} className="hover:bg-cool-gray-900/10 transition-colors">
-                          <td className="py-2.5 px-3 font-semibold text-cool-gray-200">{p.name}</td>
-                          <td className="py-2.5 px-3 text-cool-gray-400 font-medium">
-                            {p.primaryCategory} &gt; {p.subCategory}
-                          </td>
-                          <td className="py-2.5 px-3 text-right">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                dispatch({
-                                  type: 'EDIT_PRODUCT',
-                                  payload: {
-                                    productId: p.id,
-                                    updates: {
-                                      defaultTagIds: (p.defaultTagIds || []).filter(id => id !== activeTag.id)
-                                    }
-                                  }
-                                });
-                              }}
-                              className="px-2 py-1 text-[10px] font-bold text-rose-400 hover:text-rose-300 hover:bg-rose-950/20 rounded transition cursor-pointer"
-                            >
-                              Remove Default
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                <SearchableProductSelect
+                  products={availableProds}
+                  value=""
+                  onChange={(pid) => {
+                    if (!pid) return;
+                    const prod = state.products.find((p) => p.id === pid);
+                    if (prod) {
+                      const current = prod.defaultTagIds || [];
+                      dispatch({
+                        type: "EDIT_PRODUCT",
+                        payload: {
+                          productId: prod.id,
+                          updates: { defaultTagIds: [...current, activeTag.id] },
+                        },
+                      });
+                    }
+                  }}
+                  placeholder="Search product to assign default tag..."
+                  includeArchived={true}
+                />
               );
             })()}
+          </div>
+
+          {(() => {
+            const assignedProds = (state.products || []).filter((p) =>
+              (p.defaultTagIds || []).includes(activeTag.id),
+            );
+            if (assignedProds.length === 0) {
+              return (
+                <div className="text-center py-8 bg-cool-gray-900/40 rounded-xl border border-dashed border-cool-gray-800">
+                  <p className="text-cool-gray-400 text-xs">
+                    No products currently receive "{activeTag.name}" by default.
+                  </p>
+                </div>
+              );
+            }
+            return (
+              <div className="overflow-x-auto rounded-xl border border-cool-gray-750">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="bg-cool-gray-900 text-cool-gray-400 font-bold uppercase text-[10px] tracking-wider border-b border-cool-gray-750">
+                      <th className="py-2.5 px-3.5">Product Name</th>
+                      <th className="py-2.5 px-3.5">Category</th>
+                      <th className="py-2.5 px-3.5 text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-cool-gray-800">
+                    {assignedProds.map((p) => (
+                      <tr key={p.id} className="hover:bg-cool-gray-900/35 transition-colors">
+                        <td className="py-2.5 px-3.5 font-semibold text-cool-gray-100">{p.name}</td>
+                        <td className="py-2.5 px-3.5 text-cool-gray-400">
+                          {p.primaryCategory} &gt; {p.subCategory}
+                        </td>
+                        <td className="py-2.5 px-3.5 text-right">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              dispatch({
+                                type: "EDIT_PRODUCT",
+                                payload: {
+                                  productId: p.id,
+                                  updates: {
+                                    defaultTagIds: (p.defaultTagIds || []).filter(
+                                      (id) => id !== activeTag.id,
+                                    ),
+                                  },
+                                },
+                              });
+                            }}
+                            className="px-2.5 py-1 text-xs font-semibold text-rose-400 hover:text-rose-300 hover:bg-rose-950/30 rounded transition cursor-pointer"
+                          >
+                            Remove Default
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
+      {/* Tag Configuration Modal */}
+      {isFormVisible && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs"
+          onClick={resetForm}
+        >
+          <form
+            onSubmit={handleCreateOrEdit}
+            onClick={(e) => e.stopPropagation()}
+            className="bg-cool-gray-850 border border-cool-gray-700 rounded-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto p-5 sm:p-6 shadow-2xl space-y-4 animate-scale-up"
+          >
+            <div className="border-b border-cool-gray-750 pb-3 flex items-center justify-between">
+              <h3 className="text-base font-bold text-white">
+                {editingTagId ? "Edit Tag Settings" : "Create New Tag"}
+              </h3>
+              <button
+                type="button"
+                onClick={resetForm}
+                className="text-cool-gray-400 hover:text-white cursor-pointer p-1"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {errorMsg && (
+              <div className="bg-rose-950/40 border border-rose-500/40 text-rose-300 p-2.5 rounded-lg text-xs">
+                {errorMsg}
+              </div>
+            )}
+
+            <div className="space-y-1">
+              <label className="text-xs font-semibold text-cool-gray-300">Tag Display Name</label>
+              <input
+                type="text"
+                value={tagName}
+                onChange={(e) => setTagName(e.target.value)}
+                placeholder="e.g. Reserve Stock, Prioritize, Sample"
+                className="w-full px-3 py-2 text-xs bg-cool-gray-900 border border-cool-gray-700 rounded-lg focus:outline-none focus:ring-1 focus:ring-cyan-500 text-white"
+                required
+                autoFocus
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs font-semibold text-cool-gray-300">Description</label>
+              <textarea
+                value={tagDesc}
+                onChange={(e) => setTagDesc(e.target.value)}
+                placeholder="Describe when operators should apply this tag..."
+                rows={2}
+                className="w-full px-3 py-2 text-xs bg-cool-gray-900 border border-cool-gray-700 rounded-lg focus:outline-none focus:ring-1 focus:ring-cyan-500 text-white resize-none"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-cool-gray-300">Color Accent</label>
+              <div className="grid grid-cols-5 gap-2">
+                {presetColors.map((color) => {
+                  const isSelected = tagColor === color.value;
+                  return (
+                    <button
+                      type="button"
+                      key={color.value}
+                      onClick={() => setTagColor(color.value)}
+                      style={{ backgroundColor: color.value }}
+                      className={`h-7 rounded-md border transition flex items-center justify-center cursor-pointer ${
+                        isSelected ? "border-white scale-105 shadow" : "border-transparent hover:scale-105"
+                      }`}
+                      title={color.name}
+                    >
+                      {isSelected && <Check className="w-3.5 h-3.5 text-cool-gray-950" />}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="space-y-2 pt-1">
+              <label className="flex items-start gap-2.5 cursor-pointer bg-cool-gray-900 p-3 rounded-lg border border-cool-gray-750 hover:border-amber-500/40 transition">
+                <input
+                  type="checkbox"
+                  checked={tagExcludeRestock}
+                  onChange={(e) => setTagExcludeRestock(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 rounded border-cool-gray-600 bg-cool-gray-800 text-amber-500 cursor-pointer"
+                />
+                <div className="min-w-0 flex-1 text-xs">
+                  <span className="block font-bold text-amber-300">
+                    Exclude from Display Restock
+                  </span>
+                  <span className="block text-[11px] text-cool-gray-400 mt-0.5">
+                    Tagged backstock will not count toward Display Case restock availability or alerts.
+                  </span>
+                </div>
+              </label>
+
+              <label className="flex items-start gap-2.5 cursor-pointer bg-cool-gray-900 p-3 rounded-lg border border-cool-gray-750 hover:border-cyan-500/40 transition">
+                <input
+                  type="checkbox"
+                  checked={tagPrioritizeItem}
+                  onChange={(e) => setTagPrioritizeItem(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 rounded border-cool-gray-600 bg-cool-gray-800 text-cyan-500 cursor-pointer"
+                />
+                <div className="min-w-0 flex-1 text-xs">
+                  <span className="block font-bold text-cyan-300">Prioritize Item</span>
+                  <span className="block text-[11px] text-cool-gray-400 mt-0.5">
+                    Push tagged cuts first during Display restock and removal flows.
+                  </span>
+                </div>
+              </label>
+            </div>
+
+            <div className="bg-cool-gray-950 p-2.5 rounded-lg border border-cool-gray-800 flex items-center justify-between">
+              <span className="text-[11px] font-semibold text-cool-gray-400">Preview</span>
+              <span
+                style={{
+                  color: tagColor,
+                  borderColor: `${tagColor}40`,
+                  backgroundColor: `${tagColor}18`,
+                }}
+                className="px-2.5 py-0.5 rounded text-xs font-bold border uppercase inline-flex items-center gap-1 max-w-[200px] truncate"
+              >
+                {getTagActionIcon({
+                  excludeFromDisplayRestock: tagExcludeRestock,
+                  prioritizeItem: tagPrioritizeItem,
+                }) && (
+                  <span>
+                    {getTagActionIcon({
+                      excludeFromDisplayRestock: tagExcludeRestock,
+                      prioritizeItem: tagPrioritizeItem,
+                    })}
+                  </span>
+                )}
+                <span className="truncate">{tagName || "Tag Preview"}</span>
+              </span>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-3 border-t border-cool-gray-750">
+              <button
+                type="button"
+                onClick={resetForm}
+                className="px-4 py-2 bg-cool-gray-800 hover:bg-cool-gray-750 text-cool-gray-300 font-semibold text-xs rounded-lg transition cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="px-5 py-2 bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs rounded-lg transition cursor-pointer"
+              >
+                {editingTagId ? "Save Changes" : "Create Tag"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* In-App Delete Tag Confirmation Modal */}
+      {tagToDelete && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs"
+          onClick={() => setTagToDelete(null)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-cool-gray-850 border border-cool-gray-700 p-6 rounded-2xl max-w-sm w-full shadow-2xl space-y-4 animate-scale-up"
+          >
+            <div className="flex items-center gap-2.5 text-rose-400">
+              <AlertCircle className="w-5 h-5 shrink-0" />
+              <h3 className="text-base font-bold text-white">Delete Tag?</h3>
+            </div>
+            <p className="text-xs text-cool-gray-300 leading-relaxed">
+              Delete <strong className="text-white">"{tagToDelete.name}"</strong>? This label will be stripped from all products and inventory cuts.
+            </p>
+            <div className="flex justify-end gap-2 pt-2 border-t border-cool-gray-750">
+              <button
+                type="button"
+                onClick={() => setTagToDelete(null)}
+                className="px-4 py-2 bg-cool-gray-800 hover:bg-cool-gray-750 text-cool-gray-300 text-xs font-bold rounded-lg transition cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmDeleteTag}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold rounded-lg transition cursor-pointer"
+              >
+                Delete Tag
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -7497,14 +8727,25 @@ export const ManageTags: React.FC<ManageTagsProps> = ({ state, dispatch }) => {
 interface ManageLocationsProps {
   state: InventoryState;
   dispatch: React.Dispatch<Action>;
+  hideInternalHeader?: boolean;
+  createRequestCount?: number;
 }
 
-export const ManageLocations: React.FC<ManageLocationsProps> = ({ state, dispatch }) => {
+export const ManageLocations: React.FC<ManageLocationsProps> = ({
+  state,
+  dispatch,
+  hideInternalHeader = false,
+  createRequestCount = 0,
+}) => {
   const locations = state.locations || [];
   
-  // States for delete confirm and expandable drawers
   const [confirmDeleteLocId, setConfirmDeleteLocId] = useState<string | null>(null);
   const [expandedLocContents, setExpandedLocContents] = useState<Record<string, boolean>>({});
+  const [locationNotice, setLocationNotice] = useState<string | null>(null);
+  const [locationSearch, setLocationSearch] = useState("");
+  const [showLocationFilters, setShowLocationFilters] = useState(false);
+  const [locationTypeFilter, setLocationTypeFilter] = useState<"all" | "home" | "storage" | "delivery_pickup">("all");
+  const [locationSortBy, setLocationSortBy] = useState<"default" | "name_asc" | "name_desc" | "offsite_desc">("default");
   
   // Form states
   const [isFormVisible, setFormVisible] = useState(false);
@@ -7544,6 +8785,23 @@ export const ManageLocations: React.FC<ManageLocationsProps> = ({ state, dispatc
     setErrorMsg("");
     setFormVisible(false);
   };
+
+  const lastLocCreateRef = React.useRef(createRequestCount);
+  useEffect(() => {
+    if (createRequestCount > lastLocCreateRef.current) {
+      lastLocCreateRef.current = createRequestCount;
+      setEditingLocId(null);
+      setLocName("");
+      setLocAddress("");
+      setLocContact("");
+      setLocNotes("");
+      setLocType("storage");
+      setIsHome(false);
+      setLocHasPallets(true);
+      setErrorMsg("");
+      setFormVisible(true);
+    }
+  }, [createRequestCount]);
 
   const handleEditClick = (loc: any) => {
     setEditingLocId(loc.id);
@@ -7603,20 +8861,6 @@ export const ManageLocations: React.FC<ManageLocationsProps> = ({ state, dispatc
     resetForm();
   };
 
-  const handleDeleteLoc = (id: string, name: string) => {
-    const loc = locations.find(l => l.id === id);
-    if (loc && loc.isHome) {
-      alert("Cannot delete the active Home/On-Site location. Set another location as Home first.");
-      return;
-    }
-    if (confirm(`Are you sure you want to delete the location "${name}"? This action cannot be undone.`)) {
-      dispatch({
-        type: "DELETE_LOCATION",
-        payload: { locationId: id }
-      });
-    }
-  };
-
   const handleSetHome = (id: string) => {
     dispatch({
       type: "SET_HOME_LOCATION",
@@ -7629,448 +8873,614 @@ export const ManageLocations: React.FC<ManageLocationsProps> = ({ state, dispatc
   const containerCount = state.containers?.filter(c => c.freezerId && !c.isArchived)?.length || 0;
   const totalCutsOnSite = state.meatCuts?.reduce((acc, mc) => acc + (mc.quantity || 0), 0) || 0;
 
+  const offsiteWeightByLocId = useMemo(() => {
+    const map: Record<string, number> = {};
+    locations.forEach((loc) => {
+      const entries = (state.offSiteEntries || []).filter((e) => {
+        const isArchived = e.archived === true || e.archived === 1 || String(e.archived) === 'true';
+        if (isArchived) return false;
+        if (e.box && state.containers?.some(c => c.isArchived && c.name.toLowerCase().trim() === e.box.toLowerCase().trim())) {
+          return false;
+        }
+        if (e.storageLocationId && e.storageLocationId === loc.id) return true;
+        const locNameLower = loc.name.trim().toLowerCase();
+        if (e.location && e.location.trim().toLowerCase() === locNameLower) return true;
+        return false;
+      });
+      map[loc.id] = entries.reduce((sum, e) => sum + (e.netWeight || 0), 0);
+    });
+    return map;
+  }, [locations, state.offSiteEntries, state.containers]);
+
+  const filteredLocations = useMemo(() => {
+    const q = locationSearch.trim().toLowerCase();
+    const filtered = locations.filter((loc) => {
+      if (q) {
+        const haystack = [loc.name, loc.address, loc.contact, loc.notes]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+        if (!haystack.includes(q)) return false;
+      }
+      if (locationTypeFilter === "home" && !loc.isHome) return false;
+      if (locationTypeFilter === "storage" && loc.type !== "storage") return false;
+      if (locationTypeFilter === "delivery_pickup" && loc.type !== "delivery_pickup") return false;
+      return true;
+    });
+
+    if (locationSortBy === "default") return filtered;
+
+    return [...filtered].sort((a, b) => {
+      if (locationSortBy === "name_asc") {
+        return (a.name || "").localeCompare(b.name || "", undefined, { numeric: true, sensitivity: "base" });
+      }
+      if (locationSortBy === "name_desc") {
+        return (b.name || "").localeCompare(a.name || "", undefined, { numeric: true, sensitivity: "base" });
+      }
+      if (locationSortBy === "offsite_desc") {
+        return (offsiteWeightByLocId[b.id] || 0) - (offsiteWeightByLocId[a.id] || 0);
+      }
+      return 0;
+    });
+  }, [locations, locationSearch, locationTypeFilter, locationSortBy, offsiteWeightByLocId]);
+
+  const activeLocationFilterCount =
+    (locationTypeFilter !== "all" ? 1 : 0) + (locationSortBy !== "default" ? 1 : 0);
+
   return (
-    <div className="space-y-6">
-      <div className="flex justify-between items-center bg-cool-gray-850/40 p-4 rounded-xl border border-cool-gray-750/35">
-        <div>
-          <h3 className="text-lg font-bold text-cool-gray-100 flex items-center gap-2">
-            📍 Manage Storage & Delivery Locations
-          </h3>
-          <p className="text-xs text-cool-gray-400 mt-1">
-            Configure on-site home premises, warehousing units, restaurants, packers or butchers.
-          </p>
-        </div>
-        {!isFormVisible && (
+    <div className="space-y-3.5">
+      {!hideInternalHeader && (
+        <div className="flex justify-between items-center bg-cool-gray-850/40 p-3.5 rounded-xl border border-cool-gray-750/35">
+          <div>
+            <h3 className="text-base font-bold text-cool-gray-100 flex items-center gap-2">
+              Manage Storage &amp; Delivery Locations
+            </h3>
+            <p className="text-xs text-cool-gray-400 mt-0.5">
+              Configure on-site home premises, warehousing units, restaurants, packers or butchers.
+            </p>
+          </div>
           <button
+            type="button"
             onClick={() => {
               resetForm();
               setFormVisible(true);
             }}
-            className="px-4 py-2 bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-white rounded-xl text-xs font-black shadow-lg shadow-cyan-950/20 flex items-center gap-2 transition-all cursor-pointer"
+            className="px-3.5 py-2 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer"
           >
-            <PlusIcon className="w-4 h-4" /> Add Location
+            <PlusIcon className="w-3.5 h-3.5" /> Add Location
           </button>
-        )}
-      </div>
+        </div>
+      )}
 
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-        {/* LOCATIONS LIST */}
-        <div className="xl:col-span-2 space-y-4">
-          {locations.length === 0 ? (
-            <div className="bg-cool-gray-850/30 p-12 rounded-2xl border border-dashed border-cool-gray-700 text-center text-cool-gray-400 font-semibold space-y-2">
-              <MapPin className="mx-auto w-10 h-10 text-cool-gray-500 animate-pulse" />
-              <p>No custom locations found.</p>
-              <p className="text-xs text-cool-gray-500 font-medium">Click "Add Location" to register storage centers or delivery/receiving partners.</p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {locations.map((loc) => {
-                const offsiteEntriesForLoc = state.offSiteEntries?.filter(e => {
-                  const isArchived = e.archived === true || e.archived === 1 || String(e.archived) === 'true';
-                  if (isArchived) return false;
+      {locationNotice && (
+        <div className="p-2.5 bg-amber-950/40 border border-amber-500/40 rounded-lg text-xs text-amber-200 flex items-center justify-between gap-2">
+          <span>{locationNotice}</span>
+          <button
+            type="button"
+            onClick={() => setLocationNotice(null)}
+            className="text-amber-300 hover:text-white cursor-pointer"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
 
-                  if (e.box && state.containers?.some(c => c.isArchived && c.name.toLowerCase().trim() === e.box.toLowerCase().trim())) {
-                    return false;
-                  }
-                  if (e.storageLocationId && e.storageLocationId === loc.id) return true;
-                  const locNameLower = loc.name.trim().toLowerCase();
-                  if (e.location && e.location.trim().toLowerCase() === locNameLower) return true;
+      <CatalogSearchFilterBar
+        searchValue={locationSearch}
+        onSearchChange={setLocationSearch}
+        searchPlaceholder="Search locations by name, address, contact, or notes..."
+        isFiltersOpen={showLocationFilters}
+        onToggleFilters={() => setShowLocationFilters((prev) => !prev)}
+        activeFilterCount={activeLocationFilterCount}
+        onResetFilters={() => {
+          setLocationSearch("");
+          setLocationTypeFilter("all");
+          setLocationSortBy("default");
+        }}
+      >
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+          <div className="space-y-1">
+            <label className="text-[11px] font-bold text-cool-gray-400 uppercase tracking-wider block">
+              Location Type
+            </label>
+            <select
+              value={locationTypeFilter}
+              onChange={(e) => setLocationTypeFilter(e.target.value as any)}
+              className="w-full h-9 bg-cool-gray-900 border border-cool-gray-750 rounded-lg px-2.5 text-xs text-white outline-none focus:border-cyan-500 cursor-pointer"
+            >
+              <option value="all">All Locations ({locations.length})</option>
+              <option value="home">Home Base Only</option>
+              <option value="storage">Storage Room</option>
+              <option value="delivery_pickup">Delivery &amp; Receiving</option>
+            </select>
+          </div>
+          <div className="space-y-1">
+            <label className="text-[11px] font-bold text-cool-gray-400 uppercase tracking-wider block">
+              Sort Order
+            </label>
+            <select
+              value={locationSortBy}
+              onChange={(e) => setLocationSortBy(e.target.value as any)}
+              className="w-full h-9 bg-cool-gray-900 border border-cool-gray-750 rounded-lg px-2.5 text-xs text-white outline-none focus:border-cyan-500 cursor-pointer"
+            >
+              <option value="default">Saved Order</option>
+              <option value="name_asc">Name: A to Z</option>
+              <option value="name_desc">Name: Z to A</option>
+              <option value="offsite_desc">Most Stored Weight First</option>
+            </select>
+          </div>
+        </div>
+      </CatalogSearchFilterBar>
+
+      {locations.length === 0 ? (
+        <div className="bg-cool-gray-850/60 border border-cool-gray-750 rounded-xl p-8 text-center space-y-2.5">
+          <MapPin className="mx-auto w-8 h-8 text-cool-gray-500" />
+          <div className="space-y-1">
+            <h3 className="text-sm font-bold text-white">No Locations Configured</h3>
+            <p className="text-xs text-cool-gray-400 max-w-md mx-auto">
+              Register storage facilities, cold warehouses, butchers, or delivery partners.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              resetForm();
+              setFormVisible(true);
+            }}
+            className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs rounded-lg transition cursor-pointer inline-flex items-center gap-1.5"
+          >
+            <PlusIcon className="w-3.5 h-3.5" /> Add First Location
+          </button>
+        </div>
+      ) : filteredLocations.length === 0 ? (
+        <div className="bg-cool-gray-850/50 border border-cool-gray-750 rounded-xl p-8 text-center space-y-2.5">
+          <p className="text-sm font-semibold text-cool-gray-300">No locations match your search or filters.</p>
+          <button
+            type="button"
+            onClick={() => {
+              setLocationSearch("");
+              setLocationTypeFilter("all");
+              setLocationSortBy("default");
+            }}
+            className="px-3 py-1.5 bg-cool-gray-800 hover:bg-cool-gray-750 border border-cool-gray-700 text-cyan-300 text-xs font-semibold rounded-lg transition cursor-pointer"
+          >
+            Reset Filters
+          </button>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 gap-3">
+          {filteredLocations.map((loc) => {
+            const offsiteEntriesForLoc =
+              state.offSiteEntries?.filter((e) => {
+                const isArchived = e.archived === true || e.archived === 1 || String(e.archived) === "true";
+                if (isArchived) return false;
+                if (
+                  e.box &&
+                  state.containers?.some(
+                    (c) => c.isArchived && c.name.toLowerCase().trim() === e.box.toLowerCase().trim(),
+                  )
+                ) {
                   return false;
-                }) || [];
+                }
+                if (e.storageLocationId && e.storageLocationId === loc.id) return true;
+                const locNameLower = loc.name.trim().toLowerCase();
+                if (e.location && e.location.trim().toLowerCase() === locNameLower) return true;
+                return false;
+              }) || [];
 
-                const totalOffsiteCuts = offsiteEntriesForLoc.length;
-                const totalOffsiteWeight = offsiteEntriesForLoc.reduce((acc, e) => acc + (e.netWeight || 0), 0);
-                
-                // Unique pallets in this location
-                const uniquePallets = new Set(
-                  offsiteEntriesForLoc
-                    .map(e => (e.pallet || e.currentLocation || '').trim())
-                    .filter(p => p && p.toLowerCase() !== 'home' && !p.toLowerCase().includes('loose') && p.toLowerCase() !== 'unassigned' && p.toLowerCase() !== 'none')
-                );
-                const palletCount = uniquePallets.size;
+            const totalOffsiteCuts = offsiteEntriesForLoc.length;
+            const totalOffsiteWeight = offsiteEntriesForLoc.reduce((acc, e) => acc + (e.netWeight || 0), 0);
 
-                return (
-                  <div
-                    key={loc.id}
-                    className={`p-5 rounded-2xl border transition-all flex flex-col justify-between ${
-                      loc.isHome
-                        ? "bg-cool-gray-850 border-cyan-500/80 shadow-lg shadow-cyan-950/10"
-                        : "bg-cool-gray-855/75 border-cool-gray-750 hover:border-cool-gray-600"
-                    }`}
-                  >
-                    <div className="space-y-4">
-                      {/* Name & Type Badge */}
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <h4 className="text-base font-bold text-cool-gray-100 flex items-center gap-1.5 flex-wrap">
-                            {loc.name}
-                            {loc.isHome && (
-                              <span className="text-[9px] font-extrabold text-cyan-400 bg-cyan-950/30 border border-cyan-500/35 px-1.5 py-0.5 rounded uppercase tracking-wider animate-pulse flex items-center gap-1">
-                                <Home className="w-2.5 h-2.5" /> Home Base
-                              </span>
-                            )}
-                          </h4>
-                          <span className={`inline-block text-[10px] uppercase font-extrabold px-2 py-0.5 mt-1.5 rounded-full select-none ${
-                            loc.type === "storage"
-                              ? "bg-indigo-950/40 text-indigo-400 border border-indigo-500/10"
-                              : "bg-teal-950/40 text-teal-400 border border-teal-500/10"
-                          }`}>
-                            {loc.type === "storage" ? "📦 Storage Location" : "🏢 Delivery & Receiving"}
-                          </span>
-                        </div>
-                      </div>
+            const uniquePallets = new Set(
+              offsiteEntriesForLoc
+                .map((e) => (e.pallet || e.currentLocation || "").trim())
+                .filter(
+                  (p) =>
+                    p &&
+                    p.toLowerCase() !== "home" &&
+                    !p.toLowerCase().includes("loose") &&
+                    p.toLowerCase() !== "unassigned" &&
+                    p.toLowerCase() !== "none",
+                ),
+            );
+            const palletCount = uniquePallets.size;
+            const isManifestExpanded = !!expandedLocContents[loc.id];
 
-                      {/* Contact Info */}
-                      <div className="space-y-1.5 text-xs text-cool-gray-350 font-semibold">
-                        {loc.address && (
-                          <div className="flex items-start gap-2">
-                            <MapPin className="w-3.5 h-3.5 shrink-0 text-cool-gray-450 mt-0.5" />
-                            <span className="leading-tight">{loc.address}</span>
-                          </div>
-                        )}
-                        {loc.contact && (
-                          <div className="flex items-start gap-2">
-                            <Phone className="w-3.5 h-3.5 shrink-0 text-cool-gray-450 mt-0.5" />
-                            <span>{loc.contact}</span>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Notes Box */}
-                      {loc.notes && (
-                        <div className="p-3 rounded-lg bg-cool-gray-900/50 border border-cool-gray-805 text-xs text-cool-gray-350 italic font-mono leading-relaxed">
-                          {loc.notes}
-                        </div>
+            return (
+              <div
+                key={loc.id}
+                className={`rounded-xl border p-3.5 sm:p-4 transition ${
+                  loc.isHome
+                    ? "bg-cool-gray-850/90 border-cyan-500/70 shadow-sm"
+                    : "bg-cool-gray-850/75 border-cool-gray-750 hover:border-cool-gray-600"
+                }`}
+              >
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  {/* Left: Identity, inline details & compact stats */}
+                  <div className="min-w-0 flex-1 space-y-1.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h4 className="text-sm font-bold text-white truncate max-w-full">{loc.name}</h4>
+                      {loc.isHome && (
+                        <span className="text-[10px] font-bold text-cyan-300 bg-cyan-950/60 border border-cyan-500/40 px-2 py-0.5 rounded uppercase tracking-wider inline-flex items-center gap-1">
+                          <Home className="w-2.5 h-2.5" /> Home Base
+                        </span>
                       )}
-
-                      {/* On-Site stats showcase */}
-                      {loc.isHome ? (
-                        <div className="mt-3 p-3 rounded-xl bg-cyan-950/10 border border-cyan-500/15 grid grid-cols-3 gap-2 text-center text-xs">
-                          <div>
-                            <span className="block text-[10px] text-cool-gray-450 uppercase font-extrabold">Freezers</span>
-                            <span className="font-extrabold text-cyan-400 mt-0.5 block">{freezerCount} units</span>
-                          </div>
-                          <div>
-                            <span className="block text-[10px] text-cool-gray-450 uppercase font-extrabold">Bins</span>
-                            <span className="font-extrabold text-cyan-400 mt-0.5 block">{containerCount} places</span>
-                          </div>
-                          <div>
-                            <span className="block text-[10px] text-cool-gray-450 uppercase font-extrabold">On-Site</span>
-                            <span className="font-extrabold text-cyan-400 mt-0.5 block">{totalCutsOnSite} cuts</span>
-                          </div>
-                        </div>
-                      ) : (
-                        <div>
-                          <div className="mt-3 p-3 rounded-xl bg-indigo-950/10 border border-indigo-500/15 grid grid-cols-3 gap-2 text-center text-xs">
-                            <div>
-                              <span className="block text-[10px] text-cool-gray-450 uppercase font-extrabold">Pallets</span>
-                              <span className="font-extrabold text-indigo-400 mt-0.5 block">{palletCount} units</span>
-                            </div>
-                            <div>
-                              <span className="block text-[10px] text-cool-gray-450 uppercase font-extrabold">Boxes/Cuts</span>
-                              <span className="font-extrabold text-indigo-400 mt-0.5 block">{totalOffsiteCuts} items</span>
-                            </div>
-                            <div>
-                              <span className="block text-[10px] text-cool-gray-450 uppercase font-extrabold">Weight</span>
-                              <span className="font-extrabold text-indigo-400 mt-0.5 block">{totalOffsiteWeight.toFixed(1)} lbs</span>
-                            </div>
-                          </div>
-                          
-                          {totalOffsiteCuts > 0 && (
-                            <div className="mt-2.5">
-                              <button
-                                type="button"
-                                onClick={() => setExpandedLocContents(prev => ({ ...prev, [loc.id]: !prev[loc.id] }))}
-                                className="w-full text-left text-[11px] font-bold text-indigo-400 hover:text-indigo-300 flex items-center justify-between py-1 px-1.5 bg-cool-gray-800/30 hover:bg-cool-gray-800/60 rounded-lg cursor-pointer transition border border-indigo-500/10"
-                              >
-                                <span>{expandedLocContents[loc.id] ? "▼ Hide Stored Offsite Contents" : "▶ Show Stored Offsite Contents"}</span>
-                                <span className="text-[9px] bg-indigo-950/50 px-1.5 py-0.5 rounded-full border border-indigo-805 font-mono">View Manifest</span>
-                              </button>
-                              
-                              {expandedLocContents[loc.id] && (
-                                <div className="mt-2 p-2.5 bg-cool-gray-900/40 border border-cool-gray-800 rounded-xl space-y-2 text-[11px] font-sans text-cool-gray-300 max-h-48 overflow-y-auto">
-                                  {Array.from(uniquePallets).map(pName => {
-                                    const palletCuts = offsiteEntriesForLoc.filter(e => (e.pallet || e.currentLocation || '').trim() === pName);
-                                    const palletWeight = palletCuts.reduce((sum, e) => sum + (e.netWeight || 0), 0);
-                                    return (
-                                      <div key={pName} className="border-b border-cool-gray-805 last:border-0 pb-2 last:pb-0">
-                                        <div className="flex items-center justify-between font-bold text-cool-gray-200 border-b border-cool-gray-800/40 pb-0.5 group">
-                                          <div className="flex items-center gap-2">
-                                            <span>📦 {pName}</span>
-                                            <button 
-                                              onClick={(e) => {
-                                                e.stopPropagation();
-                                                setRenamePalletModal({ isOpen: true, oldName: pName, newName: pName });
-                                              }}
-                                              className="opacity-0 group-hover:opacity-100 p-0.5 text-cool-gray-500 hover:text-amber-400 transition-all rounded hover:bg-cool-gray-800"
-                                              title="Rename Pallet"
-                                            >
-                                              <Edit3 size={12} />
-                                            </button>
-                                          </div>
-                                          <span className="text-[10px] text-cyan-400 font-medium">{palletCuts.length} cuts • {palletWeight.toFixed(1)} lbs</span>
-                                        </div>
-                                        <div className="space-y-1 mt-1 pl-2.5">
-                                          {palletCuts.map(e => (
-                                            <div key={e.id} className="flex justify-between items-center text-xs font-mono py-0.5">
-                                              <span className="truncate text-cool-gray-350 pr-2 max-w-[130px]" title={(state.products?.find((p: any) => p.id === e.productId)?.name || e.originalCutName)}>{(state.products?.find((p: any) => p.id === e.productId)?.name || e.originalCutName)}</span>
-                                              <span className="text-cyan-400 shrink-0 font-bold">{e.netWeight.toFixed(1)} lbs</span>
-                                            </div>
-                                          ))}
-                                        </div>
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      )}
+                      <span
+                        className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded select-none border ${
+                          loc.type === "storage"
+                            ? "bg-indigo-950/60 text-indigo-300 border-indigo-500/30"
+                            : "bg-teal-950/60 text-teal-300 border-teal-500/30"
+                        }`}
+                      >
+                        {loc.type === "storage" ? "Storage Room" : "Delivery & Receiving"}
+                      </span>
                     </div>
 
-                    {/* Action buttons footer */}
-                    <div className="mt-5 pt-3 border-t border-cool-gray-800/40 flex items-center justify-between gap-2">
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => handleEditClick(loc)}
-                          className="p-1.5 md:px-2.5 md:py-1 hover:bg-cool-gray-800 text-cool-gray-300 rounded-lg text-xs font-bold hover:text-white transition flex items-center gap-1 cursor-pointer border border-transparent hover:border-cool-gray-700"
-                        >
-                          <Edit2 className="w-3.5 h-3.5" /> <span className="hidden md:inline">Edit</span>
-                        </button>
-                        {!loc.isHome && (
-                          confirmDeleteLocId === loc.id ? (
-                            <div className="flex items-center gap-1.5 animate-fade-in pl-1">
-                              <button
-                                onClick={() => {
-                                  dispatch({
-                                    type: "DELETE_LOCATION",
-                                    payload: { locationId: loc.id }
-                                  });
-                                  setConfirmDeleteLocId(null);
-                                }}
-                                className="px-2 py-1 bg-red-650 hover:bg-red-700 text-white font-extrabold text-[10px] rounded-md transition cursor-pointer shadow-sm animate-pulse"
-                                title="Confirm permanently deleting this location"
-                              >
-                                Confirm
-                              </button>
-                              <button
-                                onClick={() => setConfirmDeleteLocId(null)}
-                                className="px-1.5 py-1 bg-cool-gray-800 hover:bg-cool-gray-750 text-cool-gray-300 text-[10px] font-bold rounded-md cursor-pointer transition"
-                              >
-                                Cancel
-                              </button>
-                            </div>
-                          ) : (
-                            <button
-                              onClick={() => {
-                                const l = locations.find(x => x.id === loc.id);
-                                if (l && l.isHome) {
-                                  alert("Cannot delete active Home Base.");
-                                  return;
-                                }
-                                setConfirmDeleteLocId(loc.id);
-                              }}
-                              className="p-1.5 md:px-2.5 md:py-1 hover:bg-rose-950/20 text-cool-gray-450 hover:text-rose-450 rounded-lg text-xs font-bold transition flex items-center gap-1 cursor-pointer border border-transparent hover:border-rose-900/35"
-                              title="Delete Location"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" /> <span className="hidden md:inline">Delete</span>
-                            </button>
-                          )
+                    {(loc.address || loc.contact || loc.notes) && (
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-cool-gray-300">
+                        {loc.address && (
+                          <span className="inline-flex items-center gap-1.5 min-w-0">
+                            <MapPin className="w-3.5 h-3.5 shrink-0 text-cool-gray-400" />
+                            <span className="truncate max-w-md">{loc.address}</span>
+                          </span>
+                        )}
+                        {loc.contact && (
+                          <span className="inline-flex items-center gap-1.5 min-w-0">
+                            <Phone className="w-3.5 h-3.5 shrink-0 text-cool-gray-400" />
+                            <span className="truncate max-w-xs">{loc.contact}</span>
+                          </span>
+                        )}
+                        {loc.notes && (
+                          <span
+                            className="text-cool-gray-400 italic truncate max-w-md"
+                            title={loc.notes}
+                          >
+                            Note: {loc.notes}
+                          </span>
                         )}
                       </div>
+                    )}
 
-                      {!loc.isHome && (
-                        <button
-                          onClick={() => handleSetHome(loc.id)}
-                          className="px-2.5 py-1 text-[11px] font-bold text-cyan-500 hover:text-cyan-405 hover:bg-cyan-950/20 border border-cyan-800/30 rounded-lg transition cursor-pointer flex items-center gap-1"
-                        >
-                          <Home className="w-3 h-3" /> Set as Home
-                        </button>
+                    <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[11px] font-medium tabular-nums text-cool-gray-400">
+                      {loc.isHome ? (
+                        <>
+                          <span className="text-cyan-300 font-semibold">
+                            {freezerCount} {freezerCount === 1 ? "freezer" : "freezers"}
+                          </span>
+                          <span>·</span>
+                          <span>
+                            {containerCount} {containerCount === 1 ? "container" : "containers"}
+                          </span>
+                          <span>·</span>
+                          <span>{totalCutsOnSite} on-site cuts</span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="text-indigo-300 font-semibold">
+                            {palletCount} {palletCount === 1 ? "pallet" : "pallets"}
+                          </span>
+                          <span>·</span>
+                          <span>
+                            {totalOffsiteCuts} {totalOffsiteCuts === 1 ? "item" : "items"}
+                          </span>
+                          <span>·</span>
+                          <span className="text-cool-gray-200 font-semibold">
+                            {totalOffsiteWeight.toFixed(1)} lbs
+                          </span>
+                          {totalOffsiteCuts > 0 && (
+                            <>
+                              <span>·</span>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setExpandedLocContents((prev) => ({
+                                    ...prev,
+                                    [loc.id]: !prev[loc.id],
+                                  }))
+                                }
+                                className="text-indigo-300 hover:text-indigo-200 font-semibold underline underline-offset-2 cursor-pointer"
+                              >
+                                {isManifestExpanded ? "Hide Manifest" : "View Manifest"}
+                              </button>
+                            </>
+                          )}
+                        </>
                       )}
                     </div>
                   </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
 
-        {/* LOCATION FORM */}
-        <div className="col-span-1">
-          {isFormVisible ? (
-            <form
-              onSubmit={handleCreateOrEdit}
-              className="bg-cool-gray-850 p-5 rounded-2xl border border-cool-gray-750 shadow-xl space-y-4 animate-scale-up"
-            >
-              <div className="border-b border-cool-gray-700 pb-3 flex items-center justify-between">
-                <h4 className="text-sm font-bold text-cool-gray-100 flex items-center gap-1.5">
-                  {editingLocId ? "🔄 Edit Location" : "✨ New Location"}
-                </h4>
+                  {/* Right: Actions */}
+                  <div className="flex flex-wrap items-center gap-2 shrink-0 self-start sm:self-center">
+                    {!loc.isHome && (
+                      <button
+                        type="button"
+                        onClick={() => handleSetHome(loc.id)}
+                        className="px-2.5 py-1.5 bg-cool-gray-800 hover:bg-cyan-950/50 border border-cool-gray-700 hover:border-cyan-500/40 text-cyan-300 text-xs font-semibold rounded-lg transition inline-flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Home className="w-3.5 h-3.5" /> Set as Home
+                      </button>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={() => handleEditClick(loc)}
+                      className="px-2.5 py-1.5 bg-cool-gray-800 hover:bg-cool-gray-750 border border-cool-gray-700 text-cool-gray-200 text-xs font-semibold rounded-lg transition inline-flex items-center gap-1 cursor-pointer"
+                    >
+                      <Edit2 className="w-3 h-3 text-cyan-400" /> Edit Settings
+                    </button>
+
+                    {!loc.isHome && (
+                      confirmDeleteLocId === loc.id ? (
+                        <div className="flex items-center gap-1.5 animate-fade-in">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              dispatch({
+                                type: "DELETE_LOCATION",
+                                payload: { locationId: loc.id },
+                              });
+                              setConfirmDeleteLocId(null);
+                            }}
+                            className="px-2.5 py-1.5 bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs rounded-lg transition cursor-pointer"
+                            title="Confirm permanently deleting this location"
+                          >
+                            Confirm
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteLocId(null)}
+                            className="px-2 py-1.5 bg-cool-gray-800 hover:bg-cool-gray-750 border border-cool-gray-700 text-cool-gray-300 text-xs font-semibold rounded-lg cursor-pointer transition"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const l = locations.find((x) => x.id === loc.id);
+                            if (l && l.isHome) {
+                              setLocationNotice(
+                                "Cannot delete the active Home location. Set another location as Home first.",
+                              );
+                              return;
+                            }
+                            setLocationNotice(null);
+                            setConfirmDeleteLocId(loc.id);
+                          }}
+                          className="p-1.5 bg-cool-gray-800 hover:bg-rose-950/40 border border-cool-gray-700 hover:border-rose-500/40 text-cool-gray-400 hover:text-rose-300 rounded-lg transition cursor-pointer"
+                          title="Delete Location"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )
+                    )}
+                  </div>
+                </div>
+
+                {/* Expandable Stored Offsite Contents Manifest */}
+                {!loc.isHome && isManifestExpanded && totalOffsiteCuts > 0 && (
+                  <div className="mt-3 pt-3 border-t border-cool-gray-750/70 grid grid-cols-1 md:grid-cols-2 gap-2.5 max-h-64 overflow-y-auto">
+                    {Array.from(uniquePallets).map((pName) => {
+                      const palletCuts = offsiteEntriesForLoc.filter(
+                        (e) => (e.pallet || e.currentLocation || "").trim() === pName,
+                      );
+                      const palletWeight = palletCuts.reduce((sum, e) => sum + (e.netWeight || 0), 0);
+                      return (
+                        <div
+                          key={pName}
+                          className="bg-cool-gray-900/60 border border-cool-gray-800 rounded-lg p-2.5 space-y-1.5 text-[11px]"
+                        >
+                          <div className="flex items-center justify-between font-bold text-cool-gray-200 border-b border-cool-gray-800 pb-1 group">
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <span className="truncate">📦 {pName}</span>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setRenamePalletModal({ isOpen: true, oldName: pName, newName: pName });
+                                }}
+                                className="opacity-60 group-hover:opacity-100 p-0.5 text-cool-gray-400 hover:text-amber-400 transition rounded hover:bg-cool-gray-800 cursor-pointer"
+                                title="Rename Pallet"
+                              >
+                                <Edit3 size={12} />
+                              </button>
+                            </div>
+                            <span className="text-[10px] text-cyan-400 font-semibold shrink-0 tabular-nums">
+                              {palletCuts.length} cuts · {palletWeight.toFixed(1)} lbs
+                            </span>
+                          </div>
+                          <div className="space-y-0.5 max-h-32 overflow-y-auto pr-1">
+                            {palletCuts.map((e) => {
+                              const cutLabel =
+                                state.products?.find((p: any) => p.id === e.productId)?.name ||
+                                e.originalCutName;
+                              return (
+                                <div
+                                  key={e.id}
+                                  className="flex justify-between items-center gap-2 text-xs font-mono py-0.5"
+                                >
+                                  <span className="truncate text-cool-gray-300" title={cutLabel}>
+                                    {cutLabel}
+                                  </span>
+                                  <span className="text-cyan-400 shrink-0 font-bold tabular-nums">
+                                    {e.netWeight.toFixed(1)} lbs
+                                  </span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Create / Edit Location Modal */}
+      {isFormVisible && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs"
+          onClick={resetForm}
+        >
+          <form
+            onSubmit={handleCreateOrEdit}
+            onClick={(e) => e.stopPropagation()}
+            className="bg-cool-gray-850 border border-cool-gray-700 rounded-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto p-5 sm:p-6 shadow-2xl space-y-3.5 animate-scale-up"
+          >
+            <div className="border-b border-cool-gray-750 pb-3 flex items-center justify-between">
+              <h3 className="text-base font-bold text-white">
+                {editingLocId ? "Edit Location Settings" : "Add New Location"}
+              </h3>
+              <button
+                type="button"
+                onClick={resetForm}
+                className="text-cool-gray-400 hover:text-white cursor-pointer p-1"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {errorMsg && (
+              <div className="p-2.5 bg-rose-950/40 border border-rose-500/40 rounded-lg text-xs text-rose-300 font-semibold flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>{errorMsg}</span>
+              </div>
+            )}
+
+            <div className="space-y-1">
+              <label className="text-xs font-semibold text-cool-gray-300">Location Name</label>
+              <input
+                type="text"
+                required
+                value={locName}
+                onChange={(e) => setLocName(e.target.value)}
+                placeholder="e.g. Cold Storage Pallets, Big Sky Sizzler"
+                className="w-full px-3 py-2 text-xs bg-cool-gray-900 border border-cool-gray-700 rounded-lg focus:outline-none focus:ring-1 focus:ring-cyan-500 text-white"
+                autoFocus
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs font-semibold text-cool-gray-300">Type of Facility</label>
+              <div className="grid grid-cols-2 gap-2">
                 <button
                   type="button"
-                  onClick={resetForm}
-                  className="p-1 hover:bg-cool-gray-700 text-cool-gray-450 hover:text-white rounded transition cursor-pointer"
+                  onClick={() => setLocType("storage")}
+                  className={`p-2.5 border rounded-lg text-xs font-bold transition flex items-center justify-center gap-2 select-none cursor-pointer ${
+                    locType === "storage"
+                      ? "bg-indigo-950/40 border-indigo-500 text-indigo-300"
+                      : "bg-cool-gray-900 border-cool-gray-700 text-cool-gray-400 hover:text-white"
+                  }`}
                 >
-                  <X className="w-4 h-4" />
+                  <Warehouse className="w-4 h-4" />
+                  <span>Storage Room</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLocType("delivery_pickup")}
+                  className={`p-2.5 border rounded-lg text-xs font-bold transition flex items-center justify-center gap-2 select-none cursor-pointer ${
+                    locType === "delivery_pickup"
+                      ? "bg-teal-950/40 border-teal-500 text-teal-300"
+                      : "bg-cool-gray-900 border-cool-gray-700 text-cool-gray-400 hover:text-white"
+                  }`}
+                >
+                  <Truck className="w-4 h-4" />
+                  <span>Delivery &amp; Receiving</span>
                 </button>
               </div>
+            </div>
 
-              {errorMsg && (
-                <div className="p-3 bg-rose-950/35 border border-rose-500/25 rounded-md text-xs text-rose-300 font-bold flex items-center gap-2">
-                  <AlertCircle className="w-4 h-4 shrink-0" />
-                  <span>{errorMsg}</span>
-                </div>
-              )}
-
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="space-y-1">
-                <label className="text-xs font-bold text-cool-gray-350">
-                  Location Name
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={locName}
-                  onChange={(e) => setLocName(e.target.value)}
-                  placeholder="e.g. Cold Storage Pallets, Big Sky Sizzler"
-                  className="w-full bg-cool-gray-900 border border-cool-gray-700/80 rounded-lg px-3 py-2 text-white placeholder-cool-gray-550 focus:outline-none focus:ring-1 focus:ring-cyan-500 text-xs font-bold"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-xs font-bold text-cool-gray-350">
-                  Type of Facility
-                </label>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setLocType("storage")}
-                    className={`p-2.5 border rounded-lg text-xs font-bold transition flex flex-col items-center gap-1 select-none cursor-pointer ${
-                      locType === "storage"
-                        ? "bg-indigo-950/20 border-indigo-500 text-indigo-400"
-                        : "bg-cool-gray-900/60 border-cool-gray-700 text-cool-gray-400 hover:text-white"
-                    }`}
-                  >
-                    <Warehouse className="w-4 h-4" />
-                    <span>📦 Storage Room</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setLocType("delivery_pickup")}
-                    className={`p-2.5 border rounded-lg text-xs font-bold transition flex flex-col items-center gap-1 select-none cursor-pointer ${
-                      locType === "delivery_pickup"
-                        ? "bg-teal-950/20 border-teal-500 text-teal-400"
-                        : "bg-cool-gray-900/60 border-cool-gray-700 text-cool-gray-400 hover:text-white"
-                    }`}
-                  >
-                    <Truck className="w-4 h-4" />
-                    <span>🏢 Delivery & Receiving</span>
-                  </button>
-                </div>
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-xs font-bold text-cool-gray-350">
-                  Address
-                </label>
-                <textarea
-                  value={locAddress}
-                  onChange={(e) => setLocAddress(e.target.value)}
-                  placeholder="Full physical street address..."
-                  rows={2}
-                  className="w-full bg-cool-gray-900 border border-cool-gray-700/80 rounded-lg px-3 py-2 text-white placeholder-cool-gray-550 focus:outline-none focus:ring-1 focus:ring-cyan-500 text-xs font-semibold resize-none"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-xs font-bold text-cool-gray-355">
-                  Contact Information
-                </label>
+                <label className="text-xs font-semibold text-cool-gray-300">Contact Information</label>
                 <input
                   type="text"
                   value={locContact}
                   onChange={(e) => setLocContact(e.target.value)}
                   placeholder="Manager / Phone / Email..."
-                  className="w-full bg-cool-gray-900 border border-cool-gray-700/80 rounded-lg px-3 py-2 text-white placeholder-cool-gray-550 focus:outline-none focus:ring-1 focus:ring-cyan-500 text-xs font-bold"
+                  className="w-full px-3 py-2 text-xs bg-cool-gray-900 border border-cool-gray-700 rounded-lg focus:outline-none focus:ring-1 focus:ring-cyan-500 text-white"
                 />
               </div>
-
               <div className="space-y-1">
-                <label className="text-xs font-bold text-cool-gray-350">
-                  General Notes
-                </label>
-                <textarea
-                  value={locNotes}
-                  onChange={(e) => setLocNotes(e.target.value)}
-                  placeholder="Access codes, dock requirements, delivery timetables..."
-                  rows={3}
-                  className="w-full bg-cool-gray-900 border border-cool-gray-700/80 rounded-lg px-3 py-2 text-white placeholder-cool-gray-550 focus:outline-none focus:ring-1 focus:ring-cyan-500 text-xs font-semibold resize-none"
+                <label className="text-xs font-semibold text-cool-gray-300">Address</label>
+                <input
+                  type="text"
+                  value={locAddress}
+                  onChange={(e) => setLocAddress(e.target.value)}
+                  placeholder="Street address..."
+                  className="w-full px-3 py-2 text-xs bg-cool-gray-900 border border-cool-gray-700 rounded-lg focus:outline-none focus:ring-1 focus:ring-cyan-500 text-white"
                 />
               </div>
+            </div>
 
-              {!editingLocId && (
-                <div className="pt-2">
-                  <label className="flex items-start gap-2.5 cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      checked={isHome}
-                      onChange={(e) => setIsHome(e.target.checked)}
-                      className="w-4 h-4 mt-0.5 rounded bg-cool-gray-950 border-cool-gray-750 text-cyan-500 focus:ring-1 focus:ring-cyan-500"
-                    />
-                    <div className="text-[11px] leading-snug">
-                      <span className="font-bold text-cool-gray-200 block">Set as Active Home Base</span>
-                      <span className="text-cool-gray-450 block mt-0.5">Select this to route on-site freezer storage dashboard under it.</span>
-                    </div>
-                  </label>
+            <div className="space-y-1">
+              <label className="text-xs font-semibold text-cool-gray-300">General Notes</label>
+              <textarea
+                value={locNotes}
+                onChange={(e) => setLocNotes(e.target.value)}
+                placeholder="Access codes, dock requirements, delivery timetables..."
+                rows={2}
+                className="w-full px-3 py-2 text-xs bg-cool-gray-900 border border-cool-gray-700 rounded-lg focus:outline-none focus:ring-1 focus:ring-cyan-500 text-white resize-none"
+              />
+            </div>
+
+            {!editingLocId && (
+              <label className="flex items-start gap-2.5 cursor-pointer bg-cool-gray-900 p-3 rounded-lg border border-cool-gray-750">
+                <input
+                  type="checkbox"
+                  checked={isHome}
+                  onChange={(e) => setIsHome(e.target.checked)}
+                  className="mt-0.5 w-4 h-4 rounded border-cool-gray-600 bg-cool-gray-800 text-cyan-500 cursor-pointer"
+                />
+                <div className="text-xs leading-snug">
+                  <span className="font-bold text-cool-gray-200 block">Set as Active Home Base</span>
+                  <span className="text-[11px] text-cool-gray-400 block mt-0.5">
+                    Route your on-site freezer storage dashboard under this location.
+                  </span>
                 </div>
-              )}
+              </label>
+            )}
 
-              <div className="pt-4 flex gap-2.5">
-                <button
-                  type="button"
-                  onClick={resetForm}
-                  className="flex-grow p-2.5 bg-cool-gray-800 border border-cool-gray-700 rounded-xl text-cool-gray-300 text-xs font-bold hover:bg-cool-gray-700 hover:text-white transition cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="flex-grow p-2.5 bg-cyan-600 hover:bg-cyan-550 text-white rounded-xl text-xs font-bold transition cursor-pointer shadow-lg shadow-cyan-950/20"
-                >
-                  {editingLocId ? "Save Changes" : "Create Location"}
-                </button>
-              </div>
-            </form>
-          ) : (
-            <div className="p-5 rounded-2xl bg-cool-gray-850/50 border border-cool-gray-755 border-dashed text-cool-gray-405 space-y-3.5 leading-relaxed text-xs">
-              <span className="font-bold text-cool-gray-200 block">💡 Locations Architecture</span>
-              <p>The **Home Location** houses your on-site freezers, chest units, shelf slots and loose inventory cuts.</p>
-              <p>Other **Off-Site Storage locations** track pallets, boxes and bulk cuts in transit.</p>
-              <p>**Delivery outlets** (restaurants, retail centers, processors, butchers) lets you log exactly where wholesale products are routed.</p>
+            <div className="pt-2 border-t border-cool-gray-750 flex justify-end gap-2">
               <button
-                onClick={() => {
-                  resetForm();
-                  setFormVisible(true);
-                }}
-                className="w-full p-2 bg-cool-gray-800 hover:bg-cool-gray-700 text-white rounded-lg text-xs font-bold transition cursor-pointer"
+                type="button"
+                onClick={resetForm}
+                className="px-4 py-2 bg-cool-gray-800 border border-cool-gray-700 rounded-lg text-cool-gray-300 text-xs font-semibold hover:bg-cool-gray-750 hover:text-white transition cursor-pointer"
               >
-                + Register New Location
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg text-xs font-bold transition cursor-pointer"
+              >
+                {editingLocId ? "Save Changes" : "Create Location"}
               </button>
             </div>
-          )}
+          </form>
         </div>
-      </div>
+      )}
 
       {renamePalletModal?.isOpen && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-[60]">
-          <div className="bg-cool-gray-900 border border-cool-gray-750 rounded-2xl p-6 w-full max-w-sm shadow-2xl animate-scale-up">
+        <div
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-[60]"
+          onClick={() => setRenamePalletModal(null)}
+        >
+          <div
+            className="bg-cool-gray-900 border border-cool-gray-750 rounded-2xl p-6 w-full max-w-sm shadow-2xl animate-scale-up"
+            onClick={(e) => e.stopPropagation()}
+          >
             <h3 className="text-lg font-bold text-white mb-2">Rename Pallet</h3>
             <p className="text-sm text-cool-gray-400 mb-4">
               Renaming <span className="font-mono text-amber-400">{renamePalletModal.oldName}</span> will update all existing off-site items and movement targets using this pallet.
             </p>
             <input
               type="text"
-              value={renamePalletModal.newName || ''}
+              value={renamePalletModal.newName || ""}
               onChange={(e) => setRenamePalletModal({ ...renamePalletModal, newName: e.target.value })}
               className="w-full bg-cool-gray-950 border border-cool-gray-800 rounded-xl p-3 text-white mb-6 focus:border-amber-500 focus:outline-none"
               placeholder="New Pallet Name"
@@ -8078,12 +9488,14 @@ export const ManageLocations: React.FC<ManageLocationsProps> = ({ state, dispatc
             />
             <div className="flex justify-end gap-3">
               <button
+                type="button"
                 onClick={() => setRenamePalletModal(null)}
                 className="px-4 py-2 rounded-xl text-cool-gray-400 hover:text-white transition-colors cursor-pointer"
               >
                 Cancel
               </button>
               <button
+                type="button"
                 onClick={handleRenamePallet}
                 disabled={!renamePalletModal.newName.trim() || renamePalletModal.newName === renamePalletModal.oldName}
                 className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-bold transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
@@ -8094,519 +9506,6 @@ export const ManageLocations: React.FC<ManageLocationsProps> = ({ state, dispatc
           </div>
         </div>
       )}
-    </div>
-  );
-};
-
-export const NotificationCenterComponent: React.FC<{
-  state: InventoryState;
-  dispatch: React.Dispatch<Action>;
-}> = ({ state, dispatch }) => {
-  const [digestEnabled, setDigestEnabled] = useState(false);
-  const [digestMode, setDigestMode] = useState<"combined" | "individual">("combined");
-  const [digestTime, setDigestTime] = useState("20:00");
-  const [timezone, setTimezone] = useState(() => {
-    try {
-      return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-    } catch {
-      return "UTC";
-    }
-  });
-  const [method, setMethod] = useState<"in_app" | "smtp_email" | "webhook">("in_app");
-
-  const [smtpHost, setSmtpHost] = useState("");
-  const [smtpPort, setSmtpPort] = useState(587);
-  const [smtpUser, setSmtpUser] = useState("");
-  const [smtpPass, setSmtpPass] = useState("");
-  const [smtpFrom, setSmtpFrom] = useState("");
-  const [smtpTo, setSmtpTo] = useState("");
-  const [smtpSecure, setSmtpSecure] = useState(false);
-
-  const [haNotifyService, setHaNotifyService] = useState("notify.notify");
-  const [haUrl, setHaUrl] = useState("");
-  const [haToken, setHaToken] = useState("");
-  const [webhookUrl, setWebhookUrl] = useState("");
-
-  const [isLoading, setIsLoading] = useState(true);
-  const [isSaving, setIsSaving] = useState(false);
-  const [isTesting, setIsTesting] = useState(false);
-  const [isTriggering, setIsTriggering] = useState(false);
-
-  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
-  const [triggerResult, setTriggerResult] = useState<{ success: boolean; message: string; results?: any } | null>(null);
-
-  useEffect(() => {
-    fetch(getApiUrl("api/notifications/settings"))
-      .then((res) => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.json();
-      })
-      .then((data) => {
-        if (data) {
-          setDigestEnabled(!!data.digestEnabled);
-          setDigestMode(data.digestMode || "combined");
-          setDigestTime(data.digestTime || "20:00");
-          if (data.timezone) {
-            setTimezone(data.timezone);
-          }
-          if (data.method === "ha_persistent" || data.method === "ha_notify") {
-            setMethod("in_app");
-          } else {
-            setMethod(data.method || "in_app");
-          }
-
-          setSmtpHost(data.smtpHost || "");
-          setSmtpPort(Number(data.smtpPort) || 587);
-          setSmtpUser(data.smtpUser || "");
-          setSmtpPass(data.smtpPass || "");
-          setSmtpFrom(data.smtpFrom || "");
-          setSmtpTo(data.smtpTo || "");
-          setSmtpSecure(!!data.smtpSecure);
-
-          setHaNotifyService(data.haNotifyService || "notify.notify");
-          setHaUrl(data.haUrl || "");
-          setHaToken(data.haToken || "");
-          setWebhookUrl(data.webhookUrl || "");
-        }
-        setIsLoading(false);
-      })
-      .catch((err) => {
-        console.error("Failed to load notification settings:", err);
-        setIsLoading(false);
-      });
-  }, []);
-
-  const handleSaveSettings = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    setIsSaving(true);
-    setTestResult(null);
-    setTriggerResult(null);
-
-    const settings = {
-      id: "global",
-      digestEnabled,
-      digestMode,
-      digestTime,
-      timezone,
-      method,
-      smtpHost,
-      smtpPort,
-      smtpUser,
-      smtpPass,
-      smtpFrom,
-      smtpTo,
-      smtpSecure,
-      haNotifyService,
-      haUrl,
-      haToken,
-      webhookUrl,
-    };
-
-    try {
-      const res = await fetch(getApiUrl("api/notifications/save-settings"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ settings }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        setTestResult({ success: true, message: "Notification settings saved successfully!" });
-      } else {
-        setTestResult({ success: false, message: data.error || "Failed to save settings." });
-      }
-    } catch (err: any) {
-      setTestResult({ success: false, message: err.message || "Network error while saving." });
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  const handleTestSettings = async () => {
-    setIsTesting(true);
-    setTestResult(null);
-    setTriggerResult(null);
-
-    const settings = {
-      id: "global",
-      digestEnabled,
-      digestMode,
-      digestTime,
-      timezone,
-      method,
-      smtpHost,
-      smtpPort,
-      smtpUser,
-      smtpPass,
-      smtpFrom,
-      smtpTo,
-      smtpSecure,
-      haNotifyService,
-      haUrl,
-      haToken,
-      webhookUrl,
-    };
-
-    try {
-      const res = await fetch(getApiUrl("api/notifications/test-settings"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ settings }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        setTestResult({ success: true, message: "Gateway connection test succeeded! Test message delivered successfully." });
-      } else {
-        setTestResult({ success: false, message: data.error || "Gateway connection test failed. Please verify credentials." });
-      }
-    } catch (err: any) {
-      setTestResult({ success: false, message: err.message || "Network error while testing." });
-    } finally {
-      setIsTesting(false);
-    }
-  };
-
-  const handleTriggerNow = async () => {
-    setIsTriggering(true);
-    setTestResult(null);
-    setTriggerResult(null);
-
-    try {
-      const res = await fetch(getApiUrl("api/notifications/trigger-now"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ listIds: null }), // triggers all lists
-      });
-      const data = await res.json();
-      if (data.success) {
-        setTriggerResult({
-          success: true,
-          message: `Daily digests executed successfully! ${data.messagesSent || 0} notifications dispatched.`,
-        });
-      } else {
-        setTriggerResult({ success: false, message: data.error || "Failed to trigger notifications." });
-      }
-    } catch (err: any) {
-      setTriggerResult({ success: false, message: err.message || "Network error while triggering." });
-    } finally {
-      setIsTriggering(false);
-    }
-  };
-
-  const handleClearLogs = async () => {
-    if (!confirm("Are you sure you want to clear all notification log history?")) return;
-    try {
-      await fetch(getApiUrl("api/notifications/clear-logs"), { method: "POST" });
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  if (isLoading) {
-    return (
-      <div className="bg-cool-gray-850 p-8 border border-cool-gray-750 rounded-xl text-center text-cool-gray-400">
-        <RefreshCw className="w-8 h-8 animate-spin mx-auto text-amber-500 mb-2" />
-        <span className="font-bold">Loading Notification Engine configuration...</span>
-      </div>
-    );
-  }
-
-  const logs = state.notificationLogs || [];
-
-  return (
-    <div className="bg-cool-gray-855 p-5 rounded-xl border border-cool-gray-750 shadow-sm space-y-5 animate-fade-in text-sm text-cool-gray-200">
-      <div className="border-b border-cool-gray-700 pb-3 flex items-start justify-between gap-3">
-        <div>
-          <h4 className="text-lg font-extrabold text-cool-gray-150 flex items-center gap-2">
-            <Bell size={20} className="text-amber-500" />
-            Notification Center Settings
-          </h4>
-          <p className="text-xs text-cool-gray-400 mt-0.5">
-            Configure gateways, SMTP routes, webhooks, and automated daily inventory digest timers.
-          </p>
-        </div>
-        <span className="text-[10px] font-bold text-amber-400 bg-amber-950/20 border border-amber-500/20 px-2.5 py-0.5 rounded font-mono uppercase tracking-widest">
-          Engine Active
-        </span>
-      </div>
-
-      {testResult && (
-        <div
-          className={`p-3.5 rounded-lg border flex items-start gap-3 text-xs animate-scale-up ${
-            testResult.success
-              ? "bg-green-950/20 border-green-500/30 text-green-400"
-              : "bg-rose-950/20 border-rose-500/30 text-rose-450"
-          }`}
-        >
-          <AlertCircle size={16} className="shrink-0 mt-0.5" />
-          <div className="font-semibold">{testResult.message}</div>
-        </div>
-      )}
-
-      {triggerResult && (
-        <div
-          className={`p-3.5 rounded-lg border flex items-start gap-3 text-xs animate-scale-up ${
-            triggerResult.success
-              ? "bg-amber-950/20 border-amber-500/30 text-amber-400"
-              : "bg-rose-950/20 border-rose-500/30 text-rose-450"
-          }`}
-        >
-          <CheckCircle2 size={16} className="shrink-0 mt-0.5" />
-          <div className="font-semibold">{triggerResult.message}</div>
-        </div>
-      )}
-
-      <form onSubmit={handleSaveSettings} className="space-y-5">
-        {/* SECTION 1: Automatic Scheduled Digests */}
-        <div className="bg-cool-gray-900 rounded-xl p-4 border border-cool-gray-800 space-y-4">
-          <div className="flex items-start justify-between gap-3">
-            <div className="flex items-start gap-3">
-              <input
-                type="checkbox"
-                id="digestEnabledCheck"
-                checked={digestEnabled}
-                onChange={(e) => setDigestEnabled(e.target.checked)}
-                className="w-4 h-4 mt-0.5 rounded bg-cool-gray-950 border-cool-gray-700 text-cyan-500 focus:ring-1 focus:ring-cyan-500"
-              />
-              <div className="text-xs leading-normal">
-                <label htmlFor="digestEnabledCheck" className="font-bold text-cool-gray-200 block cursor-pointer select-none">
-                  Enable Scheduled Daily Digests
-                </label>
-                <span className="text-cool-gray-400 block mt-0.5">
-                  Automatically bundle notifiable lists and dispatch them daily at your chosen hour.
-                </span>
-              </div>
-            </div>
-          </div>
-
-          {digestEnabled && (
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2.5 border-t border-cool-gray-800 animate-scale-up">
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold text-cool-gray-300 block">
-                  Digest Delivery Option
-                </label>
-                <select
-                  value={digestMode}
-                  onChange={(e: any) => setDigestMode(e.target.value)}
-                  className="w-full bg-cool-gray-950 border border-cool-gray-850 rounded px-3 py-2 text-white text-xs focus:outline-none focus:border-cyan-500"
-                >
-                  <option value="combined">Combined daily digest (single notification for all lists)</option>
-                  <option value="individual">Individual list daily digest (one notification per list)</option>
-                </select>
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold text-cool-gray-300 block">
-                  Daily Dispatch Hour
-                </label>
-                <input
-                  type="time"
-                  required
-                  value={digestTime}
-                  onChange={(e) => setDigestTime(e.target.value)}
-                  className="w-full bg-cool-gray-950 border border-cool-gray-850 rounded px-3 py-2 text-white text-xs focus:outline-none focus:border-cyan-500 font-mono"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold text-cool-gray-300 block">
-                  Time Zone
-                </label>
-                <select
-                  value={timezone}
-                  onChange={(e: any) => setTimezone(e.target.value)}
-                  className="w-full bg-cool-gray-950 border border-cool-gray-850 rounded px-3 py-2 text-white text-xs focus:outline-none focus:border-cyan-500 font-mono"
-                >
-                  <option value="America/New_York">Eastern Time (America/New_York)</option>
-                  <option value="America/Chicago">Central Time (America/Chicago)</option>
-                  <option value="America/Denver">Mountain Time (America/Denver)</option>
-                  <option value="America/Phoenix">Arizona (America/Phoenix)</option>
-                  <option value="America/Los_Angeles">Pacific Time (America/Los_Angeles)</option>
-                  <option value="America/Anchorage">Alaska Time (America/Anchorage)</option>
-                  <option value="Pacific/Honolulu">Hawaii Time (Pacific/Honolulu)</option>
-                  <option value="Europe/London">London / GMT (Europe/London)</option>
-                  <option value="Europe/Paris">Central Europe (Europe/Paris)</option>
-                  <option value="Europe/Athens">Eastern Europe (Europe/Athens)</option>
-                  <option value="Asia/Tokyo">Japan (Asia/Tokyo)</option>
-                  <option value="Asia/Sydney">Sydney (Australia/Sydney)</option>
-                  <option value="UTC">UTC (Coordinated Universal Time)</option>
-                </select>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* SECTION 2: Dispatch Gateway selection */}
-        <div className="bg-cool-gray-900 rounded-xl p-4 border border-cool-gray-800 space-y-4">
-          <h5 className="text-xs font-bold text-cool-gray-300 uppercase tracking-widest flex items-center gap-2 border-b border-cool-gray-850 pb-2">
-            <Mail size={14} className="text-cyan-400" /> Notification Delivery Method & Gateways
-          </h5>
-
-          <div className="space-y-2">
-            <label className="text-xs font-bold text-cool-gray-400 block">
-              Active Delivery Gateway
-            </label>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-              <label className={`flex items-center gap-2.5 p-2.5 border rounded cursor-pointer select-none transition-all ${method === "smtp_email" ? "bg-cyan-950/15 border-cyan-500/70 text-cyan-300" : "bg-cool-gray-950 border-cool-gray-800 text-cool-gray-450 hover:border-cool-gray-700"}`}>
-                <input type="radio" name="deliveryMethod" value="smtp_email" checked={method === "smtp_email"} onChange={() => setMethod("smtp_email")} className="w-3.5 h-3.5 text-cyan-500" />
-                <div className="text-left leading-normal">
-                  <span className="font-extrabold text-xs block">SMTP Email</span>
-                  <span className="text-[9px] block">Deliver as email reports</span>
-                </div>
-              </label>
-
-              <label className={`flex items-center gap-2.5 p-2.5 border rounded cursor-pointer select-none transition-all ${method === "webhook" ? "bg-purple-950/15 border-purple-500/70 text-purple-300" : "bg-cool-gray-950 border-cool-gray-800 text-cool-gray-455 hover:border-cool-gray-700"}`}>
-                <input type="radio" name="deliveryMethod" value="webhook" checked={method === "webhook"} onChange={() => setMethod("webhook")} className="w-3.5 h-3.5 text-purple-500" />
-                <div className="text-left leading-normal">
-                  <span className="font-extrabold text-xs block">Webhook POST</span>
-                  <span className="text-[9px] block">Send JSON payload to URL</span>
-                </div>
-              </label>
-
-              <label className={`flex items-center gap-2.5 p-2.5 border rounded cursor-pointer select-none transition-all ${method === "in_app" ? "bg-cool-gray-900 border-cool-gray-700 text-cool-gray-200" : "bg-cool-gray-950 border-cool-gray-800 text-cool-gray-455 hover:border-cool-gray-700"}`}>
-                <input type="radio" name="deliveryMethod" value="in_app" checked={method === "in_app"} onChange={() => setMethod("in_app")} className="w-3.5 h-3.5 text-cool-gray-500" />
-                <div className="text-left leading-normal">
-                  <span className="font-extrabold text-xs block">In-App Log Only</span>
-                  <span className="text-[9px] block">Write history logs only</span>
-                </div>
-              </label>
-            </div>
-          </div>
-
-          {/* GATEWAY OPTIONS: SMTP EMAIL */}
-          {method === "smtp_email" && (
-            <div className="p-4 bg-cool-gray-950 rounded-xl border border-cool-gray-800 space-y-3 animate-scale-up text-xs">
-              <h6 className="font-bold text-cyan-400 block mb-1">📬 SMTP Credentials & Addressing</h6>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div className="space-y-1">
-                  <label className="text-cool-gray-400 font-bold block">SMTP Host Server</label>
-                  <input type="text" value={smtpHost} onChange={(e) => setSmtpHost(e.target.value)} placeholder="smtp.gmail.com" className="w-full bg-cool-gray-900 border border-cool-gray-750 rounded p-2 text-white" />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-cool-gray-400 font-bold block">SMTP Port</label>
-                  <input type="number" value={smtpPort} onChange={(e) => setSmtpPort(Number(e.target.value))} placeholder="587" className="w-full bg-cool-gray-900 border border-cool-gray-750 rounded p-2 text-white" />
-                </div>
-                <div className="space-y-1 pt-4.5 flex items-center pl-2">
-                  <label className="flex items-center gap-2 cursor-pointer select-none">
-                    <input type="checkbox" checked={smtpSecure} onChange={(e) => setSmtpSecure(e.target.checked)} className="w-4 h-4 bg-cool-gray-900 border-cool-gray-750 rounded text-cyan-500 focus:ring-1" />
-                    <span className="font-bold text-cool-gray-300">Use SSL (Port 465)</span>
-                  </label>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <label className="text-cool-gray-400 font-bold block">SMTP User Login</label>
-                  <input type="text" value={smtpUser} onChange={(e) => setSmtpUser(e.target.value)} placeholder="your-email@gmail.com" className="w-full bg-cool-gray-900 border border-cool-gray-750 rounded p-2 text-white" />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-cool-gray-400 font-bold block">SMTP Account Password / App Key</label>
-                  <input type="password" value={smtpPass} onChange={(e) => setSmtpPass(e.target.value)} placeholder="••••••••••••••••" className="w-full bg-cool-gray-900 border border-cool-gray-750 rounded p-2 text-white" />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 border-t border-cool-gray-850 pt-2">
-                <div className="space-y-1">
-                  <label className="text-cool-gray-400 font-bold block">Sender Address ("From")</label>
-                  <input type="email" value={smtpFrom} onChange={(e) => setSmtpFrom(e.target.value)} placeholder="Freezer Tracker <your-email@gmail.com>" className="w-full bg-cool-gray-900 border border-cool-gray-750 rounded p-2 text-white" />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-cool-gray-400 font-bold block">Recipient Address ("To")</label>
-                  <input type="text" value={smtpTo} onChange={(e) => setSmtpTo(e.target.value)} placeholder="butcher-shop@domain.com" className="w-full bg-cool-gray-900 border border-cool-gray-750 rounded p-2 text-white" />
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* GATEWAY OPTIONS: WEBHOOK */}
-          {method === "webhook" && (
-            <div className="p-4 bg-cool-gray-950 rounded-xl border border-cool-gray-800 space-y-3 animate-scale-up text-xs">
-              <h6 className="font-bold text-purple-400 block mb-1">🔗 Outgoing JSON Webhook Router</h6>
-              <div className="space-y-1">
-                <label className="text-cool-gray-400 font-bold block">Target HTTP Webhook URL</label>
-                <input type="url" value={webhookUrl} onChange={(e) => setWebhookUrl(e.target.value)} placeholder="https://api.domain.com/v1/endpoints/freezer-notifications" className="w-full bg-cool-gray-900 border border-cool-gray-750 rounded p-2 text-white font-mono" />
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* SECTION 3: Bottom action console */}
-        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2">
-          <div className="flex gap-2.5">
-            <button
-              type="button"
-              disabled={isTesting}
-              onClick={handleTestSettings}
-              className="px-4 py-2 bg-cool-gray-800 hover:bg-cool-gray-700 text-cool-gray-250 hover:text-white border border-cool-gray-700 rounded-lg text-xs font-bold transition flex items-center gap-1.5 disabled:opacity-50 select-none cursor-pointer"
-            >
-              <RefreshCw size={13} className={isTesting ? "animate-spin text-cyan-400" : "text-cyan-500"} />
-              {isTesting ? "Testing Gateway..." : "Test Gateway Setup"}
-            </button>
-
-            <button
-              type="button"
-              disabled={isTriggering}
-              onClick={handleTriggerNow}
-              className="px-4 py-2 bg-amber-950/20 border border-amber-900/35 hover:bg-amber-900/30 text-amber-300 rounded-lg text-xs font-bold transition flex items-center gap-1.5 disabled:opacity-50 select-none cursor-pointer"
-              title="Deliver digest reports configured above immediately to active receivers."
-            >
-              <Send size={13} className={isTriggering ? "animate-pulse" : ""} />
-              {isTriggering ? "Dispatching Digests..." : "Send Notification Now"}
-            </button>
-          </div>
-
-          <button
-            type="submit"
-            disabled={isSaving}
-            className="w-full sm:w-auto px-5 py-2 bg-cyan-600 hover:bg-cyan-550 text-white rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer shadow-lg shadow-cyan-950/15"
-          >
-            <Save size={13} />
-            {isSaving ? "Saving Settings..." : "Save Configuration"}
-          </button>
-        </div>
-      </form>
-
-      {/* SECTION 4: Dispatch History & logs feed */}
-      <div className="bg-cool-gray-900 rounded-xl p-4 border border-cool-gray-800 space-y-3">
-        <div className="flex justify-between items-center border-b border-cool-gray-850 pb-2">
-          <h5 className="text-xs font-bold text-cool-gray-300 uppercase tracking-widest flex items-center gap-2">
-            <History size={14} className="text-amber-400" /> System Dispatch Logs Feed
-          </h5>
-          {logs.length > 0 && (
-            <button
-              type="button"
-              onClick={handleClearLogs}
-              className="text-[10px] bg-red-950/10 hover:bg-red-950/30 text-red-400 border border-red-950/30 px-2 py-1 rounded transition cursor-pointer"
-            >
-              Clear Logs History
-            </button>
-          )}
-        </div>
-
-        <div className="max-h-[220px] overflow-y-auto space-y-2 pr-1 font-sans">
-          {logs.map((log) => (
-            <div key={log.id} className="p-2.5 rounded bg-cool-gray-950 border border-cool-gray-850 flex flex-col gap-1 text-xs">
-              <div className="flex items-center justify-between">
-                <span className="font-extrabold text-cool-gray-250 truncate max-w-[250px]">{log.title}</span>
-                <span className={`text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded ${log.status === "success" ? "bg-green-950/20 text-green-400 border border-green-950/20" : "bg-rose-950/25 text-rose-400 border border-rose-950/20"}`}>
-                  {log.status === "success" ? "● Success" : "● Failed"}
-                </span>
-              </div>
-              <div className="text-[10px] text-cool-gray-400 truncate font-mono leading-relaxed">{log.message}</div>
-              {log.error && <div className="text-[9px] text-rose-450 bg-rose-950/15 p-1 rounded font-mono border border-rose-950/20 mt-1">{log.error}</div>}
-              <div className="flex items-center justify-between text-[9px] text-cool-gray-500 font-bold uppercase tracking-wider mt-1 border-t border-cool-gray-850/40 pt-1">
-                <span>Method: {log.method}</span>
-                <span>{new Date(log.sentAt).toLocaleString()}</span>
-              </div>
-            </div>
-          ))}
-
-          {logs.length === 0 && (
-            <div className="p-6 text-center text-cool-gray-500 text-xs">
-              No recent notifications dispatched yet. Configure lists and gateways above to begin.
-            </div>
-          )}
-        </div>
-      </div>
     </div>
   );
 };

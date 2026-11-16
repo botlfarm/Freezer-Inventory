@@ -7,9 +7,11 @@ import {
   isStandalonePWA,
   setClientDeviceInfo,
   getClientDeviceInfo,
-  getClientAuditHeaders
+  getClientAuditHeaders,
+  authFetch
 } from '../utils/clientDevice';
 import { getApiUrl } from '../hooks/apiUrl';
+import { useUserAuth } from '../hooks/useUserAuth';
 
 interface DeviceSetupModalProps {
   isOpen: boolean;
@@ -22,6 +24,7 @@ export const DeviceSetupModal: React.FC<DeviceSetupModalProps> = ({
   onClose,
   onSaved
 }) => {
+  const { usersConfigured, isAuthenticated, requireLoginForEdits, openAccountModal } = useUserAuth();
   const isPwa = isStandalonePWA();
   const [operatorInput, setOperatorInput] = useState<string>(getOperatorName());
   const [deviceLabelInput, setDeviceLabelInput] = useState<string>(getDeviceName());
@@ -52,7 +55,7 @@ export const DeviceSetupModal: React.FC<DeviceSetupModalProps> = ({
 
       // Register with server
       const clientInfo = getClientDeviceInfo();
-      await fetch(getApiUrl('api/devices/register'), {
+      await authFetch(getApiUrl('api/devices/register'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -116,7 +119,7 @@ export const DeviceSetupModal: React.FC<DeviceSetupModalProps> = ({
         </div>
 
         {/* Informational Callout */}
-        <div className="p-3 bg-cool-gray-950/70 rounded-xl border border-cool-gray-800 text-xs text-cool-gray-300 space-y-1">
+        <div className="p-3 bg-cool-gray-950/70 rounded-xl border border-cool-gray-800 text-xs text-cool-gray-300 space-y-1.5">
           <div className="flex items-center gap-1.5 text-cyan-400 font-bold text-[11px]">
             <Shield className="w-3.5 h-3.5" />
             <span>Audit Trail Attribution</span>
@@ -124,6 +127,26 @@ export const DeviceSetupModal: React.FC<DeviceSetupModalProps> = ({
           <p className="text-[11px] text-cool-gray-400 leading-relaxed">
             In standalone PWA mode, this operator name replaces the generic "web browser" label in your history log, so every meat cut movement and inventory edit is properly attributed to you.
           </p>
+          {usersConfigured && !isAuthenticated && (
+            <div className="pt-2 border-t border-cool-gray-800 space-y-2">
+              {requireLoginForEdits && (
+                <p className="text-[11px] text-amber-300 font-medium leading-relaxed">
+                  User PIN sign-in is required on this server before making inventory changes.
+                </p>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  openAccountModal('signin');
+                }}
+                className="w-full px-3.5 py-2 rounded-lg text-xs font-bold bg-cyan-600 hover:bg-cyan-500 text-white transition cursor-pointer flex items-center justify-center gap-1.5"
+              >
+                <Shield className="w-3.5 h-3.5" />
+                <span>Sign In with User PIN</span>
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Error message */}

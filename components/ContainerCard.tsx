@@ -5,6 +5,7 @@ import { PlusIcon, HistoryIcon, MoveIcon, RetireIcon, EditIcon } from './icons';
 import { getContainerIcon } from './ContainerIconsMap';
 import MeatCutRow from './MeatCutRow';
 import { Move, MoreVertical, Trash2 } from 'lucide-react';
+import { isCutPrioritized } from '../utils/tagRestockRules';
 
 const ContainerCard: React.FC<ContainerCardProps> = ({ container, meatCuts, dispatch, openModal, state, isDimmed, highlightedMeatCutIds, isHighlighted, onFindProduct }) => {
   const Icon = getContainerIcon(container?.icon || 'generic');
@@ -320,7 +321,7 @@ const ContainerCard: React.FC<ContainerCardProps> = ({ container, meatCuts, disp
             </div>
         </div>
         <div className="space-y-1">
-            {meatCuts.map(cut => (
+            {[...meatCuts].sort((a, b) => (isCutPrioritized(b, state.tags) ? 1 : 0) - (isCutPrioritized(a, state.tags) ? 1 : 0)).map(cut => (
             <MeatCutRow 
                 key={cut.id} 
                 meatCut={cut} 

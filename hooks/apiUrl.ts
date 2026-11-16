@@ -1,4 +1,6 @@
 // API url helper
+import { getClientAuditHeaders } from '../utils/clientDevice';
+
 /**
  * Resolves an API path to the correct absolute path depending on the runtime environment.
  * Handles Home Assistant Ingress (by retaining the ingress token/context prefix)
@@ -63,8 +65,17 @@ export async function fetchWithRetry(
     }, timeoutMs);
 
     try {
+      const mergedHeaders = new Headers(getClientAuditHeaders());
+      if (options.headers) {
+        const callerHeaders = new Headers(options.headers);
+        callerHeaders.forEach((value, key) => {
+          mergedHeaders.set(key, value);
+        });
+      }
       const response = await fetch(url, {
         ...options,
+        headers: mergedHeaders,
+        credentials: options.credentials ?? 'include',
         signal: options.signal || controller.signal
       });
       clearTimeout(timeoutId);

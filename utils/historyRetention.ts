@@ -43,6 +43,7 @@ export function calculateHistoryRetention(
   const offSiteEntries = state.offSiteEntries || [];
   const containers = state.containers || [];
   const movementOrders = state.movementOrders || [];
+  const historyList = history || [];
 
   // 1. Identify packages and lots currently in the system (Active physical custody)
   const activeSerials = new Set<string>();
@@ -50,8 +51,8 @@ export function calculateHistoryRetention(
   const activeLots = new Set<string>();
   const activeContainerIds = new Set<string>();
 
-  // On-site cuts currently in stock
-  meatCuts.forEach(cut => {
+  for (let i = 0; i < meatCuts.length; i++) {
+    const cut = meatCuts[i];
     if ((cut.quantity ?? 1) > 0) {
       if (cut.id) activeItemIds.add(cut.id.toLowerCase());
       if (cut.serial && cut.serial.trim()) {
@@ -64,10 +65,10 @@ export function calculateHistoryRetention(
         activeContainerIds.add(cut.containerId);
       }
     }
-  });
+  }
 
-  // Off-site entries currently in stock (not archived and pieces > 0)
-  offSiteEntries.forEach(entry => {
+  for (let i = 0; i < offSiteEntries.length; i++) {
+    const entry = offSiteEntries[i];
     const isArchived = Boolean(entry.archived);
     const pieces = entry.pieces ?? 1;
     if (!isArchived && pieces > 0) {
@@ -79,34 +80,61 @@ export function calculateHistoryRetention(
         activeLots.add(entry.lot.trim().toLowerCase());
       }
     }
-  });
+  }
 
-  // Active containers currently existing in system
-  containers.forEach(c => {
+  for (let i = 0; i < containers.length; i++) {
+    const c = containers[i];
     if (!c.isArchived) {
       activeContainerIds.add(c.id);
     }
-  });
+  }
 
   // 2. Build index of all known serials and lot numbers (active and historical)
-  const allKnownSerials = new Map<string, string>(); // lower -> original
-  const allKnownLots = new Map<string, string>();     // lower -> original
+  const allKnownSerials = new Set<string>();
+  const allKnownLots = new Set<string>();
 
-  offSiteEntries.forEach(e => {
+  for (let i = 0; i < offSiteEntries.length; i++) {
+    const e = offSiteEntries[i];
     if (e.serial && e.serial.trim()) {
-      allKnownSerials.set(e.serial.trim().toLowerCase(), e.serial.trim());
+      const s = e.serial.trim().toLowerCase();
+      if (s.length >= 3) allKnownSerials.add(s);
     }
     if (e.lot && e.lot.trim()) {
-      allKnownLots.set(e.lot.trim().toLowerCase(), e.lot.trim());
+      const l = e.lot.trim().toLowerCase();
+      if (l.length >= 3) allKnownLots.add(l);
+    }
+  }
+
+  for (let i = 0; i < meatCuts.length; i++) {
+    const c = meatCuts[i];
+    if (c.serial && c.serial.trim()) {
+      const s = c.serial.trim().toLowerCase();
+      if (s.length >= 3) allKnownSerials.add(s);
+    }
+    if (c.lot && c.lot.trim()) {
+      const l = c.lot.trim().toLowerCase();
+      if (l.length >= 3) allKnownLots.add(l);
+    }
+  }
+
+  // Separate single-token identifiers from multi-word identifiers for O(1) token matching
+  const singleTokenSerials = new Set<string>();
+  const fallbackSerials: string[] = [];
+  allKnownSerials.forEach(s => {
+    if (/^[a-z0-9_./-]+$/.test(s)) {
+      singleTokenSerials.add(s);
+    } else {
+      fallbackSerials.push(s);
     }
   });
 
-  meatCuts.forEach(c => {
-    if (c.serial && c.serial.trim()) {
-      allKnownSerials.set(c.serial.trim().toLowerCase(), c.serial.trim());
-    }
-    if (c.lot && c.lot.trim()) {
-      allKnownLots.set(c.lot.trim().toLowerCase(), c.lot.trim());
+  const singleTokenLots = new Set<string>();
+  const fallbackLots: string[] = [];
+  allKnownLots.forEach(l => {
+    if (/^[a-z0-9_./-]+$/.test(l)) {
+      singleTokenLots.add(l);
+    } else {
+      fallbackLots.push(l);
     }
   });
 
@@ -119,19 +147,23 @@ export function calculateHistoryRetention(
   activeItemIds.forEach(id => packageLastSeen.set(`id:${id}`, Infinity));
   activeLots.forEach(l => lotLastSeen.set(`lot:${l}`, Infinity));
 
-  // Check movement orders for package activity dates
-  movementOrders.forEach(mo => {
+  for (let i = 0; i < movementOrders.length; i++) {
+    const mo = movementOrders[i];
     const moTime = new Date(mo.executedAt || mo.date || '').getTime();
     if (!isNaN(moTime)) {
-      (mo.moves || []).forEach(m => {
+      const moves = mo.moves || [];
+      for (let j = 0; j < moves.length; j++) {
+        const m = moves[j];
         if (m.entryId) {
           const key = `id:${m.entryId.toLowerCase()}`;
           if (packageLastSeen.get(key) !== Infinity) {
             packageLastSeen.set(key, Math.max(packageLastSeen.get(key) || 0, moTime));
           }
         }
-      });
-      (mo.originalEntries || []).forEach(oe => {
+      }
+      const origEntries = mo.originalEntries || [];
+      for (let j = 0; j < origEntries.length; j++) {
+        const oe = origEntries[j];
         if (oe.id) {
           const key = `id:${oe.id.toLowerCase()}`;
           if (packageLastSeen.get(key) !== Infinity) {
@@ -150,22 +182,78 @@ export function calculateHistoryRetention(
             lotLastSeen.set(key, Math.max(lotLastSeen.get(key) || 0, moTime));
           }
         }
-      });
+      }
     }
-  });
+  }
 
-  // Check all history entries to record the most recent event timestamp for departed packages
-  (history || []).forEach(h => {
+  // Helper to extract matched serials and lots from a lowercase description in O(tokens)
+  const extractMatchesFromDesc = (descLower: string): { serials: string[]; lots: string[] } => {
+    if (!descLower) return { serials: [], lots: [] };
+    const matchedSerialsSet = new Set<string>();
+    const matchedLotsSet = new Set<string>();
+
+    if (singleTokenSerials.size > 0 || singleTokenLots.size > 0) {
+      const compositeTokens = descLower.match(/[a-z0-9_./-]+/g);
+      if (compositeTokens) {
+        for (let t = 0; t < compositeTokens.length; t++) {
+          const tok = compositeTokens[t];
+          if (tok.length < 3) continue;
+          if (singleTokenSerials.has(tok)) matchedSerialsSet.add(tok);
+          if (singleTokenLots.has(tok)) matchedLotsSet.add(tok);
+        }
+      }
+      const alphaNumTokens = descLower.match(/[a-z0-9]+/g);
+      if (alphaNumTokens) {
+        for (let t = 0; t < alphaNumTokens.length; t++) {
+          const tok = alphaNumTokens[t];
+          if (tok.length < 3) continue;
+          if (singleTokenSerials.has(tok)) matchedSerialsSet.add(tok);
+          if (singleTokenLots.has(tok)) matchedLotsSet.add(tok);
+        }
+      }
+    }
+
+    for (let i = 0; i < fallbackSerials.length; i++) {
+      if (descLower.includes(fallbackSerials[i])) {
+        matchedSerialsSet.add(fallbackSerials[i]);
+      }
+    }
+    for (let i = 0; i < fallbackLots.length; i++) {
+      if (descLower.includes(fallbackLots[i])) {
+        matchedLotsSet.add(fallbackLots[i]);
+      }
+    }
+
+    return {
+      serials: Array.from(matchedSerialsSet),
+      lots: Array.from(matchedLotsSet)
+    };
+  };
+
+  // Single pre-pass over history entries caching parsed timestamp and matched serials/lots
+  interface ParsedHistoryMeta {
+    hTime: number;
+    targetLower: string;
+    matchedSerials: string[];
+    matchedLots: string[];
+  }
+  const parsedMeta: ParsedHistoryMeta[] = new Array(historyList.length);
+
+  for (let i = 0; i < historyList.length; i++) {
+    const h = historyList[i];
     const hTime = new Date(h.timestamp).getTime();
-    if (isNaN(hTime)) return;
+    const targetLower = h.targetId ? h.targetId.toLowerCase() : '';
+    const descLower = (h.description || '').toLowerCase();
+    const { serials: matchedSerials, lots: matchedLots } = extractMatchesFromDesc(descLower);
 
-    if (h.targetId) {
-      const targetLower = h.targetId.toLowerCase();
-      // If targetId is an item ID
+    parsedMeta[i] = { hTime, targetLower, matchedSerials, matchedLots };
+
+    if (isNaN(hTime)) continue;
+
+    if (targetLower) {
       if (packageLastSeen.get(`id:${targetLower}`) !== Infinity) {
         packageLastSeen.set(`id:${targetLower}`, Math.max(packageLastSeen.get(`id:${targetLower}`) || 0, hTime));
       }
-      // If targetId is a serial
       if (allKnownSerials.has(targetLower)) {
         if (packageLastSeen.get(`serial:${targetLower}`) !== Infinity) {
           packageLastSeen.set(`serial:${targetLower}`, Math.max(packageLastSeen.get(`serial:${targetLower}`) || 0, hTime));
@@ -173,35 +261,32 @@ export function calculateHistoryRetention(
       }
     }
 
-    // Check description for serial or lot mentions
-    const descLower = (h.description || '').toLowerCase();
-    allKnownSerials.forEach((_, serialLower) => {
-      if (serialLower.length >= 3 && descLower.includes(serialLower)) {
-        if (packageLastSeen.get(`serial:${serialLower}`) !== Infinity) {
-          packageLastSeen.set(`serial:${serialLower}`, Math.max(packageLastSeen.get(`serial:${serialLower}`) || 0, hTime));
-        }
+    for (let s = 0; s < matchedSerials.length; s++) {
+      const serialLower = matchedSerials[s];
+      if (packageLastSeen.get(`serial:${serialLower}`) !== Infinity) {
+        packageLastSeen.set(`serial:${serialLower}`, Math.max(packageLastSeen.get(`serial:${serialLower}`) || 0, hTime));
       }
-    });
+    }
 
-    allKnownLots.forEach((_, lotLower) => {
-      if (lotLower.length >= 3 && descLower.includes(lotLower)) {
-        if (lotLastSeen.get(`lot:${lotLower}`) !== Infinity) {
-          lotLastSeen.set(`lot:${lotLower}`, Math.max(lotLastSeen.get(`lot:${lotLower}`) || 0, hTime));
-        }
+    for (let l = 0; l < matchedLots.length; l++) {
+      const lotLower = matchedLots[l];
+      if (lotLastSeen.get(`lot:${lotLower}`) !== Infinity) {
+        lotLastSeen.set(`lot:${lotLower}`, Math.max(lotLastSeen.get(`lot:${lotLower}`) || 0, hTime));
       }
-    });
-  });
+    }
+  }
 
-  // 4. Partition history entries into toKeep and toPurge
+  // 4. Partition history entries into toKeep and toPurge using cached metadata
   const toKeep: HistoryEntry[] = [];
   const toPurge: HistoryEntry[] = [];
   let protectedActiveCount = 0;
 
-  (history || []).forEach(h => {
-    const hTime = new Date(h.timestamp).getTime();
+  for (let i = 0; i < historyList.length; i++) {
+    const h = historyList[i];
+    const { hTime, targetLower, matchedSerials, matchedLots } = parsedMeta[i];
     if (isNaN(hTime)) {
       toKeep.push(h);
-      return;
+      continue;
     }
 
     let packageLastSeenTime: number | null = null;
@@ -209,7 +294,6 @@ export function calculateHistoryRetention(
     let isTiedToActiveContainer = false;
 
     if (h.targetId) {
-      const targetLower = h.targetId.toLowerCase();
       if (activeContainerIds.has(h.targetId)) {
         isTiedToActiveContainer = true;
       }
@@ -221,42 +305,34 @@ export function calculateHistoryRetention(
       }
     }
 
-    const descLower = (h.description || '').toLowerCase();
-    allKnownSerials.forEach((_, serialLower) => {
-      if (serialLower.length >= 3 && descLower.includes(serialLower)) {
-        if (packageLastSeen.has(`serial:${serialLower}`)) {
-          packageLastSeenTime = Math.max(packageLastSeenTime ?? 0, packageLastSeen.get(`serial:${serialLower}`)!);
-        }
+    for (let s = 0; s < matchedSerials.length; s++) {
+      const serialLower = matchedSerials[s];
+      if (packageLastSeen.has(`serial:${serialLower}`)) {
+        packageLastSeenTime = Math.max(packageLastSeenTime ?? 0, packageLastSeen.get(`serial:${serialLower}`)!);
       }
-    });
+    }
 
-    allKnownLots.forEach((_, lotLower) => {
-      if (lotLower.length >= 3 && descLower.includes(lotLower)) {
-        if (lotLastSeen.has(`lot:${lotLower}`)) {
-          lotLastSeenTime = Math.max(lotLastSeenTime ?? 0, lotLastSeen.get(`lot:${lotLower}`)!);
-        }
+    for (let l = 0; l < matchedLots.length; l++) {
+      const lotLower = matchedLots[l];
+      if (lotLastSeen.has(`lot:${lotLower}`)) {
+        lotLastSeenTime = Math.max(lotLastSeenTime ?? 0, lotLastSeen.get(`lot:${lotLower}`)!);
       }
-    });
+    }
 
-    // Evaluation Rule:
     // A. If tied to a package:
     if (packageLastSeenTime !== null) {
-      // Package is still active in the system: NEVER purge!
       if (packageLastSeenTime === Infinity) {
         protectedActiveCount++;
         toKeep.push(h);
-        return;
+        continue;
       }
-      // Package has departed the system: check how long it has been out of our hands
       const outOfHandsDuration = now - packageLastSeenTime;
       if (outOfHandsDuration < retentionMs) {
-        // Less than X years out of our hands: PROTECTED!
         toKeep.push(h);
-        return;
+        continue;
       }
-      // Package has been out of our hands for at least X years: eligible for purge
       toPurge.push(h);
-      return;
+      continue;
     }
 
     // B. If tied to a lot:
@@ -264,36 +340,35 @@ export function calculateHistoryRetention(
       if (lotLastSeenTime === Infinity) {
         protectedActiveCount++;
         toKeep.push(h);
-        return;
+        continue;
       }
       const outOfHandsDuration = now - lotLastSeenTime;
       if (outOfHandsDuration < retentionMs) {
         toKeep.push(h);
-        return;
+        continue;
       }
       toPurge.push(h);
-      return;
+      continue;
     }
 
     // C. If tied to an active container currently in use:
     if (isTiedToActiveContainer) {
       toKeep.push(h);
-      return;
+      continue;
     }
 
     // D. General/system maintenance entry not tied to a package:
-    // Retain unless the action itself was performed >= retentionMs ago
     if (hTime < cutoffTime) {
       toPurge.push(h);
     } else {
       toKeep.push(h);
     }
-  });
+  }
 
   return {
     toKeep,
     toPurge,
-    totalEntries: (history || []).length,
+    totalEntries: historyList.length,
     activePackagesCount: activeSerials.size + activeItemIds.size,
     protectedActiveCount,
     purgedCount: toPurge.length,

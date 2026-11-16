@@ -5,6 +5,7 @@ import { Search, ChevronDown, ChevronRight, PackageOpen, ArrowRightCircle, Trash
 import { Tag as AppTag, CustomList, Action } from '../types';
 import { compareBoxLabels } from '../utils/boxSort';
 import { SearchableProductSelect } from '../components/SearchableProductSelect';
+import { getTagActionIcon } from '../utils/tagRestockRules';
 
 export const OffsiteCategoryFilterModal = ({
   primaryOptions,
@@ -776,10 +777,11 @@ export const OffSiteSpreadsheet = ({
   // Advanced Filter States
   const [simulateBoxCount, setSimulateBoxCount] = useState(() => localStorage.getItem("offsite-simulate-box-count") === "true");
   const theoreticalBoxWeight = useMemo(() => {
-    const val = localStorage.getItem("offsite-theoretical-box-weight");
+    const cfgVal = (state.appConfig || []).find((c: any) => c.key === 'offsite-theoretical-box-weight')?.value;
+    const val = cfgVal ?? localStorage.getItem("offsite-theoretical-box-weight");
     const parsed = val ? parseFloat(val) : 40;
     return isNaN(parsed) || parsed <= 0 ? 40 : parsed;
-  }, []);
+  }, [state.appConfig]);
 
   // Bulk Edit and Delete States
   const [isBulkEditModalOpen, setIsBulkEditModalOpen] = useState(false);
@@ -1128,7 +1130,7 @@ export const OffSiteSpreadsheet = ({
               ? 'bg-cyan-500/10 border-cyan-500/30 text-cyan-400 hover:scale-105'
               : 'border-cool-gray-700 hover:border-cool-gray-500 hover:bg-cool-gray-800 text-cool-gray-400 hover:text-white'
           }`}
-          title="Manage persistent tags (e.g. Use First, Not For Sale)"
+          title="Manage persistent tags"
         >
           <Tag size={13} />
         </button>
@@ -3768,7 +3770,7 @@ export const OffSiteSpreadsheet = ({
                                       className="inline-flex items-center gap-1 text-[8px] border px-1.5 py-0.5 rounded font-black tracking-wide uppercase select-none animate-fade-in group/boxtag hover:border-red-500/40 transition-colors"
                                       title={`Tag on item: ${tag.description || tag.name} (Click ✕ to remove from box)`}
                                     >
-                                      <span>{tag.id === 'use-first' ? '🍳 ' : tag.id === 'not-for-sale' ? '🛑 ' : '🏷️ '}{tag.name}</span>
+                                      <span>{getTagActionIcon(tag)} {tag.name}</span>
                                       <button
                                         type="button"
                                         onClick={(e) => {
@@ -3862,7 +3864,7 @@ export const OffSiteSpreadsheet = ({
                                             className="inline-flex items-center gap-1 text-[8px] border px-1.5 py-0.2 rounded font-black tracking-wide uppercase select-none group/cutTag hover:border-red-500/40 transition-colors"
                                             title={`Tag: ${tag.description || tag.name} (Click ✕ to remove tag from this cut)`}
                                           >
-                                            <span>{tag.id === 'use-first' ? '🍳 ' : tag.id === 'not-for-sale' ? '🛑 ' : '🏷️ '}{tag.name}</span>
+                                            <span>{getTagActionIcon(tag)} {tag.name}</span>
                                             <button
                                               type="button"
                                               onClick={(e) => {
@@ -4517,7 +4519,7 @@ export const OffSiteSpreadsheet = ({
                                               className="inline-flex items-center gap-1 text-[8px] border px-1.5 py-0.5 rounded font-semibold uppercase select-none group/tag hover:border-red-500/40 transition-colors"
                                               title={`${tag.description || tag.name} (Click ✕ to remove tag)`}
                                             >
-                                              <span>{tag.id === 'use-first' ? '🍳 ' : tag.id === 'not-for-sale' ? '🛑 ' : '🏷️ '}{tag.name}</span>
+                                              <span>{getTagActionIcon(tag)} {tag.name}</span>
                                               <button
                                                 type="button"
                                                 onClick={(e) => {
@@ -4580,7 +4582,7 @@ export const OffSiteSpreadsheet = ({
                                               className="inline-flex items-center gap-1 text-[8px] border px-1.5 py-0.5 rounded font-black tracking-wide uppercase select-none group/tag hover:border-red-500/40 transition-colors"
                                               title={`Tag: ${tag.description || tag.name} (Click ✕ to remove tag)`}
                                             >
-                                              <span>{tag.id === 'use-first' ? '🍳 ' : tag.id === 'not-for-sale' ? '🛑 ' : '🏷️ '}{tag.name}</span>
+                                              <span>{getTagActionIcon(tag)} {tag.name}</span>
                                               <button
                                                 type="button"
                                                 onClick={(e) => {

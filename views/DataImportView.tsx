@@ -10,15 +10,28 @@ import {
 import JSZip from 'jszip';
 import { generateUUID } from '../components/uuidHelper';
 import { getApiUrl } from '../hooks/apiUrl';
+import { authFetch } from '../utils/clientDevice';
 
 interface DataImportViewProps {
   state: InventoryState;
   dispatch: any; 
   onNavigateToView: (view: any) => void;
+  activeSubTab?: 'backup' | 'wipe';
+  onSubTabChange?: (tab: 'backup' | 'wipe') => void;
+  hideInternalHeader?: boolean;
 }
 
-export function DataImportView({ state, dispatch, onNavigateToView }: DataImportViewProps) {
-  const [activeTab, setActiveTab] = useState<'backup' | 'wipe'>('backup');
+export function DataImportView({
+  state,
+  dispatch,
+  onNavigateToView,
+  activeSubTab: controlledTab,
+  onSubTabChange,
+  hideInternalHeader = false,
+}: DataImportViewProps) {
+  const [internalActiveTab, setInternalActiveTab] = useState<'backup' | 'wipe'>('backup');
+  const activeTab = controlledTab ?? internalActiveTab;
+  const setActiveTab = onSubTabChange ?? setInternalActiveTab;
   
   const [onSiteBackups, setOnSiteBackups] = useState<any[]>([]);
   const [loadingBackups, setLoadingBackups] = useState(false);
@@ -74,7 +87,7 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
     setLoadingAutoConfig(true);
     try {
       const token = localStorage.getItem('freezerToken');
-      const res = await fetch(getApiUrl('api/backups/config'), {
+      const res = await authFetch(getApiUrl('api/backups/config'), {
         headers: { ...(token ? { 'Authorization': `Bearer ${token}` } : {}) }
       });
       if (res.ok) {
@@ -107,7 +120,7 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
   const handleSaveAutoConfig = async () => {
     try {
       const token = localStorage.getItem('freezerToken');
-      const res = await fetch(getApiUrl('api/backups/config'), {
+      const res = await authFetch(getApiUrl('api/backups/config'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -146,7 +159,7 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
     setLoadingBackups(true);
     try {
       const token = localStorage.getItem('freezerToken');
-      const res = await fetch(getApiUrl('api/backups'), {
+      const res = await authFetch(getApiUrl('api/backups'), {
         headers: { ...(token ? { 'Authorization': `Bearer ${token}` } : {}) }
       });
       if (res.ok) {
@@ -164,7 +177,7 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
     setIsValidatingDeps(true);
     try {
       const token = localStorage.getItem('freezerToken');
-      const res = await fetch(getApiUrl(`api/backups/check-dependencies/${filename}`), {
+      const res = await authFetch(getApiUrl(`api/backups/check-dependencies/${filename}`), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -187,7 +200,7 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
     setLoadingPreview(filename);
     try {
       const token = localStorage.getItem('freezerToken');
-      const res = await fetch(getApiUrl(`api/backups/preview/${filename}`), {
+      const res = await authFetch(getApiUrl(`api/backups/preview/${filename}`), {
         headers: { ...(token ? { 'Authorization': `Bearer ${token}` } : {}) }
       });
       if (res.ok) {
@@ -521,7 +534,7 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
       if (selTags) activeSections.push('tags');
 
       const token = localStorage.getItem('freezerToken');
-      const res = await fetch(getApiUrl('api/backups/create'), {
+      const res = await authFetch(getApiUrl('api/backups/create'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -550,7 +563,7 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
       await (window as any).__startPreviewMode(filename);
     } else {
       try {
-        const res = await fetch(getApiUrl('api/backups/preview-mode/start'), {
+        const res = await authFetch(getApiUrl('api/backups/preview-mode/start'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ filename })
@@ -600,7 +613,7 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
           }
 
           const token = localStorage.getItem('freezerToken');
-          const res = await fetch(getApiUrl(`api/backups/restore/${filename}`), {
+          const res = await authFetch(getApiUrl(`api/backups/restore/${filename}`), {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -629,7 +642,7 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
       async () => {
         try {
           const token = localStorage.getItem('freezerToken');
-          const res = await fetch(getApiUrl(`api/backups/${filename}`), {
+          const res = await authFetch(getApiUrl(`api/backups/${filename}`), {
             method: 'DELETE',
             headers: { ...(token ? { 'Authorization': `Bearer ${token}` } : {}) }
           });
@@ -649,7 +662,7 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
   const handleDownloadOnSiteBackup = async (filename: string) => {
     try {
       const token = localStorage.getItem('freezerToken');
-      const res = await fetch(getApiUrl(`api/backups/download/${filename}`), {
+      const res = await authFetch(getApiUrl(`api/backups/download/${filename}`), {
         method: 'GET',
         headers: {
           ...(token ? { 'Authorization': `Bearer ${token}` } : {})
@@ -699,7 +712,7 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
 
           setUploadProgress({ title: 'Restoring Database', total: 100, current: 40, status: 'Uploading backup to server snapshot vault...', unit: '%' });
           const token = localStorage.getItem('freezerToken');
-          const uploadRes = await fetch(getApiUrl('api/backups/upload'), {
+          const uploadRes = await authFetch(getApiUrl('api/backups/upload'), {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -733,7 +746,7 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
             throw new Error('Select at least one scope/section to restore!');
           }
 
-          const restoreRes = await fetch(getApiUrl(`api/backups/restore/${savedFilename}`), {
+          const restoreRes = await authFetch(getApiUrl(`api/backups/restore/${savedFilename}`), {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -775,7 +788,7 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
         const base64 = await blobToBase64(file);
         setUploadProgress({ title: 'Uploading Snapshot', total: 100, current: 70, status: 'Uploading to snapshot vault...', unit: '%' });
 
-        const uploadRes = await fetch(getApiUrl('api/backups/upload'), {
+        const uploadRes = await authFetch(getApiUrl('api/backups/upload'), {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -810,7 +823,7 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
             unit: 'chunks'
           });
 
-          const res = await fetch(getApiUrl('api/backups/upload-chunk'), {
+          const res = await authFetch(getApiUrl('api/backups/upload-chunk'), {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -845,7 +858,7 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
     setExportingZip(true);
     try {
       const token = localStorage.getItem('freezerToken');
-      const res = await fetch(getApiUrl('api/backups/export-zip'), {
+      const res = await authFetch(getApiUrl('api/backups/export-zip'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -948,7 +961,7 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
           setUploadProgress({ title: 'Restoring Database', total: 100, current: 40, status: 'Restoring database records and schemas...', unit: '%' });
 
           const token = localStorage.getItem('freezerToken');
-          const res = await fetch(getApiUrl('api/backups/import-zip'), {
+          const res = await authFetch(getApiUrl('api/backups/import-zip'), {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -1011,7 +1024,7 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
               );
 
               try {
-                const batchRes = await fetch(getApiUrl('api/backups/upload-images-batch'), {
+                const batchRes = await authFetch(getApiUrl('api/backups/upload-images-batch'), {
                   method: 'POST',
                   headers: {
                     'Content-Type': 'application/json',
@@ -1029,7 +1042,7 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
                 console.warn('Batch upload fallback triggered:', batchErr);
                 for (const item of batchPayload) {
                   try {
-                    await fetch(getApiUrl('api/backups/upload-image'), {
+                    await authFetch(getApiUrl('api/backups/upload-image'), {
                       method: 'POST',
                       headers: {
                         'Content-Type': 'application/json',
@@ -1070,29 +1083,32 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
   };
 
   return (
-    <div className="max-w-5xl mx-auto py-2 animate-fade-in text-cool-gray-300">
-      
-      {/* Header Panel */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6 pb-4 border-b border-cool-gray-800">
-        <div>
-          <h2 className="text-2xl font-bold font-sans tracking-tight text-white flex items-center gap-3">
-            <span className="p-2 rounded-xl bg-cyan-950/40 border border-cyan-500/30">
-              <Database className="w-6 h-6 text-cyan-400" />
-            </span>
-            System Database Manager
-          </h2>
-          <p className="text-xs text-cool-gray-400 mt-1.5 leading-relaxed">
-            Manage complete and partial database backups, point-in-time state snapshots, operations restoration, and bulk cleaning controls safely.
-          </p>
-        </div>
-        
-        <button
-          onClick={() => onNavigateToView('freezer')}
-          className="self-start md:self-auto px-4 py-2 rounded-xl bg-cool-gray-850 hover:bg-cool-gray-800 border border-cool-gray-700 text-cool-gray-200 text-xs font-bold transition duration-150 cursor-pointer"
-        >
-          Back to Freezer Map
-        </button>
-      </div>
+    <div className={`${hideInternalHeader ? 'max-w-5xl' : 'max-w-5xl mx-auto py-2'} animate-fade-in text-cool-gray-300`}>
+      {!hideInternalHeader && (
+        <>
+          {/* Header Panel */}
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6 pb-4 border-b border-cool-gray-800">
+            <div>
+              <h2 className="text-2xl font-bold font-sans tracking-tight text-white flex items-center gap-3">
+                <span className="p-2 rounded-xl bg-cyan-950/40 border border-cyan-500/30">
+                  <Database className="w-6 h-6 text-cyan-400" />
+                </span>
+                System Database Manager
+              </h2>
+              <p className="text-xs text-cool-gray-400 mt-1.5 leading-relaxed">
+                Manage complete and partial database backups, point-in-time state snapshots, operations restoration, and bulk cleaning controls safely.
+              </p>
+            </div>
+            
+            <button
+              onClick={() => onNavigateToView('freezer')}
+              className="self-start md:self-auto px-4 py-2 rounded-xl bg-cool-gray-850 hover:bg-cool-gray-800 border border-cool-gray-700 text-cool-gray-200 text-xs font-bold transition duration-150 cursor-pointer"
+            >
+              Back to Freezer Map
+            </button>
+          </div>
+        </>
+      )}
 
       {statusMessage && (
         <div className={`p-4 rounded-xl border mb-6 flex items-start gap-3 text-xs md:text-sm font-semibold shadow-xl ${
@@ -1100,34 +1116,35 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
             ? 'bg-green-950/35 border-green-500/30 text-green-300' 
             : 'bg-red-950/25 border-red-500/30 text-red-300'
         }`}>
-          <CheckCircle2 className="w-5 h-5 flex-shrink-0 text-cyan-400 animate-pulse" />
+          <CheckCircle2 className="w-5 h-5 flex-shrink-0 text-cyan-400" />
           <span>{statusMessage.label}</span>
         </div>
       )}
 
-      {/* Selector Panels tabs */}
-      <div className="flex border-b border-cool-gray-800 mb-6 font-medium flex-wrap">
-        <button
-          onClick={() => setActiveTab('backup')}
-          className={`px-5 py-3 text-xs uppercase tracking-wider font-bold transition duration-150 border-b-2 cursor-pointer ${
-            activeTab === 'backup' 
-              ? 'border-cyan-500 text-cyan-400 bg-cyan-950/10' 
-              : 'border-transparent text-cool-gray-450 hover:text-white'
-          }`}
-        >
-          💾 System Snapshots & Backups
-        </button>
-        <button
-          onClick={() => setActiveTab('wipe')}
-          className={`px-5 py-3 text-xs uppercase tracking-wider font-bold transition duration-150 border-b-2 cursor-pointer ${
-            activeTab === 'wipe' 
-              ? 'border-rose-500 text-rose-450 bg-rose-950/10' 
-              : 'border-transparent text-cool-gray-450 hover:text-rose-400'
-          }`}
-        >
-          🗑️ Reset Database (Bulk Deletes)
-        </button>
-      </div>
+      {!hideInternalHeader && (
+        <div className="flex border-b border-cool-gray-800 mb-6 font-medium flex-wrap">
+          <button
+            onClick={() => setActiveTab('backup')}
+            className={`px-5 py-3 text-xs uppercase tracking-wider font-bold transition duration-150 border-b-2 cursor-pointer ${
+              activeTab === 'backup' 
+                ? 'border-cyan-500 text-cyan-400 bg-cyan-950/10' 
+                : 'border-transparent text-cool-gray-450 hover:text-white'
+            }`}
+          >
+            💾 System Snapshots & Backups
+          </button>
+          <button
+            onClick={() => setActiveTab('wipe')}
+            className={`px-5 py-3 text-xs uppercase tracking-wider font-bold transition duration-150 border-b-2 cursor-pointer ${
+              activeTab === 'wipe' 
+                ? 'border-rose-500 text-rose-450 bg-rose-950/10' 
+                : 'border-transparent text-cool-gray-450 hover:text-rose-400'
+            }`}
+          >
+            🗑️ Reset Database (Bulk Deletes)
+          </button>
+        </div>
+      )}
 
       {/* TAB B: Backup / Restore snapshots ZIP */}
       {activeTab === 'backup' && (
@@ -1934,7 +1951,7 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
                       <button
                         type="button"
                         onClick={() => {
-                          const onSiteOnly = ['freezers', 'containers', 'container_templates', 'products', 'categories', 'meat_cuts', 'custom_lists', 'tags', 'butcher_orders', 'notification_settings', 'notification_logs', 'app_config', 'history', 'pwa_devices', 'undo_sql_journal', 'voice_dictionary'];
+                          const onSiteOnly = ['freezers', 'containers', 'container_templates', 'products', 'categories', 'meat_cuts', 'custom_lists', 'tags', 'butcher_orders', 'notification_channels', 'notification_settings', 'notification_logs', 'app_config', 'history', 'pwa_devices', 'undo_sql_journal', 'voice_dictionary', 'app_users', 'user_sessions'];
                           selectAllTables(onSiteOnly);
                         }}
                         className="px-2.5 py-1 text-[11px] font-bold bg-cool-gray-850 hover:bg-cool-gray-800 text-indigo-300 rounded-lg border border-cool-gray-750 transition cursor-pointer"
@@ -1986,12 +2003,15 @@ export function DataImportView({ state, dispatch, onNavigateToView }: DataImport
                             { name: 'custom_lists', label: 'Custom Shopping & Pick Lists', category: 'lists', description: 'Pick lists, shopping requisitions, and custom lists' },
                             { name: 'tags', label: 'Quality & Status Tags', category: 'lists', description: 'Custom tags, quality flags, and search labels' },
                             { name: 'app_config', label: 'System & Application Config', category: 'system', description: 'Application settings, preferences, and operational defaults' },
-                            { name: 'notification_settings', label: 'Notification Settings', category: 'system', description: 'Alert criteria, threshold rules, and notification endpoints' },
+                            { name: 'notification_channels', label: 'Notification Delivery Channels', category: 'system', description: 'Named SMTP email, webhook POST, and in-app notification endpoints' },
+                            { name: 'notification_settings', label: 'Notification & Digest Settings', category: 'system', description: 'Daily digest windows, default delivery routes, and system notification preferences' },
                             { name: 'notification_logs', label: 'Notification Audit Logs', category: 'system', description: 'Historical record of sent alerts and system notifications' },
                             { name: 'history', label: 'Activity Audit Log', category: 'system', description: 'Comprehensive transaction history and user audit trails' },
                             { name: 'pwa_devices', label: 'PWA Device Registry', category: 'system', description: 'Connected mobile scanner devices and client sync endpoints' },
                             { name: 'undo_sql_journal', label: 'Undo Transaction SQL Journal', category: 'system', description: 'Microsecond inverse SQL rollback operations for transaction undo' },
-                            { name: 'voice_dictionary', label: 'Voice Control Custom Dictionary', category: 'system', description: 'Custom spoken aliases and phrase rewrites for local voice commands' }
+                            { name: 'voice_dictionary', label: 'Voice Control Custom Dictionary', category: 'system', description: 'Custom spoken aliases and phrase rewrites for local voice commands' },
+                            { name: 'app_users', label: 'Local User Accounts', category: 'system', description: 'User profiles, roles (admin/user), and salted PIN credentials' },
+                            { name: 'user_sessions', label: 'User Login Sessions', category: 'system', description: 'Persistent trusted device session tokens for signed-in users' }
                           ])
                             .filter((def: any) => tableFilterCategory === 'all' || def.category === tableFilterCategory)
                             .map((def: any) => {

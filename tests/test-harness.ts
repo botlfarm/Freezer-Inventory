@@ -15,6 +15,7 @@ export const TABLE_NAMES = [
   'boxes',
   'off_site_entries',
   'custom_lists',
+  'notification_channels',
   'notification_settings',
   'notification_logs',
   'tags',
@@ -25,7 +26,9 @@ export const TABLE_NAMES = [
   'app_config',
   'pwa_devices',
   'undo_sql_journal',
-  'voice_dictionary'
+  'voice_dictionary',
+  'app_users',
+  'user_sessions'
 ];
 
 export function createTestDatabase(dbPath: string = ':memory:'): Database.Database {
@@ -152,7 +155,25 @@ export function createTestDatabase(dbPath: string = ':memory:'): Database.Databa
       items TEXT,
       notificationEnabled INTEGER DEFAULT 0,
       notificationType TEXT DEFAULT 'all_items',
+      notificationChannelIds TEXT,
+      notificationRecipientOverride TEXT,
+      notificationDailyDigestMode TEXT,
+      notificationDigestChannelIds TEXT,
+      notificationCustomSchedule TEXT,
+      notificationImmediate TEXT,
       lastNotifiedAt TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS notification_channels (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      type TEXT NOT NULL,
+      enabled INTEGER DEFAULT 1,
+      config TEXT,
+      createdAt TEXT,
+      updatedAt TEXT,
+      lastTestedAt TEXT,
+      lastTestStatus TEXT
     );
 
     CREATE TABLE IF NOT EXISTS notification_settings (
@@ -162,6 +183,8 @@ export function createTestDatabase(dbPath: string = ':memory:'): Database.Databa
       digestTime TEXT DEFAULT '20:00',
       timezone TEXT DEFAULT 'America/New_York',
       method TEXT DEFAULT 'in_app',
+      defaultChannelIds TEXT,
+      systemRoutes TEXT,
       smtpHost TEXT,
       smtpPort INTEGER DEFAULT 587,
       smtpUser TEXT,
@@ -183,7 +206,12 @@ export function createTestDatabase(dbPath: string = ':memory:'): Database.Databa
       message TEXT NOT NULL,
       method TEXT NOT NULL,
       status TEXT NOT NULL,
-      error TEXT
+      error TEXT,
+      channelId TEXT,
+      channelName TEXT,
+      eventSource TEXT,
+      listId TEXT,
+      listName TEXT
     );
 
     CREATE TABLE IF NOT EXISTS tags (
@@ -192,7 +220,8 @@ export function createTestDatabase(dbPath: string = ':memory:'): Database.Databa
       description TEXT,
       color TEXT,
       textColor TEXT,
-      excludeFromDisplayRestock INTEGER DEFAULT 0
+      excludeFromDisplayRestock INTEGER DEFAULT 0,
+      prioritizeItem INTEGER DEFAULT 0
     );
 
     CREATE TABLE IF NOT EXISTS locations (
@@ -266,6 +295,7 @@ export function createTestDatabase(dbPath: string = ':memory:'): Database.Databa
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       operator TEXT,
+      userId TEXT,
       deviceType TEXT,
       clientDevice TEXT,
       clientInfo TEXT,
@@ -275,7 +305,34 @@ export function createTestDatabase(dbPath: string = ':memory:'): Database.Databa
       lastIp TEXT,
       userAgent TEXT,
       status TEXT DEFAULT 'authorized',
+      autoUpdateCache INTEGER DEFAULT 1,
       notes TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS app_users (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'user',
+      pinHash TEXT NOT NULL,
+      pinSalt TEXT NOT NULL,
+      isActive INTEGER DEFAULT 1,
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL,
+      lastLoginAt TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS user_sessions (
+      id TEXT PRIMARY KEY,
+      userId TEXT NOT NULL,
+      tokenHash TEXT NOT NULL UNIQUE,
+      deviceId TEXT,
+      deviceName TEXT,
+      userAgent TEXT,
+      ip TEXT,
+      createdAt TEXT NOT NULL,
+      lastSeenAt TEXT NOT NULL,
+      expiresAt TEXT,
+      revokedAt TEXT
     );
 
     CREATE TABLE IF NOT EXISTS undo_sql_journal (
@@ -364,11 +421,11 @@ export function seedSampleDatabase(db: Database.Database): void {
   insertContainer.run('bin-chest-overflow', 'Chest Freezer Bin 1', 'freezer-chest', 'tpl-lug', 0, 'Archive', 0, 0);
 
   const insertTag = db.prepare(`
-    INSERT INTO tags (id, name, description, color, textColor, excludeFromDisplayRestock)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO tags (id, name, description, color, textColor, excludeFromDisplayRestock, prioritizeItem)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
   `);
-  insertTag.run('tag-grass-fed', '100% Grass-Fed', 'Pasture raised and grass finished', '#10b981', '#ffffff', 0);
-  insertTag.run('tag-not-for-sale', 'Not For Sale', 'Farm reserve or personal stock', '#ef4444', '#ffffff', 1);
+  insertTag.run('tag-grass-fed', '100% Grass-Fed', 'Pasture raised and grass finished', '#10b981', '#ffffff', 0, 0);
+  insertTag.run('tag-not-for-sale', 'Reserve Stock', 'Farm reserve or personal stock', '#ef4444', '#ffffff', 1, 0);
 
   const insertCustomList = db.prepare(`
     INSERT INTO custom_lists (id, name, description, allowNotes, isInventoryControlled, items, notificationEnabled)

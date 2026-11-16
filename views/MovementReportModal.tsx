@@ -5,6 +5,8 @@ import JsBarcode from 'jsbarcode';
 import { InventoryState, MovementOrder, MovementItem, Product } from '../types';
 import { compareBoxLabels } from '../utils/boxSort';
 import { generateWeightEmbeddedUpc, generateDefaultUpcABarcode } from '../utils/barcode';
+import { getApiUrl } from '../hooks/apiUrl';
+import { authFetch } from '../utils/clientDevice';
 
 export function formatUpcDisplay(upc: string): string {
   const clean = String(upc || '').replace(/\D/g, '');
@@ -293,7 +295,7 @@ export const MovementReportModal: React.FC<MovementReportModalProps> = ({
   // Synchronize default shipper information from database app_config table when modal opens
   useEffect(() => {
     if (!isOpen) return;
-    fetch('/api/app-config')
+    authFetch(getApiUrl('api/app-config'))
       .then(res => res.ok ? res.json() : null)
       .then(data => {
         if (!data || !data.configs) return;

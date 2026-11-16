@@ -32,7 +32,7 @@ import {
   ShieldAlert,
   Power
 } from 'lucide-react';
-import { PwaDevice } from '../types';
+import { AppUserRole, AppUserSummary, PwaDevice } from '../types';
 import {
   getDeviceId,
   getDeviceName,
@@ -40,18 +40,25 @@ import {
   isStandalonePWA,
   setClientDeviceInfo,
   getClientDeviceInfo,
-  getClientAuditHeaders
+  getClientAuditHeaders,
+  authFetch
 } from '../utils/clientDevice';
 import { getApiUrl } from '../hooks/apiUrl';
 
 interface PwaDeviceManagerCardProps {
   onDeviceUpdated?: () => void;
+  users?: AppUserSummary[];
+  refreshTrigger?: number;
 }
 
 interface UserDeviceGroup {
-  operatorKey: string; // lowercased or '__unassigned__'
+  operatorKey: string; // 'user:<id>', lowercased operator, or '__unassigned__'
   rawOperator: string; // original operator string
-  displayName: string; // e.g. "Nick" or "Unassigned / Anonymous"
+  displayName: string; // e.g. "Nick" or "Unassigned / Anonymous Devices"
+  accountId?: string;
+  accountRole?: AppUserRole;
+  isVerifiedAccount?: boolean;
+  isLegacyOperator?: boolean;
   devices: PwaDevice[];
   totalCount: number;
   pwaCount: number;
@@ -71,7 +78,11 @@ type PresenceFilter = 'all' | 'online' | 'offline';
 type TypeFilter = 'all' | 'pwa' | 'browser';
 type SortOption = 'recent' | 'user_asc' | 'name_asc' | 'devices_desc' | 'oldest';
 
-export const PwaDeviceManagerCard: React.FC<PwaDeviceManagerCardProps> = ({ onDeviceUpdated }) => {
+export const PwaDeviceManagerCard: React.FC<PwaDeviceManagerCardProps> = ({
+  onDeviceUpdated,
+  users = [],
+  refreshTrigger = 0,
+}) => {
   // Current local device state
   const [currentDeviceId, setCurrentDeviceId] = useState<string>(getDeviceId());
   const [currentDeviceName, setCurrentDeviceName] = useState<string>(getDeviceName());
@@ -105,6 +116,8 @@ export const PwaDeviceManagerCard: React.FC<PwaDeviceManagerCardProps> = ({ onDe
   const [editingDevice, setEditingDevice] = useState<PwaDevice | null>(null);
   const [modalName, setModalName] = useState<string>('');
   const [modalOperator, setModalOperator] = useState<string>('');
+  const [modalUserId, setModalUserId] = useState<string>('');
+  const [modalAutoUpdateCache, setModalAutoUpdateCache] = useState<boolean>(true);
   const [modalNotes, setModalNotes] = useState<string>('');
   const [isSavingModal, setIsSavingModal] = useState<boolean>(false);
 
@@ -133,7 +146,7 @@ export const PwaDeviceManagerCard: React.FC<PwaDeviceManagerCardProps> = ({ onDe
   const fetchDevices = useCallback(async () => {
     setIsLoadingDevices(true);
     try {
-      const res = await fetch(getApiUrl('api/devices'), {
+      const res = await authFetch(getApiUrl('api/devices'), {
         headers: {
           ...getClientAuditHeaders()
         }
@@ -153,7 +166,7 @@ export const PwaDeviceManagerCard: React.FC<PwaDeviceManagerCardProps> = ({ onDe
 
   useEffect(() => {
     fetchDevices();
-  }, [fetchDevices]);
+  }, [fetchDevices, refreshTrigger]);
 
   // Handle saving this device's operator and device name
   const handleSaveCurrentDevice = async (e?: React.FormEvent) => {
@@ -175,7 +188,7 @@ export const PwaDeviceManagerCard: React.FC<PwaDeviceManagerCardProps> = ({ onDe
 
       // Register with backend immediately
       const clientInfo = getClientDeviceInfo();
-      await fetch(getApiUrl('api/devices/register'), {
+      await authFetch(getApiUrl('api/devices/register'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -227,7 +240,7 @@ export const PwaDeviceManagerCard: React.FC<PwaDeviceManagerCardProps> = ({ onDe
 
     setDeviceActionLoadingId(device.id);
     try {
-      const res = await fetch(getApiUrl(endpoint), {
+      const res = await authFetch(getApiUrl(endpoint), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -243,6 +256,7 @@ export const PwaDeviceManagerCard: React.FC<PwaDeviceManagerCardProps> = ({ onDe
         });
         setTimeout(() => setFeedbackMessage(null), 4000);
         fetchDevices();
+        if (onDeviceUpdated) onDeviceUpdated();
       } else {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.message || 'Failed to update authorization.');
@@ -254,17 +268,57 @@ export const PwaDeviceManagerCard: React.FC<PwaDeviceManagerCardProps> = ({ onDe
     }
   };
 
-  // Revoke an entire User (all devices belonging to that user)
+  // Toggle Auto-Update Cache (Auto vs Manual) for a single device (Admin only)
+  const handleToggleAutoUpdateCache = async (device: PwaDevice) => {
+    const nextEnabled = !(device.autoUpdateCache ?? true);
+    setDeviceActionLoadingId(device.id);
+    try {
+      const res = await authFetch(getApiUrl(`api/devices/${encodeURIComponent(device.id)}`), {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getClientAuditHeaders()
+        },
+        body: JSON.stringify({ autoUpdateCache: nextEnabled })
+      });
+      if (res.ok) {
+        if (device.id === currentDeviceId) {
+          window.dispatchEvent(new CustomEvent('freezer-device-auto-update-changed', {
+            detail: { deviceId: device.id, autoUpdateCache: nextEnabled }
+          }));
+        }
+        setFeedbackMessage({
+          type: 'success',
+          text: nextEnabled
+            ? `Auto-Update Cache set to Auto for "${device.name}".`
+            : `Auto-Update Cache set to Manual for "${device.name}".`
+        });
+        setTimeout(() => setFeedbackMessage(null), 4000);
+        fetchDevices();
+        if (onDeviceUpdated) onDeviceUpdated();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.message || err.error || 'Failed to update auto-update setting.');
+      }
+    } catch (err: any) {
+      setFeedbackMessage({ type: 'error', text: err.message || 'Action failed.' });
+    } finally {
+      setDeviceActionLoadingId(null);
+    }
+  };
+
+  // Revoke an entire User (all devices in that group)
   const handleRevokeUser = async (userGroup: UserDeviceGroup) => {
     setIsBatchActionLoading(true);
     try {
-      const rawParam = userGroup.operatorKey === '__unassigned__' ? '__unassigned__' : userGroup.rawOperator;
-      const res = await fetch(getApiUrl(`api/devices/user/${encodeURIComponent(rawParam)}/revoke`), {
+      const deviceIds = userGroup.devices.map(d => d.id);
+      const res = await authFetch(getApiUrl('api/devices/batch-revoke'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           ...getClientAuditHeaders()
-        }
+        },
+        body: JSON.stringify({ deviceIds })
       });
       if (res.ok) {
         setUserToRevoke(null);
@@ -274,6 +328,7 @@ export const PwaDeviceManagerCard: React.FC<PwaDeviceManagerCardProps> = ({ onDe
         });
         setTimeout(() => setFeedbackMessage(null), 4500);
         fetchDevices();
+        if (onDeviceUpdated) onDeviceUpdated();
       } else {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.message || 'Failed to revoke user.');
@@ -285,17 +340,18 @@ export const PwaDeviceManagerCard: React.FC<PwaDeviceManagerCardProps> = ({ onDe
     }
   };
 
-  // Authorize an entire User (restore all devices belonging to that user)
+  // Authorize an entire User (restore all devices in that group)
   const handleAuthorizeUser = async (userGroup: UserDeviceGroup) => {
     setIsBatchActionLoading(true);
     try {
-      const rawParam = userGroup.operatorKey === '__unassigned__' ? '__unassigned__' : userGroup.rawOperator;
-      const res = await fetch(getApiUrl(`api/devices/user/${encodeURIComponent(rawParam)}/authorize`), {
+      const deviceIds = userGroup.devices.map(d => d.id);
+      const res = await authFetch(getApiUrl('api/devices/batch-authorize'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           ...getClientAuditHeaders()
-        }
+        },
+        body: JSON.stringify({ deviceIds })
       });
       if (res.ok) {
         setFeedbackMessage({
@@ -304,6 +360,7 @@ export const PwaDeviceManagerCard: React.FC<PwaDeviceManagerCardProps> = ({ onDe
         });
         setTimeout(() => setFeedbackMessage(null), 4000);
         fetchDevices();
+        if (onDeviceUpdated) onDeviceUpdated();
       } else {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.message || 'Failed to authorize user.');
@@ -315,18 +372,21 @@ export const PwaDeviceManagerCard: React.FC<PwaDeviceManagerCardProps> = ({ onDe
     }
   };
 
-  // Delete all devices belonging to an entire user
+  // Delete all devices belonging to a group
   const handleDeleteUser = async (userGroup: UserDeviceGroup) => {
     setIsBatchActionLoading(true);
     try {
-      const rawParam = userGroup.operatorKey === '__unassigned__' ? '__unassigned__' : userGroup.rawOperator;
-      const res = await fetch(getApiUrl(`api/devices/user/${encodeURIComponent(rawParam)}`), {
-        method: 'DELETE',
-        headers: {
-          ...getClientAuditHeaders()
-        }
-      });
-      if (res.ok) {
+      const results = await Promise.all(
+        userGroup.devices.map((d) =>
+          authFetch(getApiUrl(`api/devices/${encodeURIComponent(d.id)}`), {
+            method: 'DELETE',
+            headers: {
+              ...getClientAuditHeaders()
+            }
+          })
+        )
+      );
+      if (results.every((r) => r.ok)) {
         setUserToDelete(null);
         setFeedbackMessage({
           type: 'success',
@@ -334,9 +394,9 @@ export const PwaDeviceManagerCard: React.FC<PwaDeviceManagerCardProps> = ({ onDe
         });
         setTimeout(() => setFeedbackMessage(null), 4000);
         fetchDevices();
+        if (onDeviceUpdated) onDeviceUpdated();
       } else {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.message || 'Failed to delete user devices.');
+        throw new Error('Failed to delete one or more device records.');
       }
     } catch (err: any) {
       setFeedbackMessage({ type: 'error', text: err.message || 'Delete failed.' });
@@ -351,32 +411,43 @@ export const PwaDeviceManagerCard: React.FC<PwaDeviceManagerCardProps> = ({ onDe
     if (!editingDevice) return;
     setIsSavingModal(true);
     try {
-      const res = await fetch(getApiUrl(`api/devices/${encodeURIComponent(editingDevice.id)}`), {
+      const payload: Record<string, any> = {
+        name: modalName.trim() || editingDevice.name,
+        operator: modalOperator.trim(),
+        notes: modalNotes.trim(),
+        autoUpdateCache: modalAutoUpdateCache,
+      };
+      if (users.length > 0) {
+        payload.userId = modalUserId || null;
+      }
+      const res = await authFetch(getApiUrl(`api/devices/${encodeURIComponent(editingDevice.id)}`), {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
           ...getClientAuditHeaders()
         },
-        body: JSON.stringify({
-          name: modalName.trim() || editingDevice.name,
-          operator: modalOperator.trim(),
-          notes: modalNotes.trim()
-        })
+        body: JSON.stringify(payload)
       });
       if (res.ok) {
-        // If editing this device, also update local storage
+        const selectedUser = users.find((u) => u.id === modalUserId);
+        const resolvedOp = selectedUser ? selectedUser.name : modalOperator.trim();
+        // If editing this device, also update local storage & auto-update state
         if (editingDevice.id === currentDeviceId) {
           setClientDeviceInfo({
-            operatorName: modalOperator.trim(),
+            operatorName: resolvedOp,
             deviceName: modalName.trim() || editingDevice.name
           });
-          setCurrentOperatorName(modalOperator.trim());
+          setCurrentOperatorName(resolvedOp);
           setCurrentDeviceName(modalName.trim() || editingDevice.name);
+          window.dispatchEvent(new CustomEvent('freezer-device-auto-update-changed', {
+            detail: { deviceId: editingDevice.id, autoUpdateCache: modalAutoUpdateCache }
+          }));
         }
         setEditingDevice(null);
         setFeedbackMessage({ type: 'success', text: 'Device settings updated successfully.' });
         setTimeout(() => setFeedbackMessage(null), 3500);
         fetchDevices();
+        if (onDeviceUpdated) onDeviceUpdated();
       } else {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.message || 'Failed to update device.');
@@ -393,7 +464,7 @@ export const PwaDeviceManagerCard: React.FC<PwaDeviceManagerCardProps> = ({ onDe
     if (!deviceToDelete) return;
     setDeviceActionLoadingId(deviceToDelete.id);
     try {
-      const res = await fetch(getApiUrl(`api/devices/${encodeURIComponent(deviceToDelete.id)}`), {
+      const res = await authFetch(getApiUrl(`api/devices/${encodeURIComponent(deviceToDelete.id)}`), {
         method: 'DELETE',
         headers: {
           ...getClientAuditHeaders()
@@ -404,6 +475,7 @@ export const PwaDeviceManagerCard: React.FC<PwaDeviceManagerCardProps> = ({ onDe
         setFeedbackMessage({ type: 'success', text: `Device record deleted.` });
         setTimeout(() => setFeedbackMessage(null), 3000);
         fetchDevices();
+        if (onDeviceUpdated) onDeviceUpdated();
       }
     } catch (err: any) {
       setFeedbackMessage({ type: 'error', text: err.message || 'Failed to delete device.' });
@@ -488,17 +560,53 @@ export const PwaDeviceManagerCard: React.FC<PwaDeviceManagerCardProps> = ({ onDe
     });
   }, [devices, searchQuery, statusFilter, presenceFilter, typeFilter, currentDeviceId]);
 
-  // Group filtered devices by user/operator
+  const userById = useMemo(() => {
+    const map = new Map<string, AppUserSummary>();
+    for (const u of users) {
+      map.set(u.id, u);
+    }
+    return map;
+  }, [users]);
+
+  // Group filtered devices by verified PIN user account first, then legacy operator, then unassigned
   const userGroups = useMemo<UserDeviceGroup[]>(() => {
-    const map = new Map<string, { raw: string; devices: PwaDevice[] }>();
+    const map = new Map<string, {
+      raw: string;
+      accountId?: string;
+      accountRole?: AppUserRole;
+      isVerifiedAccount?: boolean;
+      isLegacyOperator?: boolean;
+      devices: PwaDevice[];
+    }>();
 
     for (const d of filteredDevices) {
-      const cleanOp = (d.operator || '').trim();
-      const key = cleanOp ? cleanOp.toLowerCase() : '__unassigned__';
-      if (!map.has(key)) {
-        map.set(key, { raw: cleanOp, devices: [] });
+      const matchedAccount = d.userId ? userById.get(d.userId) : undefined;
+      if (matchedAccount) {
+        const key = `user:${matchedAccount.id}`;
+        if (!map.has(key)) {
+          map.set(key, {
+            raw: matchedAccount.name,
+            accountId: matchedAccount.id,
+            accountRole: matchedAccount.role,
+            isVerifiedAccount: true,
+            isLegacyOperator: false,
+            devices: [],
+          });
+        }
+        map.get(key)!.devices.push(d);
+      } else {
+        const cleanOp = (d.operator || '').trim();
+        const key = cleanOp ? cleanOp.toLowerCase() : '__unassigned__';
+        if (!map.has(key)) {
+          map.set(key, {
+            raw: cleanOp,
+            isVerifiedAccount: false,
+            isLegacyOperator: key !== '__unassigned__',
+            devices: [],
+          });
+        }
+        map.get(key)!.devices.push(d);
       }
-      map.get(key)!.devices.push(d);
     }
 
     const groups: UserDeviceGroup[] = Array.from(map.entries()).map(([key, value]) => {
@@ -524,6 +632,10 @@ export const PwaDeviceManagerCard: React.FC<PwaDeviceManagerCardProps> = ({ onDe
         operatorKey: key,
         rawOperator: value.raw,
         displayName,
+        accountId: value.accountId,
+        accountRole: value.accountRole,
+        isVerifiedAccount: value.isVerifiedAccount,
+        isLegacyOperator: value.isLegacyOperator,
         devices: groupDevices,
         totalCount: count,
         pwaCount: groupPwa,
@@ -540,17 +652,13 @@ export const PwaDeviceManagerCard: React.FC<PwaDeviceManagerCardProps> = ({ onDe
 
     // Sort user groups
     groups.sort((a, b) => {
-      // Keep unassigned devices at the bottom by default unless sorting specifically
       if (a.operatorKey === '__unassigned__') return 1;
       if (b.operatorKey === '__unassigned__') return -1;
 
       if (sortBy === 'recent') {
         return b.lastActiveTimestamp - a.lastActiveTimestamp;
       }
-      if (sortBy === 'user_asc') {
-        return a.displayName.localeCompare(b.displayName);
-      }
-      if (sortBy === 'name_asc') {
+      if (sortBy === 'user_asc' || sortBy === 'name_asc') {
         return a.displayName.localeCompare(b.displayName);
       }
       if (sortBy === 'devices_desc') {
@@ -574,7 +682,7 @@ export const PwaDeviceManagerCard: React.FC<PwaDeviceManagerCardProps> = ({ onDe
     }
 
     return groups;
-  }, [filteredDevices, sortBy, currentDeviceId]);
+  }, [filteredDevices, sortBy, currentDeviceId, userById]);
 
   // Flat devices sorted list
   const sortedFlatDevices = useMemo(() => {
@@ -1128,6 +1236,22 @@ export const PwaDeviceManagerCard: React.FC<PwaDeviceManagerCardProps> = ({ onDe
                             </span>
                           )}
 
+                          {group.isVerifiedAccount && (
+                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md border ${
+                              group.accountRole === 'admin'
+                                ? 'bg-emerald-950/60 text-emerald-300 border-emerald-800/60'
+                                : 'bg-indigo-950/60 text-indigo-300 border-indigo-800/60'
+                            }`}>
+                              {group.accountRole === 'admin' ? 'PIN Admin' : 'PIN Account'}
+                            </span>
+                          )}
+
+                          {group.isLegacyOperator && users.length > 0 && (
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-amber-950/60 text-amber-300 border border-amber-800/60">
+                              Legacy • No PIN
+                            </span>
+                          )}
+
                           {/* Devices Count Badge */}
                           <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-cool-gray-800 text-cool-gray-300 border border-cool-gray-700">
                             {group.totalCount} {group.totalCount === 1 ? 'Device' : 'Devices'}
@@ -1335,7 +1459,25 @@ export const PwaDeviceManagerCard: React.FC<PwaDeviceManagerCardProps> = ({ onDe
                                 </span>
                               </div>
 
-                              <div className="flex items-center gap-1.5">
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                {/* Auto-Update Cache Toggle (Admin Per-Device) */}
+                                <button
+                                  type="button"
+                                  disabled={isLoadingAction}
+                                  onClick={() => handleToggleAutoUpdateCache(device)}
+                                  className={`flex items-center gap-1 px-2 py-1.5 rounded-lg text-[11px] font-semibold border transition cursor-pointer disabled:opacity-50 ${
+                                    (device.autoUpdateCache ?? true)
+                                      ? 'bg-cyan-950/60 hover:bg-cyan-900/70 text-cyan-300 border-cyan-800/60'
+                                      : 'bg-amber-950/60 hover:bg-amber-900/70 text-amber-300 border-amber-800/60'
+                                  }`}
+                                  title={(device.autoUpdateCache ?? true)
+                                    ? 'Auto-Update Cache: Auto (click to switch this device to Manual)'
+                                    : 'Auto-Update Cache: Manual (click to switch this device back to Auto)'}
+                                >
+                                  <RefreshCw className="w-3 h-3 shrink-0" />
+                                  <span>{(device.autoUpdateCache ?? true) ? 'Auto-Update: Auto' : 'Auto-Update: Manual'}</span>
+                                </button>
+
                                 {/* Edit Button */}
                                 <button
                                   type="button"
@@ -1343,10 +1485,12 @@ export const PwaDeviceManagerCard: React.FC<PwaDeviceManagerCardProps> = ({ onDe
                                     setEditingDevice(device);
                                     setModalName(device.name);
                                     setModalOperator(device.operator || '');
+                                    setModalUserId(device.userId || '');
+                                    setModalAutoUpdateCache(device.autoUpdateCache ?? true);
                                     setModalNotes(device.notes || '');
                                   }}
                                   className="p-1.5 rounded-lg bg-cool-gray-800 hover:bg-cool-gray-750 text-cool-gray-300 hover:text-white border border-cool-gray-700 transition cursor-pointer"
-                                  title="Edit Device Label, Operator & Notes"
+                                  title="Edit Device Label, Account Assignment & Notes"
                                 >
                                   <Edit2 className="w-3.5 h-3.5" />
                                 </button>
@@ -1528,7 +1672,25 @@ export const PwaDeviceManagerCard: React.FC<PwaDeviceManagerCardProps> = ({ onDe
                       </span>
                     </div>
 
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {/* Auto-Update Cache Toggle (Admin Per-Device) */}
+                      <button
+                        type="button"
+                        disabled={isLoadingAction}
+                        onClick={() => handleToggleAutoUpdateCache(device)}
+                        className={`flex items-center gap-1 px-2 py-1.5 rounded-lg text-[11px] font-semibold border transition cursor-pointer disabled:opacity-50 ${
+                          (device.autoUpdateCache ?? true)
+                            ? 'bg-cyan-950/60 hover:bg-cyan-900/70 text-cyan-300 border-cyan-800/60'
+                            : 'bg-amber-950/60 hover:bg-amber-900/70 text-amber-300 border-amber-800/60'
+                        }`}
+                        title={(device.autoUpdateCache ?? true)
+                          ? 'Auto-Update Cache: Auto (click to switch this device to Manual)'
+                          : 'Auto-Update Cache: Manual (click to switch this device back to Auto)'}
+                      >
+                        <RefreshCw className="w-3 h-3 shrink-0" />
+                        <span>{(device.autoUpdateCache ?? true) ? 'Auto-Update: Auto' : 'Auto-Update: Manual'}</span>
+                      </button>
+
                       {/* Edit Button */}
                       <button
                         type="button"
@@ -1536,10 +1698,12 @@ export const PwaDeviceManagerCard: React.FC<PwaDeviceManagerCardProps> = ({ onDe
                           setEditingDevice(device);
                           setModalName(device.name);
                           setModalOperator(device.operator || '');
+                          setModalUserId(device.userId || '');
+                          setModalAutoUpdateCache(device.autoUpdateCache ?? true);
                           setModalNotes(device.notes || '');
                         }}
                         className="p-1.5 rounded-lg bg-cool-gray-800 hover:bg-cool-gray-750 text-cool-gray-300 hover:text-white border border-cool-gray-700 transition cursor-pointer"
-                        title="Edit Device Label, Operator & Notes"
+                        title="Edit Device Label, Account Assignment & Notes"
                       >
                         <Edit2 className="w-3.5 h-3.5" />
                       </button>
@@ -1661,6 +1825,36 @@ export const PwaDeviceManagerCard: React.FC<PwaDeviceManagerCardProps> = ({ onDe
                 />
               </div>
 
+              {users.length > 0 && (
+                <div>
+                  <label className="text-[10px] font-extrabold text-cool-gray-300 uppercase tracking-wider block mb-1">
+                    Assigned User Account (PIN Access)
+                  </label>
+                  <select
+                    value={modalUserId}
+                    onChange={(e) => {
+                      const nextId = e.target.value;
+                      setModalUserId(nextId);
+                      const chosen = users.find((u) => u.id === nextId);
+                      if (chosen) {
+                        setModalOperator(chosen.name);
+                      }
+                    }}
+                    className="w-full bg-cool-gray-950 text-xs font-semibold rounded-lg border border-cool-gray-700 px-3 py-2 text-cool-gray-100 outline-none focus:border-cyan-500"
+                  >
+                    <option value="">Unlinked / Legacy Operator Only</option>
+                    {users.map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {u.name} ({u.role === 'admin' ? 'Admin' : 'User'})
+                      </option>
+                    ))}
+                  </select>
+                  <span className="text-[10px] text-cool-gray-400 mt-0.5 block">
+                    Linking a device grants that user account ownership under My Devices. Unlinking signs out active user sessions on that device.
+                  </span>
+                </div>
+              )}
+
               <div>
                 <label className="text-[10px] font-extrabold text-cool-gray-300 uppercase tracking-wider block mb-1">
                   Operator / User Name (Audit Log Attribution)
@@ -1688,6 +1882,26 @@ export const PwaDeviceManagerCard: React.FC<PwaDeviceManagerCardProps> = ({ onDe
                   onChange={(e) => setModalNotes(e.target.value)}
                   className="w-full bg-cool-gray-950 text-xs font-semibold rounded-lg border border-cool-gray-700 px-3 py-2 text-cool-gray-100 outline-none focus:border-cyan-500"
                 />
+              </div>
+
+              <div className="flex items-center justify-between gap-3 p-3 rounded-xl bg-cool-gray-950/90 border border-cool-gray-800">
+                <div className="space-y-0.5">
+                  <span className="text-xs font-bold text-cool-gray-200 block">
+                    Auto-Update Cache
+                  </span>
+                  <span className="text-[10px] text-cool-gray-400 block leading-snug">
+                    Default: Auto. When enabled, this device refreshes cached app updates automatically when idle. Switch to Manual to hold updates until triggered manually.
+                  </span>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                  <input
+                    type="checkbox"
+                    checked={modalAutoUpdateCache}
+                    onChange={(e) => setModalAutoUpdateCache(e.target.checked)}
+                    className="sr-only peer"
+                  />
+                  <div className="w-9 h-5 bg-cool-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-cool-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-cyan-600"></div>
+                </label>
               </div>
 
               <div className="flex items-center justify-end gap-2 pt-3 border-t border-cool-gray-800">

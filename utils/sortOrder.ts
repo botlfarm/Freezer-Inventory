@@ -1,6 +1,7 @@
 // Custom sort order utils
 import { AppConfigItem, Product } from '../types';
 import { getApiUrl } from '../hooks/apiUrl';
+import { authFetch } from './clientDevice';
 
 export type SortMode = 'alphabetical' | 'custom';
 
@@ -67,7 +68,7 @@ export async function saveSortOrderConfig(config: SortOrderConfig): Promise<bool
       key: SORT_CONFIG_KEY,
       value: JSON.stringify(config)
     };
-    const response = await fetch(getApiUrl('api/app-config'), {
+    const response = await authFetch(getApiUrl('api/app-config'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'

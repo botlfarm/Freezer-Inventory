@@ -1,7 +1,7 @@
 {
   "name": "freezer-inventory-tracker",
   "private": true,
-  "version": "2.60.0",
+  "version": "2.72.5",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "lint": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "admin:recover": "tsx scripts/admin-recovery.ts"
   },
   "dependencies": {
     "adm-zip": "^0.5.17",

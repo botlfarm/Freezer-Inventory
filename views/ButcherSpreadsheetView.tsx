@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { InventoryState, Action, OffSiteEntry, Product, Tag as AppTag } from '../types';
 import { compareBoxLabels } from '../utils/boxSort';
+import { getTagActionIcon } from '../utils/tagRestockRules';
 
 interface ButcherSpreadsheetViewProps {
   state: InventoryState;
@@ -2313,7 +2314,7 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({ 
                                               className="inline-flex items-center gap-1 text-[8px] border px-1.5 py-0.5 rounded font-black tracking-wide uppercase select-none group/tag hover:border-red-500/40 transition-colors"
                                               title={`Tag: ${tag.description || tag.name} (Click ✕ to remove tag)`}
                                             >
-                                              <span>{tag.id === 'use-first' ? '🍳 ' : tag.id === 'not-for-sale' ? '🛑 ' : '🏷️ '}{tag.name}</span>
+                                              <span>{getTagActionIcon(tag)} {tag.name}</span>
                                               <button
                                                 type="button"
                                                 onClick={async (e) => {
@@ -2489,7 +2490,7 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({ 
                                       className="inline-flex items-center gap-1 text-[8px] border px-1.5 py-0.5 rounded font-black tracking-wide uppercase select-none group/tag hover:border-red-500/40 transition-colors"
                                       title={`Tag: ${tag.description || tag.name} (Click ✕ to remove tag)`}
                                     >
-                                      <span>{tag.id === 'use-first' ? '🍳 ' : tag.id === 'not-for-sale' ? '🛑 ' : '🏷️ '}{tag.name}</span>
+                                      <span>{getTagActionIcon(tag)} {tag.name}</span>
                                       <button
                                         type="button"
                                         onClick={async (e) => {

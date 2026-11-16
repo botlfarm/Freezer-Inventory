@@ -4,28 +4,21 @@ import {
   Search, 
   FileText, 
   Printer, 
-  ArrowRight, 
   CheckCircle2, 
   Clock, 
   Truck, 
   MapPin, 
   Warehouse, 
   Package, 
-  Tag as TagIcon, 
   Layers, 
   Info, 
   Sparkles, 
-  ExternalLink, 
   Copy, 
   Check, 
-  Boxes, 
   Calendar, 
-  Scale, 
   ShieldCheck, 
   FileCheck2,
   ChevronRight,
-  Filter,
-  RefreshCw,
   AlertCircle
 } from 'lucide-react';
 import JsBarcode from 'jsbarcode';
@@ -34,6 +27,7 @@ import {
   OffSiteEntry, 
   ButcherOrder, 
   MovementOrder, 
+  MovementItem,
   MovementDestination,
   Product, 
   Container, 
@@ -86,45 +80,725 @@ export interface TraceRecord {
   archivedDate?: string;
   archivedReason?: string;
   removalDestination?: string;
+  /** Pre-computed lowercase index string for instant search filtering */
+  _searchIndex?: string;
 }
 
-// Safely format dates for traceability steps
+const DATE_ONLY_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  month: 'short',
+  day: 'numeric',
+  year: 'numeric'
+});
+
+const DATE_TIME_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  month: 'short',
+  day: 'numeric',
+  year: 'numeric',
+  hour: 'numeric',
+  minute: '2-digit'
+});
+
+const traceDateCache = new Map<string, string>();
+
+// Safely format dates for traceability steps with memoized Intl formatting
 export const formatTraceDate = (dateStr?: string, includeTime: boolean = false): string => {
   if (!dateStr || !dateStr.trim()) return 'Not specified';
   const clean = dateStr.trim();
+  const cacheKey = `${includeTime ? '1' : '0'}:${clean}`;
+  const cached = traceDateCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+
   const d = new Date(clean);
   if (isNaN(d.getTime())) {
     return clean;
   }
-  if (includeTime && (clean.includes('T') || clean.includes(':'))) {
-    return d.toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit'
-    });
+
+  const formatted = (includeTime && (clean.includes('T') || clean.includes(':')))
+    ? DATE_TIME_FORMATTER.format(d)
+    : DATE_ONLY_FORMATTER.format(d);
+
+  if (traceDateCache.size > 5000) {
+    traceDateCache.clear();
   }
-  return d.toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric'
-  });
+  traceDateCache.set(cacheKey, formatted);
+  return formatted;
 };
 
 // Safely parse potential date embedded in pallet or ID (e.g. P3-03262026 or 2026-03-26)
 export const extractDateFromPalletOrId = (str?: string): string | undefined => {
   if (!str) return undefined;
-  const isoMatch = str.match(/\b(20\d\d)[-_/](0[1-9]|1[0-2])[-_/](0[1-9]|[12]\d|3[01])\b/);
+  const isoMatch = str.match(/(?:^|[^0-9])(20\d\d)[-_/](0[1-9]|1[0-2])[-_/](0[1-9]|[12]\d|3[01])(?:$|[^0-9])/);
   if (isoMatch) return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
-  const usMatch = str.match(/\b(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(20\d\d)\b/);
+  const usMatch = str.match(/(?:^|[^0-9])(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(20\d\d)(?:$|[^0-9])/);
   if (usMatch) return `${usMatch[1]}/${usMatch[2]}/${usMatch[3]}`;
   return undefined;
 };
 
+const EMPTY_MOVEMENT_ORDERS: MovementOrder[] = [];
+const EMPTY_HISTORY_LOGS: HistoryEntry[] = [];
+
+export interface BuiltTraceIndex {
+  records: TraceRecord[];
+  recordsByKey: Map<string, TraceRecord>;
+  uniqueLots: string[];
+  locationsMap: Map<string, AppLocation>;
+}
+
+/**
+ * High-performance O(N) traceability index builder.
+ * Pre-indexes products, movement orders, active on-site cuts, and removal logs
+ * in single linear passes to avoid O(N * M * K^2) main-thread freezes on mount.
+ */
+export const buildTraceRecords = (
+  state: Pick<
+    InventoryState,
+    | 'products'
+    | 'butcherOrders'
+    | 'locations'
+    | 'tags'
+    | 'containers'
+    | 'freezers'
+    | 'offSiteEntries'
+    | 'movementOrders'
+    | 'meatCuts'
+    | 'history'
+  >
+): BuiltTraceIndex => {
+  const products = state.products || [];
+  const butcherOrders = state.butcherOrders || [];
+  const locations = state.locations || [];
+  const tags = state.tags || [];
+  const containers = state.containers || [];
+  const freezers = state.freezers || [];
+  const offsiteEntries = state.offSiteEntries || [];
+  const movementOrders = state.movementOrders || [];
+  const meatCuts = state.meatCuts || [];
+  const historyLogs = state.history || [];
+
+  // 1. Pre-index Products & Cut Name Resolution Cache
+  const productsMap = new Map<string, Product>();
+  const preparedProducts: { product: Product; nameLower: string; numbersLower: string[] }[] = [];
+  for (let i = 0; i < products.length; i++) {
+    const p = products[i];
+    productsMap.set(p.id, p);
+    preparedProducts.push({
+      product: p,
+      nameLower: (p.name || '').toLowerCase(),
+      numbersLower: (p.productNumbers || []).map(pn => pn.toLowerCase())
+    });
+  }
+  const cutsToProductCache = new Map<string, Product | undefined>();
+
+  const resolveProduct = (entry: OffSiteEntry): Product | undefined => {
+    if (entry.productId) {
+      const byId = productsMap.get(entry.productId);
+      if (byId) return byId;
+    }
+    const rawCuts = (entry.cuts || '').trim().toLowerCase();
+    if (!rawCuts) return undefined;
+    if (cutsToProductCache.has(rawCuts)) {
+      return cutsToProductCache.get(rawCuts);
+    }
+    let matched: Product | undefined;
+    for (let i = 0; i < preparedProducts.length; i++) {
+      const pp = preparedProducts[i];
+      if (pp.nameLower === rawCuts || pp.numbersLower.some(pn => rawCuts.startsWith(pn))) {
+        matched = pp.product;
+        break;
+      }
+    }
+    cutsToProductCache.set(rawCuts, matched);
+    return matched;
+  };
+
+  // 2. Pre-index Butcher Orders, Locations, Tags, Containers, Freezers
+  const butcherOrdersMap = new Map<string, ButcherOrder>();
+  for (let i = 0; i < butcherOrders.length; i++) {
+    const bo = butcherOrders[i];
+    if (bo.id) butcherOrdersMap.set(bo.id, bo);
+    if (bo.orderNumber) butcherOrdersMap.set(bo.orderNumber.toLowerCase(), bo);
+  }
+
+  const locationsMap = new Map<string, AppLocation>();
+  for (let i = 0; i < locations.length; i++) {
+    locationsMap.set(locations[i].id, locations[i]);
+  }
+
+  const tagsMap = new Map<string, Tag>();
+  for (let i = 0; i < tags.length; i++) {
+    tagsMap.set(tags[i].id, tags[i]);
+  }
+
+  const containersMap = new Map<string, Container>();
+  for (let i = 0; i < containers.length; i++) {
+    containersMap.set(containers[i].id, containers[i]);
+  }
+
+  const freezersMap = new Map<string, Freezer>();
+  for (let i = 0; i < freezers.length; i++) {
+    freezersMap.set(freezers[i].id, freezers[i]);
+  }
+
+  // 3. Pre-index Active On-Site MeatCuts by (productId + normalized serial)
+  const activeOnSiteCutsMap = new Map<string, MeatCut>();
+  for (let i = 0; i < meatCuts.length; i++) {
+    const mc = meatCuts[i];
+    if ((mc.quantity || 0) > 0 && mc.productId && mc.serial) {
+      const serialNorm = mc.serial.trim().toLowerCase();
+      if (serialNorm) {
+        const key = `${mc.productId}::${serialNorm}`;
+        if (!activeOnSiteCutsMap.has(key)) {
+          activeOnSiteCutsMap.set(key, mc);
+        }
+      }
+    }
+  }
+
+  // 4. Sort MovementOrders once chronologically and pre-index moves & originalEntries
+  const sortedMovementOrders = movementOrders
+    .map((mo, idx) => ({
+      mo,
+      idx,
+      time: new Date(mo.date || mo.executedAt || '').getTime() || 0
+    }))
+    .sort((a, b) => (a.time !== b.time ? a.time - b.time : a.idx - b.idx))
+    .map(item => item.mo);
+
+  const relatedOrdersByEntryId = new Map<string, MovementOrder[]>();
+  const relatedOrdersBySerial = new Map<string, MovementOrder[]>();
+  const moveItemByOrderAndEntryId = new Map<string, Map<string, MovementItem>>();
+  const moveItemByOrderAndSerial = new Map<string, Map<string, MovementItem>>();
+  const targetDestByOrderAndId = new Map<string, Map<string, MovementDestination>>();
+  const orderSortRank = new Map<string, number>();
+
+  const pushUniqueOrder = (map: Map<string, MovementOrder[]>, key: string, mo: MovementOrder) => {
+    if (!key) return;
+    let list = map.get(key);
+    if (!list) {
+      list = [mo];
+      map.set(key, list);
+    } else if (list[list.length - 1] !== mo && !list.includes(mo)) {
+      list.push(mo);
+    }
+  };
+
+  for (let i = 0; i < sortedMovementOrders.length; i++) {
+    const mo = sortedMovementOrders[i];
+    orderSortRank.set(mo.id, i);
+
+    if (mo.targetDestinations && mo.targetDestinations.length > 0) {
+      const destMap = new Map<string, MovementDestination>();
+      for (let d = 0; d < mo.targetDestinations.length; d++) {
+        const dest = mo.targetDestinations[d];
+        destMap.set(dest.id, dest);
+      }
+      targetDestByOrderAndId.set(mo.id, destMap);
+    }
+
+    const oeIdToSerial = new Map<string, string>();
+    const origEntries = mo.originalEntries || [];
+    for (let j = 0; j < origEntries.length; j++) {
+      const oe = origEntries[j];
+      if (oe.id) {
+        pushUniqueOrder(relatedOrdersByEntryId, oe.id, mo);
+      }
+      if (oe.serial) {
+        if (oe.id) oeIdToSerial.set(oe.id, oe.serial);
+        pushUniqueOrder(relatedOrdersBySerial, oe.serial, mo);
+      }
+    }
+
+    const moves = mo.moves || [];
+    if (moves.length > 0) {
+      const entryMoveMap = new Map<string, MovementItem>();
+      const serialMoveMap = new Map<string, MovementItem>();
+
+      for (let j = 0; j < moves.length; j++) {
+        const m = moves[j];
+        if (!m.entryId) continue;
+        pushUniqueOrder(relatedOrdersByEntryId, m.entryId, mo);
+        if (!entryMoveMap.has(m.entryId)) {
+          entryMoveMap.set(m.entryId, m);
+        }
+        const oeSerial = oeIdToSerial.get(m.entryId);
+        if (oeSerial && !serialMoveMap.has(oeSerial)) {
+          serialMoveMap.set(oeSerial, m);
+        }
+      }
+
+      moveItemByOrderAndEntryId.set(mo.id, entryMoveMap);
+      if (serialMoveMap.size > 0) {
+        moveItemByOrderAndSerial.set(mo.id, serialMoveMap);
+      }
+    }
+  }
+
+  // 5. Pre-filter History Logs for explicit off-site removal events (typically a tiny subset of history)
+  interface PreparedRemovalLog {
+    timestamp: string;
+    desc: string;
+    descUpper: string;
+    destName?: string;
+  }
+  const removalLogs: PreparedRemovalLog[] = [];
+  for (let i = 0; i < historyLogs.length; i++) {
+    const h = historyLogs[i];
+    if (!h.description) continue;
+    const isRemovalTarget = h.targetId === 'offsite-removal';
+    const descLower = isRemovalTarget ? '' : h.description.toLowerCase();
+    if (
+      isRemovalTarget ||
+      descLower.includes('from offsite inventory after delivery to') ||
+      descLower.includes('removed from offsite inventory')
+    ) {
+      const match = h.description.match(/after delivery to "(.*?)"/i);
+      removalLogs.push({
+        timestamp: h.timestamp,
+        desc: h.description,
+        descUpper: h.description.toUpperCase(),
+        destName: match && match[1] ? match[1].trim() : undefined
+      });
+    }
+  }
+
+  // 6. Build TraceRecords for all Off-Site Entries + On-Site Cuts
+  const recordsMap = new Map<string, TraceRecord>();
+  const recordsByKey = new Map<string, TraceRecord>();
+  const lotsSet = new Set<string>();
+
+  for (let i = 0; i < offsiteEntries.length; i++) {
+    const entry = offsiteEntries[i];
+    if (!entry.serial && !entry.lot) continue;
+
+    const serialKey = (entry.serial || entry.id).trim();
+    const product = resolveProduct(entry);
+    const butcherOrder = entry.orderId
+      ? butcherOrdersMap.get(entry.orderId) || butcherOrdersMap.get(entry.orderId.toLowerCase())
+      : undefined;
+    const storageLocation = entry.storageLocationId ? locationsMap.get(entry.storageLocationId) : undefined;
+
+    const resolvedTags: Tag[] = [];
+    if (entry.tagIds && entry.tagIds.length > 0) {
+      for (let t = 0; t < entry.tagIds.length; t++) {
+        const tagObj = tagsMap.get(entry.tagIds[t]);
+        if (tagObj) resolvedTags.push(tagObj);
+      }
+    }
+
+    // Retrieve pre-sorted related movement orders in O(1)
+    const byId = relatedOrdersByEntryId.get(entry.id);
+    const bySerial = entry.serial ? relatedOrdersBySerial.get(entry.serial) : undefined;
+    let relatedMoves: MovementOrder[];
+    if (!byId && !bySerial) {
+      relatedMoves = EMPTY_MOVEMENT_ORDERS;
+    } else if (byId && !bySerial) {
+      relatedMoves = byId;
+    } else if (!byId && bySerial) {
+      relatedMoves = bySerial;
+    } else {
+      const merged = new Map<string, MovementOrder>();
+      for (let m = 0; m < byId!.length; m++) merged.set(byId![m].id, byId![m]);
+      for (let m = 0; m < bySerial!.length; m++) merged.set(bySerial![m].id, bySerial![m]);
+      relatedMoves = Array.from(merged.values()).sort(
+        (a, b) => (orderSortRank.get(a.id) ?? 0) - (orderSortRank.get(b.id) ?? 0)
+      );
+    }
+
+    // Find last executed movement order and its specific move item for this entry
+    let lastExecutedMove: MovementOrder | undefined;
+    let lastMoveItem: MovementItem | undefined;
+    for (let m = relatedMoves.length - 1; m >= 0; m--) {
+      const mo = relatedMoves[m];
+      if (!mo.executedAt && mo.status !== 'completed') continue;
+      const itemByEntry = moveItemByOrderAndEntryId.get(mo.id)?.get(entry.id);
+      const itemBySerial =
+        !itemByEntry && entry.serial
+          ? moveItemByOrderAndSerial.get(mo.id)?.get(entry.serial)
+          : undefined;
+      const matchedItem = itemByEntry || itemBySerial;
+      if (matchedItem) {
+        lastExecutedMove = mo;
+        lastMoveItem = matchedItem;
+        break;
+      }
+    }
+
+    let lastMoveDestId: string | undefined;
+    let lastMoveTargetDest: MovementDestination | undefined;
+    let lastMoveTargetLoc: AppLocation | undefined;
+    let isLastMoveHome = false;
+
+    if (lastExecutedMove && lastMoveItem) {
+      lastMoveDestId = lastMoveItem.actualLocation || lastMoveItem.targetLocation;
+      if (lastMoveDestId) {
+        lastMoveTargetDest = targetDestByOrderAndId.get(lastExecutedMove.id)?.get(lastMoveDestId);
+      }
+      lastMoveTargetLoc = lastMoveTargetDest
+        ? locationsMap.get(lastMoveTargetDest.locationId)
+        : lastMoveDestId
+        ? locationsMap.get(lastMoveDestId)
+        : undefined;
+      const destLocNameLower = lastMoveTargetDest?.locationName?.toLowerCase() || '';
+      isLastMoveHome = Boolean(
+        lastMoveTargetLoc?.isHome ||
+          destLocNameLower.includes('home') ||
+          destLocNameLower.includes('staging')
+      );
+    }
+
+    // Check removal logs only when needed (archived or when removalLogs exist)
+    let matchedRemovalLog: PreparedRemovalLog | undefined;
+    if (removalLogs.length > 0) {
+      const serialUpper = (entry.serial || '').trim().toUpperCase();
+      for (let r = 0; r < removalLogs.length; r++) {
+        const rl = removalLogs[r];
+        if ((serialUpper && rl.descUpper.includes(serialUpper)) || rl.desc.includes(entry.id)) {
+          matchedRemovalLog = rl;
+          break;
+        }
+      }
+    }
+    const removalDestName = matchedRemovalLog?.destName;
+
+    // Match active on-site cut in O(1)
+    let matchedOnSiteCut: MeatCut | undefined;
+    if (product && entry.serial) {
+      const serialNorm = entry.serial.trim().toLowerCase();
+      if (serialNorm) {
+        matchedOnSiteCut = activeOnSiteCutsMap.get(`${product.id}::${serialNorm}`);
+      }
+    }
+
+    // Determine status and current location
+    let currentLocationType: 'offsite' | 'onsite' | 'archived' = 'offsite';
+    let currentLocationName =
+      entry.currentLocation || entry.location || storageLocation?.name || 'Off-Site Cold Storage';
+    let currentContainerName: string | undefined;
+    let currentFreezerName: string | undefined;
+    let onSiteArrivalDate: string | undefined;
+    let onSiteContainer: Container | undefined;
+    let onSiteFreezer: Freezer | undefined;
+    let archivedDate: string | undefined;
+    let archivedReason: string | undefined;
+    let removalDestination: string | undefined =
+      removalDestName ||
+      (lastMoveTargetDest && !isLastMoveHome ? lastMoveTargetDest.locationName : undefined);
+
+    if (entry.archived) {
+      if (matchedRemovalLog || (lastMoveTargetDest && !isLastMoveHome)) {
+        currentLocationType = 'archived';
+        const destLabel = removalDestName || lastMoveTargetDest?.locationName || 'External Location';
+        currentLocationName = `Delivered to ${destLabel} (Removed from Inventory)`;
+        archivedDate =
+          matchedRemovalLog?.timestamp || lastExecutedMove?.executedAt || lastExecutedMove?.date;
+        archivedReason = `Delivered to ${destLabel} and permanently removed from active inventory.`;
+        removalDestination = destLabel;
+      } else if (matchedOnSiteCut) {
+        currentLocationType = 'onsite';
+        const container = containersMap.get(matchedOnSiteCut.containerId);
+        if (container && !container.isArchived) {
+          onSiteContainer = container;
+          currentContainerName = container.name;
+          const freezer = container.freezerId ? freezersMap.get(container.freezerId) : undefined;
+          if (freezer) {
+            onSiteFreezer = freezer;
+            currentFreezerName = freezer.name;
+            currentLocationName = `${freezer.name} • ${container.name}`;
+          } else {
+            currentLocationName = container.name;
+          }
+        } else {
+          currentLocationName = 'On-Site Storage / Cabinets';
+        }
+        onSiteArrivalDate =
+          lastExecutedMove?.executedAt || lastExecutedMove?.date || matchedOnSiteCut.packDate;
+      } else {
+        currentLocationType = 'archived';
+        archivedDate = lastExecutedMove?.executedAt || lastExecutedMove?.date;
+        if (lastMoveTargetDest && isLastMoveHome) {
+          currentLocationName = 'Archived / Consumed (Past On-Site)';
+          archivedReason = 'Transferred on-site and subsequently consumed or archived.';
+        } else {
+          currentLocationName = 'Archived / Removed';
+          archivedReason = 'Archived or removed from active inventory.';
+        }
+      }
+    } else {
+      currentLocationType = 'offsite';
+      if (lastMoveTargetDest && !isLastMoveHome) {
+        currentLocationName = `${lastMoveTargetDest.locationName}${
+          lastMoveTargetDest.palletName ? ` • ${lastMoveTargetDest.palletName}` : ''
+        }`;
+      } else {
+        currentLocationName =
+          entry.currentLocation || entry.location || storageLocation?.name || 'Off-Site Cold Storage';
+      }
+    }
+
+    const harvestDate = butcherOrder?.killDate;
+    const pickupDate = butcherOrder?.pickupDate;
+
+    // Fast deterministic intake date; deep history log scan is deferred lazily to enrichTraceRecordWithHistory
+    const dateFromPallet = extractDateFromPalletOrId(entry.pallet || entry.currentLocation);
+    const offSiteIntakeDate = dateFromPallet || entry.packDate || pickupDate;
+
+    const cutName = product?.name || entry.cuts || 'Unknown Cut';
+    const serialVal = entry.serial || 'NO-SERIAL';
+    const palletVal = entry.pallet || entry.currentLocation;
+
+    if (entry.lot && entry.lot.trim()) {
+      lotsSet.add(entry.lot.trim());
+    }
+
+    const searchParts = [
+      serialVal,
+      entry.lot || '',
+      entry.orderId || '',
+      butcherOrder?.orderNumber || '',
+      butcherOrder?.species || '',
+      cutName,
+      entry.originalCutName || '',
+      entry.box || '',
+      palletVal || '',
+      ...resolvedTags.map(t => t.name)
+    ];
+
+    const record: TraceRecord = {
+      id: entry.id,
+      serial: serialVal,
+      lot: entry.lot,
+      cutName,
+      originalCutName: entry.originalCutName,
+      isWrongLabel: Boolean(entry.isWrongLabel || entry.wrongLabel),
+      wrongLabel: entry.wrongLabel,
+      product,
+      packDate: entry.packDate,
+      pieces: entry.pieces || 1,
+      netWeight: Number(entry.netWeight) || 0,
+      sourceOrderId: entry.orderId,
+      butcherOrder,
+      currentLocationType,
+      currentLocationName,
+      currentContainerName,
+      currentFreezerName,
+      pallet: palletVal,
+      box: entry.box,
+      storageLocation,
+      tags: resolvedTags,
+      movementOrders: relatedMoves,
+      entryRef: entry,
+      harvestDate,
+      pickupDate,
+      offSiteIntakeDate,
+      onSiteArrivalDate,
+      onSiteContainer,
+      onSiteFreezer,
+      onSiteCohortLogs: EMPTY_HISTORY_LOGS,
+      archivedDate,
+      archivedReason,
+      removalDestination,
+      _searchIndex: searchParts.join('\n').toLowerCase()
+    };
+
+    recordsMap.set(serialKey.toLowerCase(), record);
+    recordsByKey.set(record.serial, record);
+    recordsByKey.set(record.serial.toLowerCase(), record);
+    recordsByKey.set(record.id, record);
+  }
+
+  // 7. Index On-Site MeatCuts that don't have an Off-Site Entry
+  for (let i = 0; i < meatCuts.length; i++) {
+    const cut = meatCuts[i];
+    const serialKey = (cut.serial || cut.id).trim();
+    if (recordsMap.has(serialKey.toLowerCase())) continue;
+
+    const product = productsMap.get(cut.productId);
+    const container = containersMap.get(cut.containerId);
+    const freezer = container?.freezerId ? freezersMap.get(container.freezerId) : undefined;
+
+    const resolvedTags: Tag[] = [];
+    if (cut.tagIds && cut.tagIds.length > 0) {
+      for (let t = 0; t < cut.tagIds.length; t++) {
+        const tagObj = tagsMap.get(cut.tagIds[t]);
+        if (tagObj) resolvedTags.push(tagObj);
+      }
+    }
+
+    const isArchived = (cut.quantity || 0) <= 0 || Boolean(container?.isArchived);
+    const cutName = product?.name || cut.originalCutName || 'Unknown Cut';
+    const serialVal = cut.serial || cut.id;
+
+    if (cut.lot && cut.lot.trim()) {
+      lotsSet.add(cut.lot.trim());
+    }
+
+    const searchParts = [
+      serialVal,
+      cut.lot || '',
+      cutName,
+      cut.originalCutName || '',
+      ...resolvedTags.map(t => t.name)
+    ];
+
+    const record: TraceRecord = {
+      id: cut.id,
+      serial: serialVal,
+      lot: cut.lot,
+      cutName,
+      originalCutName: cut.originalCutName,
+      isWrongLabel: Boolean(cut.isWrongLabel || cut.wrongLabel),
+      wrongLabel: cut.wrongLabel,
+      product,
+      packDate: cut.packDate,
+      pieces: cut.quantity || 1,
+      netWeight: cut.weight || 0,
+      currentLocationType: isArchived ? 'archived' : 'onsite',
+      currentLocationName: isArchived
+        ? 'Archived / Consumed'
+        : freezer && container
+        ? `${freezer.name} • ${container.name}`
+        : container?.name || 'On-Site Freezers',
+      currentContainerName: container?.name,
+      currentFreezerName: freezer?.name,
+      tags: resolvedTags,
+      movementOrders: EMPTY_MOVEMENT_ORDERS,
+      entryRef: {
+        id: cut.id,
+        productId: cut.productId,
+        serial: serialVal,
+        lot: cut.lot,
+        packDate: cut.packDate,
+        cuts: product?.name,
+        netWeight: 0,
+        pieces: cut.quantity
+      },
+      harvestDate: undefined,
+      pickupDate: undefined,
+      offSiteIntakeDate: undefined,
+      onSiteArrivalDate: cut.packDate,
+      onSiteContainer: container,
+      onSiteFreezer: freezer,
+      onSiteCohortLogs: EMPTY_HISTORY_LOGS,
+      archivedDate: isArchived ? cut.packDate : undefined,
+      archivedReason: isArchived ? 'Consumed or depleted on-site stock.' : undefined,
+      removalDestination: undefined,
+      _searchIndex: searchParts.join('\n').toLowerCase()
+    };
+
+    recordsMap.set(serialKey.toLowerCase(), record);
+    recordsByKey.set(record.serial, record);
+    recordsByKey.set(record.serial.toLowerCase(), record);
+    recordsByKey.set(record.id, record);
+  }
+
+  return {
+    records: Array.from(recordsMap.values()),
+    recordsByKey,
+    uniqueLots: Array.from(lotsSet).sort(),
+    locationsMap
+  };
+};
+
+/**
+ * Lazily enriches a single selected TraceRecord with audit history logs
+ * (offSiteIntakeDate from intake log, onSiteArrivalDate fallback, and onSiteCohortLogs).
+ * Running this only on the active record avoids scanning thousands of history logs
+ * across thousands of items on initial view load.
+ */
+export const enrichTraceRecordWithHistory = (
+  record: TraceRecord,
+  historyLogs: HistoryEntry[] = []
+): TraceRecord => {
+  if (!historyLogs.length) return record;
+
+  const entry = record.entryRef;
+  const serialLower = (entry.serial || '').trim().toLowerCase();
+  const entryIdLower = (entry.id || '').toLowerCase();
+  const palletLower = (entry.pallet || '').toLowerCase();
+  const productLower = record.product?.name ? record.product.name.toLowerCase() : '';
+  const containerId = record.onSiteContainer?.id;
+
+  let intakeLogTimestamp: string | undefined;
+  let arrivalLogTimestamp: string | undefined;
+  const needArrivalFallback = !record.onSiteArrivalDate && record.currentLocationType === 'onsite';
+
+  for (let i = 0; i < historyLogs.length; i++) {
+    const h = historyLogs[i];
+    if (!h.description) continue;
+    const desc = h.description.toLowerCase();
+
+    if (!intakeLogTimestamp) {
+      const matchesSerial = Boolean(serialLower && desc.includes(serialLower));
+      const matchesEntryId = Boolean(entryIdLower && desc.includes(entryIdLower));
+      const matchesPallet = Boolean(palletLower && desc.includes(palletLower));
+      if (
+        (matchesSerial || matchesEntryId || matchesPallet) &&
+        (desc.includes('import') ||
+          desc.includes('intake') ||
+          desc.includes('added') ||
+          desc.includes('created') ||
+          desc.includes('off-site') ||
+          desc.includes('pallet'))
+      ) {
+        intakeLogTimestamp = h.timestamp;
+      }
+    }
+
+    if (needArrivalFallback && !arrivalLogTimestamp) {
+      const matchesSerial = Boolean(serialLower && desc.includes(serialLower));
+      const matchesProduct = Boolean(productLower && desc.includes(productLower));
+      if (
+        (matchesSerial || matchesProduct) &&
+        (desc.includes('staged') ||
+          desc.includes('restock') ||
+          desc.includes('on-site') ||
+          desc.includes('cabinet') ||
+          desc.includes('freezer'))
+      ) {
+        arrivalLogTimestamp = h.timestamp;
+      }
+    }
+
+    if (intakeLogTimestamp && (!needArrivalFallback || arrivalLogTimestamp)) {
+      break;
+    }
+  }
+
+  const resolvedIntakeDate = intakeLogTimestamp || record.offSiteIntakeDate;
+  const resolvedArrivalDate = record.onSiteArrivalDate || arrivalLogTimestamp;
+
+  const onSiteCohortLogs: HistoryEntry[] = [];
+  if (containerId) {
+    const arrivalTime = resolvedArrivalDate ? new Date(resolvedArrivalDate).getTime() || 0 : 0;
+    const minTime = arrivalTime > 0 ? arrivalTime - 86400000 * 2 : 0;
+
+    for (let i = 0; i < historyLogs.length; i++) {
+      const h = historyLogs[i];
+      const matchesTarget = h.targetId === containerId;
+      const matchesProd =
+        !matchesTarget && Boolean(productLower && h.description?.toLowerCase().includes(productLower));
+      if (matchesTarget || matchesProd) {
+        const entryTime = new Date(h.timestamp).getTime();
+        if (arrivalTime === 0 || entryTime >= minTime) {
+          onSiteCohortLogs.push(h);
+          if (onSiteCohortLogs.length >= 15) break;
+        }
+      }
+    }
+  }
+
+  return {
+    ...record,
+    offSiteIntakeDate: resolvedIntakeDate,
+    onSiteArrivalDate: resolvedArrivalDate,
+    onSiteCohortLogs
+  };
+};
+
+const INITIAL_VISIBLE_ROWS = 100;
+
 export const TraceabilityView: React.FC<TraceabilityViewProps> = ({
   state,
-  dispatch,
   onNavigateToView,
   initialSearch = ''
 }) => {
@@ -133,6 +807,7 @@ export const TraceabilityView: React.FC<TraceabilityViewProps> = ({
   const [copiedText, setCopiedText] = useState<string | null>(null);
   const [isPrintModalOpen, setIsPrintModalOpen] = useState<boolean>(false);
   const [activeStatusFilter, setActiveStatusFilter] = useState<'all' | 'offsite' | 'onsite' | 'archived'>('all');
+  const [visibleRowLimit, setVisibleRowLimit] = useState<number>(INITIAL_VISIBLE_ROWS);
 
   const barcodeRef = useRef<SVGSVGElement>(null);
   const printBarcodeRef = useRef<SVGSVGElement>(null);
@@ -140,6 +815,7 @@ export const TraceabilityView: React.FC<TraceabilityViewProps> = ({
   useEffect(() => {
     if (initialSearch) {
       setSearchQuery(initialSearch);
+      setVisibleRowLimit(INITIAL_VISIBLE_ROWS);
     }
   }, [initialSearch]);
 
@@ -149,371 +825,39 @@ export const TraceabilityView: React.FC<TraceabilityViewProps> = ({
     setTimeout(() => setCopiedText(null), 2000);
   };
 
-  // Build high-efficiency lookup dictionaries from state
-  const productsMap = useMemo(() => {
-    const map = new Map<string, Product>();
-    (state.products || []).forEach(p => map.set(p.id, p));
-    return map;
-  }, [state.products]);
-
-  const butcherOrdersMap = useMemo(() => {
-    const map = new Map<string, ButcherOrder>();
-    (state.butcherOrders || []).forEach(bo => {
-      if (bo.id) map.set(bo.id, bo);
-      if (bo.orderNumber) map.set(bo.orderNumber.toLowerCase(), bo);
-    });
-    return map;
-  }, [state.butcherOrders]);
-
-  const locationsMap = useMemo(() => {
-    const map = new Map<string, AppLocation>();
-    (state.locations || []).forEach(l => map.set(l.id, l));
-    return map;
-  }, [state.locations]);
-
-  const tagsMap = useMemo(() => {
-    const map = new Map<string, Tag>();
-    (state.tags || []).forEach(t => map.set(t.id, t));
-    return map;
-  }, [state.tags]);
-
-  const containersMap = useMemo(() => {
-    const map = new Map<string, Container>();
-    (state.containers || []).forEach(c => map.set(c.id, c));
-    return map;
-  }, [state.containers]);
-
-  const freezersMap = useMemo(() => {
-    const map = new Map<string, Freezer>();
-    (state.freezers || []).forEach(f => map.set(f.id, f));
-    return map;
-  }, [state.freezers]);
-
-  // Aggregate all unique traceability items (all offsite entries active + archived, plus historical movement snapshots)
-  const allTraceRecords = useMemo<TraceRecord[]>(() => {
-    const recordsMap = new Map<string, TraceRecord>();
-    const offsiteEntries = state.offSiteEntries || [];
-    const movementOrders = state.movementOrders || [];
-    const historyLogs = state.history || [];
-
-    // Helper to resolve product
-    const resolveProduct = (entry: OffSiteEntry): Product | undefined => {
-      if (entry.productId && productsMap.has(entry.productId)) {
-        return productsMap.get(entry.productId);
-      }
-      const rawCuts = (entry.cuts || '').trim().toLowerCase();
-      if (!rawCuts) return undefined;
-      return (state.products || []).find(p => 
-        p.name.toLowerCase() === rawCuts || 
-        (p.productNumbers && p.productNumbers.some(pn => rawCuts.startsWith(pn.toLowerCase())))
-      );
-    };
-
-    // Helper to resolve butcher order
-    const resolveButcherOrder = (entry: OffSiteEntry): ButcherOrder | undefined => {
-      if (!entry.orderId) return undefined;
-      return butcherOrdersMap.get(entry.orderId) || butcherOrdersMap.get(entry.orderId.toLowerCase());
-    };
-
-    // Process all entries from offSiteEntries
-    offsiteEntries.forEach(entry => {
-      if (!entry.serial && !entry.lot) return;
-      const serialKey = (entry.serial || entry.id).trim();
-      const product = resolveProduct(entry);
-      const butcherOrder = resolveButcherOrder(entry);
-      const storageLocation = entry.storageLocationId ? locationsMap.get(entry.storageLocationId) : undefined;
-      
-      const resolvedTags: Tag[] = (entry.tagIds || [])
-        .map(tid => tagsMap.get(tid))
-        .filter((t): t is Tag => Boolean(t));
-
-      // Determine movement orders that affected this entry
-      const relatedMoves = movementOrders.filter(mo => 
-        mo.moves.some(m => m.entryId === entry.id) ||
-        (mo.originalEntries && mo.originalEntries.some(oe => oe.id === entry.id || (oe.serial && oe.serial === entry.serial)))
-      ).sort((a, b) => new Date(a.date || a.executedAt || '').getTime() - new Date(b.date || b.executedAt || '').getTime());
-
-      // Check history logs for explicit off-site removal or consumption for this item
-      const serialUpper = (entry.serial || '').trim().toUpperCase();
-      const removalLog = historyLogs.find(h => {
-        const desc = h.description;
-        const matchesSerial = Boolean(serialUpper && desc.toUpperCase().includes(serialUpper));
-        const matchesEntryId = desc.includes(entry.id);
-        return (matchesSerial || matchesEntryId) && (
-          h.targetId === 'offsite-removal' ||
-          desc.toLowerCase().includes('from offsite inventory after delivery to') ||
-          desc.toLowerCase().includes('removed from offsite inventory')
-        );
-      });
-
-      let removalDestName: string | undefined;
-      if (removalLog) {
-        const match = removalLog.description.match(/after delivery to "(.*?)"/i);
-        if (match && match[1]) {
-          removalDestName = match[1].trim();
-        }
-      }
-
-      // Find executed moves specifically for this entry
-      const executedMovesForEntry = relatedMoves.filter(mo => 
-        Boolean(mo.executedAt || mo.status === 'completed') &&
-        mo.moves.some(m => m.entryId === entry.id || (entry.serial && mo.originalEntries?.some(oe => oe.serial === entry.serial && oe.id === m.entryId)))
-      );
-      const lastExecutedMove = executedMovesForEntry.length > 0 ? executedMovesForEntry[executedMovesForEntry.length - 1] : undefined;
-
-      // Extract specific destination for this item in the last executed move
-      let lastMoveDestId: string | undefined;
-      let lastMoveTargetDest: MovementDestination | undefined;
-      let lastMoveTargetLoc: AppLocation | undefined;
-      let isLastMoveHome = false;
-
-      if (lastExecutedMove) {
-        const moveItem = lastExecutedMove.moves.find(m => m.entryId === entry.id || (entry.serial && lastExecutedMove.originalEntries?.some(oe => oe.serial === entry.serial && oe.id === m.entryId)));
-        if (moveItem) {
-          lastMoveDestId = moveItem.actualLocation || moveItem.targetLocation;
-          lastMoveTargetDest = lastMoveDestId ? lastExecutedMove.targetDestinations?.find(d => d.id === lastMoveDestId) : undefined;
-          lastMoveTargetLoc = lastMoveTargetDest ? locationsMap.get(lastMoveTargetDest.locationId) : (lastMoveDestId ? locationsMap.get(lastMoveDestId) : undefined);
-          isLastMoveHome = Boolean(lastMoveTargetLoc?.isHome || lastMoveTargetDest?.locationName?.toLowerCase().includes('home') || lastMoveTargetDest?.locationName?.toLowerCase().includes('staging'));
-        }
-      }
-
-      // Check if specifically matched to an active cut currently on site with quantity > 0
-      let matchedOnSiteCut: MeatCut | undefined;
-      if (product && entry.serial && entry.serial.trim()) {
-        matchedOnSiteCut = (state.meatCuts || []).find(mc => 
-          mc.productId === product.id && 
-          mc.serial && 
-          mc.serial.trim().toLowerCase() === entry.serial?.trim().toLowerCase() && 
-          (mc.quantity || 0) > 0
-        );
-      }
-
-      // Determine status and location
-      let currentLocationType: 'offsite' | 'onsite' | 'archived' = 'offsite';
-      let currentLocationName = entry.currentLocation || entry.location || storageLocation?.name || 'Off-Site Cold Storage';
-      let currentContainerName: string | undefined;
-      let currentFreezerName: string | undefined;
-      let onSiteArrivalDate: string | undefined;
-      let onSiteContainer: Container | undefined;
-      let onSiteFreezer: Freezer | undefined;
-      let archivedDate: string | undefined;
-      let archivedReason: string | undefined;
-      let removalDestination: string | undefined = removalDestName || (lastMoveTargetDest && !isLastMoveHome ? lastMoveTargetDest.locationName : undefined);
-
-      if (entry.archived) {
-        // Priority 1: Explicit removal from inventory (e.g., delivered to CLiCK, customer, or written off)
-        if (removalLog || (lastMoveTargetDest && !isLastMoveHome)) {
-          currentLocationType = 'archived';
-          const destLabel = removalDestName || lastMoveTargetDest?.locationName || 'External Location';
-          currentLocationName = `Delivered to ${destLabel} (Removed from Inventory)`;
-          archivedDate = removalLog?.timestamp || lastExecutedMove?.executedAt || lastExecutedMove?.date;
-          archivedReason = `Delivered to ${destLabel} and permanently removed from active inventory.`;
-          removalDestination = destLabel;
-        } else if (matchedOnSiteCut) {
-          // Priority 2: Actively matched to an on-site cut with quantity > 0
-          currentLocationType = 'onsite';
-          const container = containersMap.get(matchedOnSiteCut.containerId);
-          if (container && !container.isArchived) {
-            onSiteContainer = container;
-            currentContainerName = container.name;
-            const freezer = container.freezerId ? freezersMap.get(container.freezerId) : undefined;
-            if (freezer) {
-              onSiteFreezer = freezer;
-              currentFreezerName = freezer.name;
-              currentLocationName = `${freezer.name} • ${container.name}`;
-            } else {
-              currentLocationName = container.name;
-            }
-          } else {
-            currentLocationName = 'On-Site Storage / Cabinets';
-          }
-          onSiteArrivalDate = lastExecutedMove?.executedAt || lastExecutedMove?.date || matchedOnSiteCut.packDate;
-        } else {
-          // Priority 3: Archived or consumed
-          currentLocationType = 'archived';
-          archivedDate = lastExecutedMove?.executedAt || lastExecutedMove?.date;
-          if (lastMoveTargetDest && isLastMoveHome) {
-            currentLocationName = 'Archived / Consumed (Past On-Site)';
-            archivedReason = 'Transferred on-site and subsequently consumed or archived.';
-          } else {
-            currentLocationName = 'Archived / Removed';
-            archivedReason = 'Archived or removed from active inventory.';
-          }
-        }
-      } else {
-        // Active in Off-Site Storage
-        currentLocationType = 'offsite';
-        if (lastMoveTargetDest && !isLastMoveHome) {
-          currentLocationName = `${lastMoveTargetDest.locationName}${lastMoveTargetDest.palletName ? ` • ${lastMoveTargetDest.palletName}` : ''}`;
-        } else {
-          currentLocationName = entry.currentLocation || entry.location || storageLocation?.name || 'Off-Site Cold Storage';
-        }
-      }
-
-      // Resolve step dates
-      const harvestDate = butcherOrder?.killDate;
-      const pickupDate = butcherOrder?.pickupDate;
-
-      // Off-Site Cold Storage intake date resolution
-      let offSiteIntakeDate: string | undefined;
-
-      const intakeLog = historyLogs.find(h => {
-        const desc = h.description.toLowerCase();
-        const matchesSerial = Boolean(serialUpper && desc.includes(serialUpper.toLowerCase()));
-        const matchesEntryId = desc.includes(entry.id.toLowerCase());
-        const matchesPallet = Boolean(entry.pallet && desc.includes(entry.pallet.toLowerCase()));
-        return (matchesSerial || matchesEntryId || matchesPallet) &&
-          (desc.includes('import') || desc.includes('intake') || desc.includes('added') || desc.includes('created') || desc.includes('off-site') || desc.includes('pallet'));
-      });
-
-      if (intakeLog) {
-        offSiteIntakeDate = intakeLog.timestamp;
-      } else {
-        const dateFromPallet = extractDateFromPalletOrId(entry.pallet || entry.currentLocation);
-        if (dateFromPallet) {
-          offSiteIntakeDate = dateFromPallet;
-        } else if (entry.packDate) {
-          offSiteIntakeDate = entry.packDate;
-        } else if (pickupDate) {
-          offSiteIntakeDate = pickupDate;
-        }
-      }
-
-      // On-Site Arrival date resolution fallback
-      if (!onSiteArrivalDate && currentLocationType === 'onsite') {
-        const arrivalLog = historyLogs.find(h => {
-          const desc = h.description.toLowerCase();
-          const matchesSerial = Boolean(serialUpper && desc.includes(serialUpper.toLowerCase()));
-          const matchesProduct = Boolean(product && desc.includes(product.name.toLowerCase()));
-          return (matchesSerial || matchesProduct) &&
-            (desc.includes('staged') || desc.includes('restock') || desc.includes('on-site') || desc.includes('cabinet') || desc.includes('freezer'));
-        });
-        if (arrivalLog) {
-          onSiteArrivalDate = arrivalLog.timestamp;
-        } else if (matchedOnSiteCut?.packDate) {
-          onSiteArrivalDate = matchedOnSiteCut.packDate;
-        }
-      }
-
-      // Collect on-site cohort logs (movements involving the on-site container post arrival)
-      const onSiteCohortLogs: HistoryEntry[] = [];
-      if (onSiteContainer) {
-        const containerId = onSiteContainer.id;
-        const arrivalTime = onSiteArrivalDate ? new Date(onSiteArrivalDate).getTime() : 0;
-        historyLogs.forEach(h => {
-          if (h.targetId === containerId || (product && h.description.toLowerCase().includes(product.name.toLowerCase()))) {
-            const entryTime = new Date(h.timestamp).getTime();
-            if (arrivalTime === 0 || entryTime >= arrivalTime - (86400000 * 2)) {
-              onSiteCohortLogs.push(h);
-            }
-          }
-        });
-      }
-
-      recordsMap.set(serialKey, {
-        id: entry.id,
-        serial: entry.serial || 'NO-SERIAL',
-        lot: entry.lot,
-        cutName: product?.name || entry.cuts || 'Unknown Cut',
-        originalCutName: entry.originalCutName,
-        isWrongLabel: Boolean(entry.isWrongLabel || entry.wrongLabel),
-        wrongLabel: entry.wrongLabel,
-        product,
-        packDate: entry.packDate,
-        pieces: entry.pieces || 1,
-        netWeight: Number(entry.netWeight) || 0,
-        sourceOrderId: entry.orderId,
-        butcherOrder,
-        currentLocationType,
-        currentLocationName,
-        currentContainerName,
-        currentFreezerName,
-        pallet: entry.pallet || entry.currentLocation,
-        box: entry.box,
-        storageLocation,
-        tags: resolvedTags,
-        movementOrders: relatedMoves,
-        entryRef: entry,
-        harvestDate,
-        pickupDate,
-        offSiteIntakeDate,
-        onSiteArrivalDate,
-        onSiteContainer,
-        onSiteFreezer,
-        onSiteCohortLogs: onSiteCohortLogs.slice(0, 15),
-        archivedDate,
-        archivedReason,
-        removalDestination
-      });
-    });
-
-    // Also index on-site cuts that don't have an off-site entry
-    (state.meatCuts || []).forEach(cut => {
-      const serialKey = (cut.serial || cut.id).trim();
-      if (recordsMap.has(serialKey)) return;
-      const product = productsMap.get(cut.productId);
-      const container = containersMap.get(cut.containerId);
-      const freezer = container?.freezerId ? freezersMap.get(container.freezerId) : undefined;
-      const resolvedTags: Tag[] = (cut.tagIds || [])
-        .map(tid => tagsMap.get(tid))
-        .filter((t): t is Tag => Boolean(t));
-
-      const isArchived = (cut.quantity || 0) <= 0 || Boolean(container?.isArchived);
-
-      recordsMap.set(serialKey, {
-        id: cut.id,
-        serial: cut.serial || cut.id,
-        lot: cut.lot,
-        cutName: product?.name || cut.originalCutName || 'Unknown Cut',
-        originalCutName: cut.originalCutName,
-        isWrongLabel: Boolean(cut.isWrongLabel || cut.wrongLabel),
-        wrongLabel: cut.wrongLabel,
-        product,
-        packDate: cut.packDate,
-        pieces: cut.quantity || 1,
-        netWeight: cut.weight || 0,
-        currentLocationType: isArchived ? 'archived' : 'onsite',
-        currentLocationName: isArchived 
-          ? 'Archived / Consumed' 
-          : (freezer && container ? `${freezer.name} • ${container.name}` : container?.name || 'On-Site Freezers'),
-        currentContainerName: container?.name,
-        currentFreezerName: freezer?.name,
-        tags: resolvedTags,
-        movementOrders: [],
-        entryRef: {
-          id: cut.id,
-          productId: cut.productId,
-          serial: cut.serial || cut.id,
-          lot: cut.lot,
-          packDate: cut.packDate,
-          cuts: product?.name,
-          netWeight: 0,
-          pieces: cut.quantity
-        },
-        harvestDate: undefined,
-        pickupDate: undefined,
-        offSiteIntakeDate: undefined,
-        onSiteArrivalDate: cut.packDate,
-        onSiteContainer: container,
-        onSiteFreezer: freezer,
-        onSiteCohortLogs: [],
-        archivedDate: isArchived ? cut.packDate : undefined,
-        archivedReason: isArchived ? 'Consumed or depleted on-site stock.' : undefined,
-        removalDestination: undefined
-      });
-    });
-
-    return Array.from(recordsMap.values());
-  }, [state.offSiteEntries, state.movementOrders, state.meatCuts, state.history, productsMap, butcherOrdersMap, locationsMap, tagsMap, containersMap, freezersMap]);
-
-  // List of unique lots for quick navigation
-  const uniqueLots = useMemo(() => {
-    const set = new Set<string>();
-    allTraceRecords.forEach(r => {
-      if (r.lot && r.lot.trim()) set.add(r.lot.trim());
-    });
-    return Array.from(set).sort();
-  }, [allTraceRecords]);
+  // Build O(N) traceability index without scanning history logs per entry
+  const {
+    records: allTraceRecords,
+    recordsByKey,
+    uniqueLots,
+    locationsMap
+  } = useMemo(
+    () =>
+      buildTraceRecords({
+        products: state.products,
+        butcherOrders: state.butcherOrders,
+        locations: state.locations,
+        tags: state.tags,
+        containers: state.containers,
+        freezers: state.freezers,
+        offSiteEntries: state.offSiteEntries,
+        movementOrders: state.movementOrders,
+        meatCuts: state.meatCuts,
+        history: state.history
+      }),
+    [
+      state.products,
+      state.butcherOrders,
+      state.locations,
+      state.tags,
+      state.containers,
+      state.freezers,
+      state.offSiteEntries,
+      state.movementOrders,
+      state.meatCuts,
+      state.history
+    ]
+  );
 
   // List of unique butcher orders for quick navigation
   const uniqueButcherOrders = useMemo(() => {
@@ -525,20 +869,28 @@ export const TraceabilityView: React.FC<TraceabilityViewProps> = ({
     }));
   }, [state.butcherOrders]);
 
-  // Filter records based on user search
+  // Filter records based on user search using pre-computed lowercase index
   const filteredRecords = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     if (!q) return [];
 
     return allTraceRecords.filter(r => {
-      const matchStatus = activeStatusFilter === 'all' || r.currentLocationType === activeStatusFilter;
-      if (!matchStatus) return false;
-
+      if (activeStatusFilter !== 'all' && r.currentLocationType !== activeStatusFilter) {
+        return false;
+      }
+      if (r._searchIndex !== undefined) {
+        return r._searchIndex.includes(q);
+      }
       const serialMatch = r.serial.toLowerCase().includes(q);
       const lotMatch = r.lot ? r.lot.toLowerCase().includes(q) : false;
-      const orderMatch = (r.sourceOrderId && r.sourceOrderId.toLowerCase().includes(q)) || 
-        (r.butcherOrder && (r.butcherOrder.orderNumber.toLowerCase().includes(q) || r.butcherOrder.species.toLowerCase().includes(q)));
-      const cutMatch = r.cutName.toLowerCase().includes(q) || (r.originalCutName && r.originalCutName.toLowerCase().includes(q));
+      const orderMatch =
+        (r.sourceOrderId && r.sourceOrderId.toLowerCase().includes(q)) ||
+        (r.butcherOrder &&
+          (r.butcherOrder.orderNumber.toLowerCase().includes(q) ||
+            r.butcherOrder.species.toLowerCase().includes(q)));
+      const cutMatch =
+        r.cutName.toLowerCase().includes(q) ||
+        (r.originalCutName && r.originalCutName.toLowerCase().includes(q));
       const boxMatch = r.box ? r.box.toLowerCase().includes(q) : false;
       const palletMatch = r.pallet ? r.pallet.toLowerCase().includes(q) : false;
       const tagMatch = r.tags.some(t => t.name.toLowerCase().includes(q));
@@ -547,18 +899,27 @@ export const TraceabilityView: React.FC<TraceabilityViewProps> = ({
     });
   }, [allTraceRecords, searchQuery, activeStatusFilter]);
 
-  // Selected record deep dive
-  const activeRecord = useMemo(() => {
+  const visibleFilteredRecords = useMemo(
+    () => filteredRecords.slice(0, visibleRowLimit),
+    [filteredRecords, visibleRowLimit]
+  );
+
+  // Resolve base active record in O(1), then lazily enrich ONLY that single record with history logs
+  const baseActiveRecord = useMemo(() => {
     if (selectedSerial) {
-      const found = allTraceRecords.find(r => r.serial === selectedSerial || r.id === selectedSerial);
+      const found = recordsByKey.get(selectedSerial);
       if (found) return found;
     }
-    // If only 1 record matched in search, default to it
     if (filteredRecords.length === 1 && searchQuery.trim().length >= 3) {
       return filteredRecords[0];
     }
     return null;
-  }, [selectedSerial, filteredRecords, allTraceRecords, searchQuery]);
+  }, [selectedSerial, filteredRecords, recordsByKey, searchQuery]);
+
+  const activeRecord = useMemo(() => {
+    if (!baseActiveRecord) return null;
+    return enrichTraceRecordWithHistory(baseActiveRecord, state.history || []);
+  }, [baseActiveRecord, state.history]);
 
   // Render Barcode
   useEffect(() => {
@@ -603,14 +964,22 @@ export const TraceabilityView: React.FC<TraceabilityViewProps> = ({
   // Aggregate Cohort Stats when multiple items match a lot / order
   const cohortSummary = useMemo(() => {
     if (filteredRecords.length <= 1) return null;
-    const totalPcs = filteredRecords.reduce((acc, r) => acc + (r.pieces || 1), 0);
-    const totalWeight = filteredRecords.reduce((acc, r) => acc + (r.netWeight || 0), 0);
-    const offsiteCount = filteredRecords.filter(r => r.currentLocationType === 'offsite').length;
-    const onsiteCount = filteredRecords.filter(r => r.currentLocationType === 'onsite').length;
-    const archivedCount = filteredRecords.filter(r => r.currentLocationType === 'archived').length;
+    let totalPcs = 0;
+    let totalWeight = 0;
+    let offsiteCount = 0;
+    let onsiteCount = 0;
+    let archivedCount = 0;
+    const distinctCutsSet = new Set<string>();
 
-    // Distinct cut names
-    const distinctCuts = Array.from(new Set(filteredRecords.map(r => r.cutName)));
+    for (let i = 0; i < filteredRecords.length; i++) {
+      const r = filteredRecords[i];
+      totalPcs += r.pieces || 1;
+      totalWeight += r.netWeight || 0;
+      if (r.currentLocationType === 'offsite') offsiteCount++;
+      else if (r.currentLocationType === 'onsite') onsiteCount++;
+      else archivedCount++;
+      distinctCutsSet.add(r.cutName);
+    }
 
     return {
       totalPackages: filteredRecords.length,
@@ -619,7 +988,7 @@ export const TraceabilityView: React.FC<TraceabilityViewProps> = ({
       offsiteCount,
       onsiteCount,
       archivedCount,
-      distinctCuts
+      distinctCuts: Array.from(distinctCutsSet)
     };
   }, [filteredRecords]);
 
@@ -1000,6 +1369,7 @@ export const TraceabilityView: React.FC<TraceabilityViewProps> = ({
             onChange={(e) => {
               setSearchQuery(e.target.value);
               setSelectedSerial(null);
+              setVisibleRowLimit(INITIAL_VISIBLE_ROWS);
             }}
             placeholder="Enter Serial Number, Lot #, Butcher Order #, Cut name, or Box ID to trace..."
             className="block w-full rounded-xl border border-cool-gray-700 bg-cool-gray-900/90 pl-11 pr-24 text-sm text-cool-gray-100 placeholder:text-cool-gray-500 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 py-3 transition shadow-inner"
@@ -1009,6 +1379,7 @@ export const TraceabilityView: React.FC<TraceabilityViewProps> = ({
               onClick={() => {
                 setSearchQuery('');
                 setSelectedSerial(null);
+                setVisibleRowLimit(INITIAL_VISIBLE_ROWS);
               }}
               className="absolute inset-y-0 right-3 flex items-center px-2.5 py-1 text-xs text-cool-gray-400 hover:text-white bg-cool-gray-800 hover:bg-cool-gray-700 rounded-lg cursor-pointer my-auto h-7 font-bold"
             >
@@ -1028,6 +1399,7 @@ export const TraceabilityView: React.FC<TraceabilityViewProps> = ({
               onClick={() => {
                 setSearchQuery(lot);
                 setSelectedSerial(null);
+                setVisibleRowLimit(INITIAL_VISIBLE_ROWS);
               }}
               className={`px-2.5 py-1 rounded-lg border text-xs font-mono transition cursor-pointer ${
                 searchQuery === lot 
@@ -1046,6 +1418,7 @@ export const TraceabilityView: React.FC<TraceabilityViewProps> = ({
               onClick={() => {
                 setSearchQuery(bo.orderNumber);
                 setSelectedSerial(null);
+                setVisibleRowLimit(INITIAL_VISIBLE_ROWS);
               }}
               className={`px-2.5 py-1 rounded-lg border text-xs font-mono transition cursor-pointer ${
                 searchQuery === bo.orderNumber 
@@ -1152,6 +1525,7 @@ export const TraceabilityView: React.FC<TraceabilityViewProps> = ({
             onClick={() => {
               setSearchQuery('');
               setSelectedSerial(null);
+              setVisibleRowLimit(INITIAL_VISIBLE_ROWS);
             }}
             className="px-4 py-2 bg-amber-500/20 text-amber-300 border border-amber-500/40 rounded-xl text-xs font-semibold hover:bg-amber-500/30 transition cursor-pointer"
           >
@@ -1646,7 +2020,10 @@ export const TraceabilityView: React.FC<TraceabilityViewProps> = ({
                 ].map(tab => (
                   <button
                     key={tab.id}
-                    onClick={() => setActiveStatusFilter(tab.id as any)}
+                    onClick={() => {
+                      setActiveStatusFilter(tab.id as any);
+                      setVisibleRowLimit(INITIAL_VISIBLE_ROWS);
+                    }}
                     className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer ${
                       activeStatusFilter === tab.id
                         ? 'bg-amber-500 text-cool-gray-950 font-bold shadow'
@@ -1667,7 +2044,9 @@ export const TraceabilityView: React.FC<TraceabilityViewProps> = ({
                 Select Any Package to Inspect Full Chain-of-Custody Timeline
               </h3>
               <span className="text-xs text-cool-gray-400 font-mono">
-                {filteredRecords.length} packages listed
+                {filteredRecords.length > visibleFilteredRecords.length
+                  ? `Showing ${visibleFilteredRecords.length} of ${filteredRecords.length} packages`
+                  : `${filteredRecords.length} packages listed`}
               </span>
             </div>
 
@@ -1687,7 +2066,7 @@ export const TraceabilityView: React.FC<TraceabilityViewProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-cool-gray-800">
-                  {filteredRecords.map(record => (
+                  {visibleFilteredRecords.map(record => (
                     <tr 
                       key={record.id} 
                       onClick={() => setSelectedSerial(record.serial)}
@@ -1748,6 +2127,28 @@ export const TraceabilityView: React.FC<TraceabilityViewProps> = ({
                 </tbody>
               </table>
             </div>
+
+            {filteredRecords.length > visibleFilteredRecords.length && (
+              <div className="p-3.5 bg-cool-gray-900/80 border-t border-cool-gray-800 flex flex-wrap items-center justify-between gap-3 text-xs">
+                <span className="text-cool-gray-400 font-mono">
+                  Showing {visibleFilteredRecords.length} of {filteredRecords.length} matching packages
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setVisibleRowLimit(prev => prev + INITIAL_VISIBLE_ROWS)}
+                    className="px-3 py-1.5 bg-cool-gray-800 hover:bg-cool-gray-700 text-amber-300 border border-cool-gray-700 rounded-lg font-semibold transition cursor-pointer"
+                  >
+                    Show Next {Math.min(INITIAL_VISIBLE_ROWS, filteredRecords.length - visibleFilteredRecords.length)}
+                  </button>
+                  <button
+                    onClick={() => setVisibleRowLimit(filteredRecords.length)}
+                    className="px-3 py-1.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded-lg font-semibold transition cursor-pointer"
+                  >
+                    Show All ({filteredRecords.length})
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

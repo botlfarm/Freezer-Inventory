@@ -5,6 +5,7 @@ import { compareBoxLabels } from '../utils/boxSort';
 import { Truck, Plus, ChevronRight, Calendar, CheckCircle2, ArrowRightCircle, PackageOpen, Info, Edit3, X, Trash2, RotateCcw, Home, ClipboardList, CheckSquare, Square, ShieldAlert, Printer, Wrench, ChevronDown, Download, MinusSquare, FileText, Flag, AlertTriangle } from 'lucide-react';
 import { MovementOrder, MovementItem } from '../types';
 import { MovementReportModal } from './MovementReportModal';
+import { getTagActionIcon } from '../utils/tagRestockRules';
 
 const flagColors = [
   { name: 'Red', value: 'red', bg: 'bg-red-500/10', border: 'border-red-500/30', text: 'text-red-400', fill: 'fill-red-500', badge: 'bg-red-500/20 text-red-300 border-red-500/30' },
@@ -50,7 +51,7 @@ const renderItemTagsHelper = (tags: any[] | undefined, items: any[]) => {
             className="inline-flex items-center gap-0.5 text-[8px] border px-1 py-0.2 rounded font-black tracking-wide uppercase select-none animate-fade-in"
             title={`Tag on item: ${tag.description || tag.name}`}
           >
-            {tag.id === 'use-first' ? '🍳 ' : tag.id === 'not-for-sale' ? '🛑 ' : '🏷️ '}{tag.name}
+            {getTagActionIcon(tag)} {tag.name}
           </span>
         );
       })}
