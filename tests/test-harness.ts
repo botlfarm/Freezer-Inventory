@@ -271,7 +271,13 @@ export function createTestDatabase(dbPath: string = ':memory:'): Database.Databa
       birthDate TEXT,
       notes TEXT,
       documents TEXT,
-      butcherFee REAL DEFAULT 0
+      butcherFee REAL DEFAULT 0,
+      weightAnomalies TEXT,
+      estimatedWeights TEXT,
+      reviewIgnoredFields TEXT,
+      tagIds TEXT,
+      auditClosed INTEGER DEFAULT 0,
+      auditClosedAt TEXT
     );
 
     CREATE TABLE IF NOT EXISTS history (
@@ -282,7 +288,9 @@ export function createTestDatabase(dbPath: string = ':memory:'): Database.Databa
       user TEXT,
       clientDevice TEXT,
       clientInfo TEXT,
-      undoData TEXT
+      undoData TEXT,
+      scope TEXT,
+      details TEXT
     );
 
     CREATE TABLE IF NOT EXISTS app_config (
@@ -353,6 +361,7 @@ export function createTestDatabase(dbPath: string = ':memory:'): Database.Databa
       targetType TEXT NOT NULL,
       targetId TEXT,
       replacementText TEXT,
+      bundleItems TEXT,
       notes TEXT,
       createdAt TEXT
     );
@@ -461,10 +470,23 @@ export function seedSampleDatabase(db: Database.Database): void {
   insertHistory.run('hist-seed', new Date().toISOString(), 'Restored baseline farm inventory state', 'system', 'Test Suite', 'Automated Harness');
 
   const insertDict = db.prepare(`
-    INSERT INTO voice_dictionary (id, spokenPhrase, targetType, targetId, replacementText, notes, createdAt)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO voice_dictionary (id, spokenPhrase, targetType, targetId, bundleItems, replacementText, notes, createdAt)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
-  insertDict.run('vd-seed-ribeye', 'prime rib', 'product', 'prod-ribeye', null, 'Common spoken alias', new Date().toISOString());
+  insertDict.run('vd-seed-ribeye', 'prime rib', 'product', 'prod-ribeye', null, null, 'Common spoken alias', new Date().toISOString());
+  insertDict.run(
+    'vd-seed-steak-pack',
+    'steak pack',
+    'bundle',
+    null,
+    JSON.stringify([
+      { productId: 'prod-ribeye', quantity: 1 },
+      { productId: 'prod-ground-beef', quantity: 2 },
+    ]),
+    null,
+    'Sample 1-to-many product bundle',
+    new Date().toISOString()
+  );
 }
 
 export function parseCutsheetCsv(csvContent: string): any[] {
@@ -509,8 +531,8 @@ export function importButcherCutsheet(
 
   // Insert or update order
   const upsertOrder = db.prepare(`
-    INSERT INTO butcher_orders (id, orderNumber, species, animalCount, killDate, pickupDate, liveWeight, hotWeight, coldWeight, locationId, createdAt, notes, butcherFee)
-    VALUES (@id, @orderNumber, @species, @animalCount, @killDate, @pickupDate, @liveWeight, @hotWeight, @coldWeight, @locationId, @createdAt, @notes, @butcherFee)
+    INSERT INTO butcher_orders (id, orderNumber, species, animalCount, killDate, pickupDate, liveWeight, hotWeight, coldWeight, locationId, createdAt, notes, butcherFee, tagIds)
+    VALUES (@id, @orderNumber, @species, @animalCount, @killDate, @pickupDate, @liveWeight, @hotWeight, @coldWeight, @locationId, @createdAt, @notes, @butcherFee, @tagIds)
     ON CONFLICT(id) DO UPDATE SET
       orderNumber = excluded.orderNumber,
       species = excluded.species,
@@ -522,7 +544,8 @@ export function importButcherCutsheet(
       coldWeight = excluded.coldWeight,
       locationId = excluded.locationId,
       notes = excluded.notes,
-      butcherFee = excluded.butcherFee
+      butcherFee = excluded.butcherFee,
+      tagIds = excluded.tagIds
   `);
   upsertOrder.run({
     id: order.id,
@@ -537,7 +560,8 @@ export function importButcherCutsheet(
     locationId: order.locationId || null,
     createdAt: order.createdAt || Date.now(),
     notes: order.notes || '',
-    butcherFee: order.butcherFee || 0
+    butcherFee: order.butcherFee || 0,
+    tagIds: JSON.stringify(order.tagIds || [])
   });
 
   const insertEntry = db.prepare(`

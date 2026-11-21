@@ -1,3 +1,892 @@
+### [2.88.1] - 2026-11-21
+
+### Changed
+- **Sticky Butcher Logs Selection Bar (`views/ButcherRecordsView.tsx`)**:
+  - Made the Butcher Logs order selection bar (`data-testid="butcher-logs-selection-bar"`) sticky (`sticky z-30`) pinned directly below the top menu bar via `top: var(--header-height, 68px)` so it stays visible while scrolling through order cards and automatically tracks header height changes (including when the filter drawer opens/closes).
+  - Upgraded the selection bar backdrop (`backdrop-blur-md`, elevated shadow, and high-opacity `bg-cyan-950/95` when orders are checked) so scrolled cards remain cleanly separated underneath.
+  - Replaced `overflow-auto` with `overflow-x-clip` on `#butcher-records-view` so window-level `position: sticky` operates reliably without an ancestor scroll-container trap.
+
+### Added
+- **Automated Tests (`tests/butcher-reports.test.ts`)**:
+  - Added SSR and source verification tests confirming `data-testid="butcher-logs-selection-bar"` uses `sticky`, `z-30`, `top: var(--header-height, 68px)`, and frosted high-opacity backdrop, and that `#butcher-records-view` uses `overflow-x-clip`.
+
+### Files Modified
+- `/views/ButcherRecordsView.tsx`
+- `/tests/butcher-reports.test.ts`
+- `/APP_CONTEXT.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.88.0] - 2026-11-21
+
+### Added
+- **Send Checked Butcher Logs Orders to Spreadsheet (`views/ButcherRecordsView.tsx`, `views/ButcherSpreadsheetView.tsx`, `utils/butcherSettings.ts`)**:
+  - Added **Send to Spreadsheet (N)** (`data-testid="butcher-send-to-spreadsheet-btn"`) and **Add to Spreadsheet** (`data-testid="butcher-append-to-spreadsheet-btn"`, shown when specific orders are already active in Spreadsheet) actions to the Butcher Logs order selection bar alongside the existing Reports actions.
+  - Added `mergeOrderIdsForSpreadsheetFilter` in `utils/butcherSettings.ts` and `orderSelectionRequest` / `onSelectedOrderIdsChange` synchronization in `ButcherSpreadsheetView.tsx` so sent orders immediately become the active Spreadsheet order filter (and clear any stale `Order #` column filter so the selected orders are always visible immediately).
+- **Automated Tests (`tests/butcher-reports.test.ts`)**:
+  - Added unit and SSR tests verifying `mergeOrderIdsForSpreadsheetFilter`, `ButcherSpreadsheetView` filtering immediately on incoming `orderSelectionRequest` (multi-order and single-order sets), and `ButcherRecordsView` Logs selection bar Spreadsheet actions.
+
+### Files Modified
+- `/utils/butcherSettings.ts`
+- `/views/ButcherSpreadsheetView.tsx`
+- `/views/ButcherRecordsView.tsx`
+- `/tests/butcher-reports.test.ts`
+- `/APP_CONTEXT.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.87.0] - 2026-11-20
+
+### Added
+- **Extensible Butcher Report Registry & Contextual Per-Report KPI Builders (`utils/butcherReports.ts`)**:
+  - Introduced a declarative `BUTCHER_REPORT_DEFINITIONS` registry, `buildButcherReportKpis`, `getButcherReportDefinition`, and adaptive `getKpiGridColumnsClass` layout helper so future Butcher report types can be registered with their own badges, descriptions, and contextual statistics blocks without modifying static summary cards.
+  - Tailored dedicated KPI strips for each active report type: **Yield Trends** (orders/head with yield coverage, dressing, cooler shrink, cutting yield, standing yield, top standing yield order), **Weights Timeline** (orders/head, per-animal live/hot/cold/packaged averages with totals, total packaged), **Cuts Over Time** (tracked cuts & mode, selected weight, share of packaged, avg/order, peak order share, avg/head), **Cut Breakdown** (unique cuts reflecting live breakdown search, total packages, total pieces, total net weight, top cut by weight, estimated sales value with priced-cut coverage), **Species Comparison** (species tracked, top volume species, highest dressing, highest cutting, lowest shrink, heaviest avg live), and **Timelines & Dates** (date span with warning count, avg days alive, avg hang time, avg package span, post-pack hold, avg turnaround).
+- **Automated Tests (`tests/butcher-reports.test.ts`, `tests/butcher-timelines.test.ts`)**:
+  - Added unit and SSR layout tests verifying `BUTCHER_REPORT_DEFINITIONS`, adaptive grid column classes, strict DOM order placing the Report Selector above the contextual KPI strip and report workspace, report-specific KPI isolation across all 6 report types, empty-dataset safety (zero `NaN` values), and suppression of duplicate inner KPI cards when Timelines & Dates is embedded in Reports.
+
+### Changed
+- **Report Selector Moved Above Contextual Statistics Strip (`views/ButcherRecordsView.tsx`, `components/ButcherTimelinesReport.tsx`)**:
+  - Promoted the Report Type Selector bar (`data-testid="butcher-report-selector-bar"`) to the top of the Butcher Reports workspace above the contextual statistics strip (`data-testid="butcher-reports-kpi-strip"`), driving selector tabs, badges, and statistics dynamically from `BUTCHER_REPORT_DEFINITIONS`.
+  - Added an optional `hideSummaryKpis` prop (default `false`) to `ButcherTimelinesReport` and enabled it when embedded in the Reports dashboard so Timelines & Dates avoids duplicating its KPI cards beneath the contextual statistics strip.
+
+### Files Modified
+- `/utils/butcherReports.ts`
+- `/views/ButcherRecordsView.tsx`
+- `/components/ButcherTimelinesReport.tsx`
+- `/tests/butcher-reports.test.ts`
+- `/tests/butcher-timelines.test.ts`
+- `/APP_CONTEXT.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.86.0] - 2026-11-20
+
+### Changed
+- **Cleaned-Up Full-Page Butcher Reports & Trends Dashboard (`views/ButcherRecordsView.tsx`)**:
+  - Moved the **Reporting Data Basis** switcher (**Actuals**, **Corrected Estimates**, **Exclude Flagged**) and flagged-orders review shortcut out of the main Reports body and directly into the Reports top-bar **Filters** drawer (`#butcher-reports-filter-panel`), counting non-default reporting bases in the active filter badge and displaying a dismissible `Basis: ...` chip in the active filter bar.
+  - Streamlined the entire **Reports** page into a unified Trends & Reports dashboard topped by a compact 8-tile summary KPI strip (`data-testid="butcher-reports-kpi-strip"`) and a single selectable report-type bar (`Yield Trends`, `Weights Timeline`, `Cuts Over Time`, `Cut Breakdown`, `Species Comparison`, `Timelines & Dates`), removing redundant dashboard titles/subtitles.
+  - Moved **Aggregated Cut Breakdown** out of its standalone bottom table and into the selectable **Cut Breakdown** report type (`data-testid="butcher-reports-breakdown-tab"`), enhanced with a live cut search filter (`data-testid="butcher-reports-breakdown-search"`) and summary totals footer row.
+
+### Fixed
+- **Rebuilt Auto-Fitting Reports SVG Charts (`utils/butcherStats.ts`, `views/ButcherRecordsView.tsx`)**:
+  - Added `computeChartYAxisScale`, `formatCompactAxisNumber`, `buildSegmentedSvgPath`, and `buildSegmentedAreaPath` so **Yield Trends**, **Weights Timeline**, and **Cuts Over Time** dynamically auto-scale their Y-axes with clean round ticks, compact large-number labels, segmented null-safe paths (no false drops to zero on missing weights), clickable series visibility toggles, and clipped SVG plot bounds (`overflow-hidden` + `<clipPath>`).
+  - Switching **Reporting Data Basis** between **Actuals**, **Corrected Estimates**, and **Exclude Flagged** (even with extreme `>100%` yield anomalies, negative cooler shrink, or high-value scale typos) now refits every curve and marker cleanly inside the chart frame instead of overflowing off the top or bottom, and clamps Species Comparison progress bars to `0–100%`.
+
+### Added
+- **Automated Tests (`tests/butcher-reports.test.ts`)**:
+  - Added unit and SSR regression tests verifying `computeChartYAxisScale`, `formatCompactAxisNumber`, `buildSegmentedSvgPath`, `buildSegmentedAreaPath`, Reporting Basis placement strictly inside `#butcher-reports-filter-panel`, the full-page Trends dashboard with **Cut Breakdown** as a selectable report type, and strict SVG coordinate containment for extreme yield outliers.
+
+### Files Modified
+- `/utils/butcherStats.ts`
+- `/views/ButcherRecordsView.tsx`
+- `/tests/butcher-reports.test.ts`
+- `/APP_CONTEXT.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.85.0] - 2026-11-20
+
+### Added
+- **Unified Multi-Facet Filters Across Butcher Logs & Reports (`utils/butcherSettings.ts`, `views/ButcherRecordsView.tsx`)**:
+  - Unified the filter drawer across both **Butcher Logs** (`#butcher-orders-filter-panel`) and **Reports** (`#butcher-reports-filter-panel`) with the exact same filter controls while keeping each tab's active state independent: full-text search (orders, species, butcher, tags, notes, and anomaly/estimate flag notes), **Date Type** (`Any Date`, `Kill Date`, `Pickup Date`, `Pack Date`) paired with **On / After Date**, **On / Before Date**, and quick range presets (`30d`, `90d`, `12m`, `YTD`, `Clear`), plus multi-select **Order Number**, **Species**, **Butcher / Processor**, **Order Tags**, **Cut Name**, and nested **Categories** (`primaryCategory` / `subCategory`).
+  - Added dismissible active filter summary chip bars on both Logs and Reports alongside an **Open Filtered View in Reports** shortcut (`data-testid="butcher-copy-filters-to-reports-btn"`) to copy the current Logs filter criteria directly into Reports.
+- **Per-Card Selection Checkboxes & Send to Reports Workflow on Butcher Logs (`views/ButcherRecordsView.tsx`, `utils/butcherSettings.ts`)**:
+  - Added a selection checkbox (`data-testid="butcher-order-select-checkbox"`) on every Butcher Logs order card plus a selection action bar (`data-testid="butcher-logs-selection-bar"`) with **Select all shown**, **Clear**, primary **Send to Reports (N)** (replaces the Reports order filter with the checked orders and switches to Reports), and secondary **Add to Reports** (appends checked orders into an existing Reports selection without duplicates).
+- **Automated Tests (`tests/butcher-reports.test.ts`)**:
+  - Added unit and SSR tests covering `matchesButcherDateRange`, `matchesButcherOrderFilters`, `matchesButcherRecordFilter`, `computeDateRangePreset`, `countActiveButcherFilters`, `mergeOrderNumbersForReportFilter`, unified filter panel parity between Logs and Reports, and per-card Logs selection checkboxes and Send-to-Reports actions.
+
+### Fixed
+- **Exact Order Number & Calendar Date Range Filtering (`utils/butcherSettings.ts`)**:
+  - Switched Reports/Logs `orderNumber` filtering from substring `.includes()` to exact trimmed case-insensitive matching so selecting Order `#12` no longer pulls in `#120`.
+  - Normalized calendar dates via `parseCalendarDate` when evaluating date ranges so an order with `killDate < startDate` and `pickupDate > endDate` (and no date inside the window) no longer leaks into range results, and US slash dates (`MM/DD/YYYY`) evaluate consistently.
+
+### Files Modified
+- `/utils/butcherSettings.ts`
+- `/views/ButcherRecordsView.tsx`
+- `/tests/butcher-reports.test.ts`
+- `/APP_CONTEXT.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.84.8] - 2026-11-20
+
+### Added
+- **Live Cuts Breakdown Search Inside Butcher Order Cards (`views/ButcherRecordsView.tsx`, `utils/butcherStats.ts`)**:
+  - Added a compact live-filtering search input (`data-testid="butcher-cut-breakdown-search"`) at the top of the **Cuts Breakdown & Take-Home Share** panel inside expanded Butcher order cards with instant multi-token case-insensitive matching (`filterCutBreakdown`), live `matched / total cuts` counter, one-click clear button, empty-match reset prompt, and automatic reset when switching or collapsing orders.
+- **Automated Tests (`tests/butcher-reports.test.ts`)**:
+  - Added unit and wiring tests verifying `filterCutBreakdown` across blank queries, case-insensitive substring matches, multi-word out-of-order token queries, unmatched queries, and input wiring inside `ButcherRecordsView`.
+
+### Files Modified
+- `/utils/butcherStats.ts`
+- `/views/ButcherRecordsView.tsx`
+- `/tests/butcher-reports.test.ts`
+- `/APP_CONTEXT.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.84.7] - 2026-11-20
+
+### Changed
+- **Compact 3-Panel Vertical Overview Layout on Butcher Order Cards (`views/ButcherRecordsView.tsx`)**:
+  - Replaced the single-row left metrics column (which created dead vertical whitespace beside the Order Statistics box) with three equal-height, compact vertical summary panels styled identically to Order Statistics: **Dates & Timeline** (`Birth Date`, `Kill Date`, `Pickup Date`, `Days Alive`, `Turnaround`), **Weights & Yields** (`Animals`, `Live Weight`, `Cold Weight`, `Yield (Cold / Live)`, `Finished Yield`), and **Order Statistics** (`Total Records`, `Total Pieces`, `Net Weight`, `Butcher Fee`, `Cost / packaged lb`).
+  - Tightened card header, body, notes, documents, and expand-bar padding so every Butcher order card presents a dense, scannable, uniform overview with zero wasted vertical space.
+- **Automated Tests (`tests/butcher-reports.test.ts`)**:
+  - Updated order card SSR regression tests to assert all 3 vertical overview panels and all 15 fixed metric labels render identically across complete, sparse, and warning orders.
+
+### Files Modified
+- `/views/ButcherRecordsView.tsx`
+- `/tests/butcher-reports.test.ts`
+- `/APP_CONTEXT.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.84.6] - 2026-11-20
+
+### Changed
+- **Consistent Butcher Order Card Quick Metrics & Expanded Timeline Drawer (`views/ButcherRecordsView.tsx`)**:
+  - Standardized every collapsed Butcher **Logs** order card (`data-testid="butcher-order-card"`) to display the exact same 6 quick metrics (`Kill Date`, `Pickup Date`, `Turnaround`, `Animals`, `Live Wt.`, `Yield (Cold/Live)`) and all 5 **Order Statistics** rows (`Total Records`, `Total Pieces`, `Net Weight`, `Butcher Fee`, `Cost / packaged lb`), falling back cleanly to `—` when dates, weights, or fees are missing instead of hiding rows or shifting card layout.
+  - Moved the detailed **Processing Timeline & Pacing** breakdown (`data-testid="butcher-order-timeline-strip"`) into the expandable drawer (`View Timeline, Yields & Cut Breakdown`) with a fixed 8-metric grid (`Birth Date`, `Days Alive`, `Kill → 1st Pack`, `Kill → Last Pack`, `Package Time`, `Post-Pack Hold`, `Daily Gain (ADG)`, and `Pack Throughput` as separate non-swapping slots), while keeping invalid date warnings (`data-testid="butcher-order-date-warning"`) immediately visible on the card.
+  - Standardized the expanded **Weight Loss & Yield Journey** section so all 4 stages (`Live Weight`, `Hot Carcass Weight`, `Cold Carcass Weight`, `Take-Home Packaged`) always render consistently across every order.
+- **Automated Tests (`tests/butcher-reports.test.ts`)**:
+  - Added SSR and source regression tests verifying that complete and sparse Butcher orders render identical quick metrics and order statistics rows on collapsed cards, keep the full non-swapping timeline metrics inside the expanded drawer, and preserve date warning visibility.
+
+### Files Modified
+- `/views/ButcherRecordsView.tsx`
+- `/tests/butcher-reports.test.ts`
+- `/APP_CONTEXT.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.84.5] - 2026-11-20
+
+### Changed
+- **Butcher Logs & Review Queue Search Includes Order Notes & Flag Notes (`utils/butcherSettings.ts`, `views/ButcherRecordsView.tsx`)**:
+  - Added shared `matchesButcherOrderSearch` helper used by both the Butcher **Logs** and **Review Queue** search inputs so queries match order numbers, species, butcher/processor location names, order tags, order notes (`notes`), per-field weight anomaly flag notes (`weightAnomalies[field].reason`), and audit/estimate notes (`estimatedWeights.note`).
+  - Updated search input placeholders in the Butcher Logs and Review Queue top-bar filter panels to reflect note and flag note matching.
+- **Automated Tests (`tests/butcher-reports.test.ts`)**:
+  - Added unit tests verifying `matchesButcherOrderSearch` across order notes, weight anomaly flag reasons, audit/estimate notes, tags, butcher locations, non-matches, and legacy orders lacking optional note/flag fields.
+
+### Files Modified
+- `/utils/butcherSettings.ts`
+- `/views/ButcherRecordsView.tsx`
+- `/tests/butcher-reports.test.ts`
+- `/APP_CONTEXT.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.84.4] - 2026-11-20
+
+### Changed
+- **Butcher Pages Visual Cleanup & Unified Top-Bar Search/Filters (`App.tsx`, `views/ButcherRecordsView.tsx`, `views/ButcherSpreadsheetView.tsx`)**:
+  - Removed redundant page titles and subtitles across Butcher views (`Butcher Records`, `Butcher Cuts Repository Spreadsheet`, `Order Review & Finalization Queue`, and `New Butcher Order`) to reclaim vertical space and match the streamlined On-Site and Off-Site layouts.
+  - Added a sticky top-bar **Filters** toggle button (`#butcher-header-filters-toggle`) with active filter count badge next to `#butcher-header-subtabs` and a header portal slot (`#butcher-header-filter-slot`) in `App.tsx`, moving search and filter controls for **Logs** (`#butcher-orders-filter-panel`), **Spreadsheet** (`#butcher-spreadsheet-filter-panel`), **Reports** (`#butcher-reports-filter-panel`), and **Review Queue** (`#butcher-review-filter-panel`) into the collapsible top-bar drawer matching On-Site and Off-Site views.
+  - Added search, species, and order tag filtering alongside category filter chips inside the Review Queue top-bar drawer, plus a compact active-view summary chip bar with one-click reset when filters are active while the drawer is collapsed.
+- **Anomaly Detection Sensitivity Moved to Butcher Settings (`components/ButcherSettingsPanel.tsx`, `utils/butcherSettings.ts`, `utils/appConfigPermissions.ts`, `views/ButcherRecordsView.tsx`)**:
+  - Removed the inline sensitivity sliders (`#review-sensitivity-slider` and `#reports-sensitivity-slider`) from the Review Queue and Reports pages and moved the setting into **Catalog & Settings → Operations → Butcher Settings** (`#butcher-settings-anomaly-sensitivity`), persisted in SQLite `app_config` under `butcher_anomaly_sensitivity` (included automatically in `.db`, `.zip`, and `.json` backups and permitted for regular signed-in users via `BUTCHER_USER_CONFIG_KEYS`), with graceful fallback to any pre-existing `localStorage` value.
+- **Automated Tests (`tests/butcher-settings.test.ts`, `tests/butcher-anomalies.test.ts`, `tests/butcher-reports.test.ts`)**:
+  - Added unit and SSR regression tests for `butcher_anomaly_sensitivity` parsing/clamping/permissions, `ButcherSettingsPanel` sensitivity controls, removed Butcher page titles/subtitles and inline sliders, and top-bar `#butcher-header-filters-toggle` / collapsible filter drawers across all Butcher tabs.
+
+### Files Modified
+- `/App.tsx`
+- `/components/ButcherSettingsPanel.tsx`
+- `/utils/butcherSettings.ts`
+- `/utils/appConfigPermissions.ts`
+- `/views/ButcherRecordsView.tsx`
+- `/views/ButcherSpreadsheetView.tsx`
+- `/tests/butcher-settings.test.ts`
+- `/tests/butcher-anomalies.test.ts`
+- `/tests/butcher-reports.test.ts`
+- `/APP_CONTEXT.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.84.3] - 2026-11-19
+
+### Changed
+- **Butcher Records Top-Banner View Navigation & Contextual Menu `New Order` Action (`App.tsx`, `views/ButcherRecordsView.tsx`)**:
+  - Moved the four main Butcher Records view tabs (**Logs**, **Spreadsheet**, **Reports**, and **Review Queue** with its live review-needed count badge) out of the inline page header and into the sticky top header banner (`#butcher-header-subtabs`), matching the On-Site and Off-Site top-banner view switcher layout and supporting browser hash/history navigation (`#butcher_records/<tab>`).
+  - Moved the **New Order** action (`#menu-butcher-new-order-btn`) out of the Butcher Records inline header bar and into the top-right status dropdown menu (`#sync-status-dropdown`), scoped exclusively to the Butcher Records page (`isButcherMode`, mirroring **Inbound Stock** on-site and **Bulk CSV Intake** off-site).
+  - Updated `ButcherRecordsView` to accept optional controlled `activeTab`, `setActiveTab`, and `onReviewQueueCountChange` props while keeping backwards-compatible internal state defaults for standalone rendering.
+- **Automated Tests (`tests/butcher-reports.test.ts`, `tests/butcher-anomalies.test.ts`)**:
+  - Added regression checks verifying `#butcher-header-subtabs` hosts `Logs`, `Spreadsheet`, `Reports`, and `Review Queue` in `App.tsx`, confirming `New Order` is gated strictly behind `isButcherMode` in `#sync-status-dropdown` and removed from `ButcherRecordsView`'s inline header, and validating controlled `activeTab` SSR rendering.
+
+### Files Modified
+- `/App.tsx`
+- `/views/ButcherRecordsView.tsx`
+- `/tests/butcher-reports.test.ts`
+- `/tests/butcher-anomalies.test.ts`
+- `/APP_CONTEXT.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.84.2] - 2026-11-19
+
+### Changed
+- **Butcher Records Logs Cards Contrast & Visual Separation Cleanup (`index.css`, `views/ButcherRecordsView.tsx`)**:
+  - Replaced undefined transparent `bg-cool-gray-*` containers across the Butcher Records **Logs** tab (tab bar frame, aggregate stat cards, order log cards, summary panels, filter controls, and expanded breakdown drawers) with dedicated Home Assistant native CSS variable + `color-mix()` surface classes (`.butcher-surface-card`, `.butcher-stat-card`, `.butcher-log-card`, `.butcher-log-card--expanded`, `.butcher-log-card-header`, `.butcher-log-summary-panel`, `.butcher-log-toggle-bar`, `.butcher-log-expanded-drawer`, `.butcher-log-subpanel`, `.butcher-progress-track`).
+  - Added a distinct tinted card header band, crisper card borders with soft elevation, and generous `24px` vertical card spacing (`space-y-6`) so each order card separates unmistakably from the page canvas and adjacent cards in both dark and light Home Assistant themes.
+  - Flattened dark-on-dark nested boxes inside the card body into clean hairline-divided sections paired with a distinct right-hand **Order Statistics** summary block, upgraded low-contrast muted labels to legible secondary text, and aligned edit/delete icon buttons inside the unified card header action group.
+  - Redesigned the expanded breakdown state with an active primary-accented outer card border/halo, a full-width interactive expand/collapse toggle bar with rotating chevron, a distinct elevated expanded drawer backdrop holding crisp Yield KPI and Cut Breakdown sub-panels, visible progress tracks, and a bottom **Collapse Breakdown** closure footer so expanded cards clearly terminate before the next order.
+- **Automated Tests (`tests/butcher-reports.test.ts`)**:
+  - Added SSR and stylesheet regression checks verifying elevated Butcher Logs card surfaces, expanded drawer classes, and Home Assistant theme-aware CSS definitions.
+
+### Files Modified
+- `/index.css`
+- `/views/ButcherRecordsView.tsx`
+- `/tests/butcher-reports.test.ts`
+- `/APP_CONTEXT.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.84.1] - 2026-11-19
+
+### Changed
+- **Removed Dedicated Traceability Tab from Butcher Records Header (`views/ButcherRecordsView.tsx`, `App.tsx`)**:
+  - Removed the dedicated **Traceability** tab (`#butcher-tab-traceability`) and embedded `TraceabilityView` render block from `ButcherRecordsView` so the Butcher Records header tab bar focuses exclusively on **Logs**, **Spreadsheet**, **Reports**, **Review Queue**, and **New Order**.
+  - Kept **Traceability** accessible exclusively via the contextual `#sync-status-dropdown` menu item when working in **Off-Site Storage**, **Butcher Records**, or **Traceability** (`#traceability`).
+- **Updated Tests (`tests/traceability-performance.test.ts`)**:
+  - Updated UI scoping assertions to confirm Traceability is surfaced only in the off-site/butcher status menu and not as a dedicated header tab in either `OffSiteStorageView` or `ButcherRecordsView`.
+
+### Files Modified
+- `/views/ButcherRecordsView.tsx`
+- `/App.tsx`
+- `/tests/traceability-performance.test.ts`
+- `/APP_CONTEXT.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.84.0] - 2026-11-19
+
+### Added
+- **Butcher Date & Timeline Analytics Reports (`utils/butcherTimelines.ts`, `components/ButcherTimelinesReport.tsx`, `views/ButcherRecordsView.tsx`)**:
+  - Added a dedicated **Timelines & Dates** analytics sub-tab inside **Butcher → Reports** featuring DST-safe UTC calendar-day metrics derived directly from existing order dates (`birthDate`, `killDate`, `pickupDate`), cutsheet `packDate` records, weights, and processor assignments with zero database schema changes:
+    - **Days Alive** (`birthDate → killDate`, with months/years context) and **Average Daily Gain (ADG)** (`Live lbs/day` and `Hot Carcass lbs/day`, respecting active Actuals / Corrected Estimates reporting basis).
+    - **Hang Time (`Kill → 1st Pack`)**, **`Kill → Last Pack`**, **Total Package Time** (inclusive calendar span where same-day packing = `1d`, paired with **Distinct Active Packing Days**), **Post-Pack Hold (`Last Pack → Pickup`)**, and **Total Turnaround (`Kill → Pickup`)**.
+    - **Packaging Throughput** (`lbs/pack day` and `packages/pack day`) and **Inter-Harvest Cadence** (chronological days between harvests).
+  - Added a 3-mode interactive SVG timeline chart (**Durations Trend** with clickable series toggles, **Lifecycle Phases** stacked Hang/Pack/Hold breakdown bars, and **Age & Daily Gain** dual-axis view), a **Turnaround & Pacing Comparison** grid toggleable between **By Butcher / Processor** and **By Species**, and a sortable **Order Timeline & Lifecycle Matrix** table with RFC-4180 **Export CSV**.
+  - Added automatic chronological validation that excludes out-of-order or unreadable date intervals (`birth_after_kill`, `pack_before_kill`, `pickup_before_kill`, `pickup_before_last_pack`, `unparseable_date`) from averages, charts, and processor rankings while highlighting a **Date Warnings** banner with one-click **Edit Order** actions.
+  - Added a **Butcher / Processor** multi-select filter to the shared Butcher Report Filters panel.
+  - Added a compact **Processing Timeline & Pacing** summary strip (with inline Date Warnings when present) inside each expanded Order card on the Butcher Logs tab.
+- **Automated Tests (`tests/butcher-timelines.test.ts`)**:
+  - Added unit and SSR test coverage for UTC date parsing across formats/DST boundaries, inclusive same-day and multi-day packaging calculations, ADG and throughput math, out-of-order date anomaly flagging & average exclusion, processor/species turnaround rollups, inter-harvest cadence, CSV formatting, and `ButcherTimelinesReport` rendering.
+
+### Files Modified
+- `/utils/butcherTimelines.ts`
+- `/components/ButcherTimelinesReport.tsx`
+- `/views/ButcherRecordsView.tsx`
+- `/tests/butcher-timelines.test.ts`
+- `/APP_CONTEXT.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.83.1] - 2026-11-19
+
+### Fixed
+- **Instant Butcher & Off-Site Settings Persistence & UI Sync (`components/ButcherSettingsPanel.tsx`, `components/OffSiteSettingsPanel.tsx`, `hooks/useInventory.ts`, `server.ts`, `App.tsx`, `types.ts`)**:
+  - Fixed an issue where clicking **Yield Anomaly Baseline Grouping** (or saving other `app_config`-backed settings in Butcher Settings and Off-Site Settings) persisted to SQLite via `POST /api/app-config` but appeared not to update in the UI on large databases because the client subsequently dispatched a full-state `REPLACE_STATE` action (attempting to upload the entire multi-MB inventory state to `/api/inventory/action` within a 10s timeout instead of updating `state.appConfig` locally).
+  - Added a synchronous local `SYNC_APP_CONFIG` action in `useInventory` (and mapped `app_config` in `TABLE_TO_KEY_MAP`/`STATE_ARRAY_KEYS`) so `state.appConfig` and the offline IndexedDB cache update instantaneously in 0ms right after `/api/app-config` confirms persistence.
+  - Replaced the oversized, unhandled `broadcastSSE({ type: 'sync', state: updatedState })` full-database SSE payload in `POST /api/app-config` and `DELETE /api/app-config/:key` with a lightweight `app_config_updated` SSE event handled in `App.tsx` so all connected tabs and devices sync config changes immediately.
+- **Automated Tests (`tests/butcher-settings.test.ts`)**:
+  - Added a regression test ensuring `ButcherSettingsPanel` and `OffSiteSettingsPanel` sync via `SYNC_APP_CONFIG` (never full-state `REPLACE_STATE`) and that `server.ts` / `App.tsx` / `hooks/useInventory.ts` wire `app_config_updated` SSE propagation cleanly.
+
+### Files Modified
+- `/types.ts`
+- `/hooks/useInventory.ts`
+- `/server.ts`
+- `/App.tsx`
+- `/components/ButcherSettingsPanel.tsx`
+- `/components/OffSiteSettingsPanel.tsx`
+- `/tests/butcher-settings.test.ts`
+- `/APP_CONTEXT.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.83.0] - 2026-11-19
+
+### Added
+- **Butcher Record Audit Finalization / Close Audit (`types.ts`, `server.ts`, `utils/butcherStats.ts`, `components/ButcherAnomalyReviewModal.tsx`, `views/ButcherRecordsView.tsx`)**:
+  - Added order-level `auditClosed` and `auditClosedAt` persistence to `ButcherOrder` and the SQLite `butcher_orders` table (with automatic non-destructive `ALTER TABLE` startup migrations, backward-compatible `normalizeState` defaults, and full SQLite/JSON/ZIP backup & restore parity).
+  - Finalized/closed audits are excluded from the active **Review Queue**, top anomaly alert banners, and `Yield Alert` reminders—even when adjusting or adding other orders later shifts species/butcher yield baselines or sensitivity thresholds—while continuing to contribute clean weights to baselines and keeping saved flags/estimates active in reports.
+  - Added **Save & Close Audit** and **Reopen & Save** controls plus an **Audit Finalized & Closed** status banner inside `ButcherAnomalyReviewModal`.
+  - Added one-click **Close Audit** buttons on Review Queue cards, a dedicated **Closed Audits** filter pill in the Review Queue with **Inspect Audit** and **Reopen Audit** actions, and an **Audit Closed** badge on finalized orders in the Logs tab.
+- **Automated Tests (`tests/butcher-anomalies.test.ts`, `tests/test-harness.ts`)**:
+  - Added automated test coverage for closing/reopening audits, silencing reminders across shifted peer baselines, preserving reporting/baseline integrity, honoring aggregate `missingWeights`/`missingMetadata` `Mark N/A` exclusions, SQLite `auditClosed`/`auditClosedAt` persistence, and SSR rendering of `ButcherRecordsView`.
+
+### Fixed
+- **Aggregate `Mark N/A` Exclusions (`utils/butcherStats.ts`)**:
+  - Fixed `analyzeOrderReviewQueue` so marking **Missing Weights** (`missingWeights`) or **Incomplete Details** (`missingMetadata`) as N/A in the review modal properly suppresses those backlog items on open orders as well as per-field keys.
+
+### Files Modified
+- `/types.ts`
+- `/server.ts`
+- `/utils/butcherStats.ts`
+- `/components/ButcherAnomalyReviewModal.tsx`
+- `/views/ButcherRecordsView.tsx`
+- `/tests/test-harness.ts`
+- `/tests/butcher-anomalies.test.ts`
+- `/APP_CONTEXT.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.82.0] - 2026-11-19
+
+### Added
+- **User-Selectable Anomaly Baseline Grouping (Species Only vs. Species & Butcher) (`components/ButcherSettingsPanel.tsx`, `utils/butcherSettings.ts`, `utils/appConfigPermissions.ts`, `types.ts`)**:
+  - Added a **Yield Anomaly Baseline Grouping** selector card inside **Catalog & Settings → Operations → Butcher Settings** (`butcher_anomaly_baseline_grouping` persisted in SQLite `app_config`, writable by regular signed-in users, and included automatically in all SQLite/ZIP/JSON backups).
+  - Operators can now choose between **Species Only (All Butchers)** (default, preserving full backward compatibility) and **Species & Butcher (Per Processor)** so processor-specific yield practices (trim style, skinning vs. scalding, cooler hang time) stay isolated instead of triggering cross-butcher false alerts.
+- **Per-Butcher Anomaly Engine & Cross-Mode Audit Comparison (`utils/butcherStats.ts`, `components/ButcherAnomalyReviewModal.tsx`)**:
+  - Extended `computeSpeciesBaselines`, `resolveBaselineForOrderAndScope`, `listAvailableBaselineScopesForOrder`, `analyzeOrderAnomalies`, and `analyzeOrderReviewQueue` to accept `groupingMode: ButcherBaselineGroupingMode` and `locationNameById`, isolating standard and `separate_baseline` tag cohorts per `(species, butcher)` pair while gracefully handling orders without an assigned butcher (`Unassigned Butcher`).
+  - Added on-demand cross-mode comparison options inside `ButcherAnomalyReviewModal` (`All Butchers (Standard)` when set to **Species & Butcher**, or `<Butcher> Only (Standard)` when set to **Species Only**) and surfaced the assigned butcher name in the modal header.
+- **Automated Tests (`tests/butcher-settings.test.ts`)**:
+  - Added tests verifying default/raw/JSON config parsing, regular-user `app_config` permissions, per-butcher baseline isolation vs. species-wide pooling, combined `separate_baseline` tag cohort isolation, unassigned butcher handling, cross-mode audit scope overrides, and SSR rendering of the Butcher Settings selector.
+
+### Changed
+- **Butcher Records Review Queue & Order Banners (`views/ButcherRecordsView.tsx`)**:
+  - Wired `parseButcherBaselineGroupingMode(state.appConfig)` and location display name maps into `analyzeOrderReviewQueue` and `ButcherAnomalyReviewModal`, updating the Review Queue description and per-order anomaly banners to display the active grouping mode and exact baseline label.
+
+### Files Modified
+- `/types.ts`
+- `/utils/butcherSettings.ts`
+- `/utils/appConfigPermissions.ts`
+- `/utils/butcherStats.ts`
+- `/components/ButcherSettingsPanel.tsx`
+- `/components/ButcherAnomalyReviewModal.tsx`
+- `/views/ButcherRecordsView.tsx`
+- `/tests/butcher-settings.test.ts`
+- `/APP_CONTEXT.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.81.0] - 2026-11-19
+
+### Added
+- **Butcher Settings Operations Page (`components/ButcherSettingsPanel.tsx`, `utils/butcherSettings.ts`, `utils/libraryNavigation.ts`, `views/LibraryView.tsx`)**:
+  - Added a dedicated **Butcher Settings** section under **Catalog & Settings → Operations** (`#library/butcher_settings`), accessible to regular signed-in users (`adminOnly: false`) with three structured management panels stored in `app_config` JSON (zero new database tables, preserving 100% 24-table backup/restore integrity):
+    - **Butcher Species (`butcher_species_list`)**: Independent species list with live order counts, adding new species, removing unused species, and atomic retroactive **Bulk Rename & Merge** (e.g., updating all `"Pig"` butcher orders to `"Pork"` in one action with merge preview).
+    - **Butcher Order Tags / Flags (`butcher_order_tags`)**: Independent order-level tags (separate from Inventory item tags) with color swatches and per-tag yield weight-checking modes (`Standard Tag`, `Separate Weight-Check Baseline`, and `Exclude from Statistical Weight Check`), plus atomic tag deletion that strips removed tag IDs from orders.
+    - **Document Link Types (`butcher_document_link_types`)**: 100% user-customizable link type presets with **zero pre-populated defaults**, tabular link counts, atomic **Bulk Rename** (updating linked documents and optionally legacy untyped links matching the old name), and safe deletion that preserves existing attached order links as custom entries.
+- **Multi-Tag Yield Anomaly Baselines & Interactive Audit Window Comparison (`utils/butcherStats.ts`, `components/ButcherAnomalyReviewModal.tsx`)**:
+  - Extended species baseline calculations so orders tagged `Separate Weight-Check Baseline` populate isolated single-tag and combined multi-tag cohorts (e.g., `Pork · Retired Sow + Skinned`) without polluting standard market-animal averages, while `Exclude from Statistical Weight Check` tags pause statistical alerts in Auto mode without disabling physical weight constraints (`Hot ≤ Live`, `Cold ≤ Hot`, `Packaged ≤ Cold`).
+  - Added an interactive **Compare Against Baseline** selector (`Auto`, combined multi-tag cohort, individual tag cohorts, `Standard Baseline`, `All Orders (Incl. Tagged)`) with leave-one-out peer counts and live **Order Event Tags** toggles directly inside the **Weight Audit & Yield Review** modal so operators can compare multi-tagged orders across any cohort in real time and save tag changes alongside audit flags/estimates.
+- **Server-Side Persistence, Permissions & Atomic Bulk Actions (`server.ts`, `types.ts`, `utils/appConfigPermissions.ts`)**:
+  - Added optional `tagIds` JSON column to `butcher_orders` with non-destructive startup `ALTER TABLE` migration and optional `typeId` on `ButcherOrderDocument`.
+  - Expanded regular-user `app_config` allowlist (`BUTCHER_USER_CONFIG_KEYS`) for the three Butcher Settings keys and implemented atomic server actions `RENAME_BUTCHER_SPECIES`, `DELETE_BUTCHER_ORDER_TAG`, `RENAME_BUTCHER_DOCUMENT_TYPE`, and `DELETE_BUTCHER_DOCUMENT_TYPE` with `butcher`-scoped audit history logs.
+- **Automated Tests (`tests/butcher-settings.test.ts`, `tests/library-settings-redesign.test.ts`, `tests/test-harness.ts`)**:
+  - Added comprehensive test coverage for zero-default parsing, species bulk rename/merge, order tag deletion, document link type bulk rename/safe delete, multi-tag anomaly cohorts & interactive audit scope selection, `app_config` permissions, SQLite `tagIds` roundtrip, and SSR rendering.
+
+### Changed
+- **Butcher Records Integration (`views/ButcherRecordsView.tsx`, `components/ManualButcherEntryModal.tsx`)**:
+  - Integrated managed species options across New Order, Edit Order, Logs/Reports filters, and Manual Butcher Entry.
+  - Added Butcher Order Tag selection in New Order and Edit Order modals, tag badges on Order cards and Review Queue items, and multi-select Species & Order Tag filters across Logs and Reports.
+  - Upgraded Associated Document Links in New Order and Edit Order modals to offer a **Link Type** dropdown (configured presets + `Custom Link Name...`) with live canonical display name resolution.
+
+### Files Modified
+- `/types.ts`
+- `/utils/butcherSettings.ts`
+- `/utils/butcherStats.ts`
+- `/utils/appConfigPermissions.ts`
+- `/utils/libraryNavigation.ts`
+- `/server.ts`
+- `/components/ButcherSettingsPanel.tsx`
+- `/components/ButcherAnomalyReviewModal.tsx`
+- `/components/ManualButcherEntryModal.tsx`
+- `/views/LibraryView.tsx`
+- `/views/ButcherRecordsView.tsx`
+- `/tests/test-harness.ts`
+- `/tests/library-settings-redesign.test.ts`
+- `/tests/butcher-settings.test.ts`
+- `/APP_CONTEXT.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.80.6] - 2026-11-18
+
+### Fixed
+- **Nearest-Adjacent Weight Anchoring, Physical Bounds Clamping & Confirmed Transition Isolation (`utils/butcherStats.ts`)**:
+  - Updated `computeSuggestedWeights` to estimate each stage from its **nearest usable upstream anchor** and **nearest usable downstream anchor** instead of jumping past a trusted intermediate weight (e.g., no longer estimating `Cold Carcass Weight` from `Live Weight × Cold/Live avg` when `Hot Carcass Weight` is trusted/confirmed valid, which previously inflated cold estimates above confirmed hot weight when dressing yield was unusually low such as a skinned hog).
+  - Enforced physical stage bounds (`Live >= Hot >= Cold >= Packaged`) across trusted anchors when filtering and clamping suggested weight approximations so suggested `Cold Weight` never exceeds a trusted `Hot Weight` (nor `Packaged` exceed `Cold`/`Hot`).
+  - Updated `analyzeOrderAnomalies` to evaluate direct stage transitions (`hotToLive`, `coolerShrink`, `cuttingYield`) before span ratios (`coldToLive`, `packagedToHot`, `packagedToLive`), preventing an already-confirmed direct anomaly (both endpoints marked `Confirmed Valid`) from cascading false `Suspect Outlier` flags onto normal downstream weights.
+- **Automated Regression Tests (`tests/butcher-anomalies.test.ts`)**:
+  - Added regression test mirroring the skinned giant hog workflow (`Live: 640 Confirmed Valid`, `Hot: 365 Confirmed Valid`, `Cold: 354`, `Packaged: 347.8`) verifying zero false `coldWeight` outlier flagging, adjacent `Hot`-based suggestion (`<= 365.0`), and bounded `packagedWeight` suggestions.
+
+### Files Modified
+- `/utils/butcherStats.ts`
+- `/tests/butcher-anomalies.test.ts`
+- `/APP_CONTEXT.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.80.5] - 2026-11-18
+
+### Fixed
+- **Eliminated Circular Self-Baseline Suggestions & Clarified Upstream/Downstream Sources (`utils/butcherStats.ts`, `components/ButcherAnomalyReviewModal.tsx`)**:
+  - Fixed `getPreferredBaselineRate` falling back to `metricStats.samples` when no *other* clean peer orders of the species had a metric sample (`filtered.length === 0`), which previously allowed an order's own ratio (e.g. `277 / 305 = 90.8%`) to suggest the wrong weight right back as `~305.0 lbs`. It now strictly returns `null` unless at least one other clean peer order contributes to that metric.
+  - Added `[upstream]` and `[downstream]` source tags to `computeSuggestedWeights` explanations so operators can immediately see whether approximations are averaged from upstream weights (`Live`, `Hot`, `Cold`), downstream weights (`Hot`, `Cold`, `Packaged`), or both.
+  - Updated `ButcherAnomalyReviewModal` empty baseline copy to `Need peer baseline` with explanatory tooltip.
+- **Regression Tests (`tests/butcher-anomalies.test.ts`)**:
+  - Added tests verifying zero self-baseline leakage when peer orders lack packaged cut records or no peers exist, and verifying `[upstream]` + `[downstream]` candidate averaging and labeling.
+
+### Files Modified
+- `/utils/butcherStats.ts`
+- `/components/ButcherAnomalyReviewModal.tsx`
+- `/tests/butcher-anomalies.test.ts`
+- `/APP_CONTEXT.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.80.4] - 2026-11-18
+
+### Changed
+- **Moved Off-Site Spreadsheet Export into Header Menu (`App.tsx`, `views/OffSiteStorageView.tsx`, `views/OffSiteSpreadsheet.tsx`)**:
+  - Removed the inline **Unified Worksheet Spreadsheet / Export Spreadsheet** top header card (`div#offsite-spreadsheet-workspace > div:nth-of-type(1)`) from `OffSiteSpreadsheet` to streamline the Off-Site Workspace layout.
+  - Added a contextual **Export Sheet** menu control (`#menu-export-sheet-btn`) inside `#sync-status-dropdown` that is visible **only** when in the Off-Site Workspace view (`currentView === 'offsite' && offsiteSubTab === 'sheet'`), expanding to expose **Export Active Filtered View** (`offsite_filtered_export_*.csv`) and **Export Entire Database** (`offsite_full_export_*.csv`) with live item counts.
+- **Updated Tests (`tests/header-menu-dismiss.test.ts`)**:
+  - Added regression assertions confirming `#menu-export-sheet-btn` and its filtered/full export options are gated to `isOffSiteWorkspace` inside `#sync-status-dropdown`, while the inline export header card is removed from `OffSiteSpreadsheet.tsx`.
+
+### Files Modified
+- `/App.tsx`
+- `/views/OffSiteStorageView.tsx`
+- `/views/OffSiteSpreadsheet.tsx`
+- `/tests/header-menu-dismiss.test.ts`
+- `/APP_CONTEXT.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.80.3] - 2026-11-18
+
+### Changed
+- **Removed Dedicated Traceability Tab from Off-Site Storage Header (`App.tsx`, `views/OffSiteStorageView.tsx`)**:
+  - Removed the dedicated **Traceability** sub-tab (`#offsite-header-subtabs` / `#offsite/traceability`) from the Off-Site Inventory view to keep the off-site header tab bar focused on **Workspace**, **Storage Hierarchy**, **Movements**, **Movement Scanner**, and **Staging Worksheet**.
+  - Kept **Traceability** accessible directly as a contextual menu item inside `#sync-status-dropdown` when working in Off-Site Storage or Butcher Records (as well as the `#butcher-tab-traceability` tab inside `ButcherRecordsView` and `#traceability` route, with legacy `#offsite/traceability` hashes redirecting cleanly to `#traceability`).
+- **Updated Tests (`tests/traceability-performance.test.ts`)**:
+  - Updated UI scoping assertions to verify Traceability remains gated to the off-site/butcher status menu and Butcher Records tab without appearing as a dedicated Off-Site Storage sub-tab.
+
+### Files Modified
+- `/App.tsx`
+- `/views/OffSiteStorageView.tsx`
+- `/tests/traceability-performance.test.ts`
+- `/APP_CONTEXT.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.80.2] - 2026-11-18
+
+### Fixed & Changed
+- **Live Multi-Field Anomaly Re-Evaluation & Auto-Clearing (`utils/butcherStats.ts`, `components/ButcherAnomalyReviewModal.tsx`)**:
+  - Updated `analyzeOrderAnomalies` and `computeSuggestedWeights` to immediately re-run physical integrity checks, species yield statistics, cross-ratio triangulation, and baseline weight approximations using any user-supplied replacement estimates (`effectiveWeights` / `adjustedFields`) and confirmed-valid anchors (`dismissed`).
+  - When two weights initially conflict (e.g., `coldWeight > hotWeight` flagging both stages) and one weight is flagged wrong or given a corrected estimate, resolved peer fields now auto-clear (`needsReview = false`), while genuinely broken peers remain flagged with updated baseline suggestions calculated from the corrected numbers.
+  - Confirming one side of a conflict valid (`Confirm Valid` / `dismissed`) now keeps the remaining unreviewed conflicting side flagged and unlocks the confirmed weight as a Tier-1 anchor for estimating the remaining suspect weight.
+  - Added auto-fill revert tracking (unflagging restores untouched auto-populated estimates back to raw weight evaluation), a quick estimate clear button, and live evaluation feedback inside `ButcherAnomalyReviewModal`.
+- **Automated Regression Tests (`tests/butcher-anomalies.test.ts`)**:
+  - Added comprehensive tests covering live anomaly re-evaluation after flagging without an estimate, fixing a conflicting weight (`601 <= 620`), dual-bad order cascade recalculation, `Confirm Valid` anchor unlocking, and conflicting adjusted estimates.
+
+### Files Modified
+- `/utils/butcherStats.ts`
+- `/components/ButcherAnomalyReviewModal.tsx`
+- `/tests/butcher-anomalies.test.ts`
+- `/APP_CONTEXT.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.80.1] - 2026-11-18
+
+### Changed
+- **Recency-Weighted Species Yield Baselines & Anomaly Detection (`utils/butcherStats.ts`, `components/ButcherAnomalyReviewModal.tsx`, `views/ButcherRecordsView.tsx`)**:
+  - Updated `computeSpeciesBaselines`, `getPreferredBaselineRate`, and `analyzeOrderAnomalies` to apply exponential recency decay (`RECENCY_HALF_LIFE_DAYS = 730` / ~2-year half-life, `MIN_RECENCY_WEIGHT = 0.05` floor) using each order's harvest date (`killDate -> pickupDate -> createdAt`) and weighted mean, weighted median, weighted standard deviation, and weighted MAD-sigma estimators.
+  - Prevents multi-year drift in livestock genetics or butchery practices (e.g., harvests from 10 years ago) from skewing current anomaly checks or suggested weight approximations while keeping sparse historical datasets numerically stable.
+  - Updated diagnostics and Review Queue UI descriptions to indicate recency-weighted comparisons.
+- **Automated Recency Drift Tests (`tests/butcher-anomalies.test.ts`)**:
+  - Added multi-year drift test scenarios confirming 10-year-old pork harvests receive decayed weight while recent harvests govern baseline detection and weight approximations.
+
+### Files Modified
+- `/utils/butcherStats.ts`
+- `/components/ButcherAnomalyReviewModal.tsx`
+- `/views/ButcherRecordsView.tsx`
+- `/tests/butcher-anomalies.test.ts`
+- `/APP_CONTEXT.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.80.0] - 2026-11-18
+
+### Added
+- **Size-Independent Butcher Yield Anomaly Detection (`utils/butcherStats.ts`, `types.ts`)**:
+  - Added per-species yield baseline calculation across all butchers (`computeSpeciesBaselines`) normalized by live weight and carcass ratios (`hotToLive`, `coldToLive`, `packagedToLive`, `coolerShrink`, `cuttingYield`, `packagedToHot`) so larger and smaller animals do not cause false positives, and different cut lists across orders do not interfere.
+  - Added deterministic physical integrity checks (`hot > live`, `cold > hot`, `packaged > cold/hot/live`), leave-one-out statistical outlier detection (`analyzeOrderAnomalies`) with median/MAD + stdDev, and cross-ratio triangulation to pinpoint suspect weight fields (`liveWeight`, `hotWeight`, `coldWeight`, `packagedWeight`).
+  - Added an interactive sensitivity slider (`1.2σ` Strict to `3.5σ` Lenient, default `2.0σ`) synchronized across both the Review Queue and Reports views.
+- **Weight Flagging, Non-Destructive Estimates & Retroactive Auditing (`components/ButcherAnomalyReviewModal.tsx`, `views/ButcherRecordsView.tsx`)**:
+  - Kept butcher-reported `liveWeight`, `hotWeight`, and `coldWeight` intact while storing separate `weightAnomalies`, `estimatedWeights`, and `reviewIgnoredFields` fields on each `ButcherOrder`.
+  - Flagged fields are automatically excluded from clean species baselines and averages, while `computeSuggestedWeights` suggests approximate corrected numbers from trusted anchor weights and species yield averages.
+  - Added an **Audit Weights** action on every order card, inside **Edit Butcher Order**, and on chart points so users can retroactively flag, unflag, dismiss alerts, or edit corrected estimates anytime.
+- **Unified Order Review & Finalization Queue (`views/ButcherRecordsView.tsx`, `utils/butcherStats.ts`)**:
+  - Added a dedicated **Review Queue** tab (`analyzeOrderReviewQueue`) surfacing orders with yield/physical anomalies, flagged weights lacking saved estimates, missing carcass/live weights, missing butcher fees, pending cutsheets, or incomplete metadata (`TEMP-` order numbers, missing kill date, missing animal count), with category filter tabs and per-issue **Mark N/A** persistence (`reviewIgnoredFields`).
+- **3-Mode Butcher Reporting Switcher (`views/ButcherRecordsView.tsx`, `utils/butcherStats.ts`)**:
+  - Added **Actuals**, **Corrected Estimates**, and **Exclude Flagged** reporting modes (`computeOrderStatsWithMode`) governing Reports KPIs, Species Bento comparisons, `Yield Trends` and `Weights Timeline` interactive charts (with anomaly rings, click-to-audit, and raw vs. estimated tooltips), and cut breakdown summaries.
+- **Database Migration & Backup Integrity (`server.ts`, `tests/test-harness.ts`)**:
+  - Added non-destructive `ALTER TABLE butcher_orders ADD COLUMN` migrations and `TABLE_SCHEMAS.butcher_orders` JSON serialization/deserialization for `weightAnomalies`, `estimatedWeights`, and `reviewIgnoredFields`, ensuring full SQLite `.db`, JSON, and ZIP backup/restore parity with legacy defaults.
+- **Automated Tests (`tests/butcher-anomalies.test.ts`)**:
+  - Added unit, SQLite roundtrip, and SSR rendering tests covering size-independent yield detection, physical conflicts, cross-ratio triangulation, sensitivity thresholds, clean species baseline exclusion, weight suggestions, reporting modes, unified review queue + `reviewIgnoredFields`, and `ButcherRecordsView` / `ButcherAnomalyReviewModal` SSR rendering.
+
+### Files Modified
+- `/types.ts`
+- `/utils/butcherStats.ts`
+- `/server.ts`
+- `/components/ButcherAnomalyReviewModal.tsx`
+- `/views/ButcherRecordsView.tsx`
+- `/tests/butcher-anomalies.test.ts`
+- `/tests/test-harness.ts`
+- `/APP_CONTEXT.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.79.0] - 2026-11-18
+
+### Added
+- **Home Assistant Add-on Configure Backup Parity (`config.yaml`, `config.json`, `utils/haBackupRecoveryConfig.ts`)**:
+  - Duplicated rolling automatic backup schedule controls into Home Assistant Add-on Configuration (`auto_db_backup_enabled`, `auto_db_backup_interval_days`, `auto_db_backup_keep_count`, `auto_db_backup_hour`, `auto_zip_backup_enabled`, `auto_zip_backup_interval_days`, `auto_zip_backup_keep_count`) alongside a last-resort `backup_recovery_mode` boolean toggle and `admin_recovery_pin` protection.
+  - Added upgrade-safe Home Assistant option syncing (`syncHaBackupSettingsToSnapshotConfig` + `/data/ha_backup_options_sync.json`) so upgrading existing installations preserves user-customized in-app schedules while subsequent changes made in HA Configuration sync automatically.
+- **Last-Resort Failsafe Backup & Recovery Console (`components/FailsafeRecoveryScreen.tsx`, `server.ts`, `App.tsx`, `types.ts`)**:
+  - Added SQLite-independent failsafe API endpoints (`/api/failsafe/status`, `/api/failsafe/unlock`, `/api/failsafe/snapshots`, `/api/failsafe/download/:filename`, `/api/failsafe/upload`, `/api/failsafe/upload-chunk`, `/api/failsafe/restore/:filename`) and standalone `/failsafe` HTML fallback page that list snapshots on file in `/data/backups` and support simple upload and one-step full restore of `.db`, `.zip`, and `.json` backups.
+  - Added `verifySqliteSnapshotFile` pre-restore integrity validation, path traversal checks, and automatic `pre_failsafe_restore_*.db` safety copies before overwriting an unhealthy or misconfigured database.
+  - Surfaced `FailsafeRecoveryScreen` automatically when `backup_recovery_mode` is enabled or when database initialization fails, plus direct launch access from `#failsafe`, the admin recovery banner, and the Database Loading error dialog (`Open Failsafe Backup & Recovery`).
+- **Home Assistant Configuration Parity Notice (`views/DataImportView.tsx`)**:
+  - Added a callout and quick link in the Dual-Schedule Rolling Automatic Snapshots card noting Home Assistant Add-on Configuration parity and `#failsafe` access.
+- **Automated Failsafe & HA Config Tests (`tests/failsafe-backup-recovery.test.ts`)**:
+  - Added Vitest tests covering HA `options.json` parsing/clamping, upgrade-safe schedule syncing, path traversal prevention, snapshot listing, SQLite integrity verification & roundtrip restore, and `config.json` / `config.yaml` schema parity.
+
+### Files Modified
+- `/utils/haBackupRecoveryConfig.ts`
+- `/components/FailsafeRecoveryScreen.tsx`
+- `/server.ts`
+- `/App.tsx`
+- `/views/DataImportView.tsx`
+- `/types.ts`
+- `/tests/failsafe-backup-recovery.test.ts`
+- `/APP_CONTEXT.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.78.3] - 2026-11-17
+
+### Fixed
+- **Off-Site Storage Undefined Cut Name Crash (`views/OffSiteStorageView.tsx`)**:
+  - Fixed a `TypeError: Cannot read properties of undefined (reading 'replace')` crash in `palletStats`, `lotStats`, and `uniqueCuts` when an off-site entry has no matching `productId` and an undefined `originalCutName`. Added safe `e.cuts` and empty-string fallbacks before calling `.replace(...)`, and aligned `rearrangeSummary` item labels with the same safe fallback.
+
+### Files Modified
+- `/views/OffSiteStorageView.tsx`
+- `/tests/workflow-offsite-and-home-logistics.test.ts`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.78.2] - 2026-11-17
+
+### Fixed
+- **Butcher View Species Badge Contrast (`views/ButcherRecordsView.tsx`)**:
+  - Replaced the low-contrast `bg-[#9ca7b5] text-cool-gray-300` styling on the main Butcher Records order species badge with theme-aware high-contrast variables (`bg-[var(--ha-bg-chip)] text-[var(--ha-text-primary)] border border-[var(--ha-border)] rounded-md`) so the species label remains legible in both light and dark themes.
+
+### Files Modified
+- `/views/ButcherRecordsView.tsx`
+- `/tests/butcher-reports.test.ts`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.78.1] - 2026-11-17
+
+### Changed
+- **Updated Documentation (`README.md`, `config.yaml`, `config.json`, `APP_CONTEXT.md`)**:
+  - Rewrote `/README.md` with a clear upfront notice that it was written by Gemini, a concise overview of current application features, quick-start instructions, and a reference to `/APP_CONTEXT.md` for full technical details.
+  - Removed outdated QR code references from `/README.md`, `/config.yaml`, `/config.json`, and `/APP_CONTEXT.md`.
+
+### Files Modified
+- `/README.md`
+- `/APP_CONTEXT.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.78.0] - 2026-11-17
+
+### Added
+- **Unified Audit History Across On-Site, Off-Site, Butcher & System Operations (`types.ts`, `utils/auditHistory.ts`, `server.ts`, `views/HistoryView.tsx`)**:
+  - **Backward-Compatible Schema Extensions**: Added optional `scope` (`'onsite' | 'offsite' | 'butcher' | 'system'`) and compact JSON `details` (`actionType`, `undoMode`, `relatedOrderId`, `orderNumber`, `orderName`, `locationName`, `palletName`, `itemCount`, `totalPieces`, `totalWeight`, `changedFields`, and a 100-item capped preview `items` + `truncatedCount`) columns to the SQLite `history` table with automatic startup `ALTER TABLE` migration.
+  - **Complete Off-Site, Butcher & System Logging**: Added audit coverage in `server.ts` for off-site entry adds, edits, tag changes, single/bulk deletes, CSV imports, pallet renames, pallet location assignments, pallet notes, staging transfers/finalizations, butcher order intake/edits/deletes, home/location updates, and system maintenance actions.
+  - **Milestone-Only Movement Logging & Consolidated Execution**: Movement orders log lifecycle milestones (`ADD_MOVEMENT_ORDER`, `planning <-> finalized` status transitions in `UPDATE_MOVEMENT_ORDER`, consolidated single-row `EXECUTE_MOVEMENT_ORDER`, `REVERT_MOVEMENT_ORDER`, and `DELETE_MOVEMENT_ORDER`), suppressing noisy intermediate planner saves and scanner pick/delivery ticks.
+  - **Scope Bar, Off-Site Filters & Collapsed Item Drawers**: Added segmented Scope filter tabs (`All`, `On-Site`, `Off-Site`, `Butcher`, `System`) with live tabular counts, **Off-Site Locations** and **Pallets** filters inside `#history-filters-panel`, inline middot-separated row metadata, and a collapsed-by-default `Show items (N)` detail drawer for bulk actions.
+
+### Changed
+- **Space-Safe Tiered Undo & Extended Custody Retention (`server.ts`, `hooks/useInventory.ts`, `components/UndoConfirmationModal.tsx`, `utils/historyRetention.ts`)**:
+  - Added tiered undo classification (`standard`, `order_revert`, `audit_only`): single-record/small edits (`<= 25` inverse ops) support standard rollback with rich conflict previews in `UndoConfirmationModal`; movement executions offer `Revert Order` directly against the order (`REVERT_MOVEMENT_ORDER`) without duplicating bulk snapshots; and bulk CSV imports, bulk mutations, or oversized operations bypass `undoData` and `undo_sql_journal` (`UNDO_JOURNAL_MAX_OPS = 25`), rendering a muted `Audit Only` state.
+  - Extended `calculateHistoryRetention` to protect active butcher orders, active pallets, open movement orders, and bulk `details` references from premature purge.
+
+### Files Modified
+- `/types.ts`
+- `/utils/auditHistory.ts`
+- `/utils/historyRetention.ts`
+- `/server.ts`
+- `/hooks/useInventory.ts`
+- `/components/UndoConfirmationModal.tsx`
+- `/views/HistoryView.tsx`
+- `/tests/test-harness.ts`
+- `/tests/audit-history-unification.test.ts`
+- `/APP_CONTEXT.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.77.0] - 2026-11-17
+
+### Changed
+- **Scoped Traceability Visibility to Off-Site & Butcher Views (`App.tsx`, `views/OffSiteStorageView.tsx`, `views/ButcherRecordsView.tsx`)**:
+  - Removed **Traceability** from the global header dropdown menu (`#sync-status-dropdown`) when viewing on-site inventory, Catalog & Settings, Audit History, or Reconciliation, keeping it visible only while inside **Off-Site**, **Butcher Records**, or **Traceability** contexts.
+  - Added an embedded **Traceability** sub-tab directly inside **Off-Site Storage** (`#offsite/traceability`, `#offsite-header-subtabs`) and **Butcher Records** (`#butcher-tab-traceability`), plus a top-level context switcher (`Off-Site Storage` | `Butcher Records` | `Traceability`) when viewing `#traceability` directly.
+- **Ended Traceability Algorithm at On-Site Transfer (`views/TraceabilityView.tsx`)**:
+  - Updated `buildTraceRecords` and `enrichTraceRecordWithHistory` to terminate package chain-of-custody tracking once an off-site item is transferred to an on-site/home destination (`Moved to <Location> (End of Trace)`), removing `meatCuts`, `containers`, and `freezers` indexing, standalone on-site `meatCuts` records, and `On-Site Container Activity Logs` cohort scanning.
+  - Updated `TraceabilityView` timeline milestones, custody badges, cohort status filters (`Moved On-Site`), and printable custody certificates to accurately represent on-site handoff as the traceability endpoint.
+
+### Files Modified
+- `/views/TraceabilityView.tsx`
+- `/views/OffSiteStorageView.tsx`
+- `/views/ButcherRecordsView.tsx`
+- `/App.tsx`
+- `/tests/traceability-performance.test.ts`
+- `/APP_CONTEXT.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.76.0] - 2026-11-17
+
+### Added
+- **Template "Pillowcase" Workflow, Sequential Placement & Zero-Dead-End Recovery in Voice Control (`utils/voiceCommandParser.ts`, `views/VoiceControlView.tsx`)**:
+  - **Pillowcase Template Support & Duplicate-Name Safeguards**: Added `"pillowcase"` and `"pillow case"` as first-class spoken container nouns mapped automatically to the `'pillowcase'` icon across creation, lifecycle, and query commands while preserving the non-blocking same-freezer duplicate-name `warningMessage`.
+  - **Sequential Pronoun Placement (`"... and put it in <freezer>"`)**: Coalesces follow-up placement clauses (`and/then put|place|move|set|drop|store|stash it|that|them in|into|to|at <freezer>`) into unified creation or combined add + container-move plans: resolves template-only targets (without requiring the word `"new"`) into auto-created containers placed in the spoken freezer, pairs unambiguous active containers with a chained `MOVE_CONTAINER`, and surfaces non-blocking template + freezer recovery when ambiguous.
+  - **Smart Default-to-Existing-Container & 1-Tap New Container Switch**: When adding items, automatically annotates existing product stock (`hasMatchingProduct`, `existingProductQty`), sorts same-product destinations first, and defaults to a unique container already stocking the matched product (both across multiple same-named containers and when destination is omitted), while rendering a 1-tap **New Container / Location** switch (and **Use Existing** revert) directly on every Add card.
+  - **Zero-Dead-End Suggestion & Recovery UI**: Replaced dead-end error walls across `add`, `remove`, `move`, `set_quantity`, `query`, and unrecognized partial fragments (`"4 broths"`, `"red bag freezer 2"`) with Dice-bigram product suggestions, template/custom-container + freezer creation chips, active-stock location pickers, and 1-tap fragment intent converters (`+ Add`, `- Remove`, `Move`, `Pack in New`, `Move Container`, `Check Stock`).
+
+### Files Modified
+- `/utils/voiceCommandParser.ts`
+- `/views/VoiceControlView.tsx`
+- `/tests/voice-command-parser.test.ts`
+- `/APP_CONTEXT.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.75.0] - 2026-11-17
+
+### Added
+- **Expanded Natural Container Language in Voice Control (`utils/voiceCommandParser.ts`, `views/VoiceControlView.tsx`)**:
+  - Expanded container noun vocabulary across creation, lifecycle, and query parsing beyond `"container"` to recognize `box`, `bag`, `bin`, `tote`, `bucket`, `crate`, `tray`, `tub`, `cooler`, `basket`, `carton`, `pouch`, `sack`, `canister`, `jar`, `pan`, `sleeve`, `holder`, `organizer`, `rack`, `shelf`, and `drawer` (including plural forms such as `"what boxes are in freezer 1"` and `"how many bags are in freezer 1"`).
+  - Supported natural container creation phrasings across all spoken word orders: type-noun-first (`"create new box yellow in freezer 1 with 4 brats"`, `"make new bag green with 6 hotdogs"`, `"create box orange in chest freezer with 2 ribeye"`), modifier-before-noun (`"create a yellow box in freezer 1 with 4 brats"`, `"make a new green bag with 6 hotdogs"`), items-first (`"inbound 3 ribeye into new box yellow in chest freezer"`), `named`/`called` naming (`"create new box called holiday in freezer 1 with 4 hotdogs"`), multi-line colon headers, and `"and"`-chained commands.
+  - Added smart container name construction (`buildSpokenNewContainerName`, avoiding redundant nouns when already present while forming names like `Box Yellow` or `Bag Green`), automatic icon inference per container type noun (`inferContainerIconFromNoun`: `box`/`crate` -> `box`, `bag`/`sack` -> `pillowcase`, `pouch` -> `pouch`, `bin`/`tote`/`tub`/`bucket`/`cooler`/`basket` -> `bin`, `tray`/`pan` -> `tray`, `rack`/`shelf`/`drawer` -> `grid`), and type-noun preservation (`keepUnitTokens: true`) during template matching so `"box yellow"` distinguishes `Yellow Box` templates from `Yellow Bag` templates.
+  - Protected normal product/packaging phrasings (`"add bag of hotdogs to display"`, `"add pan ground pork to display"`, `"make brats in display to 2"`) from false-positive container creation.
+  - Extended container move (`"move box yellow to chest freezer"`, `"put bag green in freezer 1"`), swap, rename, combine, delete-empty, and freezer-scoped container queries to match natural container nouns seamlessly, and updated **Voice Control** help guide examples in `VoiceControlView.tsx`.
+
+### Files Modified
+- `/utils/voiceCommandParser.ts`
+- `/views/VoiceControlView.tsx`
+- `/tests/voice-command-parser.test.ts`
+- `/APP_CONTEXT.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.74.2] - 2026-11-17
+
+### Fixed
+- **Dev Server Startup, Port/Host Arg Parsing & Clean Shutdown (`server.ts`, `utils/serverStartup.ts`)**:
+  - Updated `parseServerListenArgs` in `utils/serverStartup.ts` to support `npm_config_port`/`npm_config_host` and positional port/host arguments produced when `npm run dev --port <port> --host <host>` is invoked without `--`.
+  - Mounted `express.static` with `{ index: false }` in development mode and limited synchronous `ensurePublicIconsExist` to `public` directories (deferred via `setImmediate` after HTTP bind) so a prior `npm run build` (`dist/index.html`) never hijacks Vite's dev `index.html`.
+  - Added graceful `SIGTERM`/`SIGINT` shutdown (closing Vite middleware, HTTP server, and SQLite DB) and fast exit on fatal bind errors (`EADDRINUSE`/`EACCES`) to prevent stale processes from holding port 3000 across restarts.
+
+### Files Modified
+- `/utils/serverStartup.ts`
+- `/server.ts`
+- `/tests/server-startup.test.ts`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.74.1] - 2026-11-17
+
+### Fixed
+- **Prevent Duplicate Container Listing in Voice Control Selection (`utils/voiceCommandParser.ts`, `views/VoiceControlView.tsx`)**:
+  - Fixed an issue where commands requiring source container disambiguation (such as `"remove 1 liver"` when multiple containers stock the product) set both `requiresSourceLocationSelection` and `requiresCutSelection` simultaneously, causing `VoiceControlView` to render the same containers twice (once under **Select source container** and again under **Select package stack**).
+  - Updated `evaluateParsedClause` across `remove`, `move`, `set_quantity`, `manage_tag`, and `correct_label` so `requiresCutSelection` is only triggered once the source container is resolved (and only if multiple package stacks exist inside that container).
+  - Guarded the package stack selector and `Change` toggle in `views/VoiceControlView.tsx` with `!clause.requiresSourceLocationSelection`, and added per-container available quantity (`available`) on **Select source container** option cards when a product is selected.
+
+### Files Modified
+- `/utils/voiceCommandParser.ts`
+- `/views/VoiceControlView.tsx`
+- `/tests/voice-command-parser.test.ts`
+- `/tests/voice-card-links.test.ts`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.74.0] - 2026-11-16
+
+### Added
+- **1-to-Many Product Pack (Bundle) Support in Voice Dictionary (`components/VoiceDictionaryManager.tsx`, `utils/voiceCommandParser.ts`, `views/VoiceControlView.tsx`, `server.ts`, `types.ts`)**:
+  - Added a new `bundle` (`Product Pack (1-to-Many)`) target type to `VoiceDictionaryEntry` (`bundleItems: Array<{ productId, quantity }>`), persisted via a non-destructively migrated `bundleItems TEXT` column in the SQLite `voice_dictionary` table with full SQLite `.db`, JSON, and ZIP backup/restore compatibility.
+  - Added an interactive **Product Pack** builder inside **Catalog & Settings → Voice Dictionary**: search active products, add/remove items with 1 click, set per-pack item quantities (`1x`, `2x`, etc.), filter saved rules by **Packs**, and search saved rules by constituent product name.
+  - Added relational cleanup on product deletion (`DELETE_PRODUCT` and `BULK_DELETE_PRODUCTS`) in `server.ts` so deleted products are automatically pruned from any Voice Dictionary `bundleItems` lists (removing now-empty bundle rules).
+  - Updated `utils/voiceCommandParser.ts` (`resolveVoiceDictionaryBundles`) so spoken commands referencing a configured bundle phrase (e.g. `"remove 1 broth mix pack from display loose"`, `"remove 2 broth mix packs from display loose"`, `"add 1 broth mix pack to display loose"`, `"move 1 broth mix pack from ... to display loose"`, `"restock display with 1 broth mix pack"`, `"add broth mix pack to restock list"`, `"how many broth mix packs are in display loose?"`, or `"wipe out broth mix pack from display loose"`) automatically expand to the configured constituent products scaled by the spoken pack multiplier without colliding with individual product phrases (`"chicken broth"`, `"broth"`).
+  - Added a `Pack: {bundlePhrase}` badge in `VoiceControlView.tsx` on expanded mutation cards and pack stock-check cards so operators can verify pack expansions before applying or review per-item stock checks together.
+
+### Files Modified
+- `/types.ts`
+- `/server.ts`
+- `/utils/voiceCommandParser.ts`
+- `/components/VoiceDictionaryManager.tsx`
+- `/views/VoiceControlView.tsx`
+- `/tests/test-harness.ts`
+- `/tests/voice-command-parser.test.ts`
+- `/tests/workflow-restore-and-backup.test.ts`
+- `/APP_CONTEXT.md`
+- `/FREEZER_MAPPING_AI_GUIDE.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.73.1] - 2026-11-16
+
+### Fixed
+- **Non-Blocking Dev Server Startup (`server.ts`, `utils/serverStartup.ts`)**:
+  - Deferred initial `runAutomaticRollingSnapshots()` (SQLite `VACUUM INTO` & full ZIP packaging) and `checkAndTriggerScheduledNotifications()` execution until 3 seconds after the HTTP server has bound port 3000, eliminating synchronous top-level startup stalls that could delay or time out dev server readiness.
+  - Bound `app.listen(PORT, HOST)` immediately on server boot while initializing Vite middleware asynchronously behind a readiness-awaiting Express wrapper (`createDeferredViteMiddleware`), so port probes and `/api/health` succeed immediately on startup while browser requests seamlessly await Vite readiness.
+  - Added CLI/env `--port` and `--host` parsing (`parseServerListenArgs`, defaulting to `3000` and `0.0.0.0`) and a lightweight `GET /api/health` endpoint returning `{ status: 'ok', version }`, plus a defensive fallback in the boot log timezone formatter.
+
+### Files Modified
+- `/utils/serverStartup.ts`
+- `/server.ts`
+- `/tests/server-startup.test.ts`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.73.0] - 2026-11-16
+
+### Added
+- **Connect Photo to Item or Container Workflow (`views/PhotoManagerView.tsx`, `utils/photoManager.ts`)**:
+  - Added a **Connect to Item / Container** button (and clickable photo thumbnail) on every photo card in **Photo Files**, opening a dedicated **Connect Photo to Item or Container** modal.
+  - Added live search plus dual filter controls inside the modal:
+    - **Object Type**: `All`, `Items` (Products), `Containers` (Container Templates & Placed/Custom Containers), and `Templates` (Container Templates only).
+    - **Photo Status**: `All`, `Without` (objects without a photo), and `With Photo` (objects that already have a photo), complete with dynamic counts.
+  - Each matching row displays the object's current thumbnail/icon, type badge (`Item` / `Template` / `Container`), category or freezer location, and lets operators **Connect**, **Replace Photo**, or **Unlink** directly without leaving the modal.
+
+### Files Modified
+- `/utils/photoManager.ts`
+- `/views/PhotoManagerView.tsx`
+- `/tests/photo-manager.test.ts`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
 ### [2.72.5] - 2026-11-16
 
 ### Fixed

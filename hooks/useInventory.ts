@@ -15,6 +15,7 @@ import {
   deleteOfflineImage
 } from '../utils/offlineStorage';
 import { useOnlineStatus } from './useOnlineStatus';
+import { getHistoryUndoMode } from '../utils/auditHistory';
 
 export type { OperatingMode, ForcedMultiUser, OperationalZone, ZoneClientCounts };
 
@@ -138,7 +139,8 @@ const TABLE_TO_KEY_MAP: Record<string, keyof InventoryState> = {
   'history': 'history',
   'notification_channels': 'notificationChannels',
   'notification_settings': 'notificationSettings',
-  'notification_logs': 'notificationLogs'
+  'notification_logs': 'notificationLogs',
+  'app_config': 'appConfig'
 };
 
 const STATE_ARRAY_KEYS: (keyof InventoryState)[] = [
@@ -160,7 +162,8 @@ const STATE_ARRAY_KEYS: (keyof InventoryState)[] = [
   'notificationChannels',
   'notificationSettings',
   'notificationLogs',
-  'containerTemplates'
+  'containerTemplates',
+  'appConfig'
 ];
 
 function reconcileStateReferences(
@@ -408,6 +411,7 @@ export const useInventory = (activeView: View = 'product') => {
       .filter(h => 
         h && 
         h.description && 
+        getHistoryUndoMode(h) === 'standard' &&
         !h.description.startsWith('Undid action:') && 
         !h.description.startsWith('Archived & purged') &&
         !h.description.startsWith('State restored')
@@ -453,7 +457,7 @@ export const useInventory = (activeView: View = 'product') => {
   const rollbackStateRef = useRef<InventoryState | null>(null);
 
   const pushLocalUndo = useCallback((action: Action, prevState: InventoryState, nextState?: InventoryState) => {
-    if (!action || action.type === 'UNDO' || action.type === 'PURGE_HISTORY' || action.type === 'REPLACE_STATE') return;
+    if (!action || action.type === 'UNDO' || action.type === 'PURGE_HISTORY' || action.type === 'REPLACE_STATE' || action.type === 'SYNC_APP_CONFIG') return;
     const desc = getActionDescription(action);
     const snapId = 'snap-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6);
     const histId = 'hist-' + Date.now();
@@ -1243,6 +1247,21 @@ export const useInventory = (activeView: View = 'product') => {
         action.type !== 'APPEND_MOVEMENT_ORDER_IDS' &&
         action.type !== 'REMOVE_MOVEMENT_ORDER_IDS') {
       flushAllPendingSyncs().catch(() => {});
+    }
+
+    // Instant local sync for app_config updates already persisted via /api/app-config (avoids multi-MB REPLACE_STATE uploads)
+    if (action.type === 'SYNC_APP_CONFIG') {
+      const nextAppConfig = Array.isArray(action.payload) ? action.payload : [];
+      setState(prev => {
+        const next = {
+          ...prev,
+          appConfig: nextAppConfig,
+        };
+        stateRef.current = next;
+        saveCachedState(next).catch(() => {});
+        return next;
+      });
+      return true;
     }
 
     // Persistent Undo implementation integrated with DB

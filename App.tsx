@@ -5,9 +5,10 @@ import { authFetch, clearSessionToken, getClientDeviceInfo, getDeviceId, getDevi
 import { DeviceSetupModal } from './components/DeviceSetupModal';
 import { UserAccountModal } from './components/UserAccountModal';
 import { UserAuthProvider, useUserAuth } from './hooks/useUserAuth';
-import { ModalType, View } from './types';
+import { FailsafeStatus, ModalType, View } from './types';
+import { FailsafeRecoveryScreen } from './components/FailsafeRecoveryScreen';
 import { APP_VERSION } from './version';
-import { Tag, PackagePlus, History, Sparkles, Table, Package, ClipboardList, Sun, Moon, Filter, Plus, Download, ChevronDown, ChevronUp, Eye, AlertTriangle, RefreshCw, Database, RotateCcw, Users, User, Zap, ArrowUpDown, SlidersHorizontal, Smartphone, Rocket, Settings, FolderTree, KeyRound, ShieldAlert, Mic, Shield, LogIn, Lock } from 'lucide-react';
+import { Tag, PackagePlus, History, Sparkles, Table, Package, ClipboardList, Sun, Moon, Filter, Plus, Download, ChevronDown, ChevronUp, Eye, AlertTriangle, RefreshCw, Database, RotateCcw, Users, User, Zap, ArrowUpDown, SlidersHorizontal, Smartphone, Rocket, Settings, FolderTree, KeyRound, ShieldAlert, Mic, Shield, LogIn, Lock, List, FileSpreadsheet, TrendingUp, ClipboardCheck, PlusCircle } from 'lucide-react';
 import { FreezerIcon, SearchIcon, GridViewIcon, ListViewIcon } from './components/icons';
 import Modal from './components/Modal';
 import AddForms from './components/AddForms';
@@ -33,7 +34,7 @@ import { ListThresholdAlertModalContent } from './components/ListThresholdAlertM
 import { ConnectedClientsModalContent } from './components/ConnectedClientsModalContent';
 import { OffSiteStorageView } from './views/OffSiteStorageView';
 import { AdvancedFilterMenu } from './views/OffSiteSpreadsheet';
-import { ButcherRecordsView } from './views/ButcherRecordsView';
+import { ButcherRecordsView, ButcherSubTab } from './views/ButcherRecordsView';
 import { TraceabilityView } from './views/TraceabilityView';
 import { ProductQuickInfoModal } from './components/ProductQuickInfoModal';
 import { ActiveMovementModal } from './views/ActiveMovementModal';
@@ -72,7 +73,16 @@ function AppContent() {
     currentUser,
     recoveryModeActive,
     openAccountModal,
+    refreshAuth,
   } = useUserAuth();
+  const [failsafeStatus, setFailsafeStatus] = useState<FailsafeStatus | null>(null);
+  const [showFailsafeScreen, setShowFailsafeScreen] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      return window.location.hash.toLowerCase().startsWith('#failsafe');
+    }
+    return false;
+  });
+  const [dismissedFailsafeMode, setDismissedFailsafeMode] = useState<boolean>(false);
   const [authReconnectKey, setAuthReconnectKey] = useState(0);
   const lastSessionTokenRef = React.useRef<string | null>(getSessionToken());
   const [isScrolled, setIsScrolled] = useState(false);
@@ -205,12 +215,25 @@ function AppContent() {
   const [selectedProductId, setSelectedProductId] = useState<string | null>(null);
   const [initialLibraryTab, setInitialLibraryTab] = useState<LibraryTab>("products");
   const [offsiteSubTab, setOffsiteSubTab] = useState<'sheet' | 'import' | 'hierarchy' | 'history' | 'active-movement' | 'staging-worksheet'>('sheet');
+  const [butcherSubTab, setButcherSubTab] = useState<ButcherSubTab>('orders');
+  const [butcherReviewQueueCount, setButcherReviewQueueCount] = useState<number>(0);
+  const [butcherSearchFilterOpen, setButcherSearchFilterOpen] = useState<boolean>(false);
+  const [butcherActiveFilterCount, setButcherActiveFilterCount] = useState<number>(0);
+  const [butcherFilterPortalEl, setButcherFilterPortalEl] = useState<HTMLDivElement | null>(null);
+
+  React.useEffect(() => {
+    setButcherSearchFilterOpen(false);
+    if (currentView !== 'butcher_records' || butcherSubTab === 'import') {
+      setButcherActiveFilterCount(0);
+    }
+  }, [currentView, butcherSubTab]);
 
   const setCurrentView = React.useCallback((
     newView: View,
     options?: {
       libraryTab?: LibraryTab;
       subTab?: 'sheet' | 'import' | 'hierarchy' | 'history' | 'active-movement' | 'staging-worksheet';
+      butcherTab?: ButcherSubTab;
       highlightContainerId?: string | null;
       selectedProductId?: string | null;
       reconcileFreezerId?: string | null;
@@ -221,6 +244,7 @@ function AppContent() {
       _setCurrentView(newView);
       if (options?.libraryTab) setInitialLibraryTab(options.libraryTab);
       if (options?.subTab) setOffsiteSubTab(options.subTab);
+      if (options?.butcherTab) setButcherSubTab(options.butcherTab);
       if (options?.highlightContainerId !== undefined) setHighlightContainerId(options.highlightContainerId);
       if (options?.selectedProductId !== undefined) setSelectedProductId(options.selectedProductId);
       if (options?.reconcileFreezerId !== undefined) setReconcileFreezerId(options.reconcileFreezerId);
@@ -231,6 +255,7 @@ function AppContent() {
       newView === currentView &&
       !options?.libraryTab &&
       !options?.subTab &&
+      !options?.butcherTab &&
       !options?.highlightContainerId &&
       !options?.selectedProductId &&
       !options?.reconcileFreezerId
@@ -245,6 +270,8 @@ function AppContent() {
       let hash = `#${newView}`;
       if (newView === 'offsite' && options?.subTab && options.subTab !== 'sheet') {
         hash = `#offsite/${options.subTab}`;
+      } else if (newView === 'butcher_records' && options?.butcherTab && options.butcherTab !== 'orders') {
+        hash = `#butcher_records/${options.butcherTab}`;
       } else if (newView === 'library' && options?.libraryTab && options.libraryTab !== 'products') {
         hash = `#library/${options.libraryTab}`;
       }
@@ -254,6 +281,7 @@ function AppContent() {
         step: nextStep,
         libraryTab: options?.libraryTab,
         offsiteSubTab: options?.subTab,
+        butcherSubTab: options?.butcherTab,
         highlightContainerId: options?.highlightContainerId,
         selectedProductId: options?.selectedProductId,
         reconcileFreezerId: options?.reconcileFreezerId
@@ -269,6 +297,7 @@ function AppContent() {
     _setCurrentView(newView);
     if (options?.libraryTab) setInitialLibraryTab(options.libraryTab);
     if (options?.subTab) setOffsiteSubTab(options.subTab);
+    if (options?.butcherTab) setButcherSubTab(options.butcherTab);
     if (options?.highlightContainerId !== undefined) setHighlightContainerId(options.highlightContainerId);
     if (options?.selectedProductId !== undefined) setSelectedProductId(options.selectedProductId);
     if (options?.reconcileFreezerId !== undefined) setReconcileFreezerId(options.reconcileFreezerId);
@@ -327,6 +356,25 @@ function AppContent() {
     activeZoneClientCount,
     recalculateCollaborativeMode
   } = useInventory(currentView);
+
+  const fetchFailsafeStatus = React.useCallback(async () => {
+    try {
+      const res = await authFetch(getApiUrl('api/failsafe/status'), {
+        cache: 'no-store',
+        headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate' },
+      });
+      if (!res.ok) return null;
+      const data: FailsafeStatus = await res.json();
+      setFailsafeStatus(data);
+      return data;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  React.useEffect(() => {
+    void fetchFailsafeStatus();
+  }, [fetchFailsafeStatus]);
 
   const isCurrentlyStandalone = useMemo(() => {
     if (typeof window === 'undefined') return false;
@@ -864,6 +912,7 @@ function AppContent() {
   }>({ onsite: {}, offsiteCount: {}, offsiteWeight: {}, total: {} });
   const isInitialLoadRef = React.useRef<boolean>(true);
   const [isSyncMenuOpen, setIsSyncMenuOpen] = useState(false);
+  const [isOffsiteExportMenuOpen, setIsOffsiteExportMenuOpen] = useState(false);
   const syncMenuRef = React.useRef<HTMLDivElement>(null);
 
   useHeaderMenuDismiss(isSyncMenuOpen, syncMenuRef, () => setIsSyncMenuOpen(false));
@@ -871,6 +920,12 @@ function AppContent() {
   React.useEffect(() => {
     setIsSyncMenuOpen(false);
   }, [currentView, activeModal]);
+
+  React.useEffect(() => {
+    if (!isSyncMenuOpen) {
+      setIsOffsiteExportMenuOpen(false);
+    }
+  }, [isSyncMenuOpen]);
   const [searchTerm, setSearchTerm] = useState('');
   const [traceabilityInitialSearch, setTraceabilityInitialSearch] = useState<string>('');
 
@@ -878,8 +933,10 @@ function AppContent() {
 
   React.useEffect(() => {
     (window as any).__setOffSiteSubTab = setOffsiteSubTab;
+    (window as any).__setButcherSubTab = setButcherSubTab;
     return () => {
       delete (window as any).__setOffSiteSubTab;
+      delete (window as any).__setButcherSubTab;
     };
   }, []);
   const [offsiteSearch, setOffsiteSearch] = useState(() => localStorage.getItem("offsite-search") || '');
@@ -926,7 +983,13 @@ function AppContent() {
     return new Set(['box', 'cuts', 'category', 'weight', 'pieces', 'location', 'pallet', 'movedTo', 'flag']);
   });
 
-  const offsiteActionsRef = React.useRef<{ handleNewMovement: () => void; handleDownloadCSV: () => void } | null>(null);
+  const offsiteActionsRef = React.useRef<{
+    handleNewMovement: () => void;
+    handleDownloadCSV: () => void;
+    handleExportFilteredCSV?: () => void;
+    handleExportFullCSV?: () => void;
+    getExportCounts?: () => { filteredCount: number; totalCount: number };
+  } | null>(null);
 
   // Popdown Relocation editing states
   const [popdownNewDestLocId, setPopdownNewDestLocId] = useState('');
@@ -1053,6 +1116,19 @@ function AppContent() {
     setOffsiteSubTab(tab);
   }, [offsiteSubTab]);
 
+  const handleButcherSubTabChange = React.useCallback((tab: ButcherSubTab) => {
+    if (tab === butcherSubTab) return;
+    if (typeof window !== 'undefined' && !isPopNavigatingRef.current) {
+      navStepRef.current += 1;
+      window.history.pushState({
+        view: 'butcher_records',
+        butcherSubTab: tab,
+        step: navStepRef.current
+      }, '', tab === 'orders' ? '#butcher_records' : `#butcher_records/${tab}`);
+    }
+    setButcherSubTab(tab);
+  }, [butcherSubTab]);
+
   const handleLibraryTabChange = React.useCallback((tab: LibraryTab) => {
     if (tab === initialLibraryTab) return;
     if (typeof window !== 'undefined' && !isPopNavigatingRef.current) {
@@ -1114,23 +1190,46 @@ function AppContent() {
 
     // Initialize root history state if not already initialized
     const currentHash = window.location.hash;
-    const initialParsed = parseViewFromHash(currentHash) || currentView;
+    const initialParsedRaw = parseViewFromHash(currentHash) || currentView;
     const initialSub = currentHash.includes('/') ? currentHash.replace(/^#\/?/, '').split('/')[1]?.split('?')[0] : null;
 
-    const normalizedLibrarySub = initialSub ? normalizeLibraryTab(initialSub) : null;
+    const VALID_OFFSITE_SUBTABS = new Set(['sheet', 'import', 'hierarchy', 'history', 'active-movement', 'staging-worksheet']);
+    const VALID_BUTCHER_SUBTABS = new Set<ButcherSubTab>(['orders', 'spreadsheet', 'import', 'reports', 'review']);
+    const initialParsed: View = (initialParsedRaw === 'offsite' && initialSub === 'traceability')
+      ? 'traceability'
+      : initialParsedRaw;
+    if (initialParsed === 'traceability' && initialParsedRaw === 'offsite') {
+      _setCurrentView('traceability');
+    }
 
-    if (initialParsed === 'offsite' && initialSub) {
-      setOffsiteSubTab(initialSub as any);
+    const normalizedLibrarySub = initialSub ? normalizeLibraryTab(initialSub) : null;
+    const validOffsiteSub = (initialParsed === 'offsite' && initialSub && VALID_OFFSITE_SUBTABS.has(initialSub)) ? initialSub : null;
+    const validButcherSub = (initialParsed === 'butcher_records' && initialSub && VALID_BUTCHER_SUBTABS.has(initialSub as ButcherSubTab))
+      ? (initialSub as ButcherSubTab)
+      : null;
+
+    if (initialParsed === 'offsite' && validOffsiteSub) {
+      setOffsiteSubTab(validOffsiteSub as any);
+    } else if (initialParsed === 'butcher_records' && validButcherSub) {
+      setButcherSubTab(validButcherSub);
     } else if (initialParsed === 'library' && normalizedLibrarySub) {
       setInitialLibraryTab(normalizedLibrarySub);
     }
 
-    const effectiveSub = initialParsed === 'library' ? normalizedLibrarySub : initialSub;
+    const effectiveSub =
+      initialParsed === 'library'
+        ? normalizedLibrarySub
+        : initialParsed === 'offsite'
+        ? validOffsiteSub
+        : initialParsed === 'butcher_records'
+        ? (validButcherSub && validButcherSub !== 'orders' ? validButcherSub : null)
+        : initialSub;
     const initialHash = `#${initialParsed}${effectiveSub ? `/${effectiveSub}` : ''}`;
     window.history.replaceState({
       view: initialParsed,
       step: 0,
-      offsiteSubTab: initialParsed === 'offsite' ? initialSub || 'sheet' : undefined,
+      offsiteSubTab: initialParsed === 'offsite' ? validOffsiteSub || 'sheet' : undefined,
+      butcherSubTab: initialParsed === 'butcher_records' ? validButcherSub || 'orders' : undefined,
       libraryTab: initialParsed === 'library' ? normalizedLibrarySub || 'products' : undefined
     }, '', initialHash);
 
@@ -1168,8 +1267,11 @@ function AppContent() {
       if (st?.libraryTab) {
         setInitialLibraryTab(normalizeLibraryTab(st.libraryTab));
       }
-      if (st?.offsiteSubTab) {
+      if (st?.offsiteSubTab && ['sheet', 'import', 'hierarchy', 'history', 'active-movement', 'staging-worksheet'].includes(st.offsiteSubTab)) {
         setOffsiteSubTab(st.offsiteSubTab);
+      }
+      if (st?.butcherSubTab && VALID_BUTCHER_SUBTABS.has(st.butcherSubTab)) {
+        setButcherSubTab(st.butcherSubTab);
       }
       if (st?.highlightContainerId !== undefined) {
         setHighlightContainerId(st.highlightContainerId);
@@ -1467,6 +1569,7 @@ function AppContent() {
   const isSingleUserModeRef = React.useRef(isSingleUserMode);
   const isPendingSyncRef = React.useRef(isPendingSync);
   const refreshStateRef = React.useRef(refreshState);
+  const dispatchRef = React.useRef(dispatch);
   const updateSingleUserLockRef = React.useRef(updateSingleUserLock);
   const updateForcedMultiRef = React.useRef(updateForcedMulti);
   const activeClientCountRef = React.useRef(activeClientCount);
@@ -1486,6 +1589,7 @@ function AppContent() {
     isSingleUserModeRef.current = isSingleUserMode;
     isPendingSyncRef.current = isPendingSync;
     refreshStateRef.current = refreshState;
+    dispatchRef.current = dispatch;
     updateSingleUserLockRef.current = updateSingleUserLock;
     updateForcedMultiRef.current = updateForcedMulti;
     activeClientCountRef.current = activeClientCount;
@@ -1594,6 +1698,11 @@ function AppContent() {
           return;
         } else if (data.type === 'auth_changed') {
           window.dispatchEvent(new CustomEvent('freezer-auth-changed'));
+          return;
+        } else if (data.type === 'app_config_updated') {
+          if (Array.isArray(data.appConfig)) {
+            dispatchRef.current({ type: 'SYNC_APP_CONFIG', payload: data.appConfig });
+          }
           return;
         } else if (data.type === 'device_config_changed') {
           const currentDevId = getDeviceId();
@@ -2512,7 +2621,18 @@ function AppContent() {
           />
         );
       case 'butcher_records':
-        return <ButcherRecordsView state={state} dispatch={dispatch} />;
+        return (
+          <ButcherRecordsView
+            state={state}
+            dispatch={dispatch}
+            activeTab={butcherSubTab}
+            setActiveTab={handleButcherSubTabChange}
+            onReviewQueueCountChange={setButcherReviewQueueCount}
+            isFilterPanelOpen={butcherSearchFilterOpen}
+            filterPanelContainer={butcherFilterPortalEl}
+            onActiveFilterCountChange={setButcherActiveFilterCount}
+          />
+        );
       case 'traceability':
         return (
           <TraceabilityView 
@@ -2666,6 +2786,37 @@ function AppContent() {
   }
 
 
+
+  const shouldShowFailsafeConsole =
+    showFailsafeScreen ||
+    (!dismissedFailsafeMode &&
+      Boolean(
+        failsafeStatus &&
+          (failsafeStatus.backupRecoveryMode || !failsafeStatus.dbHealthy)
+      ));
+
+  if (shouldShowFailsafeConsole) {
+    return (
+      <FailsafeRecoveryScreen
+        initialStatus={failsafeStatus}
+        onContinueToApp={async () => {
+          setShowFailsafeScreen(false);
+          setDismissedFailsafeMode(true);
+          if (typeof window !== 'undefined' && window.location.hash.toLowerCase().startsWith('#failsafe')) {
+            window.history.replaceState(null, '', '#product');
+          }
+          await fetchFailsafeStatus();
+          await refreshAuth();
+          await refreshState(true);
+        }}
+        onRestored={async () => {
+          await fetchFailsafeStatus();
+          await refreshAuth();
+          await refreshState(true);
+        }}
+      />
+    );
+  }
 
   return (
     <div className="min-h-screen bg-cool-gray-900 text-cool-gray-100 font-sans p-1.5 sm:p-5 lg:p-6 lg:pt-5">
@@ -2971,15 +3122,27 @@ function AppContent() {
                 <strong className="text-white">Admin Recovery Mode Enabled:</strong> Temporary recovery override is active via server / Home Assistant config. Disable <code className="font-mono bg-amber-900/60 px-1 py-0.5 rounded text-amber-200">admin_recovery_mode</code> after regaining access.
               </span>
             </div>
-            {!isAdmin && (
+            <div className="flex items-center gap-2 shrink-0 flex-wrap">
+              {!isAdmin && (
+                <button
+                  type="button"
+                  onClick={() => openAccountModal('recovery')}
+                  className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-cool-gray-950 font-extrabold text-xs transition cursor-pointer whitespace-nowrap shrink-0"
+                >
+                  Unlock Recovery Admin
+                </button>
+              )}
               <button
                 type="button"
-                onClick={() => openAccountModal('recovery')}
-                className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-cool-gray-950 font-extrabold text-xs transition cursor-pointer whitespace-nowrap shrink-0"
+                onClick={() => {
+                  setDismissedFailsafeMode(false);
+                  setShowFailsafeScreen(true);
+                }}
+                className="px-3 py-1.5 rounded-lg bg-cool-gray-900 hover:bg-cool-gray-800 border border-amber-500/40 text-amber-200 font-bold text-xs transition cursor-pointer whitespace-nowrap shrink-0"
               >
-                Unlock Recovery Admin
+                Failsafe Recovery
               </button>
-            )}
+            </div>
           </div>
         )}
 
@@ -3203,6 +3366,138 @@ function AppContent() {
                     )}
                   </div>
                 )}
+
+                {currentView === 'butcher_records' && (
+                  <div className="flex items-center gap-1.5 sm:gap-2.5 ml-1">
+                    <div className="flex items-center rounded-lg bg-cool-gray-850 border border-cool-gray-700 p-0.5" id="butcher-header-subtabs">
+                      <button
+                        id="butcher-tab-orders"
+                        type="button"
+                        onClick={() => handleButcherSubTabChange('orders')}
+                        className={`px-2 sm:px-3 py-1 text-[11px] sm:text-xs font-bold transition-all rounded-md cursor-pointer flex items-center gap-1 ${
+                          butcherSubTab === 'orders'
+                            ? 'bg-cyan-400 text-slate-950 shadow-sm font-black'
+                            : 'text-cool-gray-300 hover:text-white hover:bg-cool-gray-800/40'
+                        }`}
+                        title="Processing order logs and summaries"
+                      >
+                        <List className="w-3.5 h-3.5 shrink-0" />
+                        <span className="hidden sm:inline shrink-0">Logs</span>
+                      </button>
+                      <button
+                        id="butcher-tab-spreadsheet"
+                        type="button"
+                        onClick={() => handleButcherSubTabChange('spreadsheet')}
+                        className={`px-2 sm:px-3 py-1 text-[11px] sm:text-xs font-bold transition-all rounded-md cursor-pointer flex items-center gap-1 ${
+                          butcherSubTab === 'spreadsheet'
+                            ? 'bg-cyan-400 text-slate-950 shadow-sm font-black'
+                            : 'text-cool-gray-300 hover:text-white hover:bg-cool-gray-800/40'
+                        }`}
+                        title="All butcher cut records in spreadsheet view"
+                      >
+                        <FileSpreadsheet className="w-3.5 h-3.5 shrink-0" />
+                        <span className="hidden sm:inline shrink-0">Spreadsheet</span>
+                      </button>
+                      <button
+                        id="butcher-tab-reports"
+                        type="button"
+                        onClick={() => handleButcherSubTabChange('reports')}
+                        className={`px-2 sm:px-3 py-1 text-[11px] sm:text-xs font-bold transition-all rounded-md cursor-pointer flex items-center gap-1 ${
+                          butcherSubTab === 'reports'
+                            ? 'bg-cyan-400 text-slate-950 shadow-sm font-black'
+                            : 'text-cool-gray-300 hover:text-white hover:bg-cool-gray-800/40'
+                        }`}
+                        title="Yield, weight, cut, and timeline analytics reports"
+                      >
+                        <TrendingUp className="w-3.5 h-3.5 shrink-0" />
+                        <span className="hidden sm:inline shrink-0">Reports</span>
+                      </button>
+                      <button
+                        id="butcher-tab-review"
+                        type="button"
+                        onClick={() => handleButcherSubTabChange('review')}
+                        className={`px-2 sm:px-3 py-1 text-[11px] sm:text-xs font-bold transition-all rounded-md cursor-pointer flex items-center gap-1 ${
+                          butcherSubTab === 'review'
+                            ? 'bg-cyan-400 text-slate-950 shadow-sm font-black'
+                            : 'text-cool-gray-300 hover:text-white hover:bg-cool-gray-800/40'
+                        }`}
+                        title="Order review and finalization queue"
+                      >
+                        <ClipboardCheck className="w-3.5 h-3.5 shrink-0" />
+                        <span className="hidden sm:inline shrink-0">Review Queue</span>
+                        {butcherReviewQueueCount > 0 && (
+                          <span
+                            id="butcher-tab-review-badge"
+                            className={`font-mono tabular-nums text-[10px] font-extrabold px-1.5 py-0.2 rounded ${
+                              butcherSubTab === 'review'
+                                ? 'bg-slate-950/20 text-slate-950'
+                                : 'bg-amber-500/20 text-amber-300'
+                            }`}
+                          >
+                            {butcherReviewQueueCount}
+                          </span>
+                        )}
+                      </button>
+                    </div>
+
+                    {butcherSubTab !== 'import' && (
+                      <div className="flex items-center gap-1.5 sm:gap-2">
+                        <button
+                          id="butcher-header-filters-toggle"
+                          type="button"
+                          onClick={() => setButcherSearchFilterOpen(prev => !prev)}
+                          className={`h-8 px-2 sm:px-2.5 rounded-lg flex items-center justify-center gap-1 border transition focus:outline-none cursor-pointer text-xs font-bold ${
+                            butcherSearchFilterOpen || butcherActiveFilterCount > 0
+                              ? 'bg-cyan-950/45 border-cyan-500/50 text-cyan-300 shadow-lg shadow-cyan-950/20'
+                              : 'bg-cool-gray-850 border-cool-gray-700 text-cool-gray-400 hover:text-white hover:border-cool-gray-650'
+                          }`}
+                          title="Toggle Search and Filters Panel"
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.4} stroke="currentColor" className="w-4 h-4 hover:scale-105 transition-all text-cyan-400">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M12 3c2.755 0 5.455.232 8.083.678.533.09.917.556.917 1.096v1.044a2.25 2.25 0 0 1-.659 1.591l-5.432 5.432a2.25 2.25 0 0 0-.659 1.591v2.927a2.25 2.25 0 0 1-1.244 2.013L9.75 21v-6.568a2.25 2.25 0 0 0-.659-1.591L3.659 7.409A2.25 2.25 0 0 1 3 5.818V4.774c0-.54.384-1.006.917-1.096A48.32 48.32 0 0 1 12 3Z" />
+                          </svg>
+                          <span className="hidden sm:inline ml-0.5">Filters</span>
+                          {butcherActiveFilterCount > 0 && (
+                            <span className="h-4 px-1 rounded-full bg-cyan-500 text-cool-gray-950 flex items-center justify-center text-[9px] font-black select-none">
+                              {butcherActiveFilterCount}
+                            </span>
+                          )}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {currentView === 'traceability' && (
+                  <div className="flex items-center gap-1.5 ml-1" id="traceability-context-tabs">
+                    <div className="flex items-center rounded-lg bg-cool-gray-850 border border-cool-gray-700 p-0.5">
+                      <button
+                        type="button"
+                        onClick={() => setCurrentView('offsite', { subTab: 'sheet' })}
+                        className="px-2 sm:px-3 py-1 text-[11px] sm:text-xs font-bold transition-all rounded-md cursor-pointer flex items-center gap-1 text-cool-gray-300 hover:text-white hover:bg-cool-gray-800/40"
+                      >
+                        <span className="text-[12px] sm:text-sm shrink-0">🏭</span>
+                        <span className="hidden sm:inline shrink-0">Off-Site Storage</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setCurrentView('butcher_records')}
+                        className="px-2 sm:px-3 py-1 text-[11px] sm:text-xs font-bold transition-all rounded-md cursor-pointer flex items-center gap-1 text-cool-gray-300 hover:text-white hover:bg-cool-gray-800/40"
+                      >
+                        <span className="text-[12px] sm:text-sm shrink-0">🥩</span>
+                        <span className="hidden sm:inline shrink-0">Butcher Records</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setCurrentView('traceability')}
+                        className="px-2 sm:px-3 py-1 text-[11px] sm:text-xs font-bold transition-all rounded-md cursor-pointer flex items-center gap-1 bg-amber-500 text-slate-950 shadow-sm font-black"
+                      >
+                        <span className="text-[12px] sm:text-sm shrink-0">🛡️</span>
+                        <span className="hidden sm:inline shrink-0">Traceability</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Session Toolbar + Connection State */}
@@ -3376,7 +3671,10 @@ function AppContent() {
                     const isOnSiteContext = ['product', 'freezer', 'display_case'].includes(currentView);
                     const isOnSiteMode = ['product', 'freezer', 'display_case', 'voice'].includes(currentView);
                     const isOffSiteMode = currentView === 'offsite';
-                    const hasContextualInbound = isOnSiteContext || isOffSiteMode;
+                    const isButcherMode = currentView === 'butcher_records';
+                    const isOffSiteWorkspace = currentView === 'offsite' && offsiteSubTab === 'sheet';
+                    const isOffSiteOrButcherContext = currentView === 'offsite' || currentView === 'butcher_records' || currentView === 'traceability';
+                    const hasContextualInbound = isOnSiteContext || isOffSiteMode || isButcherMode;
 
                     return (
                       <div
@@ -3468,6 +3766,32 @@ function AppContent() {
                             </button>
                           )}
 
+                          {isButcherMode && (
+                            <button
+                              id="menu-butcher-new-order-btn"
+                              type="button"
+                              onClick={() => {
+                                setIsSyncMenuOpen(false);
+                                handleButcherSubTabChange('import');
+                              }}
+                              className={`min-h-[40px] px-2.5 py-1.5 rounded-lg border transition flex items-center justify-between gap-1.5 cursor-pointer font-bold select-none ${
+                                butcherSubTab === 'import'
+                                  ? 'border-rose-400/70 bg-rose-600/25 text-rose-100 shadow-sm'
+                                  : 'border-rose-500/40 bg-rose-950/35 hover:bg-rose-900/50 text-rose-300 hover:text-white'
+                              }`}
+                            >
+                              <span className="flex items-center gap-1.5 min-w-0">
+                                <PlusCircle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                                <span className="truncate">New Order</span>
+                              </span>
+                              {butcherSubTab === 'import' && (
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-3 h-3 text-rose-400 shrink-0">
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                                </svg>
+                              )}
+                            </button>
+                          )}
+
                           <button
                             type="button"
                             onClick={() => {
@@ -3492,6 +3816,81 @@ function AppContent() {
                               </svg>
                             )}
                           </button>
+
+                          {isOffSiteWorkspace && (
+                            <div className="col-span-2 space-y-1.5">
+                              <button
+                                id="menu-export-sheet-btn"
+                                type="button"
+                                aria-expanded={isOffsiteExportMenuOpen}
+                                onClick={() => setIsOffsiteExportMenuOpen((prev) => !prev)}
+                                className="w-full min-h-[40px] px-2.5 py-1.5 rounded-lg border border-cyan-500/40 bg-cyan-950/35 hover:bg-cyan-900/50 text-cyan-300 hover:text-white transition flex items-center justify-between gap-1.5 cursor-pointer font-bold select-none"
+                              >
+                                <span className="flex items-center gap-1.5 min-w-0">
+                                  <Download className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                                  <span className="truncate">Export Sheet</span>
+                                </span>
+                                <ChevronDown className={`w-3.5 h-3.5 text-cyan-400 shrink-0 transition-transform duration-150 ${isOffsiteExportMenuOpen ? 'rotate-180' : ''}`} />
+                              </button>
+
+                              {isOffsiteExportMenuOpen && (() => {
+                                const exportCounts = offsiteActionsRef.current?.getExportCounts?.() || { filteredCount: 0, totalCount: 0 };
+                                return (
+                                  <div id="menu-export-sheet-options" className="grid grid-cols-1 gap-1.5 pl-1.5 border-l-2 border-cyan-500/40 animate-fade-in">
+                                    <button
+                                      id="menu-export-filtered-btn"
+                                      type="button"
+                                      disabled={exportCounts.filteredCount === 0}
+                                      onClick={() => {
+                                        setIsOffsiteExportMenuOpen(false);
+                                        setIsSyncMenuOpen(false);
+                                        offsiteActionsRef.current?.handleExportFilteredCSV?.();
+                                      }}
+                                      className="w-full px-2.5 py-2 rounded-lg border border-cool-gray-750 bg-cool-gray-900/90 hover:bg-cyan-950/50 hover:border-cyan-500/40 text-left transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-between gap-2"
+                                    >
+                                      <div className="min-w-0">
+                                        <div className="font-bold text-cyan-300 flex items-center gap-1.5 text-[11px]">
+                                          <span>🎯</span>
+                                          <span>Export Active Filtered View</span>
+                                        </div>
+                                        <div className="text-[10px] text-cool-gray-400 truncate pl-4">
+                                          Matching active search, tag &amp; column filters
+                                        </div>
+                                      </div>
+                                      <span className="text-[10px] font-mono font-bold text-cyan-300 bg-cyan-950/60 border border-cyan-500/30 px-1.5 py-0.5 rounded shrink-0">
+                                        {exportCounts.filteredCount}
+                                      </span>
+                                    </button>
+
+                                    <button
+                                      id="menu-export-full-btn"
+                                      type="button"
+                                      disabled={exportCounts.totalCount === 0}
+                                      onClick={() => {
+                                        setIsOffsiteExportMenuOpen(false);
+                                        setIsSyncMenuOpen(false);
+                                        offsiteActionsRef.current?.handleExportFullCSV?.();
+                                      }}
+                                      className="w-full px-2.5 py-2 rounded-lg border border-cool-gray-750 bg-cool-gray-900/90 hover:bg-emerald-950/40 hover:border-emerald-500/40 text-left transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-between gap-2"
+                                    >
+                                      <div className="min-w-0">
+                                        <div className="font-bold text-emerald-300 flex items-center gap-1.5 text-[11px]">
+                                          <span>🌐</span>
+                                          <span>Export Entire Database</span>
+                                        </div>
+                                        <div className="text-[10px] text-cool-gray-400 truncate pl-4">
+                                          All active off-site entries (excl. archived)
+                                        </div>
+                                      </div>
+                                      <span className="text-[10px] font-mono font-bold text-emerald-300 bg-emerald-950/60 border border-emerald-500/30 px-1.5 py-0.5 rounded shrink-0">
+                                        {exportCounts.totalCount}
+                                      </span>
+                                    </button>
+                                  </div>
+                                );
+                              })()}
+                            </div>
+                          )}
                         </div>
 
                         <div className="border-t border-cool-gray-800" />
@@ -3565,7 +3964,7 @@ function AppContent() {
                               setCurrentView('history');
                               setIsSyncMenuOpen(false);
                             }}
-                            className={`min-h-[40px] px-2.5 py-1.5 rounded-lg border text-left transition flex items-center justify-between gap-1.5 cursor-pointer font-semibold ${
+                            className={`${isOffSiteOrButcherContext ? '' : 'col-span-2'} min-h-[40px] px-2.5 py-1.5 rounded-lg border text-left transition flex items-center justify-between gap-1.5 cursor-pointer font-semibold ${
                               currentView === 'history'
                                 ? 'bg-indigo-600/25 border-indigo-500/50 text-indigo-200'
                                 : 'bg-cool-gray-900/70 border-cool-gray-750 text-cool-gray-200 hover:bg-cool-gray-800 hover:text-white'
@@ -3577,25 +3976,27 @@ function AppContent() {
                             </span>
                           </button>
 
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setCurrentView('traceability');
-                              setIsSyncMenuOpen(false);
-                            }}
-                            className={`min-h-[40px] px-2.5 py-1.5 rounded-lg border text-left transition flex items-center justify-between gap-1.5 cursor-pointer font-semibold ${
-                              currentView === 'traceability'
-                                ? 'bg-amber-500/25 border-amber-500/50 text-amber-200'
-                                : 'bg-cool-gray-900/70 border-cool-gray-750 text-cool-gray-200 hover:bg-cool-gray-800 hover:text-white'
-                            }`}
-                          >
-                            <span className="flex items-center gap-1.5 min-w-0">
-                              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-3.5 h-3.5 text-amber-400 shrink-0">
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
-                              </svg>
-                              <span className="truncate">Traceability</span>
-                            </span>
-                          </button>
+                          {isOffSiteOrButcherContext && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setCurrentView('traceability');
+                                setIsSyncMenuOpen(false);
+                              }}
+                              className={`min-h-[40px] px-2.5 py-1.5 rounded-lg border text-left transition flex items-center justify-between gap-1.5 cursor-pointer font-semibold ${
+                                currentView === 'traceability'
+                                  ? 'bg-amber-500/25 border-amber-500/50 text-amber-200'
+                                  : 'bg-cool-gray-900/70 border-cool-gray-750 text-cool-gray-200 hover:bg-cool-gray-800 hover:text-white'
+                              }`}
+                            >
+                              <span className="flex items-center gap-1.5 min-w-0">
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-3.5 h-3.5 text-amber-400 shrink-0">
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
+                                </svg>
+                                <span className="truncate">Traceability</span>
+                              </span>
+                            </button>
+                          )}
                         </div>
 
                         <div className="border-t border-cool-gray-800" />
@@ -4341,6 +4742,13 @@ function AppContent() {
                 </div>
               </div>
             )}
+            {currentView === 'butcher_records' && butcherSubTab !== 'import' && (
+              <div
+                ref={setButcherFilterPortalEl}
+                id="butcher-header-filter-slot"
+                className={butcherSearchFilterOpen ? 'block' : 'hidden'}
+              />
+            )}
              { (currentView === 'library' || currentView === 'history' || currentView === 'reconcile') && <div className="w-full h-4"></div>}
           </div>
         </header>
@@ -4389,7 +4797,7 @@ function AppContent() {
             </div>
 
             {error ? (
-              <div className="w-full space-y-3 pt-1">
+              <div className="w-full space-y-2.5 pt-1">
                 <div className="p-3 rounded-xl bg-rose-950/40 border border-rose-800/60 text-xs text-rose-300">
                   {error}
                 </div>
@@ -4400,11 +4808,35 @@ function AppContent() {
                 >
                   <RefreshCw className="w-4 h-4" /> Retry Loading
                 </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDismissedFailsafeMode(false);
+                    setShowFailsafeScreen(true);
+                  }}
+                  className="w-full py-2.5 px-4 bg-amber-600/90 hover:bg-amber-500 text-white font-bold text-xs uppercase tracking-wider rounded-xl transition-all shadow-md cursor-pointer flex items-center justify-center gap-2"
+                >
+                  <ShieldAlert className="w-4 h-4" /> Open Failsafe Backup &amp; Recovery
+                </button>
               </div>
             ) : (
-              <div className="flex items-center gap-2 text-xs font-mono text-cyan-300 bg-cyan-950/60 border border-cyan-800/60 px-3.5 py-1.5 rounded-full shadow-inner">
-                <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
-                <span>Synchronizing with server...</span>
+              <div className="flex flex-col items-center gap-2.5">
+                <div className="flex items-center gap-2 text-xs font-mono text-cyan-300 bg-cyan-950/60 border border-cyan-800/60 px-3.5 py-1.5 rounded-full shadow-inner">
+                  <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
+                  <span>Synchronizing with server...</span>
+                </div>
+                {failsafeStatus && !failsafeStatus.dbHealthy && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDismissedFailsafeMode(false);
+                      setShowFailsafeScreen(true);
+                    }}
+                    className="py-2 px-3.5 bg-amber-600/90 hover:bg-amber-500 text-white font-bold text-xs uppercase tracking-wider rounded-xl transition-all shadow-md cursor-pointer flex items-center justify-center gap-1.5"
+                  >
+                    <ShieldAlert className="w-3.5 h-3.5" /> Open Failsafe Backup &amp; Recovery
+                  </button>
+                )}
               </div>
             )}
           </div>

@@ -13,7 +13,8 @@ export type LibraryTab =
   | 'notifications'
   | 'pwa'
   | 'voice_dictionary'
-  | 'offsite_settings';
+  | 'offsite_settings'
+  | 'butcher_settings';
 
 export type LibraryGroupId = 'catalog' | 'operations' | 'admin';
 
@@ -100,6 +101,14 @@ export const LIBRARY_SECTIONS: LibrarySectionMeta[] = [
     label: 'Off-Site Settings',
     shortLabel: 'Off-Site',
     description: 'Set default movement report shipper details and simulated box weights.',
+    adminOnly: false,
+  },
+  {
+    id: 'butcher_settings',
+    groupId: 'operations',
+    label: 'Butcher Settings',
+    shortLabel: 'Butcher',
+    description: 'Manage butcher species, order tags, yield baseline rules, and document link types.',
     adminOnly: false,
   },
   {

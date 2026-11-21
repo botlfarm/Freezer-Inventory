@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   buildTraceRecords,
   enrichTraceRecordWithHistory,
@@ -71,7 +73,7 @@ describe('Item Traceability Index & Lazy History Enrichment', () => {
     { id: 'cont-1', name: 'Bin A1', freezerId: 'fz-1', icon: 'box' }
   ];
 
-  it('resolves off-site active entries, on-site correlated cuts, and delivered/archived dispositions accurately', () => {
+  it('resolves off-site active entries, ends traceability upon on-site transfer, excludes standalone on-site cuts, and resolves delivered/archived dispositions', () => {
     const offSiteEntries: OffSiteEntry[] = [
       {
         id: 'ose-1',
@@ -204,8 +206,9 @@ describe('Item Traceability Index & Lazy History Enrichment', () => {
       history
     });
 
-    expect(index.records).toHaveLength(4);
-    expect(index.uniqueLots).toEqual(['LOT-A', 'LOT-B', 'LOT-C']);
+    // Standalone on-site cut (SN-DIRECT-9) is excluded because traceability ends at on-site transfer
+    expect(index.records).toHaveLength(3);
+    expect(index.uniqueLots).toEqual(['LOT-A', 'LOT-B']);
 
     // 1. Active Off-Site Record (resolved via productNumbers prefix '101' and case-insensitive orderNumber)
     const rec1 = index.recordsByKey.get('SN-1001')!;
@@ -220,17 +223,18 @@ describe('Item Traceability Index & Lazy History Enrichment', () => {
     const enriched1 = enrichTraceRecordWithHistory(rec1, history);
     expect(enriched1.offSiteIntakeDate).toBe('2026-03-26T09:15:00Z');
 
-    // 2. Correlated On-Site Record (matched via productId + case-insensitive serial & movement order via originalEntries)
+    // 2. Moved On-Site Record -> Traceability ends at on-site transfer (no freezer/bin or cohort log tracing)
     const rec2 = index.recordsByKey.get('SN-1002')!;
     expect(rec2).toBeDefined();
     expect(rec2.currentLocationType).toBe('onsite');
-    expect(rec2.currentLocationName).toBe('Walk-In Freezer • Bin A1');
+    expect(rec2.currentLocationName).toBe('Moved to Home Staging (End of Trace)');
+    expect(rec2.onSiteContainer).toBeUndefined();
+    expect(rec2.onSiteFreezer).toBeUndefined();
     expect(rec2.movementOrders).toHaveLength(1);
     expect(rec2.onSiteArrivalDate).toBe('2026-04-02T14:30:00Z');
 
     const enriched2 = enrichTraceRecordWithHistory(rec2, history);
-    expect(enriched2.onSiteCohortLogs).toHaveLength(1);
-    expect(enriched2.onSiteCohortLogs[0].id).toBe('h-cohort-1');
+    expect(enriched2.onSiteCohortLogs).toHaveLength(0);
 
     // 3. Delivered & Removed Record (matched via pre-filtered removal log)
     const rec3 = index.recordsByKey.get('SN-1003')!;
@@ -239,11 +243,28 @@ describe('Item Traceability Index & Lazy History Enrichment', () => {
     expect(rec3.removalDestination).toBe('CLiCK Commercial Kitchen');
     expect(rec3.currentLocationName).toContain('Delivered to CLiCK Commercial Kitchen');
 
-    // 4. Direct On-Site Cut without off-site entry
-    const rec4 = index.recordsByKey.get('SN-DIRECT-9')!;
-    expect(rec4).toBeDefined();
-    expect(rec4.currentLocationType).toBe('onsite');
-    expect(rec4.currentLocationName).toBe('Walk-In Freezer • Bin A1');
+    // 4. Direct On-Site Cut without off-site entry is NOT indexed
+    expect(index.recordsByKey.get('SN-DIRECT-9')).toBeUndefined();
+  });
+
+  it('exposes traceability exclusively via the off-site/butcher status menu without dedicated header tabs in OffSiteStorageView or ButcherRecordsView', () => {
+    const appSource = fs.readFileSync(path.resolve(__dirname, '../App.tsx'), 'utf-8');
+    const offsiteSource = fs.readFileSync(path.resolve(__dirname, '../views/OffSiteStorageView.tsx'), 'utf-8');
+    const butcherSource = fs.readFileSync(path.resolve(__dirname, '../views/ButcherRecordsView.tsx'), 'utf-8');
+
+    // Dropdown menu gates Traceability behind offsite/butcher/traceability context
+    expect(appSource).toContain("const isOffSiteOrButcherContext = currentView === 'offsite' || currentView === 'butcher_records' || currentView === 'traceability';");
+    expect(appSource).toContain('{isOffSiteOrButcherContext && (');
+
+    // Off-Site header subtabs and OffSiteStorageView do NOT render Traceability as a dedicated sub-tab
+    expect(appSource).not.toContain("{ id: 'traceability', label: 'Traceability'");
+    expect(offsiteSource).not.toContain("activeSubTab === 'traceability'");
+    expect(offsiteSource).not.toContain('<TraceabilityView');
+
+    // Butcher Records tab bar does NOT render Traceability as a dedicated header tab
+    expect(butcherSource).not.toContain('id="butcher-tab-traceability"');
+    expect(butcherSource).not.toContain("activeTab === 'traceability'");
+    expect(butcherSource).not.toContain('<TraceabilityView');
   });
 
   it('formats dates and extracts embedded pallet dates reliably', () => {

@@ -2607,7 +2607,804 @@ describe('On-Site Local Voice Command Parser & Fuzzy Matcher', () => {
     expect(overAfterOverride.clauses[0].isValid).toBe(true);
     expect(overAfterOverride.clauses[0].restockAllocations?.reduce((s, a) => s + a.moveQty, 0)).toBe(20);
   });
+
+  it('supports 1-to-many Voice Dictionary Product Pack (bundle) expansion across voice commands without false positives', () => {
+    // Seed Pork, Goat, Lamb, and Chicken Broth products + display loose & backstock inventory
+    state.products.push(
+      { id: 'p-pork-broth', name: 'Pork Broth', primaryCategory: 'Pork', subCategory: 'Broth' },
+      { id: 'p-goat-broth', name: 'Goat Broth', primaryCategory: 'Goat', subCategory: 'Broth' },
+      { id: 'p-lamb-broth', name: 'Lamb Broth', primaryCategory: 'Lamb', subCategory: 'Broth' }
+    );
+    state.meatCuts.push(
+      { id: 'mc-disp-pork-broth', productId: 'p-pork-broth', quantity: 5, containerId: 'f-display_loose' },
+      { id: 'mc-disp-goat-broth', productId: 'p-goat-broth', quantity: 2, containerId: 'f-display_loose' },
+      { id: 'mc-disp-lamb-broth', productId: 'p-lamb-broth', quantity: 1, containerId: 'f-display_loose' },
+      // Backstock in Orange Canada for restock / move tests
+      { id: 'mc-can-pork-broth', productId: 'p-pork-broth', quantity: 5, containerId: 'c-orange-canada' },
+      { id: 'mc-can-goat-broth', productId: 'p-goat-broth', quantity: 5, containerId: 'c-orange-canada' },
+      { id: 'mc-can-lamb-broth', productId: 'p-lamb-broth', quantity: 5, containerId: 'c-orange-canada' },
+      { id: 'mc-can-chicken-broth', productId: 'p-chicken-broth', quantity: 5, containerId: 'c-orange-canada' }
+    );
+    state.customLists = [
+      {
+        id: 'list-restock',
+        name: 'Restock List',
+        description: '',
+        allowNotes: true,
+        isInventoryControlled: true,
+        items: [],
+      },
+    ];
+    state.voiceDictionary = [
+      {
+        id: 'vd-broth-mix-pack',
+        spokenPhrase: 'broth mix pack',
+        targetType: 'bundle',
+        bundleItems: [
+          { productId: 'p-pork-broth', quantity: 1 },
+          { productId: 'p-goat-broth', quantity: 1 },
+          { productId: 'p-lamb-broth', quantity: 1 },
+          { productId: 'p-chicken-broth', quantity: 1 },
+        ],
+        createdAt: new Date().toISOString(),
+      },
+      {
+        id: 'vd-special-soup-pack',
+        spokenPhrase: 'special soup pack',
+        targetType: 'bundle',
+        bundleItems: [
+          { productId: 'p-pork-broth', quantity: 2 },
+          { productId: 'p-chicken-broth', quantity: 1 },
+        ],
+        createdAt: new Date().toISOString(),
+      },
+    ];
+
+    // 1. Primary requested scenario: "remove 1 broth mix pack from display loose"
+    const removeOnePack = parseVoiceTranscript('remove 1 broth mix pack from display loose', state);
+    expect(removeOnePack.clauses).toHaveLength(4);
+    expect(removeOnePack.clauses.every(c => c.intent === 'remove' && c.isValid)).toBe(true);
+    expect(removeOnePack.clauses.every(c => c.bundlePhrase === 'broth mix pack')).toBe(true);
+    expect(
+      removeOnePack.clauses.map(c => ({
+        prod: c.selectedProductId,
+        qty: c.quantity,
+        cont: c.selectedSourceContainerId,
+      }))
+    ).toEqual([
+      { prod: 'p-pork-broth', qty: 1, cont: 'f-display_loose' },
+      { prod: 'p-goat-broth', qty: 1, cont: 'f-display_loose' },
+      { prod: 'p-lamb-broth', qty: 1, cont: 'f-display_loose' },
+      { prod: 'p-chicken-broth', qty: 1, cont: 'f-display_loose' },
+    ]);
+    expect(buildVoiceDispatchActions(removeOnePack.clauses, state)).toEqual([
+      {
+        type: 'BATCH_UPDATE_MEAT_QUANTITY',
+        payload: {
+          updates: {
+            'mc-disp-pork-broth': 4,
+            'mc-disp-goat-broth': 1,
+            'mc-disp-lamb-broth': 0,
+            'mc-disp-broth': 3,
+          },
+        },
+      },
+    ]);
+
+    // 2. Plural + pack quantity multiplier + per-item multiplier (2 packs * [2x pork, 1x chicken] = 4 pork, 2 chicken)
+    const removeTwoSpecial = parseVoiceTranscript(
+      'remove 2 special soup packs from display loose',
+      state
+    );
+    expect(removeTwoSpecial.clauses).toHaveLength(2);
+    expect(removeTwoSpecial.clauses.every(c => c.isValid)).toBe(true);
+    expect(removeTwoSpecial.clauses.map(c => ({ prod: c.selectedProductId, qty: c.quantity }))).toEqual([
+      { prod: 'p-pork-broth', qty: 4 },
+      { prod: 'p-chicken-broth', qty: 2 },
+    ]);
+    expect(buildVoiceDispatchActions(removeTwoSpecial.clauses, state)).toEqual([
+      {
+        type: 'BATCH_UPDATE_MEAT_QUANTITY',
+        payload: {
+          updates: {
+            'mc-disp-pork-broth': 1,
+            'mc-disp-broth': 2,
+          },
+        },
+      },
+    ]);
+
+    // 3. Partial stock failure isolates only the understocked constituent item (Lamb Broth has 1, requested 2)
+    const removeTwoMix = parseVoiceTranscript('remove 2 broth mix packs from display loose', state);
+    expect(removeTwoMix.clauses).toHaveLength(4);
+    const lambClause = removeTwoMix.clauses.find(c => c.selectedProductId === 'p-lamb-broth')!;
+    expect(lambClause.isValid).toBe(false);
+    expect(lambClause.errorMessage).toContain('Insufficient stock (available: 1)');
+    expect(
+      removeTwoMix.clauses.filter(c => c.selectedProductId !== 'p-lamb-broth').every(c => c.isValid)
+    ).toBe(true);
+
+    // 4. Add pack -> adds each item to destination container
+    const addPack = parseVoiceTranscript('add 1 broth mix pack to display loose', state);
+    expect(addPack.clauses).toHaveLength(4);
+    expect(addPack.clauses.every(c => c.intent === 'add' && c.isValid)).toBe(true);
+    expect(buildVoiceDispatchActions(addPack.clauses, state)).toEqual([
+      { type: 'ADD_MEAT_CUT', payload: { productId: 'p-pork-broth', quantity: 1, containerId: 'f-display_loose' } },
+      { type: 'ADD_MEAT_CUT', payload: { productId: 'p-goat-broth', quantity: 1, containerId: 'f-display_loose' } },
+      { type: 'ADD_MEAT_CUT', payload: { productId: 'p-lamb-broth', quantity: 1, containerId: 'f-display_loose' } },
+      { type: 'ADD_MEAT_CUT', payload: { productId: 'p-chicken-broth', quantity: 1, containerId: 'f-display_loose' } },
+    ]);
+
+    // 5. Move pack -> moves each item from source to dest
+    const movePack = parseVoiceTranscript(
+      'move 1 broth mix pack from orange in canada to display loose',
+      state
+    );
+    expect(movePack.clauses).toHaveLength(4);
+    expect(movePack.clauses.every(c => c.intent === 'move' && c.isValid)).toBe(true);
+    expect(buildVoiceDispatchActions(movePack.clauses, state)).toHaveLength(4);
+
+    // 6. Add container with pack -> 4 add clauses sharing newContainerGroupKey -> 1 ADD_CONTAINER + 4 ADD_MEAT_CUTs
+    const newContPack = parseVoiceTranscript(
+      'add container Sample Cooler in Canada with 1 broth mix pack',
+      state
+    );
+    expect(newContPack.clauses).toHaveLength(4);
+    expect(newContPack.clauses.every(c => c.intent === 'add' && Boolean(c.newContainerGroupKey) && c.isValid)).toBe(true);
+    const newContActions = buildVoiceDispatchActions(newContPack.clauses, state);
+    expect(newContActions.filter(a => a.type === 'ADD_CONTAINER')).toHaveLength(1);
+    expect(newContActions.filter(a => a.type === 'ADD_MEAT_CUT')).toHaveLength(4);
+
+    // 7. Restock display with pack -> expands to restock_display allocations from backstock
+    const restockPack = parseVoiceTranscript('restock display with 1 broth mix pack', state);
+    expect(restockPack.clauses).toHaveLength(4);
+    expect(restockPack.clauses.every(c => c.intent === 'restock_display' && c.isValid)).toBe(true);
+    expect(buildVoiceDispatchActions(restockPack.clauses, state)).toHaveLength(4);
+
+    // 8. Custom list management with pack -> adds all 4 products to list
+    const listPack = parseVoiceTranscript('add broth mix pack to restock list', state);
+    expect(listPack.clauses).toHaveLength(4);
+    expect(listPack.clauses.every(c => c.intent === 'manage_list' && c.isValid)).toBe(true);
+    expect(buildVoiceDispatchActions(listPack.clauses, state)).toEqual([
+      {
+        type: 'BATCH_TOGGLE_PRODUCTS_ON_LIST',
+        payload: {
+          updates: [
+            { listId: 'list-restock', productId: 'p-pork-broth', forceState: true, threshold: undefined },
+            { listId: 'list-restock', productId: 'p-goat-broth', forceState: true, threshold: undefined },
+            { listId: 'list-restock', productId: 'p-lamb-broth', forceState: true, threshold: undefined },
+            { listId: 'list-restock', productId: 'p-chicken-broth', forceState: true, threshold: undefined },
+          ],
+        },
+      },
+    ]);
+
+    // 9. Stock query for pack -> single query card showing all 4 constituent items scoped to location
+    const queryPack = parseVoiceTranscript('how many broth mix packs are in display loose?', state);
+    expect(queryPack.hasQueries).toBe(true);
+    expect(queryPack.clauses).toHaveLength(1);
+    expect(queryPack.clauses[0].intent).toBe('query');
+    expect(queryPack.clauses[0].bundlePhrase).toBe('broth mix pack');
+    expect(queryPack.clauses[0].queryResults?.map(r => ({ id: r.product.id, qty: r.totalQuantity }))).toEqual([
+      { id: 'p-pork-broth', qty: 5 },
+      { id: 'p-goat-broth', qty: 2 },
+      { id: 'p-lamb-broth', qty: 1 },
+      { id: 'p-chicken-broth', qty: 4 },
+    ]);
+
+    // 10. Wipe out / empty pack from display loose -> sets all 4 items in f-display_loose to 0
+    const wipePack = parseVoiceTranscript('wipe out broth mix pack from display loose', state);
+    expect(wipePack.clauses).toHaveLength(4);
+    expect(wipePack.clauses.every(c => c.intent === 'remove' && c.isAllQuantity && c.isValid)).toBe(true);
+    expect(buildVoiceDispatchActions(wipePack.clauses, state)).toEqual([
+      {
+        type: 'BATCH_UPDATE_MEAT_QUANTITY',
+        payload: {
+          updates: {
+            'mc-disp-pork-broth': 0,
+            'mc-disp-goat-broth': 0,
+            'mc-disp-lamb-broth': 0,
+            'mc-disp-broth': 0,
+          },
+        },
+      },
+    ]);
+
+    // 11. Chained pack + regular item in same command
+    const chainedPack = parseVoiceTranscript(
+      'remove 1 broth mix pack and 2 brats from display loose',
+      state
+    );
+    expect(chainedPack.clauses).toHaveLength(5);
+    expect(chainedPack.clauses.every(c => c.intent === 'remove' && c.isValid)).toBe(true);
+
+    // 12. Archived constituent item produces explicit pack error message
+    state.voiceDictionary.push({
+      id: 'vd-archived-pack',
+      spokenPhrase: 'legacy pack',
+      targetType: 'bundle',
+      bundleItems: [
+        { productId: 'p-chicken-broth', quantity: 1 },
+        { productId: 'p-archived', quantity: 1 },
+      ],
+    });
+    const archivedPack = parseVoiceTranscript('remove 1 legacy pack from display loose', state);
+    expect(archivedPack.clauses).toHaveLength(2);
+    const archivedItemClause = archivedPack.clauses.find(c => !c.isValid)!;
+    expect(archivedItemClause.errorMessage).toContain('legacy pack');
+    expect(archivedItemClause.errorMessage).toContain('archived');
+
+    // 13. Non-collision guard: individual "chicken broth" or generic "broth" must NOT trigger "broth mix pack"
+    const singleChickenBroth = parseVoiceTranscript('remove 1 chicken broth from display loose', state);
+    expect(singleChickenBroth.clauses).toHaveLength(1);
+    expect(singleChickenBroth.clauses[0].selectedProductId).toBe('p-chicken-broth');
+    expect(singleChickenBroth.clauses[0].bundlePhrase).toBeUndefined();
+
+    const genericBroth = parseVoiceTranscript('remove 1 broth from display loose', state);
+    expect(genericBroth.clauses).toHaveLength(1);
+    expect(genericBroth.clauses[0].bundlePhrase).toBeUndefined();
+    expect(genericBroth.clauses[0].requiresProductSelection).toBe(true);
+  });
+
+  it('does not require package stack selection simultaneously while source container selection is pending', () => {
+    state.products.push({
+      id: 'p-liverwurst',
+      name: 'Liverwurst',
+      primaryCategory: 'Pork',
+      subCategory: 'Offal',
+    });
+    state.containers.push(
+      { id: 'c-box-best', name: 'Box best', freezerId: 'f-canada', icon: 'Box' },
+      { id: 'c-flowers', name: 'white w/ Yellow Flowers', freezerId: 'f-chest', icon: 'Box' }
+    );
+    state.meatCuts.push(
+      { id: 'mc-liver-box', productId: 'p-liverwurst', quantity: 60, containerId: 'c-box-best' },
+      { id: 'mc-liver-disp', productId: 'p-liverwurst', quantity: 9, containerId: 'f-display_loose' },
+      { id: 'mc-liver-flowers', productId: 'p-liverwurst', quantity: 7, containerId: 'c-flowers' },
+      {
+        id: 'mc-liver-flowers-promo',
+        productId: 'p-liverwurst',
+        quantity: 2,
+        containerId: 'c-flowers',
+        notes: 'Promo pack',
+      }
+    );
+
+    // 1. Ambiguous source container across 3 locations -> only source container selection is required
+    const pendingContainer = parseVoiceTranscript('remove 1 liver', state);
+    expect(pendingContainer.clauses).toHaveLength(1);
+    const clause = pendingContainer.clauses[0];
+    expect(clause.selectedProductId).toBe('p-liverwurst');
+    expect(clause.sourceLocationCandidates).toHaveLength(3);
+    expect(clause.requiresSourceLocationSelection).toBe(true);
+    expect(clause.requiresCutSelection).toBe(false);
+    expect(clause.isValid).toBe(false);
+
+    // 2. Selecting a container with 1 stack resolves immediately without stack prompt
+    const pickedSingleStack = parseVoiceTranscript('remove 1 liver', state, {
+      [clause.id]: { sourceContainerId: 'c-box-best' },
+    });
+    expect(pickedSingleStack.clauses[0].requiresSourceLocationSelection).toBe(false);
+    expect(pickedSingleStack.clauses[0].requiresCutSelection).toBe(false);
+    expect(pickedSingleStack.clauses[0].selectedMeatCutId).toBe('mc-liver-box');
+    expect(pickedSingleStack.clauses[0].isValid).toBe(true);
+
+    // 3. Selecting a container with 2+ stacks then prompts ONLY for package stacks in that container
+    const pickedMultiStack = parseVoiceTranscript('remove 1 liver', state, {
+      [clause.id]: { sourceContainerId: 'c-flowers' },
+    });
+    expect(pickedMultiStack.clauses[0].requiresSourceLocationSelection).toBe(false);
+    expect(pickedMultiStack.clauses[0].requiresCutSelection).toBe(true);
+    expect(pickedMultiStack.clauses[0].cutCandidates.map(c => c.meatCut.id).sort()).toEqual([
+      'mc-liver-flowers',
+      'mc-liver-flowers-promo',
+    ]);
+    expect(pickedMultiStack.clauses[0].isValid).toBe(false);
+
+    // 4. Ambiguous container in manage_tag / correct_label also avoids simultaneous container + stack prompts
+    const tagAmbiguousLoc = parseVoiceTranscript('tag hotdogs in orange as vacuum sealed', state);
+    expect(tagAmbiguousLoc.clauses[0].requiresSourceLocationSelection).toBe(true);
+    expect(tagAmbiguousLoc.clauses[0].requiresCutSelection).toBe(false);
+    expect(tagAmbiguousLoc.clauses[0].isValid).toBe(false);
+
+    const labelAmbiguousLoc = parseVoiceTranscript('mark hotdogs in orange as wrong label', state);
+    expect(labelAmbiguousLoc.clauses[0].requiresSourceLocationSelection).toBe(true);
+    expect(labelAmbiguousLoc.clauses[0].requiresCutSelection).toBe(false);
+    expect(labelAmbiguousLoc.clauses[0].isValid).toBe(false);
+  });
+
+  it('expands natural container language (box, bag, bin, tote, crate, cooler, etc.) across creation, lifecycle, and queries', () => {
+    state.freezers.push({ id: 'f-freezer-1', name: 'Freezer 1' });
+
+    // 1. User's primary examples
+    // 1a. With unambiguous product ("brats mild")
+    const newBoxFreezer1 = parseVoiceTranscript(
+      'create new box yellow in freezer 1 with 4 brats mild',
+      state
+    );
+    expect(newBoxFreezer1.clauses).toHaveLength(1);
+    expect(newBoxFreezer1.clauses[0].intent).toBe('add');
+    expect(newBoxFreezer1.clauses[0].newContainerGroupKey).toBeTruthy();
+    expect(newBoxFreezer1.clauses[0].resolvedNewContainerName).toBe('Box Yellow');
+    expect(newBoxFreezer1.clauses[0].selectedFreezerId).toBe('f-freezer-1');
+    expect(newBoxFreezer1.clauses[0].quantity).toBe(4);
+    expect(newBoxFreezer1.clauses[0].selectedProductId).toBe('p-brats-mild');
+    expect(newBoxFreezer1.clauses[0].isValid).toBe(true);
+    const boxActions = buildVoiceDispatchActions(newBoxFreezer1.clauses, state);
+    expect(boxActions[0].type).toBe('ADD_CONTAINER');
+    if (boxActions[0].type === 'ADD_CONTAINER') {
+      expect(boxActions[0].payload.name).toBe('Box Yellow');
+      expect(boxActions[0].payload.freezerId).toBe('f-freezer-1');
+      expect(boxActions[0].payload.icon).toBe('box');
+    }
+
+    // 1b. Exact wording "create new box yellow in freezer 1 with 4 brats" resolves box & freezer immediately and disambiguates Bratwurst variants if multiple exist
+    const exactBratsPrompt = parseVoiceTranscript(
+      'create new box yellow in freezer 1 with 4 brats',
+      state
+    );
+    expect(exactBratsPrompt.clauses[0].intent).toBe('add');
+    expect(exactBratsPrompt.clauses[0].resolvedNewContainerName).toBe('Box Yellow');
+    expect(exactBratsPrompt.clauses[0].selectedFreezerId).toBe('f-freezer-1');
+    expect(exactBratsPrompt.clauses[0].quantity).toBe(4);
+    expect(exactBratsPrompt.clauses[0].requiresProductSelection).toBe(true);
+    const singleBratState: InventoryState = {
+      ...state,
+      products: state.products.filter(p => p.id !== 'p-brats-hot'),
+    };
+    const exactBratsSingleCatalog = parseVoiceTranscript(
+      'create new box yellow in freezer 1 with 4 brats',
+      singleBratState
+    );
+    expect(exactBratsSingleCatalog.clauses[0].resolvedNewContainerName).toBe('Box Yellow');
+    expect(exactBratsSingleCatalog.clauses[0].selectedFreezerId).toBe('f-freezer-1');
+    expect(exactBratsSingleCatalog.clauses[0].selectedProductId).toBe('p-brats-mild');
+    expect(exactBratsSingleCatalog.clauses[0].isValid).toBe(true);
+
+    const newBagStaging = parseVoiceTranscript('make new bag green with 6 hotdogs', state);
+    expect(newBagStaging.clauses).toHaveLength(1);
+    expect(newBagStaging.clauses[0].intent).toBe('add');
+    expect(newBagStaging.clauses[0].newContainerGroupKey).toBeTruthy();
+    expect(newBagStaging.clauses[0].resolvedNewContainerName).toBe('Bag Green');
+    expect(newBagStaging.clauses[0].selectedFreezerId).toBe('__staging__');
+    expect(newBagStaging.clauses[0].quantity).toBe(6);
+    expect(newBagStaging.clauses[0].selectedProductId).toBe('p-hotdogs');
+    expect(newBagStaging.clauses[0].isValid).toBe(true);
+    const bagActions = buildVoiceDispatchActions(newBagStaging.clauses, state);
+    expect(bagActions[0].type).toBe('ADD_CONTAINER');
+    if (bagActions[0].type === 'ADD_CONTAINER') {
+      expect(bagActions[0].payload.name).toBe('Bag Green');
+      expect(bagActions[0].payload.freezerId).toBeUndefined();
+      expect(bagActions[0].payload.icon).toBe('pillowcase');
+    }
+
+    // 2. Without "new", modifier-before-noun, items-first, and named/called forms
+    const withoutNew = parseVoiceTranscript('create box orange in chest freezer with 2 ribeye', state);
+    expect(withoutNew.clauses[0].intent).toBe('add');
+    expect(withoutNew.clauses[0].newContainerGroupKey).toBeTruthy();
+    expect(withoutNew.clauses[0].resolvedNewContainerName).toBe('Box Orange');
+    expect(withoutNew.clauses[0].selectedFreezerId).toBe('f-chest');
+    expect(withoutNew.clauses[0].isValid).toBe(true);
+
+    const modBeforeNoun = parseVoiceTranscript('make a new green bag with 6 hotdogs', state);
+    expect(modBeforeNoun.clauses[0].intent).toBe('add');
+    expect(modBeforeNoun.clauses[0].newContainerGroupKey).toBeTruthy();
+    expect(modBeforeNoun.clauses[0].resolvedNewContainerName).toBe('Green Bag');
+    expect(modBeforeNoun.clauses[0].newContainerIcon).toBe('pillowcase');
+    expect(modBeforeNoun.clauses[0].isValid).toBe(true);
+
+    const modWithoutNew = parseVoiceTranscript('create a yellow box in freezer 1 with 4 hotdogs', state);
+    expect(modWithoutNew.clauses[0].intent).toBe('add');
+    expect(modWithoutNew.clauses[0].newContainerGroupKey).toBeTruthy();
+    expect(modWithoutNew.clauses[0].resolvedNewContainerName).toBe('Yellow Box');
+    expect(modWithoutNew.clauses[0].selectedFreezerId).toBe('f-freezer-1');
+    expect(modWithoutNew.clauses[0].isValid).toBe(true);
+
+    const itemsFirst = parseVoiceTranscript(
+      'inbound 3 ribeye into new box yellow in chest freezer',
+      state
+    );
+    expect(itemsFirst.clauses[0].intent).toBe('add');
+    expect(itemsFirst.clauses[0].newContainerGroupKey).toBeTruthy();
+    expect(itemsFirst.clauses[0].resolvedNewContainerName).toBe('Box Yellow');
+    expect(itemsFirst.clauses[0].selectedFreezerId).toBe('f-chest');
+    expect(itemsFirst.clauses[0].quantity).toBe(3);
+    expect(itemsFirst.clauses[0].isValid).toBe(true);
+
+    const namedBox = parseVoiceTranscript(
+      'create new box called holiday in freezer 1 with 4 hotdogs',
+      state
+    );
+    expect(namedBox.clauses[0].intent).toBe('add');
+    expect(namedBox.clauses[0].newContainerGroupKey).toBeTruthy();
+    expect(namedBox.clauses[0].resolvedNewContainerName).toBe('Holiday');
+    expect(namedBox.clauses[0].selectedFreezerId).toBe('f-freezer-1');
+    expect(namedBox.clauses[0].isValid).toBe(true);
+
+    // 3. Expanded nouns & inferred icons
+    const expandedCases: Array<{ phrase: string; expectedName: string; expectedIcon: string }> = [
+      { phrase: 'create new bin alpha with 2 hotdogs', expectedName: 'Bin Alpha', expectedIcon: 'bin' },
+      { phrase: 'make new tote blue with 2 hotdogs', expectedName: 'Tote Blue', expectedIcon: 'bin' },
+      { phrase: 'build new cooler camp with 2 hotdogs', expectedName: 'Cooler Camp', expectedIcon: 'bin' },
+      { phrase: 'open new crate oak with 2 hotdogs', expectedName: 'Crate Oak', expectedIcon: 'box' },
+      { phrase: 'start new tray prep with 2 hotdogs', expectedName: 'Tray Prep', expectedIcon: 'tray' },
+      { phrase: 'set up new pouch silver with 2 hotdogs', expectedName: 'Pouch Silver', expectedIcon: 'pouch' },
+      { phrase: 'create new rack top with 2 hotdogs', expectedName: 'Rack Top', expectedIcon: 'grid' },
+      { phrase: 'make new bag with 6 hotdogs', expectedName: 'Bag', expectedIcon: 'pillowcase' },
+    ];
+    for (const tc of expandedCases) {
+      const parsed = parseVoiceTranscript(tc.phrase, state);
+      expect(parsed.clauses[0].intent).toBe('add');
+      expect(parsed.clauses[0].newContainerGroupKey).toBeTruthy();
+      expect(parsed.clauses[0].resolvedNewContainerName).toBe(tc.expectedName);
+      expect(parsed.clauses[0].newContainerIcon).toBe(tc.expectedIcon);
+      expect(parsed.clauses[0].isValid).toBe(true);
+    }
+
+    // 4. Template matching preserves container type nouns ("box yellow" matches "Yellow Box" candidate only, NOT "Yellow Bag")
+    state.containerTemplates = [
+      { id: 'tpl-ybag', name: 'Yellow Bag', icon: 'pillowcase' },
+      { id: 'tpl-ybox', name: 'Yellow Box', icon: 'box' },
+    ];
+    const boxExactTemplateMatch = parseVoiceTranscript(
+      'create a yellow box in freezer 1 with 4 hotdogs',
+      state
+    );
+    expect(boxExactTemplateMatch.clauses[0].selectedTemplateId).toBe('tpl-ybox');
+    expect(boxExactTemplateMatch.clauses[0].resolvedNewContainerName).toBe('Yellow Box');
+
+    const boxReorderedTemplateMatch = parseVoiceTranscript(
+      'create new box yellow in freezer 1 with 4 hotdogs',
+      state
+    );
+    const yboxCand = boxReorderedTemplateMatch.clauses[0].templateCandidates?.find(
+      c => c.templateId === 'tpl-ybox'
+    );
+    const ybagCand = boxReorderedTemplateMatch.clauses[0].templateCandidates?.find(
+      c => c.templateId === 'tpl-ybag'
+    );
+    expect((yboxCand?.score ?? 0) >= 65).toBe(true);
+    expect((ybagCand?.score ?? 0) < 65).toBe(true);
+    state.containerTemplates = [];
+
+    // 5. Multi-line colon header & "and"-chaining
+    const multilineBox = parseVoiceTranscript(
+      'Create new box yellow in freezer 1:\n- 4 brats mild\n- 6 hotdogs',
+      state
+    );
+    expect(multilineBox.clauses).toHaveLength(2);
+    expect(multilineBox.clauses.every(c => c.intent === 'add' && Boolean(c.newContainerGroupKey) && c.isValid)).toBe(true);
+    expect(multilineBox.clauses[0].resolvedNewContainerName).toBe('Box Yellow');
+
+    const chainedCreate = parseVoiceTranscript(
+      'remove 2 brats from display and make new bag green with 6 hotdogs',
+      state
+    );
+    expect(chainedCreate.clauses).toHaveLength(2);
+    expect(chainedCreate.clauses[0].intent).toBe('remove');
+    expect(chainedCreate.clauses[1].intent).toBe('add');
+    expect(chainedCreate.clauses[1].newContainerGroupKey).toBeTruthy();
+    expect(chainedCreate.clauses[1].resolvedNewContainerName).toBe('Bag Green');
+    expect(chainedCreate.clauses[1].isValid).toBe(true);
+
+    // 6. Negative guards: food packaging phrases or target quantities must NOT trigger add_container
+    const addBagOf = parseVoiceTranscript('add bag of hotdogs to display', state);
+    expect(addBagOf.clauses[0].intent).toBe('add');
+    expect(addBagOf.clauses[0].newContainerGroupKey).toBeUndefined();
+
+    const addPanSausage = parseVoiceTranscript('add pan ground pork to display', state);
+    expect(addPanSausage.clauses[0].intent).toBe('add');
+    expect(addPanSausage.clauses[0].newContainerGroupKey).toBeUndefined();
+
+    const makeTargetQty = parseVoiceTranscript('make brats in display to 2', state);
+    expect(makeTargetQty.clauses[0].intent).toBe('set_quantity');
+    expect(makeTargetQty.clauses[0].quantity).toBe(2);
+
+    // 7. Expanded nouns in lifecycle & query commands
+    state.containers.push(
+      { id: 'c-box-yellow', name: 'Box Yellow', freezerId: 'f-freezer-1', icon: 'box' },
+      { id: 'c-bag-green', name: 'Bag Green', freezerId: undefined, icon: 'pillowcase' },
+      { id: 'c-empty-box', name: 'Box Empty', freezerId: 'f-freezer-1', icon: 'box' }
+    );
+    state.meatCuts.push(
+      { id: 'mc-box-yellow-brats', productId: 'p-brats-mild', quantity: 4, containerId: 'c-box-yellow' },
+      { id: 'mc-bag-green-dogs', productId: 'p-hotdogs', quantity: 6, containerId: 'c-bag-green' }
+    );
+
+    const moveBox = parseVoiceTranscript('move box yellow to chest freezer', state);
+    expect(moveBox.clauses[0].intent).toBe('move_container');
+    expect(moveBox.clauses[0].selectedSourceContainerId).toBe('c-box-yellow');
+    expect(moveBox.clauses[0].selectedFreezerId).toBe('f-chest');
+    expect(moveBox.clauses[0].isValid).toBe(true);
+
+    const putBag = parseVoiceTranscript('put bag green in freezer 1', state);
+    expect(putBag.clauses[0].intent).toBe('move_container');
+    expect(putBag.clauses[0].selectedSourceContainerId).toBe('c-bag-green');
+    expect(putBag.clauses[0].selectedFreezerId).toBe('f-freezer-1');
+    expect(putBag.clauses[0].isValid).toBe(true);
+
+    const swapBoxes = parseVoiceTranscript('swap box yellow and bag green', state);
+    expect(swapBoxes.clauses[0].intent).toBe('swap_containers');
+    expect(swapBoxes.clauses[0].isValid).toBe(true);
+
+    const renameBox = parseVoiceTranscript('rename box yellow to cooler gold', state);
+    expect(renameBox.clauses[0].intent).toBe('rename_container');
+    expect(renameBox.clauses[0].selectedSourceContainerId).toBe('c-box-yellow');
+    expect(renameBox.clauses[0].newContainerNameInput).toBe('cooler gold');
+    expect(renameBox.clauses[0].isValid).toBe(true);
+
+    const queryBoxes = parseVoiceTranscript('what boxes are in freezer 1', state);
+    expect(queryBoxes.clauses[0].intent).toBe('container_query');
+    expect(queryBoxes.clauses[0].isValid).toBe(true);
+
+    const deleteEmptyBox = parseVoiceTranscript('remove the empty box empty', state);
+    expect(deleteEmptyBox.clauses[0].intent).toBe('delete_container');
+    expect(deleteEmptyBox.clauses[0].selectedSourceContainerId).toBe('c-empty-box');
+    expect(deleteEmptyBox.clauses[0].isValid).toBe(true);
+  });
+
+  it('supports pillowcase container nouns, sequential pronoun placement, and duplicate-name warnings', () => {
+    state.products = [
+      { id: 'p-brats-mild', name: 'Bratwurst Mild', primaryCategory: 'Pork', subCategory: 'Sausage' },
+      { id: 'p-hotdogs', name: 'Beef Hot Dogs', primaryCategory: 'Beef', subCategory: 'Sausage' },
+      { id: 'p-ribeye', name: 'Ribeye Steak', primaryCategory: 'Beef', subCategory: 'Steaks' },
+      { id: 'p-chicken-broth', name: 'Chicken Broth', primaryCategory: 'Poultry', subCategory: 'Broth' },
+    ];
+    state.containerTemplates = [
+      { id: 'tpl-red-bag', name: 'Red Bag', icon: 'pillowcase' },
+      { id: 'tpl-polka', name: 'Polka Pillowcase', icon: 'pillowcase' },
+    ];
+
+    // 1. Pillowcase & "pillow case" natural nouns + icon inference
+    const polka = parseVoiceTranscript(
+      'create new pillowcase polka in canada with 3 ribeye',
+      state
+    );
+    expect(polka.clauses).toHaveLength(1);
+    expect(polka.clauses[0].intent).toBe('add');
+    expect(polka.clauses[0].newContainerGroupKey).toBeTruthy();
+    expect(polka.clauses[0].newContainerIcon).toBe('pillowcase');
+    expect(polka.clauses[0].selectedTemplateId).toBe('tpl-polka');
+    expect(polka.clauses[0].selectedFreezerId).toBe('f-canada');
+    expect(polka.clauses[0].isValid).toBe(true);
+
+    const twoWordCase = parseVoiceTranscript(
+      'make new pillow case floral with 2 hotdogs',
+      state
+    );
+    expect(twoWordCase.clauses[0].intent).toBe('add');
+    expect(twoWordCase.clauses[0].newContainerGroupKey).toBeTruthy();
+    expect(twoWordCase.clauses[0].newContainerIcon).toBe('pillowcase');
+    expect(twoWordCase.clauses[0].isValid).toBe(true);
+
+    // 2. Sequential pronoun placement on explicit new container
+    const newAndPut = parseVoiceTranscript(
+      'create new yellow bag with 4 brats and put it in canada',
+      state
+    );
+    expect(newAndPut.clauses).toHaveLength(1);
+    expect(newAndPut.clauses[0].intent).toBe('add');
+    expect(newAndPut.clauses[0].newContainerGroupKey).toBeTruthy();
+    expect(newAndPut.clauses[0].resolvedNewContainerName).toBe('Yellow Bag');
+    expect(newAndPut.clauses[0].selectedFreezerId).toBe('f-canada');
+    expect(newAndPut.clauses[0].quantity).toBe(4);
+    expect(newAndPut.clauses[0].selectedProductId).toBe('p-brats-mild');
+    expect(newAndPut.clauses[0].isValid).toBe(true);
+
+    // 3. Template-only without "new" ("add 4 broths to the red bag and put it in chest freezer")
+    const templateAndPut = parseVoiceTranscript(
+      'add 4 broths to the red bag and put it in chest freezer',
+      state
+    );
+    expect(templateAndPut.clauses).toHaveLength(1);
+    expect(templateAndPut.clauses[0].intent).toBe('add');
+    expect(templateAndPut.clauses[0].newContainerGroupKey).toBeTruthy();
+    expect(templateAndPut.clauses[0].selectedTemplateId).toBe('tpl-red-bag');
+    expect(templateAndPut.clauses[0].resolvedNewContainerName).toBe('Red Bag');
+    expect(templateAndPut.clauses[0].selectedFreezerId).toBe('f-chest');
+    expect(templateAndPut.clauses[0].selectedProductId).toBe('p-chicken-broth');
+    expect(templateAndPut.clauses[0].quantity).toBe(4);
+    expect(templateAndPut.clauses[0].isValid).toBe(true);
+    const tplActions = buildVoiceDispatchActions(templateAndPut.clauses, state);
+    expect(tplActions).toHaveLength(2);
+    expect(tplActions[0].type).toBe('ADD_CONTAINER');
+    expect(tplActions[1].type).toBe('ADD_MEAT_CUT');
+
+    // 4. Existing unambiguous container ("add 4 broths to blue tote and put it in chest freezer")
+    const existingAndMove = parseVoiceTranscript(
+      'add 4 broths to blue tote and put it in chest freezer',
+      state
+    );
+    expect(existingAndMove.clauses).toHaveLength(2);
+    expect(existingAndMove.clauses[0].intent).toBe('add');
+    expect(existingAndMove.clauses[0].selectedDestContainerId).toBe('c-blue-canada');
+    expect(existingAndMove.clauses[0].isValid).toBe(true);
+    expect(existingAndMove.clauses[1].intent).toBe('move_container');
+    expect(existingAndMove.clauses[1].selectedSourceContainerId).toBe('c-blue-canada');
+    expect(existingAndMove.clauses[1].selectedFreezerId).toBe('f-chest');
+    expect(existingAndMove.clauses[1].isValid).toBe(true);
+
+    // 5. Unknown container + freezer ("add 4 broths to purple pillowcase and put it in chest freezer") -> zero dead end
+    const unknownAndPut = parseVoiceTranscript(
+      'add 4 broths to purple pillowcase and put it in chest freezer',
+      state
+    );
+    expect(unknownAndPut.clauses[0].intent).toBe('add');
+    expect(unknownAndPut.clauses[0].isValid).toBe(false);
+    expect(unknownAndPut.clauses[0].suggestedFreezerId).toBe('f-chest');
+    expect(unknownAndPut.clauses[0].suggestedTemplateCandidates?.length).toBeGreaterThan(0);
+    expect(
+      unknownAndPut.clauses[0].suggestedTemplateCandidates?.some(t => t.isCustom)
+    ).toBe(true);
+  });
+
+  it('defaults to existing container with same product, supports 1-tap new container switch, and prevents dead ends across all intents', () => {
+    state.containerTemplates = [
+      { id: 'tpl-red-bag', name: 'Red Bag', icon: 'pillowcase' },
+    ];
+    state.containers.push(
+      { id: 'c-red-canada', name: 'Red Bag', freezerId: 'f-canada', templateId: 'tpl-red-bag', icon: 'pillowcase' },
+      { id: 'c-red-chest', name: 'Red Bag', freezerId: 'f-chest', templateId: 'tpl-red-bag', icon: 'pillowcase' }
+    );
+    // Move Chicken Broth stock so ONLY Red Bag (Canada) stocks Chicken Broth
+    state.meatCuts = state.meatCuts.filter(mc => mc.productId !== 'p-chicken-broth');
+    state.meatCuts.push({
+      id: 'mc-red-canada-broth',
+      productId: 'p-chicken-broth',
+      quantity: 3,
+      containerId: 'c-red-canada',
+    });
+
+    // 1. Multiple same-named containers -> defaults to Red Bag (Canada) because it already holds Chicken Broth
+    const sameNameDefault = parseVoiceTranscript('add 4 broths to red bag', state);
+    expect(sameNameDefault.clauses[0].intent).toBe('add');
+    expect(sameNameDefault.clauses[0].selectedDestContainerId).toBe('c-red-canada');
+    expect(sameNameDefault.clauses[0].requiresDestLocationSelection).toBe(false);
+    expect(sameNameDefault.clauses[0].canSwitchToNewContainer).toBe(true);
+    expect(sameNameDefault.clauses[0].destLocationCandidates[0].hasMatchingProduct).toBe(true);
+    expect(sameNameDefault.clauses[0].destLocationCandidates[0].existingProductQty).toBe(3);
+    expect(sameNameDefault.clauses[0].isValid).toBe(true);
+
+    // 2. Omitted destination -> still defaults to Red Bag (Canada) holding Chicken Broth
+    const omittedDest = parseVoiceTranscript('add 4 broths', state);
+    expect(omittedDest.clauses[0].intent).toBe('add');
+    expect(omittedDest.clauses[0].selectedDestContainerId).toBe('c-red-canada');
+    expect(omittedDest.clauses[0].requiresDestLocationSelection).toBe(false);
+    expect(omittedDest.clauses[0].isValid).toBe(true);
+
+    // 3. 1-tap switch to New Container + Location with duplicate-name warning in Canada & clean placement in Chest
+    const switchedPrompt = parseVoiceTranscript('add 4 broths to red bag', state, {
+      'clause-0-0': { createNewContainer: true },
+    });
+    expect(switchedPrompt.clauses[0].newContainerGroupKey).toBe('switch-clause-0-0');
+    expect(switchedPrompt.clauses[0].switchedFromExistingAdd).toBe(true);
+    expect(switchedPrompt.clauses[0].requiresFreezerSelection).toBe(true);
+    expect(switchedPrompt.clauses[0].selectedTemplateId).toBe('tpl-red-bag');
+    expect(switchedPrompt.clauses[0].isValid).toBe(false);
+
+    const switchedSameFreezer = parseVoiceTranscript('add 4 broths to red bag', state, {
+      'clause-0-0': {
+        createNewContainer: true,
+        templateId: 'tpl-red-bag',
+        freezerId: 'f-canada',
+      },
+    });
+    expect(switchedSameFreezer.clauses[0].isValid).toBe(true);
+    expect(switchedSameFreezer.clauses[0].warningMessage).toContain('Red Bag');
+    expect(switchedSameFreezer.clauses[0].warningMessage).toContain('Canada');
+
+    const switchedOtherFreezer = parseVoiceTranscript('add 4 broths to red bag', state, {
+      'clause-0-0': {
+        createNewContainer: true,
+        templateId: 'tpl-red-bag',
+        freezerId: 'f-display',
+      },
+    });
+    expect(switchedOtherFreezer.clauses[0].isValid).toBe(true);
+    expect(switchedOtherFreezer.clauses[0].warningMessage).toBeUndefined();
+    const switchedActions = buildVoiceDispatchActions(switchedOtherFreezer.clauses, state);
+    expect(switchedActions).toHaveLength(2);
+    expect(switchedActions[0].type).toBe('ADD_CONTAINER');
+    expect(switchedActions[1].type).toBe('ADD_MEAT_CUT');
+
+    // 4. Zero dead ends on unknown destination ("add 3 ribeye to magenta" preserves guard + gives recovery suggestions)
+    const magentaAdd = parseVoiceTranscript('add 3 ribeye to magenta', state);
+    expect(magentaAdd.clauses[0].intent).toBe('add');
+    expect(magentaAdd.clauses[0].newContainerGroupKey).toBeUndefined();
+    expect(magentaAdd.clauses[0].destLocationCandidates).toHaveLength(0);
+    expect(magentaAdd.clauses[0].isValid).toBe(false);
+    expect(magentaAdd.clauses[0].suggestedTemplateCandidates?.some(t => t.isCustom)).toBe(true);
+    expect((magentaAdd.clauses[0].suggestedFallbackLocations || []).length).toBeGreaterThan(0);
+
+    const magentaRecovered = parseVoiceTranscript('add 3 ribeye to magenta', state, {
+      'clause-0-0': {
+        createNewContainer: true,
+        templateId: '__custom__',
+        customContainerName: 'Magenta',
+        freezerId: 'f-canada',
+      },
+    });
+    expect(magentaRecovered.clauses[0].isValid).toBe(true);
+    expect(magentaRecovered.clauses[0].resolvedNewContainerName).toBe('Magenta');
+    expect(buildVoiceDispatchActions(magentaRecovered.clauses, state).map(a => a.type)).toEqual([
+      'ADD_CONTAINER',
+      'ADD_MEAT_CUT',
+    ]);
+
+    // 5. Zero dead ends on zero stock in spoken source ("remove 2 hotdogs from display")
+    const noStockDisplay = parseVoiceTranscript('remove 2 hotdogs from display', state);
+    expect(noStockDisplay.clauses[0].isValid).toBe(false);
+    expect(
+      noStockDisplay.clauses[0].suggestedFallbackLocations?.some(
+        l => l.containerId === 'c-orange-canada'
+      )
+    ).toBe(true);
+    const noStockRecovered = parseVoiceTranscript('remove 2 hotdogs from display', state, {
+      'clause-0-0': { sourceContainerId: 'c-orange-canada' },
+    });
+    expect(noStockRecovered.clauses[0].isValid).toBe(true);
+    expect(noStockRecovered.clauses[0].selectedMeatCutId).toBe('mc-canada-hotdogs');
+
+    // 6. Zero dead ends on misspelled product in add & query
+    const misspelledAdd = parseVoiceTranscript('add 2 chiken soup to blue tote', state);
+    expect(misspelledAdd.clauses[0].isValid).toBe(false);
+    expect(
+      misspelledAdd.clauses[0].suggestedFallbackProducts?.some(
+        p => p.product.id === 'p-chicken-broth'
+      )
+    ).toBe(true);
+    const misspelledAddFixed = parseVoiceTranscript('add 2 chiken soup to blue tote', state, {
+      'clause-0-0': { productId: 'p-chicken-broth' },
+    });
+    expect(misspelledAddFixed.clauses[0].isValid).toBe(true);
+    expect(misspelledAddFixed.clauses[0].selectedDestContainerId).toBe('c-blue-canada');
+
+    const misspelledQuery = parseVoiceTranscript('how many riby cow', state);
+    expect(misspelledQuery.clauses[0].intent).toBe('query');
+    expect(misspelledQuery.clauses[0].isValid).toBe(false);
+    expect(
+      misspelledQuery.clauses[0].suggestedFallbackProducts?.some(
+        p => p.product.id === 'p-ribeye'
+      )
+    ).toBe(true);
+    const misspelledQueryFixed = parseVoiceTranscript('how many riby cow', state, {
+      'clause-0-0': { productId: 'p-ribeye' },
+    });
+    expect(misspelledQueryFixed.clauses[0].isValid).toBe(true);
+    expect(misspelledQueryFixed.clauses[0].queryResults?.[0].product.id).toBe('p-ribeye');
+
+    // 7. Partial / unknown fragment recovery via fallbackIntent without retyping
+    const partialFragment = parseVoiceTranscript('4 broths', state);
+    expect(partialFragment.clauses[0].intent).toBe('unknown');
+    expect(partialFragment.clauses[0].quantity).toBe(4);
+    expect(
+      partialFragment.clauses[0].suggestedFallbackProducts?.some(
+        p => p.product.id === 'p-chicken-broth'
+      )
+    ).toBe(true);
+
+    const partialAsAdd = parseVoiceTranscript('4 broths', state, {
+      'clause-0-0': {
+        fallbackIntent: 'add',
+        productId: 'p-chicken-broth',
+      },
+    });
+    expect(partialAsAdd.clauses[0].intent).toBe('add');
+    expect(partialAsAdd.clauses[0].quantity).toBe(4);
+    expect(partialAsAdd.clauses[0].selectedDestContainerId).toBe('c-red-canada');
+    expect(partialAsAdd.clauses[0].isValid).toBe(true);
+
+    const partialAsQuery = parseVoiceTranscript('4 broths', state, {
+      'clause-0-0': {
+        fallbackIntent: 'query',
+        productId: 'p-chicken-broth',
+      },
+    });
+    expect(partialAsQuery.clauses[0].intent).toBe('query');
+    expect(partialAsQuery.clauses[0].isValid).toBe(true);
+  });
 });
+
 
 
 

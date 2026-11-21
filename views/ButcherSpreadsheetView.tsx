@@ -1,18 +1,30 @@
 // Butcher spreadsheet view
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { 
   Search, ChevronDown, ChevronRight, FileSpreadsheet, Download, 
   Tag as TagIcon, Edit3, Trash2, X, Filter, Check, ArrowUpDown, 
-  Layers, Eye, EyeOff, Plus, Info, Box, Package, List
+  Layers, Eye, EyeOff, Plus, Info, Box, Package, List, RotateCcw
 } from 'lucide-react';
 import { InventoryState, Action, OffSiteEntry, Product, Tag as AppTag } from '../types';
 import { compareBoxLabels } from '../utils/boxSort';
 import { getTagActionIcon } from '../utils/tagRestockRules';
+import { mergeOrderIdsForSpreadsheetFilter } from '../utils/butcherSettings';
+
+export interface ButcherSpreadsheetOrderSelectionRequest {
+  orderIds: string[];
+  mode: 'replace' | 'append';
+  requestId: number;
+}
 
 interface ButcherSpreadsheetViewProps {
   state: InventoryState;
   dispatch: React.Dispatch<Action>;
+  isFilterPanelOpen?: boolean;
+  filterPanelContainer?: HTMLElement | null;
+  onActiveFilterCountChange?: (count: number) => void;
+  orderSelectionRequest?: ButcherSpreadsheetOrderSelectionRequest | null;
+  onSelectedOrderIdsChange?: (orderIds: string[]) => void;
 }
 
 const STORAGE_KEYS = {
@@ -193,7 +205,15 @@ const ButcherTagPopover: React.FC<{
   );
 };
 
-export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({ state, dispatch }) => {
+export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({
+  state,
+  dispatch,
+  isFilterPanelOpen = false,
+  filterPanelContainer = null,
+  onActiveFilterCountChange,
+  orderSelectionRequest = null,
+  onSelectedOrderIdsChange,
+}) => {
   // Sort butcher orders descending by order number (largest/newest at the top), fallback to date
   const sortedOrders = useMemo(() => {
     const orders = [...(state.butcherOrders || [])];
@@ -214,9 +234,25 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({ 
     });
   }, [state.butcherOrders]);
 
-  // Selected Order Filter - Remembers last selected orders from localStorage, fallback to most recent butcher order!
+  const lastAppliedRequestIdRef = useRef<number | null>(
+    orderSelectionRequest && orderSelectionRequest.orderIds.length > 0
+      ? orderSelectionRequest.requestId
+      : null
+  );
+
+  // Selected Order Filter - Applies incoming Send-to-Spreadsheet request first, otherwise remembers last selected orders from localStorage, falling back to most recent butcher order
   const [selectedOrderIds, setSelectedOrderIds] = useState<Set<string>>(() => {
     const savedSet = getSavedSet(STORAGE_KEYS.SELECTED_ORDER_IDS);
+    if (orderSelectionRequest && orderSelectionRequest.orderIds.length > 0) {
+      const merged = mergeOrderIdsForSpreadsheetFilter(
+        savedSet ? Array.from(savedSet) : [],
+        orderSelectionRequest.orderIds,
+        orderSelectionRequest.mode,
+      );
+      if (merged.length > 0) {
+        return new Set(merged);
+      }
+    }
     if (savedSet && savedSet.size > 0) {
       return savedSet;
     }
@@ -225,12 +261,15 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({ 
   const [isOrderDropdownOpen, setIsOrderDropdownOpen] = useState(false);
   const [orderSearchTerm, setOrderSearchTerm] = useState('');
 
-  // Save selectedOrderIds when changed
+  // Save selectedOrderIds and notify parent when changed
   useEffect(() => {
     if (selectedOrderIds.size > 0) {
       saveSet(STORAGE_KEYS.SELECTED_ORDER_IDS, selectedOrderIds);
     }
-  }, [selectedOrderIds]);
+    onSelectedOrderIdsChange?.(
+      selectedOrderIds.has('ALL') ? [] : Array.from(selectedOrderIds).filter(id => id !== 'ALL')
+    );
+  }, [selectedOrderIds, onSelectedOrderIdsChange]);
 
   // Keep selectedOrderIds synced if order was removed
   useEffect(() => {
@@ -246,7 +285,27 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({ 
   const [filterBoxes, setFilterBoxes] = useState<Set<string>>(() => getSavedSet(STORAGE_KEYS.FILTER_BOXES) || new Set());
   const [filterCuts, setFilterCuts] = useState<Set<string>>(() => getSavedSet(STORAGE_KEYS.FILTER_CUTS) || new Set());
   const [filterPrimaryCategories, setFilterPrimaryCategories] = useState<Set<string>>(() => getSavedSet(STORAGE_KEYS.FILTER_PRIMARY_CATEGORIES) || new Set());
-  const [filterOrderNumbers, setFilterOrderNumbers] = useState<Set<string>>(() => getSavedSet(STORAGE_KEYS.FILTER_ORDER_NUMBERS) || new Set());
+  const [filterOrderNumbers, setFilterOrderNumbers] = useState<Set<string>>(() =>
+    orderSelectionRequest && orderSelectionRequest.orderIds.length > 0
+      ? new Set()
+      : getSavedSet(STORAGE_KEYS.FILTER_ORDER_NUMBERS) || new Set()
+  );
+
+  // Apply subsequent incoming Send-to-Spreadsheet requests while already mounted
+  useEffect(() => {
+    if (!orderSelectionRequest || orderSelectionRequest.orderIds.length === 0) return;
+    if (lastAppliedRequestIdRef.current === orderSelectionRequest.requestId) return;
+    lastAppliedRequestIdRef.current = orderSelectionRequest.requestId;
+    setSelectedOrderIds(prev => {
+      const merged = mergeOrderIdsForSpreadsheetFilter(
+        Array.from(prev),
+        orderSelectionRequest.orderIds,
+        orderSelectionRequest.mode,
+      );
+      return merged.length > 0 ? new Set(merged) : prev;
+    });
+    setFilterOrderNumbers(new Set());
+  }, [orderSelectionRequest]);
   const [filterLocations, setFilterLocations] = useState<Set<string>>(() => getSavedSet(STORAGE_KEYS.FILTER_LOCATIONS) || new Set());
   const [filterPallets, setFilterPallets] = useState<Set<string>>(() => getSavedSet(STORAGE_KEYS.FILTER_PALLETS) || new Set());
   const [filterSerials, setFilterSerials] = useState<Set<string>>(() => getSavedSet(STORAGE_KEYS.FILTER_SERIALS) || new Set());
@@ -284,18 +343,18 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({ 
   const [openFilter, setOpenFilter] = useState<string | null>(null);
 
   // View preferences (persisted)
-  const [searchTerm, setSearchTerm] = useState(() => localStorage.getItem(STORAGE_KEYS.SEARCH_TERM) || '');
-  const [viewOriginalNames, setViewOriginalNames] = useState(() => localStorage.getItem(STORAGE_KEYS.VIEW_ORIGINAL_NAMES) === 'true');
+  const [searchTerm, setSearchTerm] = useState(() => (typeof localStorage !== 'undefined' ? localStorage.getItem(STORAGE_KEYS.SEARCH_TERM) || '' : ''));
+  const [viewOriginalNames, setViewOriginalNames] = useState(() => (typeof localStorage !== 'undefined' ? localStorage.getItem(STORAGE_KEYS.VIEW_ORIGINAL_NAMES) === 'true' : false));
   const [viewGroupedByBox, setViewGroupedByBox] = useState(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.VIEW_GROUPED_BY_BOX);
+    const saved = typeof localStorage !== 'undefined' ? localStorage.getItem(STORAGE_KEYS.VIEW_GROUPED_BY_BOX) : null;
     return saved !== null ? saved === 'true' : true;
   });
-  const [simulateBoxCount, setSimulateBoxCount] = useState(() => localStorage.getItem("offsite-simulate-box-count") === "true");
+  const [simulateBoxCount, setSimulateBoxCount] = useState(() => (typeof localStorage !== 'undefined' ? localStorage.getItem("offsite-simulate-box-count") === "true" : false));
   const theoreticalBoxWeight = 40;
 
-  useEffect(() => { localStorage.setItem(STORAGE_KEYS.SEARCH_TERM, searchTerm); }, [searchTerm]);
-  useEffect(() => { localStorage.setItem(STORAGE_KEYS.VIEW_ORIGINAL_NAMES, String(viewOriginalNames)); }, [viewOriginalNames]);
-  useEffect(() => { localStorage.setItem(STORAGE_KEYS.VIEW_GROUPED_BY_BOX, String(viewGroupedByBox)); }, [viewGroupedByBox]);
+  useEffect(() => { if (typeof localStorage !== 'undefined') localStorage.setItem(STORAGE_KEYS.SEARCH_TERM, searchTerm); }, [searchTerm]);
+  useEffect(() => { if (typeof localStorage !== 'undefined') localStorage.setItem(STORAGE_KEYS.VIEW_ORIGINAL_NAMES, String(viewOriginalNames)); }, [viewOriginalNames]);
+  useEffect(() => { if (typeof localStorage !== 'undefined') localStorage.setItem(STORAGE_KEYS.VIEW_GROUPED_BY_BOX, String(viewGroupedByBox)); }, [viewGroupedByBox]);
 
   const [selectedPrimary, setSelectedPrimary] = useState<string[]>(() => getSavedJSON(STORAGE_KEYS.SELECTED_PRIMARY, []));
   const [selectedSub, setSelectedSub] = useState<string[]>(() => getSavedJSON(STORAGE_KEYS.SELECTED_SUB, []));
@@ -330,11 +389,11 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({ 
   useEffect(() => { saveJSON(STORAGE_KEYS.VISIBLE_COLUMNS, visibleColumns); }, [visibleColumns]);
 
   // Sorting state (persisted)
-  const [sortField, setSortField] = useState<string>(() => localStorage.getItem(STORAGE_KEYS.SORT_FIELD) || 'cutName');
-  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>(() => (localStorage.getItem(STORAGE_KEYS.SORT_DIRECTION) as 'asc' | 'desc') || 'asc');
+  const [sortField, setSortField] = useState<string>(() => (typeof localStorage !== 'undefined' ? localStorage.getItem(STORAGE_KEYS.SORT_FIELD) || 'cutName' : 'cutName'));
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>(() => (typeof localStorage !== 'undefined' ? (localStorage.getItem(STORAGE_KEYS.SORT_DIRECTION) as 'asc' | 'desc') || 'asc' : 'asc'));
 
-  useEffect(() => { localStorage.setItem(STORAGE_KEYS.SORT_FIELD, sortField); }, [sortField]);
-  useEffect(() => { localStorage.setItem(STORAGE_KEYS.SORT_DIRECTION, sortDirection); }, [sortDirection]);
+  useEffect(() => { if (typeof localStorage !== 'undefined') localStorage.setItem(STORAGE_KEYS.SORT_FIELD, sortField); }, [sortField]);
+  useEffect(() => { if (typeof localStorage !== 'undefined') localStorage.setItem(STORAGE_KEYS.SORT_DIRECTION, sortDirection); }, [sortDirection]);
 
   // Box expansion state
   const [expandedBoxes, setExpandedBoxes] = useState<Record<string, boolean>>({});
@@ -576,24 +635,39 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({ 
     filterLocations, filterPallets, filterSerials, filterLots, filterPackDates, filterStatuses, filterArchived
   ]);
 
-  const hasActiveColumnFilters = useMemo(() => {
-    return (
-      filterBoxes.size > 0 ||
-      filterCuts.size > 0 ||
-      filterPrimaryCategories.size > 0 ||
-      filterOrderNumbers.size > 0 ||
-      filterLocations.size > 0 ||
-      filterPallets.size > 0 ||
-      filterSerials.size > 0 ||
-      filterLots.size > 0 ||
-      filterPackDates.size > 0 ||
-      filterStatuses.size > 0 ||
-      filterArchived.size > 0
-    );
+  const activeColumnFilterCount = useMemo(() => {
+    return [
+      filterBoxes,
+      filterCuts,
+      filterPrimaryCategories,
+      filterOrderNumbers,
+      filterLocations,
+      filterPallets,
+      filterSerials,
+      filterLots,
+      filterPackDates,
+      filterStatuses,
+      filterArchived,
+    ].reduce((acc, s) => acc + (s.size > 0 ? 1 : 0), 0);
   }, [
     filterBoxes, filterCuts, filterPrimaryCategories, filterOrderNumbers,
     filterLocations, filterPallets, filterSerials, filterLots, filterPackDates, filterStatuses, filterArchived
   ]);
+
+  const hasActiveColumnFilters = activeColumnFilterCount > 0;
+
+  const activeFilterCount = useMemo(() => {
+    return (
+      (searchTerm.trim() ? 1 : 0) +
+      selectedPrimary.length +
+      selectedSub.length +
+      activeColumnFilterCount
+    );
+  }, [searchTerm, selectedPrimary.length, selectedSub.length, activeColumnFilterCount]);
+
+  useEffect(() => {
+    onActiveFilterCountChange?.(activeFilterCount);
+  }, [activeFilterCount, onActiveFilterCountChange]);
 
   const clearAllColumnFilters = () => {
     setFilterBoxes(new Set());
@@ -607,6 +681,13 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({ 
     setFilterPackDates(new Set());
     setFilterStatuses(new Set());
     setFilterArchived(new Set());
+  };
+
+  const clearAllSpreadsheetFilters = () => {
+    setSearchTerm('');
+    setSelectedPrimary([]);
+    setSelectedSub([]);
+    clearAllColumnFilters();
   };
 
   // Reusable Column Filter Dropdown Modal Component
@@ -1149,401 +1230,395 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({ 
     setDeletingItemId(null);
   };
 
-  return (
-    <div className="space-y-6 animate-fade-in" id="butcher-spreadsheet-workspace">
-      
-      {/* Top Header & Order Selector Toolbar */}
-      <div className="bg-cool-gray-850 p-5 rounded-2xl border border-cool-gray-750 shadow-sm space-y-4">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-cool-gray-750 pb-4">
-          
-          <div className="space-y-1">
-            <div className="flex items-center gap-2">
-              <FileSpreadsheet className="text-cyan-400 shrink-0" size={22} />
-              <h2 className="text-xl font-bold text-white tracking-tight">Butcher Cuts Repository Spreadsheet</h2>
-            </div>
-            <p className="text-xs text-cool-gray-400">
-              Complete, un-archived and archived cut history across processing logs.
-            </p>
+  const spreadsheetFilterDrawer = isFilterPanelOpen ? (
+    <div
+      id="butcher-spreadsheet-filter-panel"
+      className="mt-3 p-3 sm:p-4 bg-cool-gray-900/95 border border-cool-gray-750/90 rounded-xl shadow-xl shadow-black/30 backdrop-blur-md animate-fade-in text-xs space-y-3"
+    >
+      {/* Row 1: Search Input + Focus Orders + Reset + Export */}
+      <div className="flex flex-col md:flex-row md:items-center gap-2.5">
+        <div className="relative flex-1 min-w-[200px]">
+          <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
+            <Search size={14} className="text-cool-gray-400" />
           </div>
-
-          {/* Butcher Order Multi-Selector Dropdown */}
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
-            <label className="text-xs font-bold text-cool-gray-300 uppercase tracking-wider shrink-0 flex items-center gap-1.5">
-              <Filter size={14} className="text-cyan-400" />
-              Focus Orders:
-            </label>
-
-            <div className="relative flex-1 sm:w-80">
-              <button
-                type="button"
-                onClick={() => setIsOrderDropdownOpen(!isOrderDropdownOpen)}
-                className="w-full bg-cool-gray-900 border border-cool-gray-700 hover:border-cyan-500/50 rounded-xl px-3 py-2 text-sm font-semibold text-white focus:outline-none focus:ring-2 focus:ring-cyan-500 cursor-pointer shadow-inner flex items-center justify-between gap-2 text-left transition"
-              >
-                <span className="truncate">
-                  {selectedOrdersSummary.label}
-                </span>
-                <div className="flex items-center gap-1.5 shrink-0 text-cool-gray-400">
-                  <span className="bg-cool-gray-800 text-cyan-300 text-[11px] font-bold px-2 py-0.5 rounded-md border border-cool-gray-700">
-                    {filteredEntries.length} cuts
-                  </span>
-                  <ChevronDown size={14} />
-                </div>
-              </button>
-
-              {isOrderDropdownOpen && (
-                <>
-                  <div className="fixed inset-0 z-30" onClick={() => setIsOrderDropdownOpen(false)}></div>
-                  <div className="absolute right-0 sm:left-0 top-full mt-2 bg-cool-gray-800 border border-cool-gray-650 rounded-2xl shadow-2xl p-3 z-40 w-80 max-h-96 flex flex-col space-y-2.5">
-                    {/* Order Search */}
-                    <div className="relative">
-                      <Search className="absolute left-2.5 top-2.5 text-cool-gray-500" size={14} />
-                      <input
-                        type="text"
-                        placeholder="Filter orders by # or species..."
-                        value={orderSearchTerm}
-                        onChange={(e) => setOrderSearchTerm(e.target.value)}
-                        className="w-full bg-cool-gray-900 border border-cool-gray-700 rounded-xl pl-8 pr-7 py-1.5 text-xs text-white placeholder-cool-gray-500 focus:outline-none focus:ring-1 focus:ring-cyan-500"
-                      />
-                      {orderSearchTerm && (
-                        <button
-                          type="button"
-                          onClick={() => setOrderSearchTerm('')}
-                          className="absolute right-2.5 top-2 text-cool-gray-400 hover:text-white"
-                        >
-                          <X size={12} />
-                        </button>
-                      )}
-                    </div>
-
-                    {/* Quick Order Selection Action Buttons */}
-                    <div className="flex items-center justify-between gap-1 text-[11px] font-bold border-b border-cool-gray-750 pb-2 px-1">
-                      <button
-                        type="button"
-                        onClick={() => setSelectedOrderIds(new Set(['ALL']))}
-                        className={`px-2 py-1 rounded transition cursor-pointer ${selectedOrderIds.has('ALL') ? 'bg-cyan-950 text-cyan-300 border border-cyan-800' : 'text-cool-gray-300 hover:text-white hover:bg-cool-gray-750'}`}
-                      >
-                        All Orders
-                      </button>
-                      {sortedOrders.length > 0 && (
-                        <button
-                          type="button"
-                          onClick={() => setSelectedOrderIds(new Set([sortedOrders[0].id]))}
-                          className="px-2 py-1 text-amber-400 hover:bg-amber-950/40 rounded transition cursor-pointer"
-                        >
-                          ⭐ Most Recent
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => setSelectedOrderIds(new Set())}
-                        className="px-2 py-1 text-rose-400 hover:bg-rose-950/40 rounded transition cursor-pointer"
-                      >
-                        Clear
-                      </button>
-                    </div>
-
-                    {/* List of Orders with Checkboxes */}
-                    <div className="overflow-y-auto max-h-56 space-y-1 pr-1 divide-y divide-cool-gray-750/40">
-                      <label className="flex items-center gap-2.5 p-2 hover:bg-cool-gray-750 rounded-xl cursor-pointer text-xs font-bold text-white transition">
-                        <input
-                          type="checkbox"
-                          checked={selectedOrderIds.has('ALL')}
-                          onChange={() => setSelectedOrderIds(new Set(['ALL']))}
-                          className="rounded bg-cool-gray-950 border-cool-gray-700 text-cyan-500 focus:ring-cyan-500/50 cursor-pointer w-4 h-4"
-                        />
-                        <span className="flex-1">ALL Butcher Orders ({(state.offSiteEntries || []).filter(e => e.orderId || e.orderNumber).length} total cuts)</span>
-                      </label>
-
-                      {sortedOrders
-                        .filter(o => {
-                          if (!orderSearchTerm) return true;
-                          const q = orderSearchTerm.toLowerCase();
-                          return (
-                            (o.orderNumber || '').toLowerCase().includes(q) ||
-                            (o.species || '').toLowerCase().includes(q) ||
-                            (o.killDate || '').toLowerCase().includes(q)
-                          );
-                        })
-                        .map((order, idx) => {
-                          const cutCount = (state.offSiteEntries || []).filter(e => e.orderId === order.id || (e.orderNumber && e.orderNumber === order.orderNumber)).length;
-                          const isSelected = selectedOrderIds.has(order.id) && !selectedOrderIds.has('ALL');
-                          const isMostRecent = idx === 0;
-
-                          return (
-                            <label
-                              key={order.id}
-                              className={`flex items-center justify-between gap-2 p-2 hover:bg-cool-gray-750 rounded-xl cursor-pointer text-xs transition select-none ${isSelected ? 'bg-cyan-950/40 text-cyan-200 font-bold' : 'text-cool-gray-300'}`}
-                            >
-                              <div className="flex items-center gap-2.5 min-w-0">
-                                <input
-                                  type="checkbox"
-                                  checked={isSelected}
-                                  onChange={() => {
-                                    const next = new Set(selectedOrderIds);
-                                    next.delete('ALL');
-                                    if (next.has(order.id)) {
-                                      next.delete(order.id);
-                                    } else {
-                                      next.add(order.id);
-                                    }
-                                    if (next.size === 0) {
-                                      next.add('ALL');
-                                    }
-                                    setSelectedOrderIds(next);
-                                  }}
-                                  className="rounded bg-cool-gray-950 border-cool-gray-700 text-cyan-500 focus:ring-cyan-500/50 cursor-pointer w-4 h-4 shrink-0"
-                                />
-                                <div className="min-w-0">
-                                  <div className="truncate flex items-center gap-1 font-mono font-bold text-white">
-                                    {isMostRecent && <span title="Most Recent Order">⭐</span>}
-                                    Order #{order.orderNumber}
-                                    <span className="text-cool-gray-400 font-sans font-normal">({order.species || 'Butcher'})</span>
-                                  </div>
-                                  {order.killDate && <div className="text-[10px] text-cool-gray-400">Kill Date: {order.killDate}</div>}
-                                </div>
-                              </div>
-                              <span className="text-[10px] bg-cool-gray-900 border border-cool-gray-700 px-1.5 py-0.5 rounded text-cyan-300 font-mono font-bold shrink-0">
-                                {cutCount} cuts
-                              </span>
-                            </label>
-                          );
-                        })}
-                    </div>
-
-                    <div className="pt-2 border-t border-cool-gray-750 flex justify-between items-center text-xs">
-                      <span className="text-cool-gray-400 text-[11px]">
-                        {selectedOrderIds.has('ALL') ? 'All orders' : `${selectedOrderIds.size} selected`}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => setIsOrderDropdownOpen(false)}
-                        className="bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs px-3 py-1 rounded-lg transition cursor-pointer"
-                      >
-                        Done
-                      </button>
-                    </div>
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Search, Name View Toggle, and View Mode Bar */}
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-1">
-          
-          {/* Global Search Input */}
-          <div className="relative flex-1">
-            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-cool-gray-400" />
-            <input
-              type="text"
-              placeholder="Search cuts, serials, lots, boxes, pallets, locations, or notes..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full bg-cool-gray-900 border border-cool-gray-700 rounded-xl pl-9 pr-4 py-2 text-sm text-white placeholder-cool-gray-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
-            />
-            {searchTerm && (
-              <button
-                type="button"
-                onClick={() => setSearchTerm('')}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-cool-gray-400 hover:text-white"
-              >
-                <X size={14} />
-              </button>
-            )}
-          </div>
-
-          <div className="flex items-center gap-2 flex-wrap">
-            {/* View Mode Toggle (Grouped by Box vs Flat View) */}
-            <div className="flex bg-cool-gray-900 p-1 rounded-xl border border-cool-gray-750 shrink-0">
-              <button
-                type="button"
-                onClick={() => setViewGroupedByBox(true)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
-                  viewGroupedByBox ? 'bg-cyan-600 text-white shadow-sm' : 'text-cool-gray-400 hover:text-white'
-                }`}
-              >
-                <Box size={14} />
-                Grouped by Box
-              </button>
-              <button
-                type="button"
-                onClick={() => setViewGroupedByBox(false)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
-                  !viewGroupedByBox ? 'bg-cyan-600 text-white shadow-sm' : 'text-cool-gray-400 hover:text-white'
-                }`}
-              >
-                <List size={14} />
-                Flat List
-              </button>
-            </div>
-
-            {/* Raw CSV Cut Names Toggle */}
-            <label className="flex items-center gap-2 cursor-pointer text-xs font-bold text-cool-gray-300 hover:text-white transition shrink-0 bg-cool-gray-900 px-3 py-2 rounded-xl border border-cool-gray-750">
-              <input
-                type="checkbox"
-                checked={viewOriginalNames}
-                onChange={(e) => setViewOriginalNames(e.target.checked)}
-                className="rounded bg-cool-gray-950 border-cool-gray-700 text-cyan-500 focus:ring-cyan-500/50 cursor-pointer w-4 h-4"
-              />
-              RAW CSV CUT NAMES
-            </label>
-
-            {/* Category Filter Dropdown */}
-            {categoryOptions.primaryOptions.length > 0 && (
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={() => setIsCategoryFilterOpen(!isCategoryFilterOpen)}
-                  className={`px-3 py-2 rounded-xl border text-xs font-bold flex items-center gap-2 cursor-pointer transition ${
-                    selectedPrimary.length > 0 || selectedSub.length > 0
-                      ? 'bg-cyan-950 text-cyan-300 border-cyan-700'
-                      : 'bg-cool-gray-900 text-cool-gray-300 border-cool-gray-750 hover:text-white'
-                  }`}
-                >
-                  <Layers size={14} />
-                  Categories {selectedPrimary.length > 0 ? `(${selectedPrimary.length})` : ''}
-                  <ChevronDown size={14} />
-                </button>
-
-                {isCategoryFilterOpen && (
-                  <>
-                    <div className="fixed inset-0 z-30" onClick={() => setIsCategoryFilterOpen(false)}></div>
-                    <div className="absolute right-0 top-full mt-2 bg-cool-gray-800 border border-cool-gray-650 rounded-xl shadow-2xl p-4 z-40 w-72 max-h-80 overflow-y-auto space-y-3">
-                      <div className="flex justify-between items-center border-b border-cool-gray-700 pb-2">
-                        <span className="text-xs font-bold text-white uppercase">Filter Categories</span>
-                        {(selectedPrimary.length > 0 || selectedSub.length > 0) && (
-                          <button
-                            type="button"
-                            onClick={() => { setSelectedPrimary([]); setSelectedSub([]); }}
-                            className="text-[10px] text-cyan-400 hover:underline font-bold"
-                          >
-                            Clear All
-                          </button>
-                        )}
-                      </div>
-                      <div className="space-y-2">
-                        {categoryOptions.primaryOptions.map(p => (
-                          <div key={p}>
-                            <label className="flex items-center gap-2 cursor-pointer text-xs text-white font-bold p-1 hover:bg-cool-gray-750 rounded">
-                              <input
-                                type="checkbox"
-                                checked={selectedPrimary.includes(p)}
-                                onChange={() => {
-                                  if (selectedPrimary.includes(p)) {
-                                    setSelectedPrimary(selectedPrimary.filter(x => x !== p));
-                                  } else {
-                                    setSelectedPrimary([...selectedPrimary, p]);
-                                  }
-                                }}
-                                className="rounded bg-cool-gray-950 border-cool-gray-650 text-cyan-500 focus:ring-cyan-500"
-                              />
-                              {p}
-                            </label>
-                            {(categoryOptions.subOptions[p] || []).map(s => (
-                              <label key={s} className="flex items-center gap-2 cursor-pointer text-xs text-cool-gray-300 pl-6 py-0.5 hover:bg-cool-gray-750 rounded">
-                                <input
-                                  type="checkbox"
-                                  checked={selectedSub.includes(s)}
-                                  onChange={() => {
-                                    if (selectedSub.includes(s)) {
-                                      setSelectedSub(selectedSub.filter(x => x !== s));
-                                    } else {
-                                      setSelectedSub([...selectedSub, s]);
-                                    }
-                                  }}
-                                  className="rounded bg-cool-gray-950 border-cool-gray-650 text-cyan-500 focus:ring-cyan-500"
-                                />
-                                {s}
-                              </label>
-                            ))}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
-
-            {/* Columns Customizer Dropdown */}
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() => setIsColumnPickerOpen(!isColumnPickerOpen)}
-                className="px-3 py-2 rounded-xl bg-cool-gray-900 border border-cool-gray-750 text-xs font-bold text-cool-gray-300 hover:text-white flex items-center gap-2 cursor-pointer transition"
-              >
-                <Eye size={14} />
-                Columns
-                <ChevronDown size={14} />
-              </button>
-
-              {isColumnPickerOpen && (
-                <>
-                  <div className="fixed inset-0 z-30" onClick={() => setIsColumnPickerOpen(false)}></div>
-                  <div className="absolute right-0 top-full mt-2 bg-cool-gray-800 border border-cool-gray-650 rounded-xl shadow-2xl p-3 z-40 w-56 space-y-2">
-                    <div className="text-xs font-bold text-white uppercase border-b border-cool-gray-700 pb-1.5">
-                      Visible Columns
-                    </div>
-                    <div className="space-y-1.5 max-h-60 overflow-y-auto pr-1">
-                      {[
-                        { key: 'box', label: 'Box ID' },
-                        { key: 'cutName', label: 'Cut / Product Name' },
-                        { key: 'category', label: 'Category / Sub Category' },
-                        { key: 'weight', label: 'Net Weight (lbs)' },
-                        { key: 'pieces', label: '# Pieces' },
-                        { key: 'location', label: 'Location' },
-                        { key: 'pallet', label: 'Pallet / Placement' },
-                        { key: 'serial', label: 'Serial Number' },
-                        { key: 'lotNumber', label: 'Lot Number' },
-                        { key: 'packDate', label: 'Pack Date' },
-                        { key: 'notes', label: 'Notes' },
-                        { key: 'tags', label: 'Persistent Tags' },
-                        { key: 'status', label: 'Availability Status' },
-                        { key: 'archived', label: 'Archived' },
-                      ].map(col => (
-                        <label key={col.key} className="flex items-center justify-between text-xs text-cool-gray-200 hover:bg-cool-gray-700 p-1 rounded cursor-pointer">
-                          <span>{col.label}</span>
-                          <input
-                            type="checkbox"
-                            checked={!!visibleColumns[col.key]}
-                            onChange={() => toggleColumn(col.key)}
-                            className="rounded bg-cool-gray-950 border-cool-gray-650 text-cyan-500 focus:ring-cyan-500"
-                          />
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-                </>
-              )}
-            </div>
-
-            {/* Reset Active Column Filters Button */}
-            {hasActiveColumnFilters && (
-              <button
-                type="button"
-                onClick={clearAllColumnFilters}
-                className="px-3 py-2 rounded-xl bg-rose-950/80 hover:bg-rose-900 border border-rose-800 text-xs font-bold text-rose-300 flex items-center gap-1.5 cursor-pointer transition shrink-0"
-                title="Clear all column header filters"
-              >
-                <X size={14} />
-                Clear Column Filters
-              </button>
-            )}
-
-            {/* Export CSV Button */}
+          <input
+            type="text"
+            placeholder="Search cuts, serials, lots, boxes, pallets, locations, or notes..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="block w-full rounded-lg border-0 bg-cool-gray-850 pl-9 pr-8 text-cool-gray-100 ring-1 ring-inset ring-cool-gray-750 placeholder:text-cool-gray-500 focus:ring-2 focus:ring-inset focus:ring-cyan-500 py-1.5 text-xs transition"
+          />
+          {searchTerm && (
             <button
               type="button"
-              onClick={exportToCSV}
-              className="px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs flex items-center gap-2 transition shadow-sm cursor-pointer shrink-0"
+              onClick={() => setSearchTerm('')}
+              className="absolute inset-y-0 right-0 flex items-center pr-2.5 text-cool-gray-400 hover:text-white cursor-pointer"
+              title="Clear search input"
             >
-              <Download size={14} />
-              Export CSV ({spreadsheetSummary.totalEntries})
+              <X size={13} />
+            </button>
+          )}
+        </div>
+
+        {/* Focus Orders Multi-Selector Dropdown */}
+        <div className="relative md:w-72 shrink-0">
+          <button
+            type="button"
+            onClick={() => setIsOrderDropdownOpen(!isOrderDropdownOpen)}
+            className="w-full bg-cool-gray-850 border border-cool-gray-700 hover:border-cyan-500/50 rounded-lg px-2.5 py-1.5 text-xs font-bold text-white focus:outline-none focus:ring-2 focus:ring-cyan-500 cursor-pointer flex items-center justify-between gap-2 text-left transition"
+            title="Filter spreadsheet by butcher order"
+          >
+            <span className="truncate flex items-center gap-1.5">
+              <Filter size={13} className="text-cyan-400 shrink-0" />
+              <span className="truncate">{selectedOrdersSummary.label}</span>
+            </span>
+            <div className="flex items-center gap-1.5 shrink-0 text-cool-gray-400">
+              <span className="bg-cool-gray-900 text-cyan-300 text-[10px] font-bold px-1.5 py-0.5 rounded border border-cool-gray-700">
+                {filteredEntries.length} cuts
+              </span>
+              <ChevronDown size={13} />
+            </div>
+          </button>
+
+          {isOrderDropdownOpen && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setIsOrderDropdownOpen(false)}></div>
+              <div className="absolute right-0 sm:left-0 top-full mt-2 bg-cool-gray-800 border border-cool-gray-650 rounded-2xl shadow-2xl p-3 z-50 w-80 max-h-96 flex flex-col space-y-2.5">
+                <div className="relative">
+                  <Search className="absolute left-2.5 top-2.5 text-cool-gray-500" size={14} />
+                  <input
+                    type="text"
+                    placeholder="Filter orders by # or species..."
+                    value={orderSearchTerm}
+                    onChange={(e) => setOrderSearchTerm(e.target.value)}
+                    className="w-full bg-cool-gray-900 border border-cool-gray-700 rounded-xl pl-8 pr-7 py-1.5 text-xs text-white placeholder-cool-gray-500 focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                  />
+                  {orderSearchTerm && (
+                    <button
+                      type="button"
+                      onClick={() => setOrderSearchTerm('')}
+                      className="absolute right-2.5 top-2 text-cool-gray-400 hover:text-white"
+                    >
+                      <X size={12} />
+                    </button>
+                  )}
+                </div>
+
+                <div className="flex items-center justify-between gap-1 text-[11px] font-bold border-b border-cool-gray-750 pb-2 px-1">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedOrderIds(new Set(['ALL']))}
+                    className={`px-2 py-1 rounded transition cursor-pointer ${selectedOrderIds.has('ALL') ? 'bg-cyan-950 text-cyan-300 border border-cyan-800' : 'text-cool-gray-300 hover:text-white hover:bg-cool-gray-750'}`}
+                  >
+                    All Orders
+                  </button>
+                  {sortedOrders.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setSelectedOrderIds(new Set([sortedOrders[0].id]))}
+                      className="px-2 py-1 text-amber-400 hover:bg-amber-950/40 rounded transition cursor-pointer"
+                    >
+                      ⭐ Most Recent
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setSelectedOrderIds(new Set())}
+                    className="px-2 py-1 text-rose-400 hover:bg-rose-950/40 rounded transition cursor-pointer"
+                  >
+                    Clear
+                  </button>
+                </div>
+
+                <div className="overflow-y-auto max-h-56 space-y-1 pr-1 divide-y divide-cool-gray-750/40">
+                  <label className="flex items-center gap-2.5 p-2 hover:bg-cool-gray-750 rounded-xl cursor-pointer text-xs font-bold text-white transition">
+                    <input
+                      type="checkbox"
+                      checked={selectedOrderIds.has('ALL')}
+                      onChange={() => setSelectedOrderIds(new Set(['ALL']))}
+                      className="rounded bg-cool-gray-950 border-cool-gray-700 text-cyan-500 focus:ring-cyan-500/50 cursor-pointer w-4 h-4"
+                    />
+                    <span className="flex-1">ALL Butcher Orders ({(state.offSiteEntries || []).filter(e => e.orderId || e.orderNumber).length} total cuts)</span>
+                  </label>
+
+                  {sortedOrders
+                    .filter(o => {
+                      if (!orderSearchTerm) return true;
+                      const q = orderSearchTerm.toLowerCase();
+                      return (
+                        (o.orderNumber || '').toLowerCase().includes(q) ||
+                        (o.species || '').toLowerCase().includes(q) ||
+                        (o.killDate || '').toLowerCase().includes(q)
+                      );
+                    })
+                    .map((order, idx) => {
+                      const cutCount = (state.offSiteEntries || []).filter(e => e.orderId === order.id || (e.orderNumber && e.orderNumber === order.orderNumber)).length;
+                      const isSelected = selectedOrderIds.has(order.id) && !selectedOrderIds.has('ALL');
+                      const isMostRecent = idx === 0;
+
+                      return (
+                        <label
+                          key={order.id}
+                          className={`flex items-center justify-between gap-2 p-2 hover:bg-cool-gray-750 rounded-xl cursor-pointer text-xs transition select-none ${isSelected ? 'bg-cyan-950/40 text-cyan-200 font-bold' : 'text-cool-gray-300'}`}
+                        >
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => {
+                                const next = new Set(selectedOrderIds);
+                                next.delete('ALL');
+                                if (next.has(order.id)) {
+                                  next.delete(order.id);
+                                } else {
+                                  next.add(order.id);
+                                }
+                                if (next.size === 0) {
+                                  next.add('ALL');
+                                }
+                                setSelectedOrderIds(next);
+                              }}
+                              className="rounded bg-cool-gray-950 border-cool-gray-700 text-cyan-500 focus:ring-cyan-500/50 cursor-pointer w-4 h-4 shrink-0"
+                            />
+                            <div className="min-w-0">
+                              <div className="truncate flex items-center gap-1 font-mono font-bold text-white">
+                                {isMostRecent && <span title="Most Recent Order">⭐</span>}
+                                Order #{order.orderNumber}
+                                <span className="text-cool-gray-400 font-sans font-normal">({order.species || 'Butcher'})</span>
+                              </div>
+                              {order.killDate && <div className="text-[10px] text-cool-gray-400">Kill Date: {order.killDate}</div>}
+                            </div>
+                          </div>
+                          <span className="text-[10px] bg-cool-gray-900 border border-cool-gray-700 px-1.5 py-0.5 rounded text-cyan-300 font-mono font-bold shrink-0">
+                            {cutCount} cuts
+                          </span>
+                        </label>
+                      );
+                    })}
+                </div>
+
+                <div className="pt-2 border-t border-cool-gray-750 flex justify-between items-center text-xs">
+                  <span className="text-cool-gray-400 text-[11px]">
+                    {selectedOrderIds.has('ALL') ? 'All orders' : `${selectedOrderIds.size} selected`}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setIsOrderDropdownOpen(false)}
+                    className="bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs px-3 py-1 rounded-lg transition cursor-pointer"
+                  >
+                    Done
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+
+        {activeFilterCount > 0 && (
+          <button
+            type="button"
+            onClick={clearAllSpreadsheetFilters}
+            className="px-2.5 py-1.5 rounded-lg bg-cool-gray-800 hover:bg-cool-gray-750 text-cool-gray-400 hover:text-red-400 border border-cool-gray-700 transition flex items-center gap-1 font-bold text-xs cursor-pointer shrink-0"
+            title="Reset search, category, and column filters"
+          >
+            <RotateCcw className="w-3 h-3" />
+            <span>Reset Filters</span>
+          </button>
+        )}
+      </div>
+
+      {/* Row 2: View Mode, Categories, Columns, Raw CSV Names, Export CSV */}
+      <div className="flex flex-wrap items-center gap-2 pt-0.5">
+        <div className="flex bg-cool-gray-850 p-0.5 rounded-lg border border-cool-gray-700 shrink-0">
+          <button
+            type="button"
+            onClick={() => setViewGroupedByBox(true)}
+            className={`px-2.5 py-1 rounded-md text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+              viewGroupedByBox ? 'bg-cyan-600 text-white shadow-sm' : 'text-cool-gray-400 hover:text-white'
+            }`}
+          >
+            <Box size={13} />
+            Grouped by Box
+          </button>
+          <button
+            type="button"
+            onClick={() => setViewGroupedByBox(false)}
+            className={`px-2.5 py-1 rounded-md text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+              !viewGroupedByBox ? 'bg-cyan-600 text-white shadow-sm' : 'text-cool-gray-400 hover:text-white'
+            }`}
+          >
+            <List size={13} />
+            Flat List
+          </button>
+        </div>
+
+        {categoryOptions.primaryOptions.length > 0 && (
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setIsCategoryFilterOpen(!isCategoryFilterOpen)}
+              className={`px-3 py-1.5 rounded-lg border text-xs font-bold flex items-center gap-1.5 cursor-pointer transition ${
+                selectedPrimary.length > 0 || selectedSub.length > 0
+                  ? 'bg-cyan-950/45 text-cyan-300 border-cyan-500/50'
+                  : 'bg-cool-gray-850 text-cool-gray-300 border-cool-gray-700 hover:text-white hover:border-cool-gray-600'
+              }`}
+            >
+              <Layers size={13} className="text-cyan-400" />
+              Categories {selectedPrimary.length + selectedSub.length > 0 ? `(${selectedPrimary.length + selectedSub.length})` : ''}
+              <ChevronDown size={13} />
             </button>
 
+            {isCategoryFilterOpen && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setIsCategoryFilterOpen(false)}></div>
+                <div className="absolute left-0 top-full mt-1.5 bg-cool-gray-800 border border-cool-gray-650 rounded-xl shadow-2xl p-4 z-50 w-72 max-h-80 overflow-y-auto space-y-3">
+                  <div className="flex justify-between items-center border-b border-cool-gray-700 pb-2">
+                    <span className="text-xs font-bold text-white uppercase">Filter Categories</span>
+                    {(selectedPrimary.length > 0 || selectedSub.length > 0) && (
+                      <button
+                        type="button"
+                        onClick={() => { setSelectedPrimary([]); setSelectedSub([]); }}
+                        className="text-[10px] text-cyan-400 hover:underline font-bold"
+                      >
+                        Clear All
+                      </button>
+                    )}
+                  </div>
+                  <div className="space-y-2">
+                    {categoryOptions.primaryOptions.map(p => (
+                      <div key={p}>
+                        <label className="flex items-center gap-2 cursor-pointer text-xs text-white font-bold p-1 hover:bg-cool-gray-750 rounded">
+                          <input
+                            type="checkbox"
+                            checked={selectedPrimary.includes(p)}
+                            onChange={() => {
+                              if (selectedPrimary.includes(p)) {
+                                setSelectedPrimary(selectedPrimary.filter(x => x !== p));
+                              } else {
+                                setSelectedPrimary([...selectedPrimary, p]);
+                              }
+                            }}
+                            className="rounded bg-cool-gray-950 border-cool-gray-650 text-cyan-500 focus:ring-cyan-500"
+                          />
+                          {p}
+                        </label>
+                        {(categoryOptions.subOptions[p] || []).map(s => (
+                          <label key={s} className="flex items-center gap-2 cursor-pointer text-xs text-cool-gray-300 pl-6 py-0.5 hover:bg-cool-gray-750 rounded">
+                            <input
+                              type="checkbox"
+                              checked={selectedSub.includes(s)}
+                              onChange={() => {
+                                if (selectedSub.includes(s)) {
+                                  setSelectedSub(selectedSub.filter(x => x !== s));
+                                } else {
+                                  setSelectedSub([...selectedSub, s]);
+                                }
+                              }}
+                              className="rounded bg-cool-gray-950 border-cool-gray-650 text-cyan-500 focus:ring-cyan-500"
+                            />
+                            {s}
+                          </label>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
           </div>
+        )}
+
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setIsColumnPickerOpen(!isColumnPickerOpen)}
+            className="px-3 py-1.5 rounded-lg bg-cool-gray-850 border border-cool-gray-700 hover:border-cool-gray-600 text-xs font-bold text-cool-gray-300 hover:text-white flex items-center gap-1.5 cursor-pointer transition"
+          >
+            <Eye size={13} />
+            Columns
+            <ChevronDown size={13} />
+          </button>
+
+          {isColumnPickerOpen && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setIsColumnPickerOpen(false)}></div>
+              <div className="absolute left-0 top-full mt-1.5 bg-cool-gray-800 border border-cool-gray-650 rounded-xl shadow-2xl p-3 z-50 w-56 space-y-2">
+                <div className="text-xs font-bold text-white uppercase border-b border-cool-gray-700 pb-1.5">
+                  Visible Columns
+                </div>
+                <div className="space-y-1.5 max-h-60 overflow-y-auto pr-1">
+                  {[
+                    { key: 'box', label: 'Box ID' },
+                    { key: 'cutName', label: 'Cut / Product Name' },
+                    { key: 'category', label: 'Category / Sub Category' },
+                    { key: 'weight', label: 'Net Weight (lbs)' },
+                    { key: 'pieces', label: '# Pieces' },
+                    { key: 'location', label: 'Location' },
+                    { key: 'pallet', label: 'Pallet / Placement' },
+                    { key: 'serial', label: 'Serial Number' },
+                    { key: 'lotNumber', label: 'Lot Number' },
+                    { key: 'packDate', label: 'Pack Date' },
+                    { key: 'notes', label: 'Notes' },
+                    { key: 'tags', label: 'Persistent Tags' },
+                    { key: 'status', label: 'Availability Status' },
+                    { key: 'archived', label: 'Archived' },
+                  ].map(col => (
+                    <label key={col.key} className="flex items-center justify-between text-xs text-cool-gray-200 hover:bg-cool-gray-700 p-1 rounded cursor-pointer">
+                      <span>{col.label}</span>
+                      <input
+                        type="checkbox"
+                        checked={!!visibleColumns[col.key]}
+                        onChange={() => toggleColumn(col.key)}
+                        className="rounded bg-cool-gray-950 border-cool-gray-650 text-cyan-500 focus:ring-cyan-500"
+                      />
+                    </label>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
         </div>
+
+        <label className="inline-flex items-center gap-1.5 text-xs font-semibold text-cool-gray-300 hover:text-white cursor-pointer select-none bg-cool-gray-850 border border-cool-gray-700 hover:border-cool-gray-600 px-3 py-1.5 rounded-lg transition shrink-0">
+          <input
+            type="checkbox"
+            checked={viewOriginalNames}
+            onChange={(e) => setViewOriginalNames(e.target.checked)}
+            className="rounded bg-cool-gray-900 border-cool-gray-700 text-cyan-500 focus:ring-cyan-500/50 cursor-pointer w-3.5 h-3.5"
+          />
+          <span>Raw CSV Cut Names</span>
+        </label>
+
+        {hasActiveColumnFilters && (
+          <button
+            type="button"
+            onClick={clearAllColumnFilters}
+            className="px-2.5 py-1.5 rounded-lg bg-rose-950/80 hover:bg-rose-900 border border-rose-800 text-xs font-bold text-rose-300 flex items-center gap-1 cursor-pointer transition shrink-0"
+            title="Clear all column header filters"
+          >
+            <X size={13} />
+            Clear Column Filters
+          </button>
+        )}
+
+        <button
+          type="button"
+          onClick={exportToCSV}
+          className="px-3 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs flex items-center gap-1.5 transition shadow-sm cursor-pointer shrink-0 sm:ml-auto"
+        >
+          <Download size={13} />
+          Export CSV ({spreadsheetSummary.totalEntries})
+        </button>
       </div>
+    </div>
+  ) : null;
+
+  return (
+    <div className="space-y-5 animate-fade-in" id="butcher-spreadsheet-workspace">
+      {spreadsheetFilterDrawer &&
+        (filterPanelContainer
+          ? createPortal(spreadsheetFilterDrawer, filterPanelContainer)
+          : spreadsheetFilterDrawer)}
 
       {/* Spreadsheet Summary Dashboard Cards (Div #2 - Live Updating based on filters!) */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 bg-cool-gray-800/40 p-5 rounded-2xl border border-cool-gray-750">

@@ -1,10 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { createTestDatabase, seedSampleDatabase, parseCutsheetCsv, importButcherCutsheet } from './test-harness';
 import { ButcherOrder, MovementOrder } from '../types';
+import { OffSiteStorageView } from '../views/OffSiteStorageView';
 
 describe('Workflow 3: Off-Site Logistics, Cold Storage Pallet Transfer & Home Staging Intake', () => {
   let tempDir: string;
@@ -236,5 +239,100 @@ describe('Workflow 3: Off-Site Logistics, Cold Storage Pallet Transfer & Home St
     const finishedOrder = db.prepare('SELECT status, executedAt FROM movement_orders WHERE id = ?').get(movementOrder.id) as any;
     expect(finishedOrder.status).toBe('completed');
     expect(finishedOrder.executedAt).toBeDefined();
+  });
+
+  it('renders OffSiteStorageView safely when off-site entries have undefined originalCutName and no matching product', () => {
+    const mockState = {
+      offSiteEntries: [
+        {
+          id: 'os-missing-cut-1',
+          serial: 'SN-999',
+          productId: 'non-existent-product',
+          originalCutName: undefined,
+          cuts: undefined,
+          packDate: '2026-10-15',
+          lot: 'LOT-99',
+          pieces: 4,
+          netWeight: 12.5,
+          box: '1',
+          currentLocation: 'P1',
+          pallet: 'P1',
+          location: 'Cold Storage',
+        },
+        {
+          id: 'os-legacy-cuts-2',
+          serial: 'SN-1000',
+          productId: undefined,
+          originalCutName: undefined,
+          cuts: '14082 PORK TRIM',
+          packDate: '2026-10-15',
+          lot: 'LOT-99',
+          pieces: 2,
+          netWeight: 10.0,
+          box: '2',
+          currentLocation: 'P2',
+          pallet: 'P2',
+          location: 'Cold Storage',
+        },
+      ],
+      products: [],
+      locations: [],
+      pallets: [],
+      movementOrders: [],
+      tags: [],
+      customLists: [],
+      butcherOrders: [],
+      butcherRecords: [],
+      freezers: [],
+      containers: [],
+      meatCuts: [],
+      history: [],
+      containerTemplates: [],
+      appConfig: [],
+    };
+
+    const prevLocalStorage = (globalThis as any).localStorage;
+    (globalThis as any).localStorage = {
+      getItem: () => null,
+      setItem: () => {},
+      removeItem: () => {},
+      clear: () => {},
+    };
+    try {
+      const html = renderToStaticMarkup(
+        React.createElement(OffSiteStorageView, {
+          state: mockState as any,
+          dispatch: async () => true,
+          products: [],
+          activeSubTab: 'sheet',
+          setActiveSubTab: () => {},
+          searchTerm: '',
+          setSearchTerm: () => {},
+          isAdvancedFilterOpen: false,
+          setIsAdvancedFilterOpen: () => {},
+          isDirectEdit: false,
+          setIsDirectEdit: () => {},
+          viewOriginalNames: false,
+          setViewOriginalNames: () => {},
+          filterTags: new Set<string>(),
+          setFilterTags: () => {},
+          filterLists: new Set<string>(),
+          setFilterLists: () => {},
+          viewUngrouped: false,
+          setViewUngrouped: () => {},
+          visibleColumns: new Set<string>(),
+          setVisibleColumns: () => {},
+          registerActions: () => {},
+        }),
+      );
+
+      expect(html).toContain('offsite');
+    } finally {
+      if (prevLocalStorage === undefined) {
+        delete (globalThis as any).localStorage;
+      } else {
+        (globalThis as any).localStorage = prevLocalStorage;
+      }
+    }
   });
 });

@@ -462,6 +462,131 @@ hr,
 }
 
 /* ==========================================================================
+   BUTCHER RECORDS LOGS - DISTINCT ELEVATED CARDS & EXPANDED DRAWER SURFACES
+   Uses Home Assistant native theme variables + color-mix() so each order
+   card, header band, summary block, and expanded breakdown separates cleanly
+   from the page canvas and from neighboring cards in dark & light themes.
+   ========================================================================== */
+
+.butcher-surface-card {
+  background-color: var(--ha-bg-card, #1f2937);
+  border: 1px solid color-mix(in srgb, var(--ha-text-primary, #f3f4f6) 16%, var(--ha-bg-card, #1f2937) 84%);
+  color: var(--ha-text-primary, #f3f4f6);
+  box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.25);
+}
+
+.butcher-stat-card {
+  background-color: var(--ha-bg-card, #1f2937);
+  border: 1px solid color-mix(in srgb, var(--ha-text-primary, #f3f4f6) 16%, var(--ha-bg-card, #1f2937) 84%);
+  color: var(--ha-text-primary, #f3f4f6);
+  box-shadow: 0 2px 10px -2px rgba(0, 0, 0, 0.28);
+}
+
+.butcher-log-card {
+  background-color: var(--ha-bg-card, #1f2937);
+  border: 1px solid color-mix(in srgb, var(--ha-text-primary, #f3f4f6) 20%, var(--ha-bg-card, #1f2937) 80%);
+  color: var(--ha-text-primary, #f3f4f6);
+  box-shadow: 0 4px 16px -4px rgba(0, 0, 0, 0.36), 0 1px 3px rgba(0, 0, 0, 0.22);
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.butcher-log-card:hover {
+  border-color: color-mix(in srgb, var(--ha-primary-color, #03a9f4) 40%, var(--ha-text-primary, #f3f4f6) 20%);
+}
+
+.butcher-log-card--expanded {
+  border: 1.5px solid color-mix(in srgb, var(--ha-primary-color, #03a9f4) 70%, var(--ha-bg-card, #1f2937) 30%);
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--ha-primary-color, #03a9f4) 18%, transparent),
+    0 14px 32px -6px rgba(0, 0, 0, 0.48);
+}
+
+.butcher-log-card--expanded:hover {
+  border-color: color-mix(in srgb, var(--ha-primary-color, #03a9f4) 80%, var(--ha-bg-card, #1f2937) 20%);
+}
+
+.butcher-log-card-header {
+  background-color: color-mix(in srgb, var(--ha-bg-card, #1f2937) 91%, var(--ha-primary-color, #03a9f4) 9%);
+  border-bottom: 1px solid color-mix(in srgb, var(--ha-text-primary, #f3f4f6) 14%, var(--ha-bg-card, #1f2937) 86%);
+}
+
+.butcher-log-card--expanded .butcher-log-card-header {
+  background-color: color-mix(in srgb, var(--ha-bg-card, #1f2937) 84%, var(--ha-primary-color, #03a9f4) 16%);
+  border-bottom-color: color-mix(in srgb, var(--ha-primary-color, #03a9f4) 32%, var(--ha-bg-card, #1f2937) 68%);
+}
+
+.butcher-log-divider {
+  border-color: color-mix(in srgb, var(--ha-text-primary, #f3f4f6) 13%, var(--ha-bg-card, #1f2937) 87%);
+}
+
+.butcher-log-summary-panel {
+  background-color: color-mix(in srgb, var(--ha-bg-card, #1f2937) 92%, var(--ha-text-primary, #f3f4f6) 8%);
+  border: 1px solid color-mix(in srgb, var(--ha-text-primary, #f3f4f6) 15%, var(--ha-bg-card, #1f2937) 85%);
+}
+
+.butcher-log-toggle-bar {
+  background-color: color-mix(in srgb, var(--ha-bg-card, #1f2937) 93%, var(--ha-text-primary, #f3f4f6) 7%);
+  border-top: 1px solid color-mix(in srgb, var(--ha-text-primary, #f3f4f6) 14%, var(--ha-bg-card, #1f2937) 86%);
+  color: var(--ha-text-primary, #f3f4f6);
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.butcher-log-toggle-bar:hover {
+  background-color: color-mix(in srgb, var(--ha-bg-card, #1f2937) 86%, var(--ha-primary-color, #03a9f4) 14%);
+}
+
+.butcher-log-toggle-bar--expanded {
+  background-color: color-mix(in srgb, var(--ha-bg-card, #1f2937) 87%, var(--ha-primary-color, #03a9f4) 13%);
+  border-top-color: color-mix(in srgb, var(--ha-primary-color, #03a9f4) 30%, var(--ha-bg-card, #1f2937) 70%);
+  border-bottom: 1px solid color-mix(in srgb, var(--ha-primary-color, #03a9f4) 26%, var(--ha-bg-card, #1f2937) 74%);
+  color: var(--ha-primary-color, #03a9f4);
+}
+
+.butcher-log-expanded-drawer {
+  background-color: color-mix(in srgb, var(--ha-bg-card, #1f2937) 94%, var(--ha-text-primary, #f3f4f6) 6%);
+  color: var(--ha-text-primary, #f3f4f6);
+}
+
+.butcher-log-subpanel {
+  background-color: var(--ha-bg-card, #1f2937);
+  border: 1px solid color-mix(in srgb, var(--ha-text-primary, #f3f4f6) 16%, var(--ha-bg-card, #1f2937) 84%);
+  color: var(--ha-text-primary, #f3f4f6);
+}
+
+.butcher-log-row-divider > :not([hidden]) ~ :not([hidden]) {
+  border-top: 1px solid color-mix(in srgb, var(--ha-text-primary, #f3f4f6) 11%, var(--ha-bg-card, #1f2937) 89%);
+}
+
+.butcher-log-chip-btn {
+  background-color: var(--ha-bg-chip, #374151);
+  border: 1px solid color-mix(in srgb, var(--ha-text-primary, #f3f4f6) 16%, var(--ha-bg-chip, #374151) 84%);
+  color: var(--ha-text-primary, #f3f4f6);
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.butcher-log-chip-btn:hover {
+  background-color: color-mix(in srgb, var(--ha-bg-chip, #374151) 82%, var(--ha-primary-color, #03a9f4) 18%);
+  border-color: color-mix(in srgb, var(--ha-primary-color, #03a9f4) 48%, var(--ha-bg-chip, #374151) 52%);
+}
+
+.butcher-progress-track {
+  background-color: color-mix(in srgb, var(--ha-bg-card, #1f2937) 75%, var(--ha-text-primary, #f3f4f6) 25%);
+  border: none;
+}
+
+.butcher-log-action-icon {
+  color: var(--ha-text-secondary, #9ca3af);
+  border: 1px solid transparent;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.butcher-log-action-icon:hover {
+  background-color: var(--ha-bg-chip, #374151);
+  border-color: color-mix(in srgb, var(--ha-text-primary, #f3f4f6) 16%, transparent);
+}
+
+
+/* ==========================================================================
    MOVEMENT REPORTS & CHECKLISTS - PRINT / PDF / PREVIEW OVERRIDES
    Ensures clean black text on white backgrounds, completely bypassing
    Home Assistant dark mode variables and overrides.

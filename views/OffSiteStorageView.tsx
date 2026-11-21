@@ -66,7 +66,13 @@ interface OffSiteStorageViewProps {
   setViewUngrouped: (view: boolean) => void;
   visibleColumns: Set<string>;
   setVisibleColumns: (cols: Set<string>) => void;
-  registerActions: (actions: { handleNewMovement: () => void; handleDownloadCSV: () => void } | null) => void;
+  registerActions: (actions: {
+    handleNewMovement: () => void;
+    handleDownloadCSV: () => void;
+    handleExportFilteredCSV?: () => void;
+    handleExportFullCSV?: () => void;
+    getExportCounts?: () => { filteredCount: number; totalCount: number };
+  } | null) => void;
   isSingleUserMode?: boolean;
   claimSingleUserMode?: (scope?: 'all' | 'onsite' | 'offsite') => Promise<{ success: boolean; message?: string }>;
   releaseSingleUserMode?: (fullStateToSync?: any) => Promise<boolean>;
@@ -248,14 +254,54 @@ export const OffSiteStorageView: React.FC<OffSiteStorageViewProps> = ({
   });
   
   const [filteredSpreadsheetEntries, setFilteredSpreadsheetEntries] = useState<OffSiteEntry[] | null>(null);
+  const spreadsheetExportRef = React.useRef<{
+    exportFiltered: () => void;
+    exportFull: () => void;
+    getCounts: () => { filteredCount: number; totalCount: number };
+  } | null>(null);
 
-  // Register hamburger action handlers
+  const handleRegisterSpreadsheetExport = React.useCallback((actions: {
+    exportFiltered: () => void;
+    exportFull: () => void;
+    getCounts: () => { filteredCount: number; totalCount: number };
+  } | null) => {
+    spreadsheetExportRef.current = actions;
+  }, []);
+
+  // Register menu action handlers
   React.useEffect(() => {
     if (registerActions) {
       registerActions({
         handleNewMovement,
         handleDownloadCSV: () => {
-          handleDownloadCSV();
+          if (spreadsheetExportRef.current) {
+            spreadsheetExportRef.current.exportFiltered();
+          } else {
+            handleDownloadCSV();
+          }
+        },
+        handleExportFilteredCSV: () => {
+          if (spreadsheetExportRef.current) {
+            spreadsheetExportRef.current.exportFiltered();
+          } else {
+            handleDownloadCSV();
+          }
+        },
+        handleExportFullCSV: () => {
+          if (spreadsheetExportRef.current) {
+            spreadsheetExportRef.current.exportFull();
+          } else {
+            handleDownloadCSV();
+          }
+        },
+        getExportCounts: () => {
+          if (spreadsheetExportRef.current) {
+            return spreadsheetExportRef.current.getCounts();
+          }
+          return {
+            filteredCount: filteredSpreadsheetEntries?.length ?? entries.length,
+            totalCount: entries.length,
+          };
         }
       });
     }
@@ -907,14 +953,15 @@ export const OffSiteStorageView: React.FC<OffSiteStorageViewProps> = ({
   const uniqueCuts = useMemo(() => {
     const set = new Set<string>();
     entries.forEach(e => {
-      if ((state.products?.find((p: any) => p.id === e.productId)?.name || e.originalCutName)) {
+      const resolvedCut = state.products?.find((p: any) => p.id === e.productId)?.name || e.originalCutName || e.cuts || '';
+      if (resolvedCut) {
         // Strip out front numbers if it has code (like "14082 PORK TRIM")
-        const nameOnly = (state.products?.find((p: any) => p.id === e.productId)?.name || e.originalCutName).replace(/^\d+\s+/, '').trim();
+        const nameOnly = String(resolvedCut).replace(/^\d+\s+/, '').trim();
         if (nameOnly) set.add(nameOnly);
       }
     });
     return Array.from(set).sort();
-  }, [entries]);
+  }, [entries, state.products]);
 
   // Compute all suppliers/origins in database and defined list
   const allSuppliers = useMemo(() => {
@@ -1390,7 +1437,7 @@ export const OffSiteStorageView: React.FC<OffSiteStorageViewProps> = ({
             countedBoxesInDest.add(uniqB);
             breakdown['Unassigned'].boxCount += 1;
           }
-          breakdown['Unassigned'].items.push(`${(state.products?.find((p: any) => p.id === e.productId)?.name || e.originalCutName)} (${e.netWeight} lbs)`);
+          breakdown['Unassigned'].items.push(`${(state.products?.find((p: any) => p.id === e.productId)?.name || e.originalCutName || e.cuts || 'Unknown Cut')} (${e.netWeight} lbs)`);
         } else if (draftMove === 'Home') {
           breakdown['Home'].weight += e.netWeight || 0;
           const uniqB = `Home-${bId}`;
@@ -1398,7 +1445,7 @@ export const OffSiteStorageView: React.FC<OffSiteStorageViewProps> = ({
             countedBoxesInDest.add(uniqB);
             breakdown['Home'].boxCount += 1;
           }
-          breakdown['Home'].items.push(`${(state.products?.find((p: any) => p.id === e.productId)?.name || e.originalCutName)} (${e.netWeight} lbs)`);
+          breakdown['Home'].items.push(`${(state.products?.find((p: any) => p.id === e.productId)?.name || e.originalCutName || e.cuts || 'Unknown Cut')} (${e.netWeight} lbs)`);
         } else if (draftMove) {
           if (!breakdown[draftMove]) {
             breakdown[draftMove] = { weight: 0, boxCount: 0, items: [] };
@@ -1409,7 +1456,7 @@ export const OffSiteStorageView: React.FC<OffSiteStorageViewProps> = ({
             countedBoxesInDest.add(uniqB);
             breakdown[draftMove].boxCount += 1;
           }
-          breakdown[draftMove].items.push(`${(state.products?.find((p: any) => p.id === e.productId)?.name || e.originalCutName)} (${e.netWeight} lbs)`);
+          breakdown[draftMove].items.push(`${(state.products?.find((p: any) => p.id === e.productId)?.name || e.originalCutName || e.cuts || 'Unknown Cut')} (${e.netWeight} lbs)`);
         } else {
           if (!palletAssignments[draftLoc]) {
             palletAssignments[draftLoc] = { weight: 0, boxCount: 0 };
@@ -1587,7 +1634,8 @@ export const OffSiteStorageView: React.FC<OffSiteStorageViewProps> = ({
       stats[groupKey].weight += e.netWeight || 0;
 
       // Group cuts
-      const cleanC = (state.products?.find((p: any) => p.id === e.productId)?.name || e.originalCutName).replace(/^\d+\s+/, '').trim();
+      const resolvedCut = state.products?.find((p: any) => p.id === e.productId)?.name || e.originalCutName || e.cuts || '';
+      const cleanC = String(resolvedCut).replace(/^\d+\s+/, '').trim() || 'Unknown Cut';
       stats[groupKey].cutsList[cleanC] = (stats[groupKey].cutsList[cleanC] || 0) + (e.netWeight || 0);
 
       // Unique box tracking
@@ -1601,7 +1649,7 @@ export const OffSiteStorageView: React.FC<OffSiteStorageViewProps> = ({
     });
 
     return stats;
-  }, [entries]);
+  }, [entries, state.products]);
 
   // Lot breakdown calculations
   const lotStats = useMemo(() => {
@@ -1620,7 +1668,8 @@ export const OffSiteStorageView: React.FC<OffSiteStorageViewProps> = ({
       stats[lotId].weight += e.netWeight || 0;
       stats[lotId].pieces += e.pieces || 1;
       
-      const cleanC = (state.products?.find((p: any) => p.id === e.productId)?.name || e.originalCutName).replace(/^\d+\s+/, '').trim();
+      const resolvedCut = state.products?.find((p: any) => p.id === e.productId)?.name || e.originalCutName || e.cuts || '';
+      const cleanC = String(resolvedCut).replace(/^\d+\s+/, '').trim() || 'Unknown Cut';
       stats[lotId].cuts[cleanC] = (stats[lotId].cuts[cleanC] || 0) + (e.netWeight || 0);
       if (e.packDate) stats[lotId].dates.add(e.packDate);
     });
@@ -1632,7 +1681,7 @@ export const OffSiteStorageView: React.FC<OffSiteStorageViewProps> = ({
       cuts: data.cuts,
       dates: Array.from(data.dates).join(', ')
     })).sort((a,b) => b.weight - a.weight);
-  }, [entries]);
+  }, [entries, state.products]);
 
   // Handle active logistics location scope toggling
   const handleToggleMoveLocation = (loc: string) => {
@@ -1766,6 +1815,7 @@ export const OffSiteStorageView: React.FC<OffSiteStorageViewProps> = ({
                   setVisibleColumns={setVisibleColumns}
                   activeOrderId={activeOrder?.id}
                   onSelectActiveOrder={onSelectActiveOrder}
+                  onRegisterExportActions={handleRegisterSpreadsheetExport}
                 />
               </div>
             )}

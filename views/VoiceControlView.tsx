@@ -134,15 +134,19 @@ const SAMPLE_PHRASE_SECTIONS: SamplePhraseSection[] = [
   {
     id: 'add_create',
     title: 'Adding Items & New Containers',
-    description: 'Restock existing bins or strictly create new containers/templates with items.',
+    description: 'Restock existing bins or create new containers (box, bag, bin, tote, crate, tray, cooler, etc.) with items.',
     badgeClass: 'bg-emerald-950/60 text-emerald-300 border-emerald-500/35',
     headingClass: 'text-emerald-300',
     items: [
       { label: 'Restock existing location', command: 'add 5 pork chops to display' },
+      { label: 'New box in freezer', command: 'create new box yellow in freezer canada with 4 brats' },
+      { label: 'New bag in Staging', command: 'make new bag green with 6 hotdogs' },
+      { label: 'New pillowcase in freezer', command: 'create new pillowcase blue in freezer canada with 4 brats' },
+      { label: 'Add to bag & place in freezer', command: 'add 4 chicken broth to red bag and put it in chest freezer' },
       { label: 'New container + items', command: 'add container yellow bag in freezer canada with 4 liverwurst' },
       { label: 'New container from template', command: 'add container from template yellow bag in chest freezer with 3 ribeye' },
-      { label: 'Inbound into new container', command: 'inbound 4 ribeye, 2 brisket into new container red tote in canada' },
-      { label: 'Multi-line new container', command: 'Add container blue bin in chest freezer:\n- 4 ribeye\n- 2 ground beef' },
+      { label: 'Inbound into new container', command: 'inbound 4 ribeye, 2 brisket into new red tote in canada' },
+      { label: 'Multi-line new container', command: 'Create new bin blue in chest freezer:\n- 4 ribeye\n- 2 ground beef' },
       { label: 'Shorthand labels (w/, w/o, &)', command: 'add 2 boneless chicken breast to red tote with lid' },
     ],
   },
@@ -2006,10 +2010,18 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
                     className="bg-cool-gray-900 border border-cyan-500/35 rounded-xl p-3.5 space-y-2.5"
                   >
                     <div className="flex items-center justify-between gap-2 text-xs text-cool-gray-400">
-                      <span className="flex items-center gap-1.5">
+                      <span className="flex flex-wrap items-center gap-1.5">
                         <Search className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
                         <span>
                           Stock check: <strong className="text-white">"{clause.productQuery}"</strong>
+                          {clause.bundlePhrase && (
+                            <>
+                              {' · '}
+                              <span className="text-fuchsia-300 font-semibold">
+                                Pack: {clause.bundlePhrase}
+                              </span>
+                            </>
+                          )}
                           {clause.queryLocationFilter && (
                             <>
                               {' · '}in <strong className="text-cyan-300">{clause.queryLocationFilter}</strong>
@@ -2023,9 +2035,33 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
                     </div>
 
                     {(!clause.queryResults || clause.queryResults.length === 0) && (
-                      <div className="p-2.5 rounded-lg bg-cool-gray-850 border border-cool-gray-800 text-xs text-amber-300 flex items-center gap-2">
-                        <AlertTriangle className="w-4 h-4 shrink-0" />
-                        <span>{clause.errorMessage || `No on-site products matched "${clause.productQuery}".`}</span>
+                      <div className="space-y-2">
+                        <div className="p-2.5 rounded-lg bg-cool-gray-850 border border-cool-gray-800 text-xs text-amber-300 flex items-center gap-2">
+                          <AlertTriangle className="w-4 h-4 shrink-0" />
+                          <span>{clause.errorMessage || `No on-site products matched "${clause.productQuery}".`}</span>
+                        </div>
+                        {clause.suggestedFallbackProducts && clause.suggestedFallbackProducts.length > 0 && (
+                          <div className="space-y-1">
+                            <div className="text-[11px] font-semibold text-cool-gray-300">
+                              Did you mean? Tap to check stock:
+                            </div>
+                            <div className="flex flex-wrap gap-1.5">
+                              {clause.suggestedFallbackProducts.map(cand => (
+                                <button
+                                  key={cand.product.id}
+                                  type="button"
+                                  onClick={() => updateOverride(clause.id, { productId: cand.product.id })}
+                                  className="px-2.5 py-1.5 rounded-lg bg-cool-gray-850 hover:bg-cool-gray-800 border border-cool-gray-700 hover:border-cyan-500/60 text-xs text-cool-gray-100 hover:text-cyan-200 transition cursor-pointer inline-flex items-center gap-1.5"
+                                >
+                                  <span>{cand.product.name}</span>
+                                  <span className="text-[10px] text-cool-gray-400 tabular-nums">
+                                    ({cand.totalOnSiteQty})
+                                  </span>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
 
@@ -2118,25 +2154,150 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
             </div>
           )}
 
-          {/* Unrecognized Clauses Warning */}
+          {/* Partial / Unrecognized Clauses with 1-Tap Recovery */}
           {unknownClauses.length > 0 && (
-            <div className="bg-cool-gray-900 border border-amber-500/40 rounded-xl p-3 space-y-2">
-              {unknownClauses.map(clause => (
-                <div key={clause.id} className="flex items-start justify-between gap-2 text-xs">
-                  <div className="flex items-start gap-2 text-amber-200">
-                    <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-                    <span>{clause.errorMessage}</span>
+            <div className="bg-cool-gray-900 border border-amber-500/40 rounded-xl p-3 space-y-2.5">
+              {unknownClauses.map(clause => {
+                const topProd = clause.suggestedFallbackProducts?.[0];
+                const topTpl = clause.suggestedTemplateCandidates?.[0];
+                const topLoc = clause.suggestedFallbackLocations?.[0];
+                const suggestedFreezerName = clause.suggestedFreezerId
+                  ? (clause.suggestedFallbackFreezers || []).find(
+                      f => f.freezerId === clause.suggestedFreezerId
+                    )?.freezerName
+                  : undefined;
+
+                return (
+                  <div key={clause.id} className="space-y-2">
+                    <div className="flex items-start justify-between gap-2 text-xs">
+                      <div className="flex items-start gap-2 text-amber-200">
+                        <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                        <span>{clause.errorMessage}</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => updateOverride(clause.id, { excluded: true })}
+                        className="min-w-[32px] min-h-[32px] flex items-center justify-center rounded-lg text-cool-gray-400 hover:text-white hover:bg-cool-gray-800 cursor-pointer shrink-0"
+                        title="Dismiss line"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-1.5 pl-6">
+                      {topProd && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              updateOverride(clause.id, {
+                                fallbackIntent: 'add',
+                                productId: clause.inferredFallbackProductQuery
+                                  ? topProd.product.id
+                                  : undefined,
+                              })
+                            }
+                            className="min-h-[34px] px-2.5 py-1 rounded-lg bg-emerald-950/50 hover:bg-emerald-900/60 border border-emerald-500/40 text-xs font-semibold text-emerald-200 transition cursor-pointer inline-flex items-center gap-1"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                            <span>
+                              Add {clause.quantity}x{' '}
+                              {clause.inferredFallbackProductQuery ? topProd.product.name : 'Item'}
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              updateOverride(clause.id, {
+                                fallbackIntent: 'remove',
+                                productId: clause.inferredFallbackProductQuery
+                                  ? topProd.product.id
+                                  : undefined,
+                              })
+                            }
+                            className="min-h-[34px] px-2.5 py-1 rounded-lg bg-red-950/50 hover:bg-red-900/60 border border-red-500/40 text-xs font-semibold text-red-200 transition cursor-pointer inline-flex items-center gap-1"
+                          >
+                            <Minus className="w-3.5 h-3.5" />
+                            <span>
+                              Remove {clause.quantity}x{' '}
+                              {clause.inferredFallbackProductQuery ? topProd.product.name : 'Item'}
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              updateOverride(clause.id, {
+                                fallbackIntent: 'move',
+                                productId: clause.inferredFallbackProductQuery
+                                  ? topProd.product.id
+                                  : undefined,
+                              })
+                            }
+                            className="min-h-[34px] px-2.5 py-1 rounded-lg bg-amber-950/50 hover:bg-amber-900/60 border border-amber-500/40 text-xs font-semibold text-amber-200 transition cursor-pointer inline-flex items-center gap-1"
+                          >
+                            <ArrowRight className="w-3.5 h-3.5" />
+                            <span>Move</span>
+                          </button>
+                        </>
+                      )}
+
+                      {topTpl && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            updateOverride(clause.id, {
+                              fallbackIntent: 'add',
+                              createNewContainer: true,
+                              templateId: topTpl.templateId,
+                              customContainerName: topTpl.isCustom ? topTpl.name : undefined,
+                              productId: clause.inferredFallbackProductQuery
+                                ? topProd?.product.id
+                                : undefined,
+                              freezerId: clause.suggestedFreezerId || undefined,
+                            })
+                          }
+                          className="min-h-[34px] px-2.5 py-1 rounded-lg bg-cyan-950/50 hover:bg-cyan-900/60 border border-cyan-500/40 text-xs font-semibold text-cyan-200 transition cursor-pointer inline-flex items-center gap-1"
+                        >
+                          <Package className="w-3.5 h-3.5" />
+                          <span>
+                            Pack in New "{topTpl.name}"
+                            {suggestedFreezerName ? ` → ${suggestedFreezerName}` : ''}
+                          </span>
+                        </button>
+                      )}
+
+                      {topLoc && !topLoc.isLoose && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            updateOverride(clause.id, {
+                              fallbackIntent: 'move_container',
+                              sourceContainerId: topLoc.containerId,
+                              freezerId: clause.suggestedFreezerId || undefined,
+                            })
+                          }
+                          className="min-h-[34px] px-2.5 py-1 rounded-lg bg-purple-950/50 hover:bg-purple-900/60 border border-purple-500/40 text-xs font-semibold text-purple-200 transition cursor-pointer inline-flex items-center gap-1"
+                        >
+                          <MapPin className="w-3.5 h-3.5" />
+                          <span>
+                            Move {topLoc.containerName}
+                            {suggestedFreezerName ? ` → ${suggestedFreezerName}` : ' to Freezer'}
+                          </span>
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() => updateOverride(clause.id, { fallbackIntent: 'query' })}
+                        className="min-h-[34px] px-2.5 py-1 rounded-lg bg-cool-gray-850 hover:bg-cool-gray-800 border border-cool-gray-700 text-xs font-semibold text-cool-gray-200 transition cursor-pointer inline-flex items-center gap-1"
+                      >
+                        <Search className="w-3.5 h-3.5 text-cyan-400" />
+                        <span>Check Stock</span>
+                      </button>
+                    </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => updateOverride(clause.id, { excluded: true })}
-                    className="min-w-[32px] min-h-[32px] flex items-center justify-center rounded-lg text-cool-gray-400 hover:text-white hover:bg-cool-gray-800 cursor-pointer shrink-0"
-                    title="Dismiss line"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
 
@@ -2318,10 +2479,18 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
                     {/* Top Row: Intent + Item/Container + Stepper */}
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-1.5 text-[11px]">
+                        <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
                           <span className={`font-bold uppercase tracking-wider ${meta.accentText}`}>
                             {meta.label}
                           </span>
+                          {clause.bundlePhrase && (
+                            <>
+                              <span className="text-cool-gray-600">·</span>
+                              <span className="text-fuchsia-300 font-semibold">
+                                Pack: {clause.bundlePhrase}
+                              </span>
+                            </>
+                          )}
                           {clause.newContainerGroupKey && clause.intent === 'add' && (
                             <>
                               <span className="text-cool-gray-600">·</span>
@@ -3339,6 +3508,41 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
                                 <strong className="text-white">{totalPreviewPieces}</strong> pcs
                               </span>
                             )}
+                            {clause.switchedFromExistingAdd && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  updateOverride(clause.id, {
+                                    createNewContainer: false,
+                                    templateId: null,
+                                    freezerId: null,
+                                    customContainerName: undefined,
+                                    existingSpareContainerId: undefined,
+                                  })
+                                }
+                                className="px-2 py-1 rounded-md bg-cool-gray-850 hover:bg-cool-gray-800 border border-cool-gray-700 text-cool-gray-300 hover:text-white font-semibold flex items-center gap-1 cursor-pointer transition"
+                                title="Switch back to adding into an existing container"
+                              >
+                                <RotateCcw className="w-3 h-3 shrink-0" />
+                                <span>Use Existing</span>
+                              </button>
+                            )}
+                            {clause.canSwitchToNewContainer && !clause.newContainerGroupKey && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  updateOverride(clause.id, {
+                                    createNewContainer: true,
+                                    destContainerId: null,
+                                  })
+                                }
+                                className="px-2 py-1 rounded-md bg-cool-gray-800 hover:bg-cool-gray-750 border border-emerald-500/40 text-emerald-300 hover:text-white font-semibold flex items-center gap-1 cursor-pointer transition"
+                                title="Pack these items into a new container / template and pick a freezer"
+                              >
+                                <Plus className="w-3 h-3 shrink-0" />
+                                <span>New Container / Location</span>
+                              </button>
+                            )}
                             {isNewContainerGroupOwner && (
                               <button
                                 type="button"
@@ -3353,7 +3557,7 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
                             {(clause.productCandidates.length > 1 ||
                               clause.sourceLocationCandidates.length > 1 ||
                               clause.destLocationCandidates.length > 1 ||
-                              clause.cutCandidates.length > 1 ||
+                              (!clause.requiresSourceLocationSelection && clause.cutCandidates.length > 1) ||
                               hasContainerSwitcherOptions ||
                               hasCombineSlotSwitcherOptions ||
                               hasExtraCandidateSwitcherOptions) && (
@@ -3445,40 +3649,193 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
                         </div>
                       )}
 
-                    {/* Validation Error Banner */}
+                    {/* Validation Error Banner & Zero-Dead-End Recovery Suggestions */}
                     {clause.errorMessage && (!needsAnySelection || clause.intent === 'add_container') && (
-                      <div className="p-2.5 rounded-lg bg-red-950/30 border border-red-500/40 text-xs text-red-200 flex flex-wrap items-center justify-between gap-2">
-                        <div className="flex items-start gap-2 min-w-0 flex-1">
-                          <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
-                          <span>{clause.errorMessage}</span>
-                        </div>
-                        {clause.intent === 'add_container' && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setCommandInput(prev => {
-                                const trimmed = prev.trim();
-                                return /\bwith$/i.test(trimmed) ? `${trimmed} ` : `${trimmed} with `;
-                              });
-                              setTimeout(() => inputRef.current?.focus(), 20);
-                            }}
-                            className="min-h-[32px] px-2.5 py-1 rounded-md bg-cool-gray-900 border border-cool-gray-700 text-xs font-semibold text-white hover:border-cyan-500 cursor-pointer shrink-0"
-                          >
-                            + Add items
-                          </button>
-                        )}
-                        {selectedCut &&
-                          selectedCut.meatCut.quantity > 0 &&
-                          clause.quantity > selectedCut.meatCut.quantity && (
+                      <div className="space-y-2">
+                        <div className="p-2.5 rounded-lg bg-red-950/30 border border-red-500/40 text-xs text-red-200 flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex items-start gap-2 min-w-0 flex-1">
+                            <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                            <span>{clause.errorMessage}</span>
+                          </div>
+                          {clause.intent === 'add_container' && (
                             <button
                               type="button"
-                              onClick={() =>
-                                updateOverride(clause.id, { quantity: selectedCut.meatCut.quantity })
-                              }
-                              className="min-h-[32px] px-2.5 py-1 rounded-md bg-cool-gray-900 border border-cool-gray-700 text-xs font-semibold text-white hover:border-cyan-500 cursor-pointer"
+                              onClick={() => {
+                                setCommandInput(prev => {
+                                  const trimmed = prev.trim();
+                                  return /\bwith$/i.test(trimmed) ? `${trimmed} ` : `${trimmed} with `;
+                                });
+                                setTimeout(() => inputRef.current?.focus(), 20);
+                              }}
+                              className="min-h-[32px] px-2.5 py-1 rounded-md bg-cool-gray-900 border border-cool-gray-700 text-xs font-semibold text-white hover:border-cyan-500 cursor-pointer shrink-0"
                             >
-                              Use max ({selectedCut.meatCut.quantity})
+                              + Add items
                             </button>
+                          )}
+                          {selectedCut &&
+                            selectedCut.meatCut.quantity > 0 &&
+                            clause.quantity > selectedCut.meatCut.quantity && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  updateOverride(clause.id, { quantity: selectedCut.meatCut.quantity })
+                                }
+                                className="min-h-[32px] px-2.5 py-1 rounded-md bg-cool-gray-900 border border-cool-gray-700 text-xs font-semibold text-white hover:border-cyan-500 cursor-pointer"
+                              >
+                                Use max ({selectedCut.meatCut.quantity})
+                              </button>
+                            )}
+                        </div>
+
+                        {/* Zero-Dead-End Template / New Container Recovery for Add */}
+                        {clause.suggestedTemplateCandidates &&
+                          clause.suggestedTemplateCandidates.length > 0 &&
+                          !clause.newContainerGroupKey && (
+                            <div className="space-y-1.5">
+                              <div className="text-xs font-semibold text-emerald-300 flex items-center gap-1.5">
+                                <Package className="w-3.5 h-3.5 shrink-0" />
+                                <span>
+                                  Start as New Container
+                                  {clause.suggestedFreezerId
+                                    ? ` in ${
+                                        (clause.suggestedFallbackFreezers || []).find(
+                                          f => f.freezerId === clause.suggestedFreezerId
+                                        )?.freezerName || 'selected freezer'
+                                      }`
+                                    : ''}
+                                  :
+                                </span>
+                              </div>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                                {clause.suggestedTemplateCandidates.map(tpl => (
+                                  <button
+                                    key={`sug-tpl-${tpl.templateId}`}
+                                    type="button"
+                                    onClick={() =>
+                                      updateOverride(clause.id, {
+                                        createNewContainer: true,
+                                        templateId: tpl.templateId,
+                                        customContainerName: tpl.isCustom ? tpl.name : undefined,
+                                        freezerId: clause.suggestedFreezerId || undefined,
+                                        destContainerId: null,
+                                      })
+                                    }
+                                    className="min-h-[42px] px-3 py-2 rounded-lg bg-emerald-950/30 hover:bg-emerald-900/45 border border-emerald-500/40 text-left transition cursor-pointer flex items-center justify-between gap-2"
+                                  >
+                                    <div className="min-w-0">
+                                      <div className="text-xs font-semibold text-white truncate">
+                                        {tpl.isCustom ? `Create "${tpl.name}"` : tpl.name}
+                                      </div>
+                                      <div className="text-[11px] text-emerald-300/80 truncate">
+                                        {tpl.isCustom ? 'New custom container' : 'From Container Template'}
+                                      </div>
+                                    </div>
+                                    <Plus className="w-4 h-4 text-emerald-300 shrink-0" />
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                        {/* Zero-Dead-End Product Suggestions */}
+                        {clause.suggestedFallbackProducts &&
+                          clause.suggestedFallbackProducts.length > 0 &&
+                          clause.productCandidates.length === 0 && (
+                            <div className="space-y-1.5">
+                              <div className="text-xs font-semibold text-amber-300 flex items-center gap-1.5">
+                                <Package className="w-3.5 h-3.5 shrink-0" />
+                                <span>Closest products — tap to select:</span>
+                              </div>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                                {clause.suggestedFallbackProducts.map(cand => (
+                                  <button
+                                    key={`sug-prod-${cand.product.id}`}
+                                    type="button"
+                                    onClick={() =>
+                                      updateOverride(clause.id, {
+                                        productId: cand.product.id,
+                                        meatCutId: null,
+                                      })
+                                    }
+                                    className="min-h-[42px] px-3 py-2 rounded-lg bg-cool-gray-850 hover:bg-cool-gray-800 border border-cool-gray-700 hover:border-cyan-500/60 text-left transition cursor-pointer flex items-center justify-between gap-2"
+                                  >
+                                    <div className="min-w-0">
+                                      <div className="text-xs font-semibold text-white truncate">
+                                        {cand.product.name}
+                                      </div>
+                                      <div className="text-[11px] text-cool-gray-400 truncate">
+                                        {cand.product.primaryCategory} · {cand.product.subCategory}
+                                      </div>
+                                    </div>
+                                    <div className="text-right shrink-0 tabular-nums">
+                                      <div className="text-xs font-bold text-cyan-300">
+                                        {cand.totalOnSiteQty}
+                                      </div>
+                                      <div className="text-[10px] text-cool-gray-500">in stock</div>
+                                    </div>
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                        {/* Zero-Dead-End Location / Container Suggestions */}
+                        {clause.suggestedFallbackLocations &&
+                          clause.suggestedFallbackLocations.length > 0 && (
+                            <div className="space-y-1.5">
+                              <div className="text-xs font-semibold text-amber-300 flex items-center gap-1.5">
+                                <MapPin className="w-3.5 h-3.5 shrink-0" />
+                                <span>
+                                  {clause.intent === 'add' ||
+                                  (clause.intent === 'move' && clause.sourceLocationCandidates.length > 0 && clause.destLocationCandidates.length === 0)
+                                    ? 'Or select an existing destination container / location:'
+                                    : clause.intent === 'move_container' ||
+                                      clause.intent === 'empty_container' ||
+                                      clause.intent === 'move_all'
+                                    ? 'Select container from active list:'
+                                    : 'Available containers — tap to select:'}
+                                </span>
+                              </div>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                                {clause.suggestedFallbackLocations.map(loc => {
+                                  const isDestRecovery =
+                                    clause.intent === 'add' ||
+                                    (clause.intent === 'move' &&
+                                      clause.sourceLocationCandidates.length > 0 &&
+                                      clause.destLocationCandidates.length === 0);
+                                  return (
+                                    <button
+                                      key={`sug-loc-${loc.containerId}`}
+                                      type="button"
+                                      onClick={() =>
+                                        updateOverride(
+                                          clause.id,
+                                          isDestRecovery
+                                            ? { destContainerId: loc.containerId }
+                                            : { sourceContainerId: loc.containerId, meatCutId: null }
+                                        )
+                                      }
+                                      className="min-h-[42px] px-3 py-2 rounded-lg bg-cool-gray-850 hover:bg-cool-gray-800 border border-cool-gray-700 hover:border-cyan-500/60 text-left transition cursor-pointer flex items-center justify-between gap-2"
+                                    >
+                                      <div className="min-w-0">
+                                        <div className="text-xs font-semibold text-white truncate">
+                                          {loc.containerName}
+                                        </div>
+                                        <div className="text-[11px] text-cool-gray-400 truncate">
+                                          {loc.freezerName}
+                                          {loc.hasMatchingProduct && (
+                                            <span className="ml-1.5 text-emerald-300 font-semibold">
+                                              · {loc.existingProductQty} in box
+                                            </span>
+                                          )}
+                                        </div>
+                                      </div>
+                                      <ArrowRight className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
                           )}
                       </div>
                     )}
@@ -3553,6 +3910,20 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
                               {clause.sourceLocationCandidates.map(loc => {
                                 const isSelected = clause.selectedSourceContainerId === loc.containerId;
+                                const containerStockQty =
+                                  clause.selectedProductId &&
+                                  (clause.intent === 'remove' ||
+                                    clause.intent === 'move' ||
+                                    clause.intent === 'set_quantity')
+                                    ? (state.meatCuts || [])
+                                        .filter(
+                                          mc =>
+                                            mc.productId === clause.selectedProductId &&
+                                            mc.containerId === loc.containerId &&
+                                            mc.quantity > 0
+                                        )
+                                        .reduce((sum, mc) => sum + mc.quantity, 0)
+                                    : null;
                                 return (
                                   <button
                                     key={loc.containerId}
@@ -3578,7 +3949,15 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
                                         {loc.freezerName}
                                       </div>
                                     </div>
-                                    {isSelected && <Check className="w-4 h-4 text-cyan-400 shrink-0" />}
+                                    <div className="flex items-center gap-2 shrink-0">
+                                      {containerStockQty !== null && (
+                                        <div className="text-right tabular-nums">
+                                          <div className="text-xs font-bold text-white">{containerStockQty}</div>
+                                          <div className="text-[10px] text-cool-gray-400">available</div>
+                                        </div>
+                                      )}
+                                      {isSelected && <Check className="w-4 h-4 text-cyan-400 shrink-0" />}
+                                    </div>
                                   </button>
                                 );
                               })}
@@ -3684,6 +4063,11 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
                                       <div className="text-[11px] text-cool-gray-400 truncate">
                                         {loc.freezerName}
                                         {piecesInDest !== null && ` · ${piecesInDest} pcs inside`}
+                                        {loc.hasMatchingProduct && (
+                                          <span className="ml-1.5 text-emerald-300 font-semibold">
+                                            · {loc.existingProductQty} already inside
+                                          </span>
+                                        )}
                                       </div>
                                     </div>
                                     {isSelected && <Check className="w-4 h-4 text-cyan-400 shrink-0" />}
@@ -3696,7 +4080,9 @@ export const VoiceControlView: React.FC<VoiceControlViewProps> = ({
 
                         {/* 4. Specific MeatCut Variant Stack Candidates */}
                         {(clause.requiresCutSelection ||
-                          (isSwitcherOpen && clause.cutCandidates.length > 1)) && (
+                          (isSwitcherOpen &&
+                            !clause.requiresSourceLocationSelection &&
+                            clause.cutCandidates.length > 1)) && (
                           <div className="space-y-1.5">
                             <div className="text-xs font-semibold text-amber-300 flex items-center gap-1.5">
                               <Package className="w-3.5 h-3.5 shrink-0" />

@@ -17,14 +17,14 @@ import {
 import { createTestDatabase } from './test-harness';
 
 describe('Catalog & Settings Navigation Structure', () => {
-  it('defines the three logical navigation groups in order with all 13 sections', () => {
+  it('defines the three logical navigation groups in order with all 14 sections', () => {
     expect(LIBRARY_GROUPS.map((g) => g.id)).toEqual(['catalog', 'operations', 'admin']);
     expect(LIBRARY_GROUPS.map((g) => g.label)).toEqual([
       'Catalog',
       'Operations',
       'System & Admin',
     ]);
-    expect(LIBRARY_SECTIONS).toHaveLength(13);
+    expect(LIBRARY_SECTIONS).toHaveLength(14);
   });
 
   it('normalizes legacy and alias hash routes accurately', () => {
@@ -49,6 +49,7 @@ describe('Catalog & Settings Navigation Structure', () => {
     expect(isSectionAdminOnly('locations')).toBe(false);
     expect(isSectionAdminOnly('photos')).toBe(false);
     expect(isSectionAdminOnly('offsite_settings')).toBe(false);
+    expect(isSectionAdminOnly('butcher_settings')).toBe(false);
     expect(isSectionAdminOnly('voice_dictionary')).toBe(false);
 
     // Admin-only sections (including legacy pwa alias and Notifications)
@@ -65,7 +66,7 @@ describe('Catalog & Settings Navigation Structure', () => {
     expect(gatedGroups.find((g) => g.group.id === 'catalog')?.sections).toHaveLength(7);
     expect(
       gatedGroups.find((g) => g.group.id === 'operations')?.sections.map((s) => s.id),
-    ).toEqual(['offsite_settings', 'voice_dictionary']);
+    ).toEqual(['offsite_settings', 'butcher_settings', 'voice_dictionary']);
 
     const adminGroups = getVisibleLibraryGroups(false);
     expect(adminGroups.map((g) => g.group.id)).toEqual(['catalog', 'operations', 'admin']);
@@ -79,6 +80,7 @@ describe('Catalog & Settings Navigation Structure', () => {
 
   it('returns section metadata with fallback to products', () => {
     expect(getLibrarySectionMeta('offsite_settings').label).toBe('Off-Site Settings');
+    expect(getLibrarySectionMeta('butcher_settings').label).toBe('Butcher Settings');
     expect(getLibrarySectionMeta('pwa').id).toBe('users_devices');
     expect(getLibrarySectionMeta('unknown').id).toBe('products');
   });
@@ -198,10 +200,12 @@ describe('Unified Settings & Catalog UI Architecture Checks', () => {
     expect(librarySrc).toContain('getVisibleLibraryGroups');
     expect(librarySrc).toContain('mobileNavOpen');
     expect(librarySrc).toContain('OffSiteSettingsPanel');
+    expect(librarySrc).toContain('ButcherSettingsPanel');
     expect(librarySrc).toContain('hideInternalHeader');
 
-    // Off-site settings removed from admin-only settings and moved to dedicated tab
+    // Off-site & butcher settings live in dedicated Operations tabs
     expect(librarySrc).toContain('case "offsite_settings":');
+    expect(librarySrc).toContain('case "butcher_settings":');
 
     // Regression guard: ensure no stale duplicate case "lists" bypasses shell header wiring
     const listCaseMatches = librarySrc.match(/case "lists":/g) || [];

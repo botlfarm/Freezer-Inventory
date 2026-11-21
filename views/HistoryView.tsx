@@ -9,11 +9,21 @@ import {
   Product,
   MeatCut,
   AppLocation,
-  HistoryEntry
+  HistoryEntry,
+  HistoryScope,
+  OffSiteEntry,
+  ButcherOrder,
+  MovementOrder,
+  AppPallet
 } from '../types';
 import { SearchIcon } from '../components/icons';
-import { SlidersHorizontal, ChevronDown, ChevronUp } from 'lucide-react';
+import { SlidersHorizontal, ChevronDown, ChevronUp, RotateCcw } from 'lucide-react';
 import { calculateHistoryRetention } from '../utils/historyRetention';
+import {
+  resolveHistoryScope,
+  getHistoryUndoMode,
+  ScopeLookupContext
+} from '../utils/auditHistory';
 
 interface HistoryViewProps {
   state: InventoryState;
@@ -24,6 +34,7 @@ interface HistoryViewProps {
 }
 
 export type DateRangeOption = '24hours' | 'today' | '7days' | '30days' | '90days' | 'all' | 'custom';
+export type ScopeFilterOption = 'all' | HistoryScope;
 type PurgeMode = '1year' | '2years' | '3years' | '5years';
 
 interface OptionItem {
@@ -33,19 +44,29 @@ interface OptionItem {
 }
 
 export interface HistoryLocationInfo {
-  type: 'meatCut' | 'container' | 'freezer' | 'product' | 'location';
+  type: 'meatCut' | 'container' | 'freezer' | 'product' | 'location' | 'offsiteEntry' | 'butcherOrder' | 'movementOrder' | 'pallet' | 'details';
   containerId?: string;
   freezerId?: string;
   productId?: string;
   locationId?: string;
+  palletName?: string;
+  orderId?: string;
   label: string;
   detail: string;
 }
 
 export interface EnrichedHistoryEntry extends HistoryEntry {
   timestampMs: number;
+  resolvedScope: HistoryScope;
   locInfo: HistoryLocationInfo | null;
 }
+
+const SCOPE_META: Record<HistoryScope, { label: string; textClass: string }> = {
+  onsite: { label: 'On-Site', textClass: 'text-cyan-400' },
+  offsite: { label: 'Off-Site', textClass: 'text-emerald-400' },
+  butcher: { label: 'Butcher', textClass: 'text-amber-400' },
+  system: { label: 'System', textClass: 'text-cool-gray-300' }
+};
 
 const HISTORY_DATE_FORMATTER = new Intl.DateTimeFormat(undefined, {
   year: 'numeric',
@@ -259,11 +280,13 @@ const FALLBACK_RECENT_COUNT = 25;
 const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch, onOpenUndo, undoSnapshots, canPurgeHistory = false }) => {
     // Filter States - Default to '24hours' so opening the Audit Log is instantaneous
     const [searchTerm, setSearchTerm] = useState('');
+    const [selectedScope, setSelectedScope] = useState<ScopeFilterOption>('all');
     const [dateRangeOption, setDateRangeOption] = useState<DateRangeOption>('24hours');
     const [hasExplicitDateSelection, setHasExplicitDateSelection] = useState(false);
     const [customStartDate, setCustomStartDate] = useState('');
     const [customEndDate, setCustomEndDate] = useState('');
     const [visibleLimit, setVisibleLimit] = useState<number>(INITIAL_RENDER_LIMIT);
+    const [expandedEntryIds, setExpandedEntryIds] = useState<Set<string>>(new Set());
     
     // Filter Panel Visibility
     const [showFilters, setShowFilters] = useState(false);
@@ -272,6 +295,8 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch, onOpenUndo, 
     const [selectedFreezerIds, setSelectedFreezerIds] = useState<Set<string>>(new Set());
     const [selectedContainerIds, setSelectedContainerIds] = useState<Set<string>>(new Set());
     const [selectedProductIds, setSelectedProductIds] = useState<Set<string>>(new Set());
+    const [selectedLocationIds, setSelectedLocationIds] = useState<Set<string>>(new Set());
+    const [selectedPalletNames, setSelectedPalletNames] = useState<Set<string>>(new Set());
     const [selectedUsers, setSelectedUsers] = useState<Set<string>>(new Set());
     const [selectedDeviceIds, setSelectedDeviceIds] = useState<Set<string>>(new Set());
 
@@ -280,6 +305,11 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch, onOpenUndo, 
     const [showPurgeModal, setShowPurgeModal] = useState(false);
     const [purgeMode, setPurgeMode] = useState<PurgeMode>('1year');
     const [showPurgeConfirm, setShowPurgeConfirm] = useState(false);
+    const [confirmRevertOrderModal, setConfirmRevertOrderModal] = useState<{
+        orderId: string;
+        orderName: string;
+        historyDescription: string;
+    } | null>(null);
 
     // Pre-indexed O(1) Entity Lookup Maps
     const {
@@ -287,13 +317,31 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch, onOpenUndo, 
         containersMap,
         productsMap,
         meatCutsMap,
-        locationsMap
+        locationsMap,
+        locationByNameMap,
+        offSiteEntriesMap,
+        butcherOrdersMap,
+        movementOrdersMap,
+        palletsMap,
+        scopeLookupContext
     } = useMemo(() => {
         const fMap = new Map<string, Freezer>();
         const cMap = new Map<string, Container>();
         const pMap = new Map<string, Product>();
         const mMap = new Map<string, MeatCut>();
         const lMap = new Map<string, AppLocation>();
+        const lNameMap = new Map<string, AppLocation>();
+        const oMap = new Map<string, OffSiteEntry>();
+        const bMap = new Map<string, ButcherOrder>();
+        const moMap = new Map<string, MovementOrder>();
+        const palMap = new Map<string, AppPallet>();
+
+        const offSiteEntryIds = new Set<string>();
+        const butcherOrderIds = new Set<string>();
+        const movementOrderIds = new Set<string>();
+        const palletIds = new Set<string>();
+        const locationIds = new Set<string>();
+        const productIds = new Set<string>();
 
         const freezers = state.freezers || [];
         for (let i = 0; i < freezers.length; i++) fMap.set(freezers[i].id, freezers[i]);
@@ -302,101 +350,261 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch, onOpenUndo, 
         for (let i = 0; i < containers.length; i++) cMap.set(containers[i].id, containers[i]);
 
         const products = state.products || [];
-        for (let i = 0; i < products.length; i++) pMap.set(products[i].id, products[i]);
+        for (let i = 0; i < products.length; i++) {
+            pMap.set(products[i].id, products[i]);
+            productIds.add(products[i].id);
+        }
 
         const meatCuts = state.meatCuts || [];
         for (let i = 0; i < meatCuts.length; i++) mMap.set(meatCuts[i].id, meatCuts[i]);
 
         const locations = state.locations || [];
-        for (let i = 0; i < locations.length; i++) lMap.set(locations[i].id, locations[i]);
+        for (let i = 0; i < locations.length; i++) {
+            lMap.set(locations[i].id, locations[i]);
+            lNameMap.set(locations[i].name.trim().toLowerCase(), locations[i]);
+            locationIds.add(locations[i].id);
+        }
+
+        const offSiteEntries = state.offSiteEntries || [];
+        for (let i = 0; i < offSiteEntries.length; i++) {
+            oMap.set(offSiteEntries[i].id, offSiteEntries[i]);
+            offSiteEntryIds.add(offSiteEntries[i].id);
+        }
+
+        const butcherOrders = state.butcherOrders || [];
+        for (let i = 0; i < butcherOrders.length; i++) {
+            bMap.set(butcherOrders[i].id, butcherOrders[i]);
+            butcherOrderIds.add(butcherOrders[i].id);
+        }
+
+        const movementOrders = state.movementOrders || [];
+        for (let i = 0; i < movementOrders.length; i++) {
+            moMap.set(movementOrders[i].id, movementOrders[i]);
+            movementOrderIds.add(movementOrders[i].id);
+        }
+
+        const pallets = state.pallets || [];
+        for (let i = 0; i < pallets.length; i++) {
+            palMap.set(pallets[i].id, pallets[i]);
+            palletIds.add(pallets[i].id);
+        }
 
         return {
             freezersMap: fMap,
             containersMap: cMap,
             productsMap: pMap,
             meatCutsMap: mMap,
-            locationsMap: lMap
+            locationsMap: lMap,
+            locationByNameMap: lNameMap,
+            offSiteEntriesMap: oMap,
+            butcherOrdersMap: bMap,
+            movementOrdersMap: moMap,
+            palletsMap: palMap,
+            scopeLookupContext: {
+                offSiteEntryIds,
+                butcherOrderIds,
+                movementOrderIds,
+                palletIds,
+                locationIds,
+                productIds
+            } satisfies ScopeLookupContext
         };
-    }, [state.freezers, state.containers, state.products, state.meatCuts, state.locations]);
+    }, [
+        state.freezers,
+        state.containers,
+        state.products,
+        state.meatCuts,
+        state.locations,
+        state.offSiteEntries,
+        state.butcherOrders,
+        state.movementOrders,
+        state.pallets
+    ]);
 
-    // Memoized O(1) location resolver per targetId
+    // Memoized O(1) location & entity context resolver per history entry
     const resolveLocationInfo = useMemo(() => {
         const cache = new Map<string, HistoryLocationInfo | null>();
-        return (targetId?: string): HistoryLocationInfo | null => {
-            if (!targetId) return null;
-            if (cache.has(targetId)) return cache.get(targetId)!;
+        return (entryOrTarget?: HistoryEntry | string): HistoryLocationInfo | null => {
+            const entry = typeof entryOrTarget === 'string' ? undefined : entryOrTarget;
+            const targetId = typeof entryOrTarget === 'string' ? entryOrTarget : entryOrTarget?.targetId;
+            const details = entry?.details;
+            const cacheKey = entry
+                ? `${entry.id}:${targetId || ''}:${details?.locationName || ''}:${details?.palletName || ''}:${details?.orderNumber || ''}:${details?.relatedOrderId || ''}`
+                : targetId || '';
+            if (!cacheKey) return null;
+            if (cache.has(cacheKey)) return cache.get(cacheKey)!;
 
             let result: HistoryLocationInfo | null = null;
 
-            // 1. Meat cut check
-            const meatCut = meatCutsMap.get(targetId);
-            if (meatCut) {
-                const product = productsMap.get(meatCut.productId);
-                const container = containersMap.get(meatCut.containerId);
-                const freezer = container?.freezerId ? freezersMap.get(container.freezerId) : undefined;
-                const containerName = container?.name || 'Staging Area';
-                const freezerName = freezer?.name || (container ? 'Unassigned Freezer' : 'Staging');
-                result = {
-                    type: 'meatCut',
-                    containerId: container?.id,
-                    freezerId: freezer?.id,
-                    productId: product?.id,
-                    label: `${containerName} → ${freezerName}`,
-                    detail: product?.name ? `${product.name} in ${containerName} (${freezerName})` : `${containerName} (${freezerName})`
-                };
-            } else {
-                // 2. Container check
-                const container = containersMap.get(targetId);
-                if (container) {
-                    const freezer = container.freezerId ? freezersMap.get(container.freezerId) : undefined;
-                    const freezerName = freezer?.name || 'Unassigned / Staging';
+            if (targetId) {
+                // 1. Meat cut check
+                const meatCut = meatCutsMap.get(targetId);
+                if (meatCut) {
+                    const product = productsMap.get(meatCut.productId);
+                    const container = containersMap.get(meatCut.containerId);
+                    const freezer = container?.freezerId ? freezersMap.get(container.freezerId) : undefined;
+                    const containerName = container?.name || 'Staging Area';
+                    const freezerName = freezer?.name || (container ? 'Unassigned Freezer' : 'Staging');
                     result = {
-                        type: 'container',
-                        containerId: container.id,
+                        type: 'meatCut',
+                        containerId: container?.id,
                         freezerId: freezer?.id,
-                        label: `Container: ${container.name} (${freezerName})`,
-                        detail: `Container "${container.name}" in ${freezerName}`
+                        productId: product?.id,
+                        label: `${containerName} -> ${freezerName}`,
+                        detail: product?.name ? `${product.name} in ${containerName} (${freezerName})` : `${containerName} (${freezerName})`
                     };
                 } else {
-                    // 3. Freezer check
-                    const freezer = freezersMap.get(targetId);
-                    if (freezer) {
+                    // 2. Container check
+                    const container = containersMap.get(targetId);
+                    if (container) {
+                        const freezer = container.freezerId ? freezersMap.get(container.freezerId) : undefined;
+                        const freezerName = freezer?.name || 'Unassigned / Staging';
                         result = {
-                            type: 'freezer',
-                            freezerId: freezer.id,
-                            label: `Freezer: ${freezer.name}`,
-                            detail: `Freezer "${freezer.name}"`
+                            type: 'container',
+                            containerId: container.id,
+                            freezerId: freezer?.id,
+                            label: `${container.name} (${freezerName})`,
+                            detail: `Container "${container.name}" in ${freezerName}`
                         };
                     } else {
-                        // 4. Product check
-                        const product = productsMap.get(targetId);
-                        if (product) {
+                        // 3. Freezer check
+                        const freezer = freezersMap.get(targetId);
+                        if (freezer) {
                             result = {
-                                type: 'product',
-                                productId: product.id,
-                                label: `Product: ${product.name}`,
-                                detail: `Product "${product.name}"`
+                                type: 'freezer',
+                                freezerId: freezer.id,
+                                label: freezer.name,
+                                detail: `Freezer "${freezer.name}"`
                             };
                         } else {
-                            // 5. Offsite location check
-                            const location = locationsMap.get(targetId);
-                            if (location) {
+                            // 4. Off-site entry check
+                            const offSite = offSiteEntriesMap.get(targetId);
+                            if (offSite) {
+                                const locObj =
+                                    (offSite.storageLocationId ? locationsMap.get(offSite.storageLocationId) : undefined) ||
+                                    (offSite.location ? locationByNameMap.get(offSite.location.trim().toLowerCase()) : undefined);
+                                const palletName = (offSite.currentLocation || offSite.pallet || '').trim() || undefined;
+                                const locName = locObj?.name || offSite.location || 'Off-Site';
+                                const product = offSite.productId ? productsMap.get(offSite.productId) : undefined;
                                 result = {
-                                    type: 'location',
-                                    locationId: location.id,
-                                    label: `Location: ${location.name}`,
-                                    detail: `Location "${location.name}"`
+                                    type: 'offsiteEntry',
+                                    locationId: locObj?.id || offSite.storageLocationId,
+                                    palletName,
+                                    productId: product?.id,
+                                    orderId: offSite.orderId,
+                                    label: palletName ? `${locName} · ${palletName}` : locName,
+                                    detail: `${product?.name || offSite.cuts || 'Package'} at ${locName}${palletName ? ` (${palletName})` : ''}`
                                 };
+                            } else {
+                                // 5. Butcher order check
+                                const butcherOrder = butcherOrdersMap.get(targetId);
+                                if (butcherOrder) {
+                                    const locObj =
+                                        (butcherOrder.locationId ? locationsMap.get(butcherOrder.locationId) : undefined) ||
+                                        (butcherOrder.targetLocation ? locationByNameMap.get(butcherOrder.targetLocation.trim().toLowerCase()) : undefined);
+                                    const locName = locObj?.name || butcherOrder.targetLocation;
+                                    const palletName = (butcherOrder.targetPallet || butcherOrder.pallet || '').trim() || undefined;
+                                    result = {
+                                        type: 'butcherOrder',
+                                        orderId: butcherOrder.id,
+                                        locationId: locObj?.id || butcherOrder.locationId,
+                                        palletName,
+                                        label: `Order #${butcherOrder.orderNumber}${locName ? ` · ${locName}` : ''}`,
+                                        detail: `Butcher Order #${butcherOrder.orderNumber} (${butcherOrder.species || 'Butcher'})`
+                                    };
+                                } else {
+                                    // 6. Movement order check
+                                    const movOrder = movementOrdersMap.get(targetId);
+                                    if (movOrder) {
+                                        result = {
+                                            type: 'movementOrder',
+                                            orderId: movOrder.id,
+                                            label: `${movOrder.name} (${movOrder.status})`,
+                                            detail: `Movement Order "${movOrder.name}"`
+                                        };
+                                    } else {
+                                        // 7. Pallet check
+                                        const pallet = palletsMap.get(targetId);
+                                        if (pallet) {
+                                            const locObj = pallet.storageLocationId ? locationsMap.get(pallet.storageLocationId) : undefined;
+                                            result = {
+                                                type: 'pallet',
+                                                palletName: pallet.id,
+                                                locationId: locObj?.id || pallet.storageLocationId,
+                                                label: locObj ? `${locObj.name} · ${pallet.id}` : `Pallet ${pallet.id}`,
+                                                detail: `Pallet "${pallet.id}"${locObj ? ` at ${locObj.name}` : ''}`
+                                            };
+                                        } else {
+                                            // 8. Product check
+                                            const product = productsMap.get(targetId);
+                                            if (product) {
+                                                result = {
+                                                    type: 'product',
+                                                    productId: product.id,
+                                                    label: product.name,
+                                                    detail: `Product "${product.name}"`
+                                                };
+                                            } else {
+                                                // 9. AppLocation check
+                                                const location = locationsMap.get(targetId);
+                                                if (location) {
+                                                    result = {
+                                                        type: 'location',
+                                                        locationId: location.id,
+                                                        label: location.name,
+                                                        detail: `Location "${location.name}"`
+                                                    };
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
 
-            cache.set(targetId, result);
+            // Fallback/supplement from structured details metadata (supports bulk/archived/deleted records)
+            if (!result && details) {
+                const matchedLoc = details.locationName
+                    ? locationByNameMap.get(details.locationName.trim().toLowerCase())
+                    : undefined;
+                const relatedButcher = details.relatedOrderId ? butcherOrdersMap.get(details.relatedOrderId) : undefined;
+                const relatedMove = details.relatedOrderId ? movementOrdersMap.get(details.relatedOrderId) : undefined;
+                const labelParts: string[] = [];
+                if (details.orderNumber) labelParts.push(`Order #${details.orderNumber}`);
+                else if (details.orderName) labelParts.push(details.orderName);
+                if (details.locationName) labelParts.push(details.locationName);
+                if (details.palletName) labelParts.push(details.palletName);
+
+                if (labelParts.length > 0 || relatedButcher || relatedMove) {
+                    result = {
+                        type: 'details',
+                        locationId: matchedLoc?.id || relatedButcher?.locationId,
+                        palletName: details.palletName,
+                        orderId: details.relatedOrderId,
+                        label: labelParts.join(' · ') || relatedMove?.name || `Order #${relatedButcher?.orderNumber}`,
+                        detail: labelParts.join(' · ')
+                    };
+                }
+            }
+
+            cache.set(cacheKey, result);
             return result;
         };
-    }, [meatCutsMap, containersMap, freezersMap, productsMap, locationsMap]);
+    }, [
+        meatCutsMap,
+        containersMap,
+        freezersMap,
+        productsMap,
+        locationsMap,
+        locationByNameMap,
+        offSiteEntriesMap,
+        butcherOrdersMap,
+        movementOrdersMap,
+        palletsMap
+    ]);
 
     // Options for Searchable Checkbox Dropdowns
     const freezerOptions = useMemo<OptionItem[]>(() => {
@@ -425,6 +633,40 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch, onOpenUndo, 
             subtext: (p as any).cutCategory ? `Category: ${(p as any).cutCategory}` : 'Product'
         }));
     }, [state.products]);
+
+    const locationOptions = useMemo<OptionItem[]>(() => {
+        return (state.locations || []).map(l => ({
+            id: l.id,
+            name: l.name,
+            subtext: l.isHome ? 'Home Base' : (l.hasPallets ? 'Cold Storage (Pallets)' : 'Storage / Delivery')
+        }));
+    }, [state.locations]);
+
+    const palletOptions = useMemo<OptionItem[]>(() => {
+        const palletMap = new Map<string, string>();
+        for (const p of state.pallets || []) {
+            if (!p?.id) continue;
+            const locName = p.storageLocationId ? locationsMap.get(p.storageLocationId)?.name : undefined;
+            palletMap.set(p.id, locName ? `Location: ${locName}` : 'Pallet');
+        }
+        for (const e of state.offSiteEntries || []) {
+            const name = (e.currentLocation || e.pallet || '').trim();
+            if (!name || palletMap.has(name)) continue;
+            palletMap.set(name, e.location ? `Location: ${e.location}` : 'Off-Site Pallet');
+        }
+        for (const h of state.history || []) {
+            const name = h.details?.palletName?.trim();
+            if (!name || palletMap.has(name)) continue;
+            palletMap.set(name, h.details?.locationName ? `Location: ${h.details.locationName}` : 'Historical Pallet');
+        }
+        return Array.from(palletMap.entries())
+            .sort((a, b) => a[0].localeCompare(b[0]))
+            .map(([name, subtext]) => ({
+                id: name,
+                name,
+                subtext
+            }));
+    }, [state.pallets, state.offSiteEntries, state.history, locationsMap]);
 
     const formatUserDisplay = (usr?: string) => {
         if (!usr || !usr.trim()) return 'System';
@@ -514,21 +756,30 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch, onOpenUndo, 
     }, [undoSnapshots]);
 
     const hasEntityOrSearchFilters =
+        selectedScope !== 'all' ||
         searchTerm.trim() !== '' ||
         selectedFreezerIds.size > 0 ||
         selectedContainerIds.size > 0 ||
         selectedProductIds.size > 0 ||
+        selectedLocationIds.size > 0 ||
+        selectedPalletNames.size > 0 ||
         selectedUsers.size > 0 ||
         selectedDeviceIds.size > 0;
 
-    // If user is actively searching or filtering by entity and hasn't manually locked a timeframe, search across all history
+    // If user is actively searching or filtering by entity/scope and hasn't manually locked a timeframe, search across all history
     const effectiveDateRange: DateRangeOption =
         !hasExplicitDateSelection && dateRangeOption === '24hours' && hasEntityOrSearchFilters
             ? 'all'
             : dateRangeOption;
 
     // Fast Multi-Dimensional Filter Engine
-    const { filteredHistory, usingRecentFallback, countLast24h, countLast7d } = useMemo(() => {
+    const {
+        filteredHistory,
+        usingRecentFallback,
+        countLast24h,
+        countLast7d,
+        scopeCounts
+    } = useMemo(() => {
         const now = Date.now();
         const cutoff24h = now - 24 * 3600 * 1000;
         const cutoff7d = now - 7 * 86400 * 1000;
@@ -560,16 +811,33 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch, onOpenUndo, 
             .map(id => (productsMap.get(id)?.name || '').toLowerCase())
             .filter(Boolean);
 
+        const selectedLocationNames = Array.from(selectedLocationIds)
+            .map(id => (locationsMap.get(id)?.name || '').toLowerCase())
+            .filter(Boolean);
+
+        const selectedPalletLowerSet = new Set(
+            (Array.from(selectedPalletNames) as string[]).map(p => p.trim().toLowerCase())
+        );
+
         const searchLower = searchTerm.trim().toLowerCase();
         const needLocForFilter =
             selectedFreezerIds.size > 0 ||
             selectedContainerIds.size > 0 ||
             selectedProductIds.size > 0 ||
+            selectedLocationIds.size > 0 ||
+            selectedPalletNames.size > 0 ||
             searchLower !== '';
 
-        const matched: HistoryEntry[] = [];
+        const matched: Array<{ entry: HistoryEntry; resolvedScope: HistoryScope }> = [];
         let c24 = 0;
         let c7d = 0;
+        const counts = {
+            all: 0,
+            onsite: 0,
+            offsite: 0,
+            butcher: 0,
+            system: 0
+        };
 
         for (let i = 0; i < sortedHistory.length; i++) {
             const entry = sortedHistory[i];
@@ -581,7 +849,7 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch, onOpenUndo, 
                 if (entryTime >= cutoff7d) c7d++;
             }
 
-            // 1. Date Range Filter (with early exit when sorted descending and no entity filters need full count)
+            // 1. Date Range Filter
             if (validTime) {
                 if (effectiveDateRange === '24hours' && entryTime < cutoff24h) {
                     continue;
@@ -610,9 +878,10 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch, onOpenUndo, 
             }
 
             // Resolve location info in O(1) only if needed by remaining filters
-            const locInfo = needLocForFilter ? resolveLocationInfo(entry.targetId) : null;
+            const locInfo = needLocForFilter ? resolveLocationInfo(entry) : null;
             const descLower =
                 needLocForFilter ? (entry.description || '').toLowerCase() : '';
+            const details = entry.details;
 
             // 4. Freezer Checkbox Filter
             if (selectedFreezerIds.size > 0) {
@@ -634,11 +903,64 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch, onOpenUndo, 
             if (selectedProductIds.size > 0) {
                 const matchesProductId = Boolean(locInfo?.productId && selectedProductIds.has(locInfo.productId));
                 const matchesProductName =
-                    !matchesProductId && selectedProductNames.some(name => descLower.includes(name));
+                    !matchesProductId &&
+                    (selectedProductNames.some(name => descLower.includes(name)) ||
+                        Boolean(
+                            details?.items?.some(it =>
+                                selectedProductNames.some(name => it.cut.toLowerCase().includes(name))
+                            )
+                        ));
                 if (!matchesProductId && !matchesProductName) continue;
             }
 
-            // 7. Text Search Filter
+            // 7. Off-Site Location Checkbox Filter
+            if (selectedLocationIds.size > 0) {
+                const detailsLocLower = (details?.locationName || '').trim().toLowerCase();
+                const matchesLocId = Boolean(locInfo?.locationId && selectedLocationIds.has(locInfo.locationId));
+                const matchesDetailsLoc =
+                    !matchesLocId &&
+                    detailsLocLower !== '' &&
+                    selectedLocationNames.some(name => detailsLocLower === name || detailsLocLower.includes(name));
+                const matchesItemsLoc =
+                    !matchesLocId &&
+                    !matchesDetailsLoc &&
+                    Boolean(
+                        details?.items?.some(it => {
+                            const itemLoc = (it.location || '').trim().toLowerCase();
+                            return itemLoc !== '' && selectedLocationNames.some(name => itemLoc === name || itemLoc.includes(name));
+                        })
+                    );
+                const matchesDescLoc =
+                    !matchesLocId &&
+                    !matchesDetailsLoc &&
+                    !matchesItemsLoc &&
+                    selectedLocationNames.some(name => descLower.includes(name));
+                if (!matchesLocId && !matchesDetailsLoc && !matchesItemsLoc && !matchesDescLoc) continue;
+            }
+
+            // 8. Pallet Checkbox Filter
+            if (selectedPalletNames.size > 0) {
+                const locPallet = (locInfo?.palletName || '').trim().toLowerCase();
+                const detailsPallet = (details?.palletName || '').trim().toLowerCase();
+                const matchesPalletDirect =
+                    (locPallet !== '' && selectedPalletLowerSet.has(locPallet)) ||
+                    (detailsPallet !== '' && selectedPalletLowerSet.has(detailsPallet));
+                const matchesPalletItems =
+                    !matchesPalletDirect &&
+                    Boolean(
+                        details?.items?.some(it => {
+                            const p = (it.pallet || '').trim().toLowerCase();
+                            return p !== '' && selectedPalletLowerSet.has(p);
+                        })
+                    );
+                const matchesPalletDesc =
+                    !matchesPalletDirect &&
+                    !matchesPalletItems &&
+                    Array.from(selectedPalletLowerSet).some(p => p.length > 1 && descLower.includes(p));
+                if (!matchesPalletDirect && !matchesPalletItems && !matchesPalletDesc) continue;
+            }
+
+            // 9. Text Search Filter (description, user, location, device, details, preview items)
             if (searchLower) {
                 const matchesDesc = descLower.includes(searchLower);
                 const matchesUsr = !matchesDesc && (entry.user || '').toLowerCase().includes(searchLower);
@@ -662,6 +984,28 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch, onOpenUndo, 
                     !matchesLocDetail &&
                     !matchesDev &&
                     (entry.clientInfo || '').toLowerCase().includes(searchLower);
+                const matchesDetails =
+                    !matchesDesc &&
+                    !matchesUsr &&
+                    !matchesLocLabel &&
+                    !matchesLocDetail &&
+                    !matchesDev &&
+                    !matchesInfo &&
+                    Boolean(
+                        details &&
+                            ((details.orderNumber || '').toLowerCase().includes(searchLower) ||
+                                (details.orderName || '').toLowerCase().includes(searchLower) ||
+                                (details.locationName || '').toLowerCase().includes(searchLower) ||
+                                (details.palletName || '').toLowerCase().includes(searchLower) ||
+                                details.items?.some(
+                                    it =>
+                                        (it.cut || '').toLowerCase().includes(searchLower) ||
+                                        (it.serial || '').toLowerCase().includes(searchLower) ||
+                                        (it.box || '').toLowerCase().includes(searchLower) ||
+                                        (it.pallet || '').toLowerCase().includes(searchLower) ||
+                                        (it.location || '').toLowerCase().includes(searchLower)
+                                ))
+                    );
 
                 if (
                     !matchesDesc &&
@@ -669,13 +1013,23 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch, onOpenUndo, 
                     !matchesLocLabel &&
                     !matchesLocDetail &&
                     !matchesDev &&
-                    !matchesInfo
+                    !matchesInfo &&
+                    !matchesDetails
                 ) {
                     continue;
                 }
             }
 
-            matched.push(entry);
+            const resolvedScope = resolveHistoryScope(entry, scopeLookupContext);
+            counts.all++;
+            counts[resolvedScope]++;
+
+            // 10. Operational Scope Filter
+            if (selectedScope !== 'all' && resolvedScope !== selectedScope) {
+                continue;
+            }
+
+            matched.push({ entry, resolvedScope });
         }
 
         // If on default '24hours' view with no other filters and 0 entries occurred in the last 24h,
@@ -687,11 +1041,19 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch, onOpenUndo, 
             !hasEntityOrSearchFilters &&
             sortedHistory.length > 0
         ) {
+            const fallbackEntries = sortedHistory.slice(0, FALLBACK_RECENT_COUNT);
+            const fallbackCounts = { all: fallbackEntries.length, onsite: 0, offsite: 0, butcher: 0, system: 0 };
+            const wrapped = fallbackEntries.map(entry => {
+                const resolvedScope = resolveHistoryScope(entry, scopeLookupContext);
+                fallbackCounts[resolvedScope]++;
+                return { entry, resolvedScope };
+            });
             return {
-                filteredHistory: sortedHistory.slice(0, FALLBACK_RECENT_COUNT),
+                filteredHistory: wrapped,
                 usingRecentFallback: true,
                 countLast24h: c24,
-                countLast7d: c7d
+                countLast7d: c7d,
+                scopeCounts: fallbackCounts
             };
         }
 
@@ -699,7 +1061,8 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch, onOpenUndo, 
             filteredHistory: matched,
             usingRecentFallback: false,
             countLast24h: c24,
-            countLast7d: c7d
+            countLast7d: c7d,
+            scopeCounts: counts
         };
     }, [
         sortedHistory,
@@ -708,24 +1071,31 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch, onOpenUndo, 
         hasEntityOrSearchFilters,
         customStartDate,
         customEndDate,
+        selectedScope,
         selectedUsers,
         selectedFreezerIds,
         selectedContainerIds,
         selectedProductIds,
+        selectedLocationIds,
+        selectedPalletNames,
         selectedDeviceIds,
         searchTerm,
         freezersMap,
         containersMap,
         productsMap,
+        locationsMap,
+        scopeLookupContext,
         resolveLocationInfo
     ]);
 
     // Slice to visible DOM limit and attach O(1) location info ONLY for visible rows
-    const visibleHistory = useMemo(() => {
+    const visibleHistory = useMemo<EnrichedHistoryEntry[]>(() => {
         const slice = filteredHistory.slice(0, visibleLimit);
-        return slice.map(entry => ({
+        return slice.map(({ entry, resolvedScope }) => ({
             ...entry,
-            locInfo: resolveLocationInfo(entry.targetId)
+            timestampMs: parseHistoryTimestampMs(entry.timestamp) || 0,
+            resolvedScope,
+            locInfo: resolveLocationInfo(entry)
         }));
     }, [filteredHistory, visibleLimit, resolveLocationInfo]);
 
@@ -734,15 +1104,18 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch, onOpenUndo, 
         selectedFreezerIds.size +
         selectedContainerIds.size +
         selectedProductIds.size +
+        selectedLocationIds.size +
+        selectedPalletNames.size +
         selectedUsers.size +
         selectedDeviceIds.size;
 
-    const hasActiveFilters = 
-         hasEntityOrSearchFilters ||
+    const hasActiveFilters =
+        hasEntityOrSearchFilters ||
         (hasExplicitDateSelection && dateRangeOption !== 'all');
 
     const handleClearFilters = () => {
         setSearchTerm('');
+        setSelectedScope('all');
         setDateRangeOption('24hours');
         setHasExplicitDateSelection(false);
         setCustomStartDate('');
@@ -750,6 +1123,8 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch, onOpenUndo, 
         setSelectedFreezerIds(new Set());
         setSelectedContainerIds(new Set());
         setSelectedProductIds(new Set());
+        setSelectedLocationIds(new Set());
+        setSelectedPalletNames(new Set());
         setSelectedUsers(new Set());
         setSelectedDeviceIds(new Set());
         setVisibleLimit(INITIAL_RENDER_LIMIT);
@@ -759,6 +1134,15 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch, onOpenUndo, 
         setDateRangeOption(nextRange);
         setHasExplicitDateSelection(explicit);
         setVisibleLimit(INITIAL_RENDER_LIMIT);
+    };
+
+    const toggleExpandEntry = (entryId: string) => {
+        setExpandedEntryIds(prev => {
+            const next = new Set(prev);
+            if (next.has(entryId)) next.delete(entryId);
+            else next.add(entryId);
+            return next;
+        });
     };
 
     // LAZY Purge Estimation: ONLY run calculateHistoryRetention when the Purge Modal is actually open for an admin!
@@ -783,7 +1167,18 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch, onOpenUndo, 
             protectedActiveCount: res.protectedActiveCount,
             activePackagesCount: res.activePackagesCount
         };
-    }, [canPurgeHistory, showPurgeModal, state.history, state.meatCuts, state.offSiteEntries, state.containers, state.movementOrders, purgeMode]);
+    }, [
+        canPurgeHistory,
+        showPurgeModal,
+        state.history,
+        state.meatCuts,
+        state.offSiteEntries,
+        state.containers,
+        state.movementOrders,
+        state.butcherOrders,
+        state.pallets,
+        purgeMode
+    ]);
 
     const handleExecutePurge = () => {
         if (!canPurgeHistory) return;
@@ -1049,7 +1444,7 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch, onOpenUndo, 
                         onClick={() => setShowFilters(prev => !prev)}
                         aria-expanded={showFilters}
                         aria-controls="history-filters-panel"
-                        className={`shrink-0 inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border text-xs sm:text-sm font-semibold transition cursor-pointer ${
+                        className={`shrink-0 inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border text-xs sm:text-sm font-semibold transition cursor-pointer whitespace-nowrap ${
                             showFilters || activeFilterCount > 0
                                 ? 'bg-cyan-950/60 border-cyan-500/70 text-cyan-300 shadow-xs'
                                 : 'bg-cool-gray-800 border-cool-gray-700 hover:border-cool-gray-600 text-cool-gray-200 hover:text-white'
@@ -1059,7 +1454,7 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch, onOpenUndo, 
                         <SlidersHorizontal className="w-4 h-4 text-cyan-400" />
                         <span>Filters</span>
                         {activeFilterCount > 0 && (
-                            <span className="px-1.5 py-0.2 rounded-full bg-cyan-500 text-cool-gray-950 text-[10px] font-black">
+                            <span className="px-1.5 py-0.2 rounded-full bg-cyan-500 text-cool-gray-950 text-[10px] font-black font-mono tabular-nums">
                                 {activeFilterCount}
                             </span>
                         )}
@@ -1069,6 +1464,57 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch, onOpenUndo, 
                             <ChevronDown className="w-3.5 h-3.5 text-cool-gray-400" />
                         )}
                     </button>
+                </div>
+
+                {/* Operational Scope Segmented Filter Bar */}
+                <div
+                    id="history-scope-filter-bar"
+                    className="flex flex-wrap items-center justify-between gap-2 pt-0.5"
+                    role="tablist"
+                    aria-label="Audit history scope filter"
+                >
+                    <div className="inline-flex flex-wrap sm:flex-nowrap items-center gap-1 p-1 bg-cool-gray-950/70 border border-cool-gray-800 rounded-lg">
+                        {(
+                            [
+                                { id: 'all' as ScopeFilterOption, label: 'All', count: scopeCounts.all },
+                                { id: 'onsite' as ScopeFilterOption, label: 'On-Site', count: scopeCounts.onsite },
+                                { id: 'offsite' as ScopeFilterOption, label: 'Off-Site', count: scopeCounts.offsite },
+                                { id: 'butcher' as ScopeFilterOption, label: 'Butcher', count: scopeCounts.butcher },
+                                { id: 'system' as ScopeFilterOption, label: 'System', count: scopeCounts.system }
+                            ] as const
+                        ).map(tab => {
+                            const isActive = selectedScope === tab.id;
+                            return (
+                                <button
+                                    key={tab.id}
+                                    id={`history-scope-tab-${tab.id}`}
+                                    type="button"
+                                    role="tab"
+                                    aria-selected={isActive}
+                                    onClick={() => {
+                                        setSelectedScope(tab.id);
+                                        setVisibleLimit(INITIAL_RENDER_LIMIT);
+                                    }}
+                                    className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
+                                        isActive
+                                            ? 'bg-cool-gray-800 text-cyan-300 border border-cyan-500/40'
+                                            : 'text-cool-gray-400 hover:text-cool-gray-200 border border-transparent'
+                                    }`}
+                                >
+                                    <span>{tab.label}</span>
+                                    <span className={`font-mono tabular-nums text-[11px] ${isActive ? 'text-cyan-400' : 'text-cool-gray-500'}`}>
+                                        {tab.count}
+                                    </span>
+                                </button>
+                            );
+                        })}
+                    </div>
+
+                    {usingRecentFallback && (
+                        <span className="text-[11px] text-amber-300/90 font-medium">
+                            Quiet in last 24h · Showing latest {visibleHistory.length} changes
+                        </span>
+                    )}
                 </div>
 
                 {/* Collapsible All Filters Panel */}
@@ -1106,7 +1552,7 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch, onOpenUndo, 
                                         key={pill.id}
                                         type="button"
                                         onClick={() => handleSelectDateRange(pill.id, true)}
-                                        className={`px-2.5 py-1 rounded-lg border text-[11px] font-semibold transition cursor-pointer ${
+                                        className={`px-2.5 py-1 rounded-lg border text-[11px] font-semibold transition cursor-pointer whitespace-nowrap shrink-0 ${
                                             isActive
                                                 ? 'bg-cyan-500/20 border-cyan-500 text-cyan-300 font-bold'
                                                 : 'bg-cool-gray-800/80 border-cool-gray-700 text-cool-gray-300 hover:border-cyan-500/50 hover:text-white'
@@ -1148,8 +1594,8 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch, onOpenUndo, 
                             </div>
                         )}
 
-                        {/* Entity Searchable Checkbox Dropdowns: Freezer, Container, Product, User, Device */}
-                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5 pt-1">
+                        {/* Entity Searchable Checkbox Dropdowns: Freezer, Container, Location, Pallet, Product, User, Device */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 pt-1">
                             {/* Freezer Searchable Checkbox Filter */}
                             <SearchableCheckboxDropdown
                                 label="Freezers"
@@ -1176,6 +1622,34 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch, onOpenUndo, 
                                     setVisibleLimit(INITIAL_RENDER_LIMIT);
                                 }}
                                 placeholder="Search containers..."
+                            />
+
+                            {/* Off-Site Locations Searchable Checkbox Filter */}
+                            <SearchableCheckboxDropdown
+                                label="Locations"
+                                singularLabel="Location"
+                                icon="📍"
+                                options={locationOptions}
+                                selectedIds={selectedLocationIds}
+                                onChange={(next) => {
+                                    setSelectedLocationIds(next);
+                                    setVisibleLimit(INITIAL_RENDER_LIMIT);
+                                }}
+                                placeholder="Search off-site locations..."
+                            />
+
+                            {/* Off-Site Pallets Searchable Checkbox Filter */}
+                            <SearchableCheckboxDropdown
+                                label="Pallets"
+                                singularLabel="Pallet"
+                                icon="🪵"
+                                options={palletOptions}
+                                selectedIds={selectedPalletNames}
+                                onChange={(next) => {
+                                    setSelectedPalletNames(next);
+                                    setVisibleLimit(INITIAL_RENDER_LIMIT);
+                                }}
+                                placeholder="Search pallets..."
                             />
 
                             {/* Product Searchable Checkbox Filter */}
@@ -1226,24 +1700,22 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch, onOpenUndo, 
                             <div className="text-cool-gray-400 flex items-center gap-1.5 flex-wrap">
                                 <span>
                                     Showing{' '}
-                                    <strong className="text-cyan-300">{visibleHistory.length}</strong>
+                                    <strong className="text-cyan-300 font-mono tabular-nums">{visibleHistory.length}</strong>
                                     {filteredHistory.length > visibleHistory.length && (
-                                        <> (of <strong className="text-cyan-200">{filteredHistory.length}</strong> matched)</>
+                                        <> (of <strong className="text-cyan-200 font-mono tabular-nums">{filteredHistory.length}</strong> matched)</>
                                     )}{' '}
-                                    out of <strong className="text-cool-gray-200">{totalHistoryCount}</strong> total log entries
+                                    out of <strong className="text-cool-gray-200 font-mono tabular-nums">{totalHistoryCount}</strong> total log entries
                                 </span>
-                                {usingRecentFallback && (
-                                    <span className="px-2 py-0.5 rounded bg-amber-500/15 border border-amber-500/30 text-amber-300 text-[11px] font-medium">
-                                        No actions in last 24h • Showing latest {visibleHistory.length} changes
-                                    </span>
-                                )}
                                 {hasActiveFilters && (
                                     <span className="text-[11px] text-cyan-400/80 font-medium">
                                         (Active filters: {[
+                                            selectedScope !== 'all' && `Scope: ${SCOPE_META[selectedScope].label}`,
                                             searchTerm && 'Search',
                                             hasExplicitDateSelection && dateRangeOption !== 'all' && 'Date Range',
                                             selectedFreezerIds.size > 0 && `${selectedFreezerIds.size} Freezer(s)`,
                                             selectedContainerIds.size > 0 && `${selectedContainerIds.size} Container(s)`,
+                                            selectedLocationIds.size > 0 && `${selectedLocationIds.size} Location(s)`,
+                                            selectedPalletNames.size > 0 && `${selectedPalletNames.size} Pallet(s)`,
                                             selectedProductIds.size > 0 && `${selectedProductIds.size} Product(s)`,
                                             selectedUsers.size > 0 && `${selectedUsers.size} User(s)`,
                                             selectedDeviceIds.size > 0 && `${selectedDeviceIds.size} Device(s)`
@@ -1277,12 +1749,69 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch, onOpenUndo, 
                 )}
             </div>
 
+            {/* Confirm Movement Order Revert Modal */}
+            {confirmRevertOrderModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs">
+                    <div className="w-full max-w-md p-5 bg-cool-gray-800 border border-cool-gray-700 rounded-xl shadow-2xl animate-scale-up text-left">
+                        <div className="flex items-center gap-2.5 mb-2">
+                            <RotateCcw className="w-4 h-4 text-amber-400 shrink-0" />
+                            <h4 className="text-base font-bold text-cool-gray-100">Revert Movement Order</h4>
+                        </div>
+                        <p className="text-xs text-cool-gray-300 leading-relaxed mb-2">
+                            Revert execution for movement order <strong className="text-white">{confirmRevertOrderModal.orderName}</strong>?
+                        </p>
+                        <p className="text-[11px] text-cool-gray-400 bg-cool-gray-900 border border-cool-gray-750 rounded-lg p-2.5 mb-4">
+                            {confirmRevertOrderModal.historyDescription}
+                        </p>
+                        <div className="flex justify-end gap-2.5">
+                            <button
+                                type="button"
+                                onClick={() => setConfirmRevertOrderModal(null)}
+                                className="px-3.5 py-1.5 bg-cool-gray-700 hover:bg-cool-gray-600 text-cool-gray-200 text-xs font-semibold rounded-lg transition cursor-pointer"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                id="confirm-revert-movement-order-btn"
+                                type="button"
+                                onClick={() => {
+                                    dispatch({
+                                        type: 'REVERT_MOVEMENT_ORDER',
+                                        payload: { id: confirmRevertOrderModal.orderId }
+                                    });
+                                    setConfirmRevertOrderModal(null);
+                                }}
+                                className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-400 text-cool-gray-950 text-xs font-bold rounded-lg transition cursor-pointer"
+                            >
+                                Confirm Order Revert
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* Log Entry List */}
             <div className="max-h-[60vh] overflow-y-auto pr-2">
                 {visibleHistory.length === 0 ? (
                     <div className="text-center py-12 px-4 bg-cool-gray-800/40 rounded-xl border border-dashed border-cool-gray-700">
-                        <p className="text-cool-gray-400 text-sm font-medium">No historical log entries match your filter criteria.</p>
+                        <p className="text-cool-gray-300 text-sm font-medium">
+                            {selectedScope !== 'all'
+                                ? `No ${SCOPE_META[selectedScope].label} audit entries match your filter criteria.`
+                                : 'No historical log entries match your filter criteria.'}
+                        </p>
                         <div className="flex flex-wrap justify-center gap-2 mt-3">
+                            {selectedScope !== 'all' && (
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setSelectedScope('all');
+                                        setVisibleLimit(INITIAL_RENDER_LIMIT);
+                                    }}
+                                    className="px-3.5 py-1.5 bg-cool-gray-700 hover:bg-cool-gray-600 text-cool-gray-100 text-xs font-semibold rounded-lg transition cursor-pointer"
+                                >
+                                    Show All Scopes ({scopeCounts.all})
+                                </button>
+                            )}
                             {effectiveDateRange !== 'all' && totalHistoryCount > 0 && (
                                 <button
                                     type="button"
@@ -1304,70 +1833,219 @@ const HistoryView: React.FC<HistoryViewProps> = ({ state, dispatch, onOpenUndo, 
                     </div>
                 ) : (
                     <>
-                        <ul className="space-y-3">
+                        <ul className="space-y-2.5">
                             {visibleHistory.map(entry => {
                                 const hasSnapshot = undoSnapshotIds.has(entry.id);
                                 const hasUndoData = Boolean(entry.undoData);
+                                const undoMode = getHistoryUndoMode(entry);
+                                const scopeMeta = SCOPE_META[entry.resolvedScope];
+                                const details = entry.details;
+                                const previewItems = details?.items;
+                                const hasItemsDrawer = Boolean(previewItems && previewItems.length > 0);
+                                const isExpanded = expandedEntryIds.has(entry.id);
+                                const relatedOrderId = details?.relatedOrderId;
+                                const relatedMovementOrder = relatedOrderId ? movementOrdersMap.get(relatedOrderId) : undefined;
+                                const canRevertOrder =
+                                    undoMode === 'order_revert' &&
+                                    Boolean(
+                                        relatedOrderId &&
+                                            relatedMovementOrder &&
+                                            (relatedMovementOrder.status === 'completed' ||
+                                                relatedMovementOrder.status === 'finalized')
+                                    );
+
+                                const itemCountBadge =
+                                    details?.itemCount !== undefined && details.itemCount > 1
+                                        ? `${details.itemCount} items`
+                                        : undefined;
+                                const weightReadout =
+                                    details?.totalWeight !== undefined && details.totalWeight > 0
+                                        ? `${details.totalWeight.toFixed(1)} lbs`
+                                        : undefined;
+
                                 return (
-                                    <li key={entry.id} className="text-sm p-3.5 bg-cool-gray-800 rounded-lg border border-cool-gray-700 hover:border-cool-gray-600 transition shadow-2xs">
+                                    <li key={entry.id} className="text-sm p-3.5 bg-cool-gray-800 rounded-lg border border-cool-gray-700 hover:border-cool-gray-600 transition">
                                         <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2">
-                                            <p className="text-cool-gray-100 font-medium leading-relaxed">{entry.description}</p>
+                                            <div className="space-y-1 min-w-0">
+                                                <p className="text-cool-gray-100 font-medium leading-relaxed">{entry.description}</p>
+                                                {(itemCountBadge || weightReadout || (details?.changedFields && details.changedFields.length > 0)) && (
+                                                    <div className="flex flex-wrap items-center gap-2 text-xs text-cool-gray-400 font-mono tabular-nums">
+                                                        {itemCountBadge && <span>{itemCountBadge}</span>}
+                                                        {itemCountBadge && weightReadout && <span aria-hidden="true">·</span>}
+                                                        {weightReadout && <span>{weightReadout}</span>}
+                                                        {(itemCountBadge || weightReadout) && details?.changedFields && details.changedFields.length > 0 && (
+                                                            <span aria-hidden="true">·</span>
+                                                        )}
+                                                        {details?.changedFields && details.changedFields.length > 0 && (
+                                                            <span className="font-sans">
+                                                                Updated: {details.changedFields.join(', ')}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                )}
+                                            </div>
                                             {entry.locInfo && (
-                                                <span className="shrink-0 inline-flex items-center gap-1 text-[11px] font-semibold bg-cyan-950/80 border border-cyan-800/70 text-cyan-300 px-2.5 py-0.5 rounded-full self-start sm:self-auto" title={entry.locInfo.detail}>
-                                                    <span className="text-[10px]">📍</span>
-                                                    <span>{entry.locInfo.label}</span>
+                                                <span
+                                                    className="shrink-0 text-xs font-medium text-cyan-300/90 sm:text-right"
+                                                    title={entry.locInfo.detail}
+                                                >
+                                                    {entry.locInfo.label}
                                                 </span>
                                             )}
                                         </div>
-                                        <div className="flex justify-between items-center mt-2.5 pt-2 border-t border-cool-gray-750 text-xs">
-                                            <div className="flex items-center gap-3 flex-wrap">
-                                                <p className="text-cool-gray-400 font-mono text-[11px] flex items-center gap-1">
-                                                    <span>👤</span>
-                                                    <span>{formatUserDisplay(entry.user)}</span>
-                                                </p>
-                                                {entry.clientDevice && (
-                                                    <span
-                                                        className={`inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded border ${
-                                                            entry.clientDevice.includes('Companion')
-                                                                ? 'bg-blue-950/80 border-blue-800/80 text-blue-300'
-                                                                : entry.clientDevice.includes('Standalone') || entry.clientDevice.includes('PWA')
-                                                                ? 'bg-cyan-950/80 border-cyan-800/80 text-cyan-300'
-                                                                : entry.clientDevice.includes('Mobile')
-                                                                ? 'bg-purple-950/80 border-purple-800/80 text-purple-300'
-                                                                : 'bg-emerald-950/80 border-emerald-800/80 text-emerald-300'
-                                                        }`}
-                                                        title={entry.clientInfo || entry.clientDevice}
-                                                    >
-                                                        <span>{entry.clientDevice.includes('Companion') ? '📱' : entry.clientDevice.includes('Standalone') || entry.clientDevice.includes('PWA') ? '⚡' : entry.clientDevice.includes('Mobile') ? '📱' : '💻'}</span>
-                                                        <span>
-                                                            {entry.clientDevice}
-                                                            {entry.clientInfo && entry.clientInfo.includes('•') ? ` (${entry.clientInfo.split('•').slice(1).join('•').trim()})` : ''}
-                                                        </span>
+
+                                        {hasItemsDrawer && (
+                                            <div className="mt-2">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => toggleExpandEntry(entry.id)}
+                                                    aria-expanded={isExpanded}
+                                                    className="inline-flex items-center gap-1.5 text-xs font-semibold text-cyan-400 hover:text-cyan-300 transition-colors cursor-pointer"
+                                                >
+                                                    {isExpanded ? (
+                                                        <ChevronUp className="w-3.5 h-3.5" />
+                                                    ) : (
+                                                        <ChevronDown className="w-3.5 h-3.5" />
+                                                    )}
+                                                    <span className="tabular-nums">
+                                                        {isExpanded
+                                                            ? 'Hide items'
+                                                            : `Show items (${details?.itemCount || previewItems!.length})`}
                                                     </span>
+                                                </button>
+
+                                                {isExpanded && (
+                                                    <div className="mt-2 pt-2 border-t border-cool-gray-750 overflow-x-auto">
+                                                        <table className="w-full text-left text-xs border-collapse">
+                                                            <thead>
+                                                                <tr className="text-[11px] font-semibold text-cool-gray-400 border-b border-cool-gray-750">
+                                                                    <th className="py-1.5 pr-3">Cut</th>
+                                                                    <th className="py-1.5 pr-3">Serial</th>
+                                                                    <th className="py-1.5 pr-3">Box</th>
+                                                                    <th className="py-1.5 pr-3">Pallet</th>
+                                                                    <th className="py-1.5 pr-3">Location</th>
+                                                                    <th className="py-1.5 pr-3 text-right">Pcs</th>
+                                                                    <th className="py-1.5 pr-3 text-right">Weight</th>
+                                                                    <th className="py-1.5 text-right">Note</th>
+                                                                </tr>
+                                                            </thead>
+                                                            <tbody className="divide-y divide-cool-gray-750/70">
+                                                                {previewItems!.map((item, idx) => (
+                                                                    <tr key={item.id || item.serial || idx} className="text-cool-gray-200 hover:bg-cool-gray-750/30">
+                                                                        <td className="py-1.5 pr-3 font-medium text-cool-gray-100">{item.cut}</td>
+                                                                        <td className="py-1.5 pr-3 font-mono tabular-nums text-cool-gray-400">{item.serial || '—'}</td>
+                                                                        <td className="py-1.5 pr-3 font-mono text-cool-gray-300">{item.box || '—'}</td>
+                                                                        <td className="py-1.5 pr-3 text-cool-gray-300">{item.pallet || '—'}</td>
+                                                                        <td className="py-1.5 pr-3 text-cool-gray-400">{item.location || '—'}</td>
+                                                                        <td className="py-1.5 pr-3 text-right font-mono tabular-nums text-cool-gray-200">
+                                                                            {item.pieces !== undefined ? item.pieces : '—'}
+                                                                        </td>
+                                                                        <td className="py-1.5 pr-3 text-right font-mono tabular-nums text-cool-gray-200">
+                                                                            {item.weight !== undefined ? `${item.weight.toFixed(1)} lbs` : '—'}
+                                                                        </td>
+                                                                        <td className="py-1.5 text-right text-cool-gray-400">
+                                                                            {item.action || item.note || '—'}
+                                                                        </td>
+                                                                    </tr>
+                                                                ))}
+                                                            </tbody>
+                                                        </table>
+                                                        {details?.truncatedCount && details.truncatedCount > 0 && (
+                                                            <p className="mt-2 text-[11px] text-cool-gray-400 font-mono tabular-nums">
+                                                                + {details.truncatedCount} more item(s) omitted from preview
+                                                            </p>
+                                                        )}
+                                                    </div>
                                                 )}
-                                                <p className="text-cool-gray-400 font-mono text-[11px]">
-                                                    {formatHistoryTimestamp(entry.timestamp)}
-                                                </p>
                                             </div>
-                                            <button
-                                                type="button"
-                                                onClick={() => {
-                                                    if (onOpenUndo) {
-                                                        onOpenUndo(entry.id);
-                                                    } else if (hasSnapshot || hasUndoData) {
-                                                        dispatch({ type: 'UNDO', payload: { historyId: entry.id } });
-                                                    }
-                                                }}
-                                                className={`px-2.5 py-1 rounded-lg font-semibold text-[11px] transition flex items-center gap-1 cursor-pointer ${
-                                                    hasSnapshot || hasUndoData || onOpenUndo
-                                                        ? 'bg-amber-500 hover:bg-amber-400 text-cool-gray-950 shadow-xs'
-                                                        : 'bg-cool-gray-700 hover:bg-cool-gray-600 text-cool-gray-300'
-                                                }`}
-                                                title={`Review and revert this action: "${entry.description}"`}
-                                            >
-                                                <span>↩️</span>
-                                                <span>Undo This</span>
-                                            </button>
+                                        )}
+
+                                        <div className="flex flex-wrap justify-between items-center gap-2 mt-2.5 pt-2 border-t border-cool-gray-750 text-xs">
+                                            <div className="flex items-center gap-2 flex-wrap text-cool-gray-400">
+                                                <span className={`font-semibold ${scopeMeta.textClass}`}>
+                                                    {scopeMeta.label}
+                                                </span>
+                                                <span aria-hidden="true">·</span>
+                                                <span className="font-mono text-[11px] text-cool-gray-300">
+                                                    {formatUserDisplay(entry.user)}
+                                                </span>
+                                                {entry.clientDevice && (
+                                                    <>
+                                                        <span aria-hidden="true">·</span>
+                                                        <span
+                                                            className="text-[11px] text-cool-gray-400"
+                                                            title={entry.clientInfo || entry.clientDevice}
+                                                        >
+                                                            {entry.clientDevice}
+                                                            {entry.clientInfo && entry.clientInfo.includes('•')
+                                                                ? ` (${entry.clientInfo.split('•').slice(1).join('•').trim()})`
+                                                                : ''}
+                                                        </span>
+                                                    </>
+                                                )}
+                                                <span aria-hidden="true">·</span>
+                                                <time className="font-mono tabular-nums text-[11px] text-cool-gray-400">
+                                                    {formatHistoryTimestamp(entry.timestamp)}
+                                                </time>
+                                            </div>
+
+                                            {undoMode === 'audit_only' ? (
+                                                <span
+                                                    className="text-[11px] font-medium text-cool-gray-500 select-none"
+                                                    title="Bulk imports, bulk mutations, and system maintenance events are recorded as permanent audit logs"
+                                                >
+                                                    Audit Only
+                                                </span>
+                                            ) : undoMode === 'order_revert' ? (
+                                                canRevertOrder && relatedOrderId ? (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() =>
+                                                            setConfirmRevertOrderModal({
+                                                                orderId: relatedOrderId,
+                                                                orderName: relatedMovementOrder?.name || details?.orderName || relatedOrderId,
+                                                                historyDescription: entry.description
+                                                            })
+                                                        }
+                                                        className="px-2.5 py-1 rounded-lg font-semibold text-[11px] transition flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300"
+                                                        title="Revert this executed movement order back to planning"
+                                                    >
+                                                        <RotateCcw className="w-3 h-3" />
+                                                        <span>Revert Order</span>
+                                                    </button>
+                                                ) : (
+                                                    <span
+                                                        className="text-[11px] font-medium text-cool-gray-500 select-none"
+                                                        title={
+                                                            relatedMovementOrder
+                                                                ? `Movement order is currently in "${relatedMovementOrder.status}" status`
+                                                                : 'Movement order has already been reverted or deleted'
+                                                        }
+                                                    >
+                                                        {relatedMovementOrder ? 'Order Reverted' : 'Audit Only'}
+                                                    </span>
+                                                )
+                                            ) : (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        if (onOpenUndo) {
+                                                            onOpenUndo(entry.id);
+                                                        } else if (hasSnapshot || hasUndoData) {
+                                                            dispatch({ type: 'UNDO', payload: { historyId: entry.id } });
+                                                        }
+                                                    }}
+                                                    className={`px-2.5 py-1 rounded-lg font-semibold text-[11px] transition flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0 ${
+                                                        hasSnapshot || hasUndoData || onOpenUndo
+                                                            ? 'bg-amber-500 hover:bg-amber-400 text-cool-gray-950 shadow-xs'
+                                                            : 'bg-cool-gray-700 hover:bg-cool-gray-600 text-cool-gray-300'
+                                                    }`}
+                                                    title={`Review and revert this action: "${entry.description}"`}
+                                                >
+                                                    <RotateCcw className="w-3 h-3" />
+                                                    <span>Undo This</span>
+                                                </button>
+                                            )}
                                         </div>
                                     </li>
                                 );

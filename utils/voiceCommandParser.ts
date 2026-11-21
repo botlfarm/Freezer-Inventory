@@ -1,4 +1,4 @@
-import { Action, Category, Container, CustomList, Freezer, InventoryState, MeatCut, Product, Tag } from '../types';
+import { Action, Category, Container, CustomList, Freezer, InventoryState, MeatCut, Product, Tag, VoiceDictionaryEntry } from '../types';
 import {
   compareBackstockForDisplayRestock,
   compareCutsForRemoval,
@@ -59,6 +59,8 @@ export interface VoiceLocationCandidate {
   isExact: boolean;
   label: string;
   hasPrioritized?: boolean;
+  hasMatchingProduct?: boolean;
+  existingProductQty?: number;
 }
 
 export interface VoiceFreezerCandidate {
@@ -221,6 +223,8 @@ export interface VoiceSelectionOverrides {
   combineSlotSelections?: Record<number, string>;
   quantity?: number;
   excluded?: boolean;
+  createNewContainer?: boolean;
+  fallbackIntent?: 'add' | 'remove' | 'move' | 'query' | 'move_container';
 }
 
 export interface ParsedVoiceClause {
@@ -307,6 +311,8 @@ export interface ParsedVoiceClause {
   newContainerNameQuery?: string;
   newContainerFreezerQuery?: string;
   explicitTemplateRequested?: boolean;
+  switchedFromExistingAdd?: boolean;
+  canSwitchToNewContainer?: boolean;
   freezerCandidates?: VoiceFreezerCandidate[];
   selectedFreezerId?: string | null;
   requiresFreezerSelection?: boolean;
@@ -319,8 +325,22 @@ export interface ParsedVoiceClause {
   newContainerIcon?: string;
   selectedExistingSpareContainerId?: string;
 
+  // Non-dead-end fallback & template suggestions when primary match is missing/partial
+  suggestedTemplateCandidates?: VoiceContainerTemplateCandidate[];
+  suggestedFreezerId?: string | null;
+  suggestedFallbackProducts?: VoiceProductMatch[];
+  suggestedFallbackLocations?: VoiceLocationCandidate[];
+  suggestedFallbackFreezers?: VoiceFreezerCandidate[];
+  inferredFallbackProductQuery?: string;
+  inferredFallbackLocationQuery?: string;
+  inferredFallbackFreezerQuery?: string;
+
   queryResults?: VoiceQueryProductResult[];
   queryLocationFilter?: string;
+
+  // Optional 1-to-many Voice Dictionary product pack / bundle provenance
+  pinnedProductId?: string;
+  bundlePhrase?: string;
 
   isValid: boolean;
   excluded: boolean;
@@ -386,6 +406,40 @@ const UNIT_FILLER_WORDS = new Set([
   'of', 'the', 'some', 'please', 'item', 'items',
 ]);
 
+const SPECIFIC_CONTAINER_NOUNS = [
+  'bin',
+  'box',
+  'bag',
+  'pillowcase',
+  'tote',
+  'bucket',
+  'crate',
+  'tray',
+  'tub',
+  'cooler',
+  'basket',
+  'carton',
+  'pouch',
+  'sack',
+  'canister',
+  'jar',
+  'pan',
+  'sleeve',
+  'holder',
+  'organizer',
+  'rack',
+  'shelf',
+  'drawer',
+] as const;
+
+const SPECIFIC_CONTAINER_NOUN_PATTERN = SPECIFIC_CONTAINER_NOUNS.join('|');
+const ALL_CONTAINER_NOUN_PATTERN = `(?:container|${SPECIFIC_CONTAINER_NOUN_PATTERN})`;
+const ALL_CONTAINER_NOUN_PLURAL_PATTERN =
+  '(?:containers?|bins?|box(?:es)?|bags?|pillowcases?|totes?|buckets?|crates?|trays?|tubs?|coolers?|baskets?|cartons?|pouch(?:es)?|sacks?|canisters?|jars?|pans?|sleeves?|holders?|organizers?|racks?|shel(?:f|ves)|drawers?)';
+const PLURAL_CONTAINER_GROUP_PREFIX_PATTERN =
+  '(?:containers?|bins|boxes|bags|pillowcases|totes|buckets|crates|trays|tubs|coolers|baskets|cartons|pouches|sacks|canisters|jars|pans|sleeves|holders|organizers|racks|shelves|drawers)';
+const NEW_CONTAINER_CREATE_VERBS = 'create|make|start|open|build|set\\s*up|setup';
+
 const ACTION_VERBS = [
   'remove', 'take', 'took', 'deduct', 'subtract', 'minus', 'sell', 'sold', 'pull', 'pulled', 'grab', 'grabbed',
   'checkout', 'use', 'used', 'zero\\s+out', 'wipe\\s+out', 'clean\\s+out', 'consume', 'consumed', 'discard', 'write\\s+off',
@@ -403,9 +457,8 @@ const ACTION_VERBS = [
   'lower(?=\\s+(?:(?:the|my|our|all)\\s+)?(?:quantity|quantities|qty|inventory|stock|count|counts|amount|amounts|level|levels)\\b|\\s+.+?\\s+(?:by|(?:down\\s+|up\\s+)?to|=)\\s*)',
   'drop(?=\\s+(?:(?:the|my|our|all)\\s+)?(?:quantity|quantities|qty|inventory|stock|count|counts|amount|amounts|level|levels)\\b|\\s+.+?\\s+(?:by|(?:down\\s+|up\\s+)?to|=)\\s*|\\s+.+?\\s+(?:in|into|to|from|off)\\s+)',
   'add', 'put', 'restock', 'plus', 'pack', 'packed', 'receive', 'received', 'inbound', 'inbounded', 'toss', 'stash', 'insert', 'enter', 'log',
-  'create\\s+(?:a\\s+)?(?:new\\s+)?(?:container|bin|box|bag|tote|bucket|crate|tray|tub)',
-  'make\\s+(?:a\\s+)?(?:new\\s+)?(?:container|bin|box|bag|tote|bucket|crate|tray|tub)',
-  'new\\s+(?:container|bin|box|bag|tote|bucket|crate|tray|tub)',
+  `(?:${NEW_CONTAINER_CREATE_VERBS})\\s+(?:a\\s+)?(?:new\\s+)?(?:(?:[a-z0-9#-]+\\s+){0,3})?${ALL_CONTAINER_NOUN_PATTERN}`,
+  `new\\s+(?:(?:[a-z0-9#-]+\\s+){0,3})?${ALL_CONTAINER_NOUN_PATTERN}`,
   'alert\\s+(?:me|us)', 'notify\\s+(?:me|us)', 'warn\\s+(?:me|us)',
   'turn\\s+(?:on|off)', 'mute', 'unmute', 'silence', 'enable', 'disable',
 ];
@@ -416,8 +469,8 @@ const QUERY_TRIGGERS = [
   'what(?:\'|\\s)?s\\s+(?:in|inside|on|tagged|out\\s+of|running\\s+low|getting\\s+low|low|empty|missing|the\\s+(?:count|stock|inventory))',
   'what\\s+is\\s+(?:in|inside|on|tagged|out\\s+of|running\\s+low|getting\\s+low|low|empty|missing)',
   'what\\s+are\\s+(?:in|on|we\\s+(?:out\\s+of|running\\s+low|low)|the\\s+(?:lists?|empty))',
-  'what\\s+(?:containers?|items?|lists?|needs?\\s+(?:to\\s+be\\s+)?restock|did\\s+(?:we|i)|(?:do|should|can)\\s+(?:we|i)\\s+(?:need\\s+to\\s+)?restock)',
-  'which\\s+(?:containers?|items?|lists?)', 'does\\s+anything', 'anything\\s+(?:low|out|need|in)',
+  `what\\s+(?:${ALL_CONTAINER_NOUN_PLURAL_PATTERN}|items?|lists?|needs?\\s+(?:to\\s+be\\s+)?restock|did\\s+(?:we|i)|(?:do|should|can)\\s+(?:we|i)\\s+(?:need\\s+to\\s+)?restock)`,
+  `which\\s+(?:${ALL_CONTAINER_NOUN_PLURAL_PATTERN}|items?|lists?)`, 'does\\s+anything', 'anything\\s+(?:low|out|need|in)',
   'check\\s+stock', 'check\\s+count', 'check\\s+(?:a\\s+|the\\s+|my\\s+|our\\s+|all\\s+|custom\\s+)?lists?', 'check', 'count', 'total', 'list', 'inspect', 'read', 'open', 'view',
   'where do (?:i|we|you) (?:have|keep|store)', 'where have (?:i|we) got', 'where did (?:i|we) (?:put|store|keep)',
   'where is', 'where are', "where's", 'wheres', 'where can (?:i|we) (?:find|get)', 'where (?:in|inside|at)',
@@ -1136,7 +1189,7 @@ const HEADER_INVENTORY_CHANGE_VERBS =
   'adjust|reduce|decrease|lower|drop|increase|raise|bump|boost|change|update|edit|modify|reconcile|reset|correct|recount|set';
 
 const HEADER_VERB_PATTERN =
-  `(?:move|transfer|relocate|shift|bring|carry|transport|haul|remove|take|took|deduct|subtract|minus|sell|sold|pull|pulled|grab|grabbed|check\\s*out|checkout|use|used|consume|consumed|cook|cooked|discard|write\\s+off|add|put|restock|plus|pack|packed|receive|received|inbound|inbounded|stock|toss|place|load|store|stash|enter|log|${HEADER_INVENTORY_CHANGE_VERBS}|(?:create|make)(?=\\s+(?:a\\s+)?(?:new\\s+)?(?:container|bin|box|bag|tote|bucket|crate|tray|tub)\\b)|new(?=\\s+(?:container|bin|box|bag|tote|bucket|crate|tray|tub)\\b))`;
+  `(?:move|transfer|relocate|shift|bring|carry|transport|haul|remove|take|took|deduct|subtract|minus|sell|sold|pull|pulled|grab|grabbed|check\\s*out|checkout|use|used|consume|consumed|cook|cooked|discard|write\\s+off|add|put|restock|plus|pack|packed|receive|received|inbound|inbounded|stock|toss|place|load|store|stash|enter|log|${HEADER_INVENTORY_CHANGE_VERBS}|(?:${NEW_CONTAINER_CREATE_VERBS})(?=\\s+(?:a\\s+)?(?:new\\s+)?(?:(?:[a-z0-9#-]+\\s+){0,3})?${ALL_CONTAINER_NOUN_PATTERN}\\b)|new(?=\\s+(?:(?:[a-z0-9#-]+\\s+){0,3})?${ALL_CONTAINER_NOUN_PATTERN}\\b))`;
 
 interface ParsedLineHeader {
   verbPrefix: string;
@@ -1145,8 +1198,78 @@ interface ParsedLineHeader {
   foldItemsIntoSingleCommand?: boolean;
 }
 
-const STRICT_NEW_CONTAINER_START_REGEX =
-  /^(?:please\s+)?(?:(?:add|create|make)\s+(?:a\s+)?(?:(?:new\s+)?container|new\s+(?:bin|box|bag|tote|bucket|crate|tray|tub))|new\s+(?:container|bin|box|bag|tote|bucket|crate|tray|tub))(?:\s+(?:from\s+)?template)?\s+(.+)$/i;
+interface ParsedNewContainerStatement {
+  spokenNoun: string;
+  containerNameQuery: string;
+  freezerQuery?: string;
+  itemsPart?: string;
+  explicitTemplateRequested: boolean;
+  inferredIcon: string;
+}
+
+function normalizeContainerNounPluralRegex(noun: string): RegExp {
+  const lower = noun.toLowerCase();
+  if (lower === 'shelf') return /\bshel(?:f|ves)\b/i;
+  if (lower === 'box' || lower === 'pouch') return new RegExp(`\\b${lower}(?:es)?\\b`, 'i');
+  return new RegExp(`\\b${lower}s?\\b`, 'i');
+}
+
+function buildSpokenNewContainerName(spokenNoun: string, rawNameBody: string): string {
+  const cleanedTail = rawNameBody.replace(/\s+/g, ' ').trim();
+  const explicitNamedMatch = cleanedTail.match(/^(?:named|called)\s+(.+)$/i);
+  if (explicitNamedMatch) {
+    return explicitNamedMatch[1].trim();
+  }
+
+  const lowerNoun = spokenNoun.toLowerCase();
+  if (!lowerNoun || lowerNoun === 'container') {
+    return cleanedTail || 'New Container';
+  }
+  if (!cleanedTail) {
+    return spokenNoun;
+  }
+  if (normalizeContainerNounPluralRegex(lowerNoun).test(cleanedTail)) {
+    return cleanedTail;
+  }
+  return `${spokenNoun} ${cleanedTail}`;
+}
+
+function inferContainerIconFromNoun(noun?: string): string {
+  const lower = (noun || '').toLowerCase();
+  if (!lower || lower === 'container' || lower === 'box' || lower === 'crate' || lower === 'carton') {
+    return 'box';
+  }
+  if (lower === 'bag' || lower === 'sack' || lower === 'pillowcase') return 'pillowcase';
+  if (lower === 'pouch') return 'pouch';
+  if (
+    lower === 'bin' ||
+    lower === 'tote' ||
+    lower === 'tub' ||
+    lower === 'bucket' ||
+    lower === 'cooler' ||
+    lower === 'basket'
+  ) {
+    return 'bin';
+  }
+  if (lower === 'tray' || lower === 'pan') return 'tray';
+  if (lower === 'rack' || lower === 'shelf' || lower === 'drawer') return 'grid';
+  return 'box';
+}
+
+function inferContainerIconFromName(rawName?: string): string {
+  if (!rawName) return 'box';
+  const match = rawName.match(new RegExp(`\\b(${ALL_CONTAINER_NOUN_PATTERN})\\b`, 'i'));
+  return inferContainerIconFromNoun(match?.[1]);
+}
+
+function singularizeSpecificContainerNoun(pluralNoun: string): string {
+  const lower = pluralNoun.toLowerCase().trim();
+  if (lower === 'shelves' || lower === 'shelf') return 'shelf';
+  if (lower === 'boxes' || lower === 'box') return 'box';
+  if (lower === 'pouches' || lower === 'pouch') return 'pouch';
+  if (lower.endsWith('s') && lower.length > 3) return lower.slice(0, -1);
+  return lower;
+}
 
 function splitContainerWithItems(body: string): { left: string; itemsPart?: string } {
   const keywordRegex = /\b(?:with|containing|having)\s+|(?:^|\s)w\s*\/\s*/gi;
@@ -1164,6 +1287,183 @@ function splitContainerWithItems(body: string): { left: string; itemsPart?: stri
   return { left: body.trim() };
 }
 
+function extractFreezerAndNameFromLeft(
+  containerAndFreezer: string,
+  itemsPart: string | undefined,
+  state?: InventoryState
+): { namePart: string; freezerQuery?: string; itemsPart?: string } {
+  let namePart = containerAndFreezer.trim();
+  let freezerQuery: string | undefined;
+  let finalItemsPart = itemsPart;
+
+  const freezerInContainerMatch = namePart.match(/^(.+?)\s+\b(?:in|into|to|inside|at)\s+(.+)$/i);
+  if (freezerInContainerMatch) {
+    namePart = freezerInContainerMatch[1].trim();
+    freezerQuery = freezerInContainerMatch[2].trim();
+  } else if (finalItemsPart && state) {
+    // Allow trailing "in <freezer>" after items when none was placed after container name,
+    // e.g. "add container yellow bag with 4 liverwurst in freezer canada"
+    const trailingFreezerMatch = finalItemsPart.match(/^(.+?)\s+\b(?:in|into|to|inside|at)\s+(.+)$/i);
+    if (trailingFreezerMatch) {
+      const candFreezer = trailingFreezerMatch[2].trim();
+      if (resolveOnSiteFreezerCandidates(candFreezer, state).length > 0) {
+        finalItemsPart = trailingFreezerMatch[1].trim();
+        freezerQuery = candFreezer;
+      }
+    }
+  }
+
+  return { namePart, freezerQuery, itemsPart: finalItemsPart };
+}
+
+function parseContainerFirstTarget(
+  input: string,
+  state?: InventoryState,
+  options?: { isHeaderLine?: boolean; itemsAlreadyExtracted?: string }
+): ParsedNewContainerStatement | null {
+  const cleaned = input.replace(/^(?:please\s+)?/i, '').replace(/\s+/g, ' ').trim();
+  if (!cleaned) return null;
+
+  // 1. Type-noun-first: "create new box yellow in freezer 1 with 4 brats", "make new bag green with 6 hotdogs", "add container yellow bag ..."
+  const nounFirstRegex = new RegExp(
+    `^(?:(add|${NEW_CONTAINER_CREATE_VERBS})\\s+(?:a\\s+)?(new\\s+)?(${ALL_CONTAINER_NOUN_PATTERN})|(new)\\s+(${ALL_CONTAINER_NOUN_PATTERN}))(?:\\s+(from\\s+template|template))?(?:\\s+(.*))?$`,
+    'i'
+  );
+  const nounFirstMatch = cleaned.match(nounFirstRegex);
+  if (nounFirstMatch) {
+    const verb = (nounFirstMatch[1] || nounFirstMatch[4] || '').toLowerCase().replace(/\s+/g, ' ');
+    const hasNew = Boolean(nounFirstMatch[2] || nounFirstMatch[4]);
+    const spokenNoun = (nounFirstMatch[3] || nounFirstMatch[5] || 'container').toLowerCase();
+    const explicitTemplateRequested = Boolean(nounFirstMatch[6]);
+    const rawRest = (nounFirstMatch[7] || '').trim();
+
+    if (/^of\b/i.test(rawRest)) {
+      return null;
+    }
+
+    const split =
+      options?.itemsAlreadyExtracted !== undefined
+        ? { left: rawRest, itemsPart: options.itemsAlreadyExtracted }
+        : splitContainerWithItems(rawRest);
+
+    if (verb === 'add' && !hasNew && !explicitTemplateRequested && spokenNoun !== 'container') {
+      const hasItemsWithClause = Boolean(split.itemsPart);
+      const isPlainItemHeader = Boolean(options?.isHeaderLine) && /\b(?:to|into)\s+/i.test(rawRest);
+      if (!hasItemsWithClause && !(options?.isHeaderLine && !isPlainItemHeader)) {
+        return null;
+      }
+    }
+
+    if (verb === 'make' && !hasNew && !explicitTemplateRequested && hasTargetQtyExpression(split.left)) {
+      return null;
+    }
+
+    if (!split.left && !split.itemsPart && !explicitTemplateRequested) {
+      return null;
+    }
+
+    const { namePart, freezerQuery, itemsPart } = extractFreezerAndNameFromLeft(
+      split.left,
+      split.itemsPart,
+      state
+    );
+    const containerNameQuery = buildSpokenNewContainerName(spokenNoun, namePart);
+    return {
+      spokenNoun,
+      containerNameQuery,
+      freezerQuery,
+      itemsPart,
+      explicitTemplateRequested,
+      inferredIcon: inferContainerIconFromNoun(spokenNoun),
+    };
+  }
+
+  // 2. Modifier-before-noun: "create a yellow box in freezer 1 with 4 brats", "make a new green bag with 6 hotdogs", "new red tote w/ lid in canada with 2 ribeye"
+  const modBeforeNounRegex = new RegExp(
+    `^(?:(${NEW_CONTAINER_CREATE_VERBS})\\s+(?:a\\s+)?(new\\s+)?|(add)\\s+(?:a\\s+)?(new\\s+)?|(new)\\s+)(?:(from\\s+template|template)\\s+)?(.+)$`,
+    'i'
+  );
+  const modMatch = cleaned.match(modBeforeNounRegex);
+  if (modMatch) {
+    const verb = (modMatch[1] || modMatch[3] || modMatch[5] || '').toLowerCase().replace(/\s+/g, ' ');
+    const hasNew = Boolean(modMatch[2] || modMatch[4] || modMatch[5]);
+    const explicitTemplateRequested = Boolean(modMatch[6]);
+    const rawRest = (modMatch[7] || '').trim();
+    if (!rawRest) return null;
+
+    const split =
+      options?.itemsAlreadyExtracted !== undefined
+        ? { left: rawRest, itemsPart: options.itemsAlreadyExtracted }
+        : splitContainerWithItems(rawRest);
+
+    if (verb === 'add' && !hasNew && !explicitTemplateRequested && !split.itemsPart) {
+      return null;
+    }
+
+    if (hasTargetQtyExpression(split.left)) {
+      return null;
+    }
+
+    const { namePart, freezerQuery, itemsPart } = extractFreezerAndNameFromLeft(
+      split.left,
+      split.itemsPart,
+      state
+    );
+    if (!namePart) return null;
+
+    const nounSplitMatch = namePart.match(
+      new RegExp(`^(.+?)\\s+\\b(${ALL_CONTAINER_NOUN_PATTERN})\\b(?:\\s+(.*))?$`, 'i')
+    );
+    if (!nounSplitMatch) return null;
+
+    const beforeNoun = nounSplitMatch[1].trim();
+    const spokenNoun = nounSplitMatch[2].toLowerCase();
+    const afterNoun = (nounSplitMatch[3] || '').trim();
+    const beforeWords = beforeNoun.split(/\s+/).filter(Boolean);
+
+    if (beforeWords.length === 0 || beforeWords.length > 4) return null;
+    if (startsWithNumberToken(beforeNoun)) return null;
+    if (/\b(?:from|with|by|of|all|every|existing)\b/i.test(beforeNoun)) return null;
+    if (/^of\b/i.test(afterNoun)) return null;
+
+    return {
+      spokenNoun,
+      containerNameQuery: namePart,
+      freezerQuery,
+      itemsPart,
+      explicitTemplateRequested,
+      inferredIcon: inferContainerIconFromNoun(spokenNoun),
+    };
+  }
+
+  return null;
+}
+
+function parseNewContainerStatement(
+  segment: string,
+  state?: InventoryState,
+  options?: { isHeaderLine?: boolean }
+): ParsedNewContainerStatement | null {
+  const firstResult = parseContainerFirstTarget(segment, state, options);
+  if (firstResult) return firstResult;
+
+  if (options?.isHeaderLine) return null;
+
+  // 3. Items-first: "inbound 3 ribeye into new box yellow in chest freezer", "put 6 hotdogs in a new green bag"
+  const itemsFirstMatch = segment.match(
+    /^(?:please\s+)?(?:add|put|restock|plus|pack|packed|receive|received|inbound|inbounded|stock|toss|place|load|store|stash|enter|log)\s+(.+?)\s+\b(?:to|into|in)\s+(?:a\s+)?(new\s+.+)$/i
+  );
+  if (itemsFirstMatch) {
+    const itemsPart = itemsFirstMatch[1].trim();
+    const newTargetPhrase = itemsFirstMatch[2].trim();
+    return parseContainerFirstTarget(newTargetPhrase, state, {
+      itemsAlreadyExtracted: itemsPart,
+    });
+  }
+
+  return null;
+}
+
 function parseHeaderPhrase(rawHeader: string): ParsedLineHeader | null {
   const cleaned = rawHeader
     .replace(/^(?:please\s+)?/i, '')
@@ -1171,17 +1471,17 @@ function parseHeaderPhrase(rawHeader: string): ParsedLineHeader | null {
     .trim();
   if (!cleaned) return null;
 
-  // Strict new-container header (e.g. "Add container yellow bag in freezer canada:")
-  if (STRICT_NEW_CONTAINER_START_REGEX.test(cleaned)) {
-    const split = splitContainerWithItems(cleaned);
-    if (!split.itemsPart) {
-      return {
-        verbPrefix: cleaned,
-        locSuffix: '',
-        intentType: 'add_container',
-        foldItemsIntoSingleCommand: true,
-      };
-    }
+  // Strict new-container header (e.g. "Add container yellow bag in freezer canada:" or "Create new box yellow in freezer 1:")
+  const parsedNewHeader = parseContainerFirstTarget(cleaned, undefined, { isHeaderLine: true });
+  if (parsedNewHeader && !parsedNewHeader.itemsPart) {
+    return {
+      verbPrefix: cleaned,
+      locSuffix: '',
+      intentType: 'add_container',
+      foldItemsIntoSingleCommand: true,
+    };
+  }
+  if (parsedNewHeader) {
     return null;
   }
 
@@ -1267,14 +1567,16 @@ function stripBulletPrefix(line: string): string {
 
 function startsWithCommandOrQuery(line: string): boolean {
   const cleaned = stripPoliteLeadIn(line);
-  if (STRICT_NEW_CONTAINER_START_REGEX.test(cleaned)) return true;
+  if (parseContainerFirstTarget(cleaned, undefined, { isHeaderLine: true })) return true;
   const actionRegex = new RegExp(
     `^(?:${HEADER_VERB_PATTERN}|empty|clear|wipe|clean|unload|unpack|dump|combine|merge|consolidate|swap|trade|switch|exchange|rename|archive|unarchive|restore|delete|retire|unplace|stage|tag|untag|relabel|re-label|replenish|fill|top\\s+(?:off|up)|refill|undo|roll\\s*back|revert|zero\\s+out|sold\\s+out\\s+of|ran\\s+out\\s+of)\\b`,
     'i'
   );
   if (actionRegex.test(cleaned)) return true;
-  const queryStartRegex =
-    /^(?:how\s+many|how\s+much|how(?:'s|\s+is|\s+are)|what(?:'s|s|\s+is|\s+are)?\s+(?:(?:the\s+)?(?:count|stock|inventory)|inside|in|on|tagged|out\s+of|running\s+low|getting\s+low|low|empty|missing|do\s+(?:we|i)|items|lists?)\b|what\s+(?:do|should|can)\s+(?:we|i)\s+(?:need\s+to\s+)?restock|what\s+did\s+(?:we|i)|which\s+(?:containers?|items?|lists?)\b|anything\s+(?:low|out|need|in)|does\s+anything|count\b|check\b|total\b|list\b|inspect\b|read\b|open\b|view\b|is\s+.+?\s+on\s+|do\s+(?:we|i|you)\s+(?:still\s+)?have\b|have\s+(?:we|i)\s+got\b|got\s+any\b|are\s+(?:there|we\s+out\s+of)\b|is\s+there\b|where(?:'s|s|\s+is|\s+are|\s+do\s+(?:i|we|you)\s+(?:have|keep|store)|\s+have\s+(?:i|we)\s+got|\s+did\s+(?:i|we)\s+(?:put|store|keep)|\s+can\s+(?:i|we)\s+(?:find|get)|\s+(?:in|inside|at)\s+\S+)\b|find\b|locate\b|show\s+(?:me|us)\b|search\s+for\b|look\s+up\b)/i;
+  const queryStartRegex = new RegExp(
+    `^(?:how\\s+many|how\\s+much|how(?:'s|\\s+is|\\s+are)|what(?:'s|s|\\s+is|\\s+are)?\\s+(?:(?:the\\s+)?(?:count|stock|inventory)|inside|in|on|tagged|out\\s+of|running\\s+low|getting\\s+low|low|empty|missing|do\\s+(?:we|i)|items|lists?)\\b|what\\s+(?:do|should|can)\\s+(?:we|i)\\s+(?:need\\s+to\\s+)?restock|what\\s+did\\s+(?:we|i)|(?:what|which)\\s+(?:${ALL_CONTAINER_NOUN_PLURAL_PATTERN}|items?|lists?)\\b|anything\\s+(?:low|out|need|in)|does\\s+anything|count\\b|check\\b|total\\b|list\\b|inspect\\b|read\\b|open\\b|view\\b|is\\s+.+?\\s+on\\s+|do\\s+(?:we|i|you)\\s+(?:still\\s+)?have\\b|have\\s+(?:we|i)\\s+got\\b|got\\s+any\\b|are\\s+(?:there|we\\s+out\\s+of)\\b|is\\s+there\\b|where(?:'s|s|\\s+is|\\s+are|\\s+do\\s+(?:i|we|you)\\s+(?:have|keep|store)|\\s+have\\s+(?:i|we)\\s+got|\\s+did\\s+(?:i|we)\\s+(?:put|store|keep)|\\s+can\\s+(?:i|we)\\s+(?:find|get)|\\s+(?:in|inside|at)\\s+\\S+)\\b|find\\b|locate\\b|show\\s+(?:me|us)\\b|search\\s+for\\b|look\\s+up\\b)`,
+    'i'
+  );
   return queryStartRegex.test(cleaned);
 }
 
@@ -1524,7 +1826,86 @@ function splitTopLevelCommands(transcript: string, state: InventoryState): strin
       .filter(Boolean);
     finalSegments.push(...subParts);
   }
-  return finalSegments;
+  return coalesceSequentialPlacementSegments(
+    finalSegments.map(s => s.replace(/\bpillow\s+(cases?)\b/gi, 'pillow$1')),
+    state
+  );
+}
+
+const PRONOUN_PLACEMENT_REGEX = new RegExp(
+  `^(?:then\\s+)?(?:put|place|move|set|drop|store|stash|put\\s+away)\\s+(?:it|that(?:\\s+(?:container|one|${SPECIFIC_CONTAINER_NOUN_PATTERN}))?|them)\\s+(?:in|into|inside|to|at)\\s+(.+?)\\s*[?!.]*$`,
+  'i'
+);
+
+function coalesceSequentialPlacementSegments(
+  segments: string[],
+  state: InventoryState
+): string[] {
+  if (segments.length <= 1) return segments;
+  const out: string[] = [];
+
+  for (const rawSeg of segments) {
+    const seg = rawSeg.trim();
+    const prev = out[out.length - 1];
+    const placementMatch = prev ? seg.match(PRONOUN_PLACEMENT_REGEX) : null;
+
+    if (prev && placementMatch) {
+      const targetFreezerPhrase = placementMatch[1].trim();
+      const prevStripped = stripPoliteLeadIn(prev);
+
+      // 1. Previous segment explicitly creates a new container (with or without location)
+      const parsedNew = parseNewContainerStatement(prevStripped, state);
+      if (parsedNew) {
+        if (!parsedNew.freezerQuery) {
+          const withMatch = prev.match(/^(.+?)\s+\b(with|containing|having)\s+(.+)$/i);
+          if (withMatch) {
+            out[out.length - 1] = `${withMatch[1].trim()} in ${targetFreezerPhrase} ${withMatch[2]} ${withMatch[3].trim()}`;
+          } else {
+            out[out.length - 1] = `${prev.replace(/[?!.]+\s*$/, '').trim()} in ${targetFreezerPhrase}`;
+          }
+          continue;
+        }
+      }
+
+      // 2. Previous segment is an "add/put/pack/inbound ... to/into/in/at <dest>" command
+      const addDestMatch = prevStripped.match(
+        /^(add|put|restock|plus|pack|packed|receive|received|inbound|inbounded|stock|toss|place|load|store|stash|enter|log)\s+(.+?)\s+\b(?:to|into|in|at)\s+(.+?)\s*[?!.]*$/i
+      );
+      if (addDestMatch) {
+        const itemsPart = addDestMatch[2].trim();
+        const rawDest = addDestMatch[3].trim();
+        const cleanDest = rawDest.replace(/^(?:the|an?)\s+/i, '').trim();
+
+        const activeContMatches = resolveOnSiteLocationCandidates(cleanDest, state, 'dest').filter(
+          l => !l.isLoose
+        );
+        const tplResolution = resolveNewContainerTemplates(cleanDest, state, false);
+        const hasMatchedTemplate = tplResolution.candidates.some(
+          c => !c.isCustom && c.score >= 65
+        );
+
+        if (activeContMatches.length === 0 && hasMatchedTemplate) {
+          // Zero active containers match (e.g. only exists as a pillowcase/template) -> pack directly into new container in target freezer
+          out[out.length - 1] = `inbound ${itemsPart} into new container ${cleanDest} in ${targetFreezerPhrase}`;
+          continue;
+        }
+
+        if (activeContMatches.length > 0) {
+          // Existing container(s) found -> add to existing (same-product preferred) AND move container to target freezer
+          out.push(`move container ${cleanDest} to ${targetFreezerPhrase}`);
+          continue;
+        }
+
+        // Neither active container nor template matched -> preserve both container name & target freezer for 1-tap suggestions
+        out[out.length - 1] = `${prev.replace(/[?!.]+\s*$/, '').trim()} in ${targetFreezerPhrase}`;
+        continue;
+      }
+    }
+
+    out.push(seg);
+  }
+
+  return out;
 }
 
 export const VOICE_PRIMARY_DISPLAY_CONFIG_KEY = 'voice_primary_display_freezer_id';
@@ -2020,7 +2401,7 @@ export function resolveOnSiteLocationCandidates(
   }
 
   // 4. General matching across Containers and Freezers
-  const CONTAINER_TYPE_PREFIX_REGEX = /^(box|bag|bin|tote|bucket|crate|tray|tub|shelf|drawer)\s+(.+)$/i;
+  const CONTAINER_TYPE_PREFIX_REGEX = new RegExp(`^(${SPECIFIC_CONTAINER_NOUN_PATTERN})\\s+(.+)$`, 'i');
   const containerTypePrefixMatch = query.match(CONTAINER_TYPE_PREFIX_REGEX);
   const querySpokenTypeNoun = containerTypePrefixMatch?.[1].toLowerCase();
   const queryWithoutTypePrefix = containerTypePrefixMatch?.[2]?.trim();
@@ -2254,6 +2635,142 @@ export function resolveOnSiteProductCandidates(
   return allMatches;
 }
 
+export interface ResolvedVoiceBundleMatch {
+  entry: VoiceDictionaryEntry;
+  score: number;
+  isExact: boolean;
+}
+
+export interface VoiceBundleLookupResult {
+  best: ResolvedVoiceBundleMatch;
+  matches: ResolvedVoiceBundleMatch[];
+  isAmbiguous: boolean;
+}
+
+/**
+ * Resolve a spoken item phrase against 1-to-many Voice Dictionary product pack/bundle entries.
+ * Preserves unit words ("pack", "box", "bag") so phrases like "broth mix pack" / "broth mix packs"
+ * match deterministically without colliding with single-product queries like "broth".
+ */
+export function resolveVoiceDictionaryBundles(
+  productQuery: string,
+  state: InventoryState,
+  options?: { scopedContainerIds?: Set<string> }
+): VoiceBundleLookupResult | null {
+  const bundleEntries = (state.voiceDictionary || []).filter(
+    e =>
+      e.targetType === 'bundle' &&
+      Boolean(e.spokenPhrase?.trim()) &&
+      Array.isArray(e.bundleItems) &&
+      e.bundleItems.length > 0
+  );
+  if (bundleEntries.length === 0) return null;
+
+  const rawNorm = normalizeText(productQuery);
+  if (!rawNorm) return null;
+
+  const articleStripped = rawNorm.replace(/^(?:the|some|a|an)\s+/i, '').trim();
+  const wrapperStripped = articleStripped
+    .replace(/^(?:packs?|packages?|pkgs?|bags?|boxes?|cases?|sets?|bundles?)\s+of\s+/i, '')
+    .trim();
+
+  const queriesToTry = Array.from(
+    new Set([rawNorm, articleStripped, wrapperStripped].filter(Boolean))
+  );
+
+  const matches: ResolvedVoiceBundleMatch[] = [];
+  for (const entry of bundleEntries) {
+    let bestScore: { score: number; isExact: boolean } | null = null;
+    for (const q of queriesToTry) {
+      const m = scoreNameMatch(q, entry.spokenPhrase, { keepUnitTokens: true });
+      if (m && (!bestScore || m.score > bestScore.score || (m.isExact && !bestScore.isExact))) {
+        bestScore = { score: m.score, isExact: m.isExact };
+      }
+    }
+    if (bestScore) {
+      matches.push({
+        entry,
+        score: bestScore.score,
+        isExact: bestScore.isExact,
+      });
+    }
+  }
+
+  if (matches.length === 0) return null;
+
+  matches.sort((a, b) => {
+    if (a.isExact !== b.isExact) return a.isExact ? -1 : 1;
+    if (b.score !== a.score) return b.score - a.score;
+    return b.entry.spokenPhrase.trim().length - a.entry.spokenPhrase.trim().length;
+  });
+
+  const best = matches[0];
+  if (best.isExact) {
+    const exactTies = matches.filter(m => m.isExact && m.score === best.score);
+    return {
+      best,
+      matches: exactTies,
+      isAmbiguous: exactTies.length > 1,
+    };
+  }
+
+  // Non-exact bundle match (e.g. "broth mix" -> "broth mix pack") only applies when no single product matches
+  if (best.score >= 80) {
+    const singleProdMatches = resolveOnSiteProductCandidates(
+      productQuery,
+      state,
+      options?.scopedContainerIds
+    );
+    if (singleProdMatches.length === 0) {
+      const topTies = matches.filter(m => m.score >= best.score - 2);
+      return {
+        best,
+        matches: topTies,
+        isAmbiguous: topTies.length > 1,
+      };
+    }
+  }
+
+  return null;
+}
+
+function resolvePinnedProductCandidates(
+  pinnedProductId: string,
+  state: InventoryState,
+  scopedContainerIds?: Set<string>
+): VoiceProductMatch[] {
+  const pinnedProduct = (state.products || []).find(
+    p => p.id === pinnedProductId && !p.isArchived
+  );
+  if (!pinnedProduct) return [];
+
+  const activeContainerIds = new Set(
+    (state.containers || []).filter(c => !c.isArchived).map(c => c.id)
+  );
+  let totalOnSiteQty = 0;
+  let locationStockQty = 0;
+  for (const mc of state.meatCuts || []) {
+    if (mc.quantity <= 0 || mc.productId !== pinnedProduct.id || !activeContainerIds.has(mc.containerId)) {
+      continue;
+    }
+    totalOnSiteQty += mc.quantity;
+    if (!scopedContainerIds || scopedContainerIds.has(mc.containerId)) {
+      locationStockQty += mc.quantity;
+    }
+  }
+
+  return [
+    {
+      product: pinnedProduct,
+      score: 100,
+      matchReason: 'exact',
+      isExact: true,
+      totalOnSiteQty,
+      locationStockQty,
+    },
+  ];
+}
+
 /**
  * Determine whether a candidate list requires explicit user selection.
  * Rule per user preference:
@@ -2477,7 +2994,8 @@ function resolveOnSiteFreezerCandidates(
 function resolveNewContainerTemplates(
   containerNameQuery: string,
   state: InventoryState,
-  explicitTemplateRequested = false
+  explicitTemplateRequested = false,
+  defaultIcon = 'box'
 ): {
   candidates: VoiceContainerTemplateCandidate[];
   selectedTemplateId: string | null;
@@ -2488,7 +3006,7 @@ function resolveNewContainerTemplates(
   const customCandidate: VoiceContainerTemplateCandidate = {
     templateId: '__custom__',
     name: customDisplayName,
-    icon: 'box',
+    icon: defaultIcon || 'box',
     isCustom: true,
     score: 50,
     matchReason: 'exact',
@@ -2498,18 +3016,29 @@ function resolveNewContainerTemplates(
   const templates = state.containerTemplates || [];
   const matchedTemplates: VoiceContainerTemplateCandidate[] = [];
 
+  const qNormTokens = tokenize(normalizeText(containerNameQuery))
+    .map(canonicalizeToken)
+    .sort();
   for (const tpl of templates) {
-    const m = scoreNameMatch(containerNameQuery, tpl.name);
+    const m = scoreNameMatch(containerNameQuery, tpl.name, { keepUnitTokens: true });
     if (m && m.score >= 65) {
+      const tplNormTokens = tokenize(normalizeText(tpl.name))
+        .map(canonicalizeToken)
+        .sort();
+      const isReorderedExact =
+        !m.isExact &&
+        qNormTokens.length >= 2 &&
+        qNormTokens.length === tplNormTokens.length &&
+        qNormTokens.every((t, idx) => t === tplNormTokens[idx]);
       matchedTemplates.push({
         templateId: tpl.id,
         name: tpl.name,
         icon: tpl.icon || 'box',
         imageUrl: tpl.imageUrl,
         isCustom: false,
-        score: m.score,
-        matchReason: m.reason,
-        isExact: m.isExact,
+        score: isReorderedExact ? Math.max(m.score, 95) : m.score,
+        matchReason: isReorderedExact ? 'exact' : m.reason,
+        isExact: m.isExact || isReorderedExact,
       });
     }
   }
@@ -2845,6 +3374,484 @@ function getAllActiveLocationCandidates(
     });
 }
 
+function getDiceBigramSimilarity(aRaw: string, bRaw: string): number {
+  const a = normalizeText(aRaw);
+  const b = normalizeText(bRaw);
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+  if (a.length < 2 || b.length < 2) {
+    return b.includes(a) || a.includes(b) ? 0.5 : 0;
+  }
+  const bigramsA = new Map<string, number>();
+  for (let i = 0; i < a.length - 1; i++) {
+    const bg = a.slice(i, i + 2);
+    bigramsA.set(bg, (bigramsA.get(bg) || 0) + 1);
+  }
+  let intersection = 0;
+  for (let i = 0; i < b.length - 1; i++) {
+    const bg = b.slice(i, i + 2);
+    const count = bigramsA.get(bg) || 0;
+    if (count > 0) {
+      bigramsA.set(bg, count - 1);
+      intersection++;
+    }
+  }
+  return (2 * intersection) / (a.length - 1 + (b.length - 1));
+}
+
+function findFallbackProductMatches(
+  productQuery: string,
+  state: InventoryState,
+  scopedContainerIds?: Set<string>,
+  limit = 6
+): VoiceProductMatch[] {
+  const direct = resolveOnSiteProductCandidates(productQuery, state, scopedContainerIds);
+  if (direct.length >= limit) {
+    return direct.slice(0, limit);
+  }
+
+  const activeProducts = (state.products || []).filter(p => !p.isArchived);
+  const activeContainerIds = new Set(
+    (state.containers || []).filter(c => !c.isArchived).map(c => c.id)
+  );
+  const totalOnSiteMap = new Map<string, number>();
+  const scopedStockMap = new Map<string, number>();
+  for (const mc of state.meatCuts || []) {
+    if (mc.quantity <= 0 || !activeContainerIds.has(mc.containerId)) continue;
+    totalOnSiteMap.set(mc.productId, (totalOnSiteMap.get(mc.productId) || 0) + mc.quantity);
+    if (!scopedContainerIds || scopedContainerIds.has(mc.containerId)) {
+      scopedStockMap.set(mc.productId, (scopedStockMap.get(mc.productId) || 0) + mc.quantity);
+    }
+  }
+
+  const cleanedQuery = normalizeText(stripUnitFillers(productQuery) || productQuery);
+  const qTokens = tokenize(cleanedQuery);
+  const seenIds = new Set(direct.map(d => d.product.id));
+  const extraMatches: VoiceProductMatch[] = [];
+
+  for (const product of activeProducts) {
+    if (seenIds.has(product.id)) continue;
+    const prodNorm = normalizeText(product.name);
+    const catNorm = normalizeText(`${product.primaryCategory || ''} ${product.subCategory || ''}`);
+    const dice = getDiceBigramSimilarity(cleanedQuery, prodNorm);
+    const catDice = getDiceBigramSimilarity(cleanedQuery, catNorm);
+    const pTokens = tokenize(prodNorm);
+    const tokenHits = qTokens.filter(qt =>
+      pTokens.some(pt => pt.startsWith(qt.slice(0, 3)) || qt.startsWith(pt.slice(0, 3)))
+    ).length;
+
+    const totalStock = totalOnSiteMap.get(product.id) || 0;
+    const scopedStock = scopedStockMap.get(product.id) || 0;
+    const simScore = Math.round(Math.max(dice, catDice * 0.8) * 65 + tokenHits * 12);
+    const stockBoost = scopedStock > 0 ? 18 : totalStock > 0 ? 8 : 0;
+
+    if (cleanedQuery && simScore === 0 && totalStock === 0 && scopedStock === 0) {
+      continue;
+    }
+
+    extraMatches.push({
+      product,
+      score: Math.max(10, simScore + stockBoost),
+      matchReason: 'fuzzy',
+      isExact: false,
+      totalOnSiteQty: totalStock,
+      locationStockQty: scopedStock,
+    });
+  }
+
+  extraMatches.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    if (b.locationStockQty !== a.locationStockQty) return b.locationStockQty - a.locationStockQty;
+    if (b.totalOnSiteQty !== a.totalOnSiteQty) return b.totalOnSiteQty - a.totalOnSiteQty;
+    return a.product.name.localeCompare(b.product.name);
+  });
+
+  // If still fewer than limit (e.g. completely unrecognized gibberish), surface top stocked products
+  if (direct.length + extraMatches.length < limit) {
+    for (const product of activeProducts) {
+      if (seenIds.has(product.id) || extraMatches.some(m => m.product.id === product.id)) continue;
+      extraMatches.push({
+        product,
+        score: 5 + ((totalOnSiteMap.get(product.id) || 0) > 0 ? 5 : 0),
+        matchReason: 'fuzzy',
+        isExact: false,
+        totalOnSiteQty: totalOnSiteMap.get(product.id) || 0,
+        locationStockQty: scopedStockMap.get(product.id) || 0,
+      });
+    }
+    extraMatches.sort((a, b) => b.score - a.score || b.totalOnSiteQty - a.totalOnSiteQty);
+  }
+
+  return [...direct, ...extraMatches].slice(0, limit);
+}
+
+function findFallbackLocations(
+  locQuery: string | undefined,
+  state: InventoryState,
+  options?: {
+    mode?: 'source' | 'dest' | 'any';
+    productId?: string | null;
+    excludeIds?: Set<string>;
+    onlyNonLoose?: boolean;
+    limit?: number;
+  }
+): VoiceLocationCandidate[] {
+  const mode = options?.mode || 'any';
+  const productId = options?.productId || null;
+  const limit = options?.limit ?? 8;
+
+  const qtyByContainer = new Map<string, number>();
+  if (productId) {
+    for (const mc of state.meatCuts || []) {
+      if (mc.quantity > 0 && mc.productId === productId) {
+        qtyByContainer.set(mc.containerId, (qtyByContainer.get(mc.containerId) || 0) + mc.quantity);
+      }
+    }
+  }
+
+  const totalPiecesByContainer = new Map<string, number>();
+  for (const mc of state.meatCuts || []) {
+    if (mc.quantity > 0) {
+      totalPiecesByContainer.set(
+        mc.containerId,
+        (totalPiecesByContainer.get(mc.containerId) || 0) + mc.quantity
+      );
+    }
+  }
+
+  const direct = locQuery?.trim() ? resolveOnSiteLocationCandidates(locQuery, state, mode) : [];
+  const directById = new Map(direct.map(d => [d.containerId, d]));
+
+  const allLocs = getAllActiveLocationCandidates(state, !options?.onlyNonLoose).filter(
+    l => !options?.excludeIds?.has(l.containerId)
+  );
+
+  const cleanedQuery = normalizeText(cleanLocationFragment(locQuery || ''));
+  const enriched = allLocs.map(loc => {
+    const existingProductQty = productId ? qtyByContainer.get(loc.containerId) || 0 : 0;
+    const hasMatchingProduct = existingProductQty > 0;
+    const totalInside = totalPiecesByContainer.get(loc.containerId) || 0;
+    const directHit = directById.get(loc.containerId);
+    const sim = cleanedQuery
+      ? Math.round(
+          Math.max(
+            getDiceBigramSimilarity(cleanedQuery, loc.containerName),
+            getDiceBigramSimilarity(cleanedQuery, `${loc.containerName} ${loc.freezerName}`),
+            getDiceBigramSimilarity(cleanedQuery, loc.freezerName) * 0.9
+          ) * 60
+        )
+      : 0;
+    return {
+      ...loc,
+      score: directHit ? directHit.score : Math.max(sim, totalInside > 0 ? 15 : 5),
+      matchReason: directHit ? directHit.matchReason : ('fuzzy' as MatchReason),
+      isExact: Boolean(directHit?.isExact),
+      hasMatchingProduct,
+      existingProductQty,
+    };
+  });
+
+  enriched.sort((a, b) => {
+    if (productId && a.hasMatchingProduct !== b.hasMatchingProduct) {
+      return a.hasMatchingProduct ? -1 : 1;
+    }
+    if (mode === 'source' && productId) {
+      const aQty = a.existingProductQty || 0;
+      const bQty = b.existingProductQty || 0;
+      if (bQty !== aQty) return bQty - aQty;
+    }
+    if (b.score !== a.score) return b.score - a.score;
+    if (a.isDisplay !== b.isDisplay) return a.isDisplay ? -1 : 1;
+    if (a.isLoose !== b.isLoose) return a.isLoose ? 1 : -1;
+    return a.label.localeCompare(b.label);
+  });
+
+  return enriched.slice(0, limit);
+}
+
+function extractContainerAndFreezerFromDestQuery(
+  rawDestQuery: string | undefined,
+  state: InventoryState
+): {
+  containerNameQuery: string;
+  freezerQuery?: string;
+  matchedFreezers: VoiceFreezerCandidate[];
+  onlyFreezer: boolean;
+} {
+  const cleaned = (rawDestQuery || '')
+    .replace(/^(?:the|an?)\s+/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!cleaned) {
+    return { containerNameQuery: '', matchedFreezers: [], onlyFreezer: false };
+  }
+
+  // 1. Check explicit preposition split: "red bag in freezer 2"
+  const prepMatch = cleaned.match(/^(.+?)\s+\b(?:in|into|inside|to|at)\s+(.+)$/i);
+  if (prepMatch) {
+    const left = prepMatch[1].replace(/^(?:the|an?)\s+/i, '').trim();
+    const right = prepMatch[2].trim();
+    const matchedRight = resolveOnSiteFreezerCandidates(right, state);
+    if (matchedRight.length > 0) {
+      return {
+        containerNameQuery: left,
+        freezerQuery: right,
+        matchedFreezers: matchedRight,
+        onlyFreezer: false,
+      };
+    }
+    return {
+      containerNameQuery: left,
+      freezerQuery: right,
+      matchedFreezers: [],
+      onlyFreezer: false,
+    };
+  }
+
+  // 2. Check if the entire phrase is just a freezer (and NOT a container/template name)
+  const directFreezers = resolveOnSiteFreezerCandidates(cleaned, state);
+  const directNamedCont = resolveOnSiteLocationCandidates(cleaned, state, 'source').filter(
+    c => !c.isLoose
+  );
+  const directTplMatch = (state.containerTemplates || []).some(t => {
+    const m = scoreNameMatch(cleaned, t.name, { keepUnitTokens: true });
+    return Boolean(m && m.score >= 65);
+  });
+  if (directFreezers.length > 0 && directNamedCont.length === 0 && !directTplMatch) {
+    return {
+      containerNameQuery: '',
+      freezerQuery: cleaned,
+      matchedFreezers: directFreezers,
+      onlyFreezer: true,
+    };
+  }
+
+  // 3. Check trailing freezer without preposition, e.g. "red bag freezer 2"
+  const words = cleaned.split(/\s+/).filter(Boolean);
+  for (let i = words.length - 1; i >= 1; i--) {
+    const left = words.slice(0, i).join(' ');
+    const right = words.slice(i).join(' ');
+    const rightFreezers = resolveOnSiteFreezerCandidates(right, state);
+    if (rightFreezers.length > 0) {
+      return {
+        containerNameQuery: left,
+        freezerQuery: right,
+        matchedFreezers: rightFreezers,
+        onlyFreezer: false,
+      };
+    }
+  }
+
+  return { containerNameQuery: cleaned, matchedFreezers: [], onlyFreezer: false };
+}
+
+function buildAddFallbackSuggestions(
+  destLocationQuery: string | undefined,
+  selectedProductId: string | null,
+  state: InventoryState
+): {
+  suggestedTemplateCandidates: VoiceContainerTemplateCandidate[];
+  suggestedFreezerId: string | null;
+  suggestedFallbackFreezers: VoiceFreezerCandidate[];
+  suggestedFallbackLocations: VoiceLocationCandidate[];
+} {
+  const split = extractContainerAndFreezerFromDestQuery(destLocationQuery, state);
+  const allFreezers = resolveOnSiteFreezerCandidates(undefined, state);
+  const suggestedFreezerId =
+    split.matchedFreezers.length === 1 ? split.matchedFreezers[0].freezerId : null;
+  const suggestedFallbackFreezers =
+    split.matchedFreezers.length > 0 ? split.matchedFreezers : allFreezers;
+
+  const suggestedTemplateCandidates: VoiceContainerTemplateCandidate[] = [];
+  if (split.containerNameQuery) {
+    const tplRes = resolveNewContainerTemplates(
+      split.containerNameQuery,
+      state,
+      false,
+      inferContainerIconFromName(split.containerNameQuery)
+    );
+    suggestedTemplateCandidates.push(...tplRes.candidates.slice(0, 6));
+  } else {
+    for (const tpl of (state.containerTemplates || []).slice(0, 6)) {
+      suggestedTemplateCandidates.push({
+        templateId: tpl.id,
+        name: tpl.name,
+        icon: tpl.icon || 'box',
+        imageUrl: tpl.imageUrl,
+        isCustom: false,
+        score: 40,
+        matchReason: 'fuzzy',
+        isExact: false,
+      });
+    }
+  }
+
+  const suggestedFallbackLocations = findFallbackLocations(destLocationQuery, state, {
+    mode: 'dest',
+    productId: selectedProductId,
+    limit: 8,
+  });
+
+  return {
+    suggestedTemplateCandidates,
+    suggestedFreezerId,
+    suggestedFallbackFreezers,
+    suggestedFallbackLocations,
+  };
+}
+
+function analyzeUnknownSegment(
+  segmentRaw: string,
+  state: InventoryState
+): {
+  quantity: number;
+  inferredProductQuery?: string;
+  inferredLocationQuery?: string;
+  inferredFreezerQuery?: string;
+  suggestedFallbackProducts: VoiceProductMatch[];
+  suggestedFallbackLocations: VoiceLocationCandidate[];
+  suggestedTemplateCandidates: VoiceContainerTemplateCandidate[];
+  suggestedFreezerId: string | null;
+  suggestedFallbackFreezers: VoiceFreezerCandidate[];
+} {
+  const cleanedRaw = stripPoliteLeadIn(segmentRaw.trim()).replace(/[?!.]+$/g, '').trim();
+  const qtyExtracted = extractLeadingQuantity(cleanedRaw, { allowToAsTwo: true, defaultQty: 1 });
+  const body = (qtyExtracted.rest || cleanedRaw).trim();
+
+  // Direct phrase checks on full body
+  const directProd = body ? resolveOnSiteProductCandidates(body, state) : [];
+  const directLoc = body ? resolveOnSiteLocationCandidates(body, state, 'any') : [];
+  const directTpl = body
+    ? resolveNewContainerTemplates(body, state, false, inferContainerIconFromName(body)).candidates.filter(
+        c => !c.isCustom && c.score >= 65
+      )
+    : [];
+  const directFreezer = body ? resolveOnSiteFreezerCandidates(body, state) : [];
+
+  let bestRank =
+    (directProd[0]?.score || 0) +
+    (directLoc[0]?.score || 0) +
+    (directTpl[0]?.score || 0) +
+    (directFreezer[0]?.score || 0);
+  let inferredProductQuery = directProd.length > 0 ? body : undefined;
+  let inferredLocationQuery = directLoc.length > 0 ? body : undefined;
+  let inferredFreezerQuery = directFreezer.length > 0 && directLoc.length === 0 ? body : undefined;
+  let bestProducts = directProd;
+  let bestLocations = directLoc;
+  let bestTemplates = directTpl;
+  let bestFreezers = directFreezer;
+
+  // Test two-part splits across words / prepositions (e.g. "4 broths red bag", "red bag freezer 2")
+  const words = body.split(/\s+/).filter(Boolean);
+  for (let i = 1; i < words.length; i++) {
+    const left = words
+      .slice(0, i)
+      .join(' ')
+      .replace(/\s+\b(?:to|into|in|inside|from|at|on|for)$/i, '')
+      .trim();
+    const right = words
+      .slice(i)
+      .join(' ')
+      .replace(/^(?:to|into|in|inside|from|at|on|for|the|a|an)\b\s*/i, '')
+      .trim();
+    if (!left || !right) continue;
+
+    const pLeft = resolveOnSiteProductCandidates(left, state);
+    const lRight = resolveOnSiteLocationCandidates(right, state, 'any');
+    const tRight = resolveNewContainerTemplates(right, state, false, inferContainerIconFromName(right)).candidates.filter(
+      c => !c.isCustom && c.score >= 65
+    );
+    const fRight = resolveOnSiteFreezerCandidates(right, state);
+
+    // Pair A: left = product, right = container/template/freezer
+    const rightTargetScore = Math.max(lRight[0]?.score || 0, tRight[0]?.score || 0, fRight[0]?.score || 0);
+    if (pLeft.length > 0 && rightTargetScore > 0) {
+      const rank = pLeft[0].score + rightTargetScore + 25;
+      if (rank > bestRank) {
+        bestRank = rank;
+        inferredProductQuery = left;
+        inferredLocationQuery = lRight.length > 0 || tRight.length > 0 ? right : undefined;
+        inferredFreezerQuery = fRight.length > 0 ? right : undefined;
+        bestProducts = pLeft;
+        bestLocations = lRight;
+        bestTemplates = tRight;
+        bestFreezers = fRight;
+      }
+    }
+
+    // Pair B: left = container/template, right = freezer (e.g. "red bag freezer 2")
+    const lLeft = resolveOnSiteLocationCandidates(left, state, 'any').filter(l => !l.isLoose);
+    const tLeft = resolveNewContainerTemplates(left, state, false, inferContainerIconFromName(left)).candidates.filter(
+      c => !c.isCustom && c.score >= 65
+    );
+    const leftContScore = Math.max(lLeft[0]?.score || 0, tLeft[0]?.score || 0);
+    if (leftContScore > 0 && fRight.length > 0) {
+      const rank = leftContScore + fRight[0].score + 20;
+      if (rank > bestRank) {
+        bestRank = rank;
+        inferredProductQuery = undefined;
+        inferredLocationQuery = left;
+        inferredFreezerQuery = right;
+        bestProducts = [];
+        bestLocations = lLeft;
+        bestTemplates = tLeft;
+        bestFreezers = fRight;
+      }
+    }
+  }
+
+  const productSearchSeed = inferredProductQuery || body;
+  const suggestedFallbackProducts =
+    bestProducts.length > 0
+      ? bestProducts.slice(0, 6)
+      : findFallbackProductMatches(productSearchSeed, state, undefined, 5);
+
+  const primaryProductId = bestProducts[0]?.product.id || null;
+  const suggestedFallbackLocations =
+    bestLocations.length > 0
+      ? bestLocations.slice(0, 6)
+      : findFallbackLocations(inferredLocationQuery || body, state, {
+          mode: 'any',
+          productId: primaryProductId,
+          limit: 6,
+        });
+
+  const tplSeed = inferredLocationQuery || (!inferredProductQuery ? body : '');
+  const suggestedTemplateCandidates =
+    bestTemplates.length > 0
+      ? bestTemplates
+      : tplSeed
+      ? resolveNewContainerTemplates(tplSeed, state, false, inferContainerIconFromName(tplSeed)).candidates
+          .filter(c => !c.isCustom || Boolean(inferredLocationQuery))
+          .slice(0, 4)
+      : (state.containerTemplates || []).slice(0, 4).map(t => ({
+          templateId: t.id,
+          name: t.name,
+          icon: t.icon || 'box',
+          imageUrl: t.imageUrl,
+          isCustom: false,
+          score: 30,
+          matchReason: 'fuzzy' as MatchReason,
+          isExact: false,
+        }));
+
+  const allFreezers = resolveOnSiteFreezerCandidates(undefined, state);
+  const suggestedFallbackFreezers = bestFreezers.length > 0 ? bestFreezers : allFreezers;
+  const suggestedFreezerId = bestFreezers.length === 1 ? bestFreezers[0].freezerId : null;
+
+  return {
+    quantity: qtyExtracted.quantity,
+    inferredProductQuery,
+    inferredLocationQuery,
+    inferredFreezerQuery,
+    suggestedFallbackProducts,
+    suggestedFallbackLocations,
+    suggestedTemplateCandidates,
+    suggestedFreezerId,
+    suggestedFallbackFreezers,
+  };
+}
+
 /**
  * Evaluate a single parsed clause (with optional user selection overrides) against live state.
  */
@@ -3036,7 +4043,10 @@ export function evaluateParsedClause(
 
     if (!errorMessage && containerQueryResults.length === 0) {
       const freezerResolved = Boolean(resolvedTargetLabel || explicitAllContainers);
-      if (!(mode === 'count' && freezerResolved) && !(explicitAllContainers && freezerResolved)) {
+      const isTypedFreezerFilterQuery =
+        freezerResolved &&
+        new RegExp(`^${ALL_CONTAINER_NOUN_PATTERN}$`, 'i').test(rawLoc.trim());
+      if (!(mode === 'count' && freezerResolved) && !(explicitAllContainers && freezerResolved) && !isTypedFreezerFilterQuery) {
         errorMessage = resolvedTargetLabel
           ? `No on-site container matched "${rawLoc}" in ${resolvedTargetLabel}.`
           : `No on-site container or freezer matched "${rawLoc || locFilter || ''}".`;
@@ -3070,9 +4080,20 @@ export function evaluateParsedClause(
 
   // Handle EMPTY CONTAINER and MOVE ALL CONTENTS intents
   if (baseClause.intent === 'empty_container' || baseClause.intent === 'move_all') {
-    const sourceLocationCandidates = baseClause.sourceLocationQuery
+    let sourceLocationCandidates = baseClause.sourceLocationQuery
       ? resolveOnSiteLocationCandidates(baseClause.sourceLocationQuery, state, 'source')
       : [];
+    if (
+      override?.sourceContainerId &&
+      !sourceLocationCandidates.some(l => l.containerId === override.sourceContainerId)
+    ) {
+      const ovLoc = getAllActiveLocationCandidates(state, true).find(
+        l => l.containerId === override.sourceContainerId
+      );
+      if (ovLoc) {
+        sourceLocationCandidates = [{ ...ovLoc, score: 100, isExact: true }, ...sourceLocationCandidates];
+      }
+    }
 
     // Prefer non-empty source containers if ambiguity comes strictly from empty ones
     const nonEmptySource = sourceLocationCandidates.filter(
@@ -3099,6 +4120,17 @@ export function evaluateParsedClause(
         state,
         'dest'
       );
+      if (
+        override?.destContainerId &&
+        !destLocationCandidates.some(l => l.containerId === override.destContainerId)
+      ) {
+        const ovDest = getAllActiveLocationCandidates(state, true).find(
+          l => l.containerId === override.destContainerId
+        );
+        if (ovDest) {
+          destLocationCandidates = [{ ...ovDest, score: 100, isExact: true }, ...destLocationCandidates];
+        }
+      }
       const destPick = pickSingleOrRequireSelection(
         destLocationCandidates,
         l => l.containerId,
@@ -3226,6 +4258,13 @@ export function evaluateParsedClause(
       Boolean(selectedDestContainerId) &&
       containerCutPreviews.length > 0;
 
+    const suggestedFallbackLocations =
+      sourceLocationCandidates.length === 0
+        ? findFallbackLocations(baseClause.sourceLocationQuery, state, { mode: 'source', limit: 8 })
+        : baseClause.destLocationQuery && destLocationCandidates.length === 0
+        ? findFallbackLocations(baseClause.destLocationQuery, state, { mode: 'dest', limit: 8 })
+        : undefined;
+
     return {
       ...baseClause,
       quantity: containerCutPreviews.reduce((s, c) => s + c.quantity, 0) || 1,
@@ -3244,6 +4283,7 @@ export function evaluateParsedClause(
       requiresCutSelection: false,
       containerCutPreviews,
       excludedProductIds: Array.from(excludedIds),
+      suggestedFallbackLocations,
       isValid,
       errorMessage,
       warningMessage,
@@ -3252,11 +4292,22 @@ export function evaluateParsedClause(
 
   // Handle MOVE CONTAINER (relocate whole container intact to another freezer or Staging Area)
   if (baseClause.intent === 'move_container') {
-    const rawMatchedSources = baseClause.sourceLocationQuery
+    let rawMatchedSources = baseClause.sourceLocationQuery
       ? resolveOnSiteLocationCandidates(baseClause.sourceLocationQuery, state, 'source').filter(
           l => !l.isLoose
         )
       : [];
+    if (
+      override?.sourceContainerId &&
+      !rawMatchedSources.some(l => l.containerId === override.sourceContainerId)
+    ) {
+      const ovLoc = getAllActiveLocationCandidates(state, false).find(
+        l => l.containerId === override.sourceContainerId
+      );
+      if (ovLoc) {
+        rawMatchedSources = [{ ...ovLoc, score: 100, isExact: true }, ...rawMatchedSources];
+      }
+    }
 
     const srcPick = pickSingleOrRequireSelection(
       rawMatchedSources,
@@ -3361,6 +4412,14 @@ export function evaluateParsedClause(
       selectedFreezerId,
       requiresFreezerSelection,
       containerCutPreviews,
+      suggestedFallbackLocations:
+        rawMatchedSources.length === 0
+          ? findFallbackLocations(baseClause.sourceLocationQuery, state, {
+              mode: 'source',
+              onlyNonLoose: true,
+              limit: 8,
+            })
+          : undefined,
       isValid,
       errorMessage,
       warningMessage,
@@ -3738,22 +4797,29 @@ export function evaluateParsedClause(
     const requiresListSelection = listPick.requiresSelection;
 
     const selectedListObj = matchedLists.find(l => l.list.id === selectedListId)?.list;
-    const rawProductCandidates = baseClause.productQuery.trim()
+    const rawProductCandidates = baseClause.pinnedProductId
+      ? resolvePinnedProductCandidates(baseClause.pinnedProductId, state)
+      : baseClause.productQuery.trim()
       ? resolveOnSiteProductCandidates(baseClause.productQuery, state)
       : [];
     const onListCandidates =
-      selectedListObj && listAction !== 'add' && rawProductCandidates.length > 1
+      !baseClause.pinnedProductId && selectedListObj && listAction !== 'add' && rawProductCandidates.length > 1
         ? rawProductCandidates.filter(c =>
             selectedListObj.items.some(i => i.productId === c.product.id)
           )
         : [];
     const productCandidates =
       onListCandidates.length > 0 ? onListCandidates : rawProductCandidates;
-    const prodPick = pickSingleOrRequireSelection(
-      productCandidates,
-      p => p.product.id,
-      override?.productId
-    );
+    const prodPick = baseClause.pinnedProductId
+      ? {
+          selectedId: productCandidates[0]?.product.id || null,
+          requiresSelection: false,
+        }
+      : pickSingleOrRequireSelection(
+          productCandidates,
+          p => p.product.id,
+          override?.productId
+        );
     const selectedProductId = prodPick.selectedId;
     const requiresProductSelection = prodPick.requiresSelection;
 
@@ -3765,8 +4831,10 @@ export function evaluateParsedClause(
       errorMessage = 'No custom lists exist yet. Create a list in Restock / Lists first.';
     } else if (baseClause.listQueryText && matchedLists.length === 0) {
       errorMessage = `No custom list matched "${baseClause.listQueryText}".`;
-    } else if (!baseClause.productQuery.trim() || productCandidates.length === 0) {
-      errorMessage = `No on-site product matched "${baseClause.productQuery || ''}".`;
+    } else if (productCandidates.length === 0) {
+      errorMessage = baseClause.pinnedProductId
+        ? `Product "${baseClause.productQuery}" in voice pack "${baseClause.bundlePhrase || ''}" is archived or no longer exists.`
+        : `No on-site product matched "${baseClause.productQuery || ''}".`;
     } else if (selectedListObj && selectedProdObj) {
       const alreadyOnList = selectedListObj.items.some(i => i.productId === selectedProdObj.id);
       if (listAction === 'add' && alreadyOnList && baseClause.listThreshold === undefined) {
@@ -4059,11 +5127,13 @@ export function evaluateParsedClause(
         .map(c => c.id)
     );
 
-    let productCandidates = baseClause.productQuery.trim()
+    let productCandidates = baseClause.pinnedProductId
+      ? resolvePinnedProductCandidates(baseClause.pinnedProductId, state, activeNonSpecialIds)
+      : baseClause.productQuery.trim()
       ? resolveOnSiteProductCandidates(baseClause.productQuery, state, activeNonSpecialIds)
       : [];
 
-    if (isDisplayDest && productCandidates.length > 1) {
+    if (!baseClause.pinnedProductId && isDisplayDest && productCandidates.length > 1) {
       const eligibleBackstockByProduct = new Map<string, number>();
       for (const mc of state.meatCuts || []) {
         if (mc.quantity <= 0 || !activeNonSpecialIds.has(mc.containerId)) continue;
@@ -4084,11 +5154,16 @@ export function evaluateParsedClause(
       }
     }
 
-    const prodPick = pickSingleOrRequireSelection(
-      productCandidates,
-      p => p.product.id,
-      override?.productId
-    );
+    const prodPick = baseClause.pinnedProductId
+      ? {
+          selectedId: productCandidates[0]?.product.id || null,
+          requiresSelection: false,
+        }
+      : pickSingleOrRequireSelection(
+          productCandidates,
+          p => p.product.id,
+          override?.productId
+        );
     const selectedProductId = prodPick.selectedId;
     const requiresProductSelection = prodPick.requiresSelection;
     const selectedProductObj = productCandidates.find(p => p.product.id === selectedProductId)?.product;
@@ -4303,7 +5378,7 @@ export function evaluateParsedClause(
       selectedMeatCutId = override.meatCutId;
     } else if (cutCandidates.length === 1) {
       selectedMeatCutId = cutCandidates[0].meatCut.id;
-    } else if (cutCandidates.length > 1) {
+    } else if (cutCandidates.length > 1 && !requiresSourceLocationSelection) {
       requiresCutSelection = true;
     }
 
@@ -4418,7 +5493,7 @@ export function evaluateParsedClause(
       selectedMeatCutId = override.meatCutId;
     } else if (cutCandidates.length === 1) {
       selectedMeatCutId = cutCandidates[0].meatCut.id;
-    } else if (cutCandidates.length > 1) {
+    } else if (cutCandidates.length > 1 && !requiresSourceLocationSelection) {
       requiresCutSelection = true;
     }
 
@@ -4563,12 +5638,51 @@ export function evaluateParsedClause(
       };
     }
 
-    const prodMatches = resolveOnSiteProductCandidates(baseClause.productQuery, state);
+    let prodMatches = resolveOnSiteProductCandidates(baseClause.productQuery, state);
+    if (
+      override?.productId &&
+      !prodMatches.some(p => p.product.id === override.productId)
+    ) {
+      const pinnedOverride = resolvePinnedProductCandidates(
+        override.productId,
+        state,
+        scopedContainerIds
+      );
+      if (pinnedOverride.length > 0) {
+        prodMatches = pinnedOverride;
+      }
+    } else if (override?.productId) {
+      const picked = prodMatches.find(p => p.product.id === override.productId);
+      if (picked) {
+        prodMatches = [picked];
+      }
+    }
     const catMatches = resolveCategoryCandidates(baseClause.productQuery, state);
     const topProdScore = prodMatches[0]?.score ?? 0;
     const topCat = catMatches[0];
     const hasExactProd = prodMatches.some(p => p.isExact);
+
+    // Check 1-to-many Voice Dictionary pack/bundle before category/single-product query fallback
+    const bundleHit = resolveVoiceDictionaryBundles(baseClause.productQuery, state, {
+      scopedContainerIds,
+    });
+    let matchedBundlePhrase: string | undefined;
+    if (bundleHit && !bundleHit.isAmbiguous && (bundleHit.best.isExact || !hasExactProd)) {
+      const bundleProductMatches: VoiceProductMatch[] = [];
+      for (const bi of bundleHit.best.entry.bundleItems || []) {
+        const pinned = resolvePinnedProductCandidates(bi.productId, state, scopedContainerIds);
+        if (pinned.length > 0) {
+          bundleProductMatches.push(pinned[0]);
+        }
+      }
+      if (bundleProductMatches.length > 0) {
+        prodMatches = bundleProductMatches;
+        matchedBundlePhrase = bundleHit.best.entry.spokenPhrase;
+      }
+    }
+
     const preferCategory =
+      !matchedBundlePhrase &&
       Boolean(topCat) &&
       !hasExactProd &&
       (topCat!.isExact || topCat!.score > topProdScore || /^\s*all\s+/i.test(baseClause.productQuery));
@@ -4688,6 +5802,7 @@ export function evaluateParsedClause(
       ...baseClause,
       quantity,
       excluded,
+      bundlePhrase: matchedBundlePhrase,
       productCandidates: prodMatches,
       selectedProductId: prodMatches.length === 1 ? prodMatches[0].product.id : null,
       requiresProductSelection: false,
@@ -4702,6 +5817,10 @@ export function evaluateParsedClause(
       requiresCutSelection: false,
       queryResults,
       queryLocationFilter: baseClause.sourceLocationQuery,
+      suggestedFallbackProducts:
+        queryResults.length === 0 && baseClause.productQuery.trim()
+          ? findFallbackProductMatches(baseClause.productQuery, state, scopedContainerIds)
+          : undefined,
       isValid: queryResults.length > 0,
       errorMessage:
         queryResults.length === 0
@@ -4711,9 +5830,10 @@ export function evaluateParsedClause(
   }
 
   if (baseClause.intent === 'unknown') {
+    const analysis = analyzeUnknownSegment(baseClause.rawText, state);
     return {
       ...baseClause,
-      quantity,
+      quantity: override?.quantity !== undefined ? Math.max(1, override.quantity) : analysis.quantity,
       excluded,
       productCandidates: [],
       selectedProductId: null,
@@ -4727,17 +5847,43 @@ export function evaluateParsedClause(
       cutCandidates: [],
       selectedMeatCutId: null,
       requiresCutSelection: false,
+      suggestedFallbackProducts: analysis.suggestedFallbackProducts,
+      suggestedFallbackLocations: analysis.suggestedFallbackLocations,
+      suggestedTemplateCandidates: analysis.suggestedTemplateCandidates,
+      suggestedFreezerId: analysis.suggestedFreezerId,
+      suggestedFallbackFreezers: analysis.suggestedFallbackFreezers,
+      inferredFallbackProductQuery: analysis.inferredProductQuery,
+      inferredFallbackLocationQuery: analysis.inferredLocationQuery,
+      inferredFallbackFreezerQuery: analysis.inferredFreezerQuery,
       isValid: false,
-      errorMessage: `Could not understand command: "${baseClause.rawText}". Try "remove 2 brats from display", "move 4 hotdogs from orange in canada to display", "add 3 ribeye to chest freezer", "add container yellow bag in freezer canada with 4 liverwurst", or "how many belly fresh do we have".`,
+      errorMessage: `Could not understand command: "${baseClause.rawText}". Pick an action below or rephrase (e.g. "add 4 broths to red bag", "remove 2 brats from display").`,
     };
   }
 
-  // Handle STRICT NEW CONTAINER CREATION (empty container or items added into a new container)
-  if (baseClause.newContainerGroupKey && baseClause.newContainerNameQuery) {
+  // Handle STRICT NEW CONTAINER CREATION (explicit keyword OR 1-tap switch from existing Add)
+  if (
+    (baseClause.newContainerGroupKey && baseClause.newContainerNameQuery) ||
+    (baseClause.intent === 'add' && override?.createNewContainer)
+  ) {
+    const switchedFromExistingAdd = Boolean(
+      baseClause.intent === 'add' && override?.createNewContainer && !baseClause.newContainerGroupKey
+    );
+    const resolvedGroupKey = baseClause.newContainerGroupKey || `switch-${baseClause.id}`;
+    const destSplit = switchedFromExistingAdd
+      ? extractContainerAndFreezerFromDestQuery(baseClause.destLocationQuery, state)
+      : null;
+    const effectiveNameQuery = switchedFromExistingAdd
+      ? (override?.customContainerName?.trim() || destSplit?.containerNameQuery || '')
+      : baseClause.newContainerNameQuery || '';
+    const effectiveFreezerQuery = switchedFromExistingAdd
+      ? destSplit?.freezerQuery
+      : baseClause.newContainerFreezerQuery;
+    const effectiveDefaultIcon =
+      baseClause.newContainerIcon || inferContainerIconFromName(effectiveNameQuery);
     const isEmptyContainerOnly = baseClause.intent === 'add_container';
-    const hasFreezerQuery = Boolean(baseClause.newContainerFreezerQuery?.trim());
+    const hasFreezerQuery = Boolean(effectiveFreezerQuery?.trim());
     const matchedFreezers = hasFreezerQuery
-      ? resolveOnSiteFreezerCandidates(baseClause.newContainerFreezerQuery, state)
+      ? resolveOnSiteFreezerCandidates(effectiveFreezerQuery, state)
       : [];
     const allFreezerOptions = resolveOnSiteFreezerCandidates(undefined, state);
     const overriddenFreezerOption = override?.freezerId
@@ -4759,12 +5905,17 @@ export function evaluateParsedClause(
       selectedFreezerId = overriddenFreezerOption.freezerId;
       requiresFreezerSelection = false;
     } else if (!hasFreezerQuery) {
-      selectedFreezerId = '__staging__';
-      requiresFreezerSelection = false;
+      if (switchedFromExistingAdd) {
+        selectedFreezerId = null;
+        requiresFreezerSelection = true;
+      } else {
+        selectedFreezerId = '__staging__';
+        requiresFreezerSelection = false;
+      }
     } else if (matchedFreezers.length === 0) {
       selectedFreezerId = null;
       requiresFreezerSelection = true;
-      freezerError = `No on-site freezer matched "${baseClause.newContainerFreezerQuery}".`;
+      freezerError = `No on-site freezer matched "${effectiveFreezerQuery}".`;
     } else {
       const fPick = pickSingleOrRequireSelection(
         matchedFreezers,
@@ -4775,11 +5926,38 @@ export function evaluateParsedClause(
       requiresFreezerSelection = fPick.requiresSelection;
     }
 
-    const templateResolution = resolveNewContainerTemplates(
-      baseClause.newContainerNameQuery,
-      state,
-      Boolean(baseClause.explicitTemplateRequested)
-    );
+    const templateResolution = effectiveNameQuery.trim()
+      ? resolveNewContainerTemplates(
+          effectiveNameQuery,
+          state,
+          Boolean(baseClause.explicitTemplateRequested),
+          effectiveDefaultIcon || 'box'
+        )
+      : {
+          candidates: [
+            ...(state.containerTemplates || []).map(tpl => ({
+              templateId: tpl.id,
+              name: tpl.name,
+              icon: tpl.icon || 'box',
+              imageUrl: tpl.imageUrl,
+              isCustom: false,
+              score: 50,
+              matchReason: 'fuzzy' as MatchReason,
+              isExact: false,
+            })),
+            {
+              templateId: '__custom__',
+              name: 'Custom New Container',
+              icon: effectiveDefaultIcon || 'box',
+              isCustom: true,
+              score: 40,
+              matchReason: 'fuzzy' as MatchReason,
+              isExact: false,
+            },
+          ],
+          selectedTemplateId: null,
+          requiresSelection: true,
+        };
     let selectedTemplateId = templateResolution.selectedTemplateId;
     let requiresTemplateSelection = templateResolution.requiresSelection;
     if (
@@ -4787,6 +5965,9 @@ export function evaluateParsedClause(
       templateResolution.candidates.some(t => t.templateId === override.templateId)
     ) {
       selectedTemplateId = override.templateId;
+      requiresTemplateSelection = false;
+    } else if (override?.customContainerName?.trim() && !override?.templateId) {
+      selectedTemplateId = '__custom__';
       requiresTemplateSelection = false;
     }
 
@@ -4806,7 +5987,7 @@ export function evaluateParsedClause(
       override?.customContainerName?.trim() ||
       existingSpare?.name ||
       chosenTemplateObj?.name ||
-      formatSpokenContainerName(baseClause.newContainerNameQuery);
+      (effectiveNameQuery.trim() ? formatSpokenContainerName(effectiveNameQuery) : 'New Container');
 
     const newContainerSaveAsTemplate = existingSpare
       ? false
@@ -4818,15 +5999,33 @@ export function evaluateParsedClause(
         ? override.containerImageUrl || undefined
         : existingSpare?.imageUrl || chosenTemplateObj?.imageUrl;
     const newContainerIcon =
-      override?.containerIcon || existingSpare?.icon || chosenTemplateObj?.icon || 'box';
+      override?.containerIcon ||
+      existingSpare?.icon ||
+      chosenTemplateObj?.icon ||
+      baseClause.newContainerIcon ||
+      inferContainerIconFromName(resolvedNewContainerName);
 
     let productCandidates: VoiceProductMatch[] = [];
     let selectedProductId: string | null = null;
     let requiresProductSelection = false;
     let productError: string | undefined;
+    let suggestedFallbackProducts: VoiceProductMatch[] | undefined;
 
     if (!isEmptyContainerOnly) {
-      productCandidates = resolveOnSiteProductCandidates(baseClause.productQuery, state);
+      productCandidates = baseClause.pinnedProductId
+        ? resolvePinnedProductCandidates(baseClause.pinnedProductId, state)
+        : baseClause.productQuery.trim()
+        ? resolveOnSiteProductCandidates(baseClause.productQuery, state)
+        : [];
+      if (
+        override?.productId &&
+        !productCandidates.some(p => p.product.id === override.productId)
+      ) {
+        const pinnedOverride = resolvePinnedProductCandidates(override.productId, state);
+        if (pinnedOverride.length > 0) {
+          productCandidates = [...pinnedOverride, ...productCandidates];
+        }
+      }
       const prodPick = pickSingleOrRequireSelection(
         productCandidates,
         p => p.product.id,
@@ -4836,6 +6035,7 @@ export function evaluateParsedClause(
       requiresProductSelection = prodPick.requiresSelection;
       if (productCandidates.length === 0) {
         productError = `No on-site product matched "${baseClause.productQuery}".`;
+        suggestedFallbackProducts = findFallbackProductMatches(baseClause.productQuery, state);
       }
     }
 
@@ -4885,9 +6085,15 @@ export function evaluateParsedClause(
       ...baseClause,
       quantity,
       excluded,
+      newContainerGroupKey: resolvedGroupKey,
+      newContainerNameQuery: effectiveNameQuery || resolvedNewContainerName,
+      newContainerFreezerQuery: effectiveFreezerQuery,
+      switchedFromExistingAdd,
+      canSwitchToNewContainer: false,
       productCandidates,
       selectedProductId,
       requiresProductSelection,
+      suggestedFallbackProducts,
       sourceLocationCandidates: [],
       selectedSourceContainerId: null,
       requiresSourceLocationSelection: false,
@@ -4934,6 +6140,17 @@ export function evaluateParsedClause(
       // No source location spoken: populate later from containers holding the matched product
       sourceLocationCandidates = [];
     }
+    if (
+      override?.sourceContainerId &&
+      !sourceLocationCandidates.some(l => l.containerId === override.sourceContainerId)
+    ) {
+      const overrideLoc = getAllActiveLocationCandidates(state, true).find(
+        l => l.containerId === override.sourceContainerId
+      );
+      if (overrideLoc) {
+        sourceLocationCandidates = [{ ...overrideLoc, score: 100, isExact: true }, ...sourceLocationCandidates];
+      }
+    }
   }
 
   let destLocationCandidates: VoiceLocationCandidate[] = [];
@@ -4947,42 +6164,30 @@ export function evaluateParsedClause(
         state,
         'dest'
       );
-      const destPick = pickSingleOrRequireSelection(
-        destLocationCandidates,
-        l => l.containerId,
-        override?.destContainerId
-      );
-      selectedDestContainerId = destPick.selectedId;
-      requiresDestLocationSelection = destPick.requiresSelection;
     } else {
-      // No destination specified: provide all active on-site loose/container options and require selection
-      destLocationCandidates = (state.containers || [])
-        .filter(c => !c.isArchived)
-        .map(c => {
-          const freezer = c.freezerId ? (state.freezers || []).find(f => f.id === c.freezerId) : undefined;
-          const freezerName = freezer ? freezer.name : 'Staging Area';
-          return {
-            containerId: c.id,
-            containerName: c.name,
-            freezerId: freezer?.id,
-            freezerName,
-            isDisplay: Boolean(freezer?.isSpecial),
-            isLoose: c.id === 'staging_loose' || c.id.endsWith('_loose'),
-            isStaging: !c.freezerId,
-            score: 50,
-            matchReason: 'fuzzy' as MatchReason,
-            isExact: false,
-            label: c.id.endsWith('_loose') ? `${freezerName} (Loose)` : `${c.name} (${freezerName})`,
-          };
-        });
-      const destPick = pickSingleOrRequireSelection(
-        destLocationCandidates,
-        l => l.containerId,
-        override?.destContainerId
-      );
-      selectedDestContainerId = destPick.selectedId;
-      requiresDestLocationSelection = destLocationCandidates.length > 1 && !selectedDestContainerId;
+      // No destination specified: provide all active on-site loose/container options
+      destLocationCandidates = getAllActiveLocationCandidates(state, true);
     }
+    if (
+      override?.destContainerId &&
+      !destLocationCandidates.some(l => l.containerId === override.destContainerId)
+    ) {
+      const overrideLoc = getAllActiveLocationCandidates(state, true).find(
+        l => l.containerId === override.destContainerId
+      );
+      if (overrideLoc) {
+        destLocationCandidates = [{ ...overrideLoc, score: 100, isExact: true }, ...destLocationCandidates];
+      }
+    }
+    const destPick = pickSingleOrRequireSelection(
+      destLocationCandidates,
+      l => l.containerId,
+      override?.destContainerId
+    );
+    selectedDestContainerId = destPick.selectedId;
+    requiresDestLocationSelection = baseClause.destLocationQuery
+      ? destPick.requiresSelection
+      : destLocationCandidates.length > 1 && !selectedDestContainerId;
   }
 
   // 2. Resolve Product Candidates (scoped to source containers if remove/move/set_quantity, or dest containers for upward inventory adjustments)
@@ -5003,21 +6208,122 @@ export function evaluateParsedClause(
       ? scopedDestIds
       : undefined;
 
-  const productCandidates = baseClause.productQuery.trim()
-    ? resolveOnSiteProductCandidates(
-        baseClause.productQuery,
+  let productCandidates: VoiceProductMatch[] = [];
+  let selectedProductId: string | null = null;
+  let requiresProductSelection = false;
+
+  if (baseClause.pinnedProductId) {
+    productCandidates = resolvePinnedProductCandidates(
+      baseClause.pinnedProductId,
+      state,
+      scopedIdsForProducts
+    );
+    selectedProductId = productCandidates[0]?.product.id || null;
+    requiresProductSelection = false;
+  } else {
+    productCandidates = baseClause.productQuery.trim()
+      ? resolveOnSiteProductCandidates(
+          baseClause.productQuery,
+          state,
+          scopedIdsForProducts
+        )
+      : [];
+    if (
+      override?.productId &&
+      !productCandidates.some(p => p.product.id === override.productId)
+    ) {
+      const pinnedOverride = resolvePinnedProductCandidates(
+        override.productId,
         state,
         scopedIdsForProducts
-      )
-    : [];
+      );
+      if (pinnedOverride.length > 0) {
+        productCandidates = [...pinnedOverride, ...productCandidates];
+      }
+    }
 
-  const prodPick = pickSingleOrRequireSelection(
-    productCandidates,
-    p => p.product.id,
-    override?.productId
-  );
-  const selectedProductId = prodPick.selectedId;
-  const requiresProductSelection = prodPick.requiresSelection;
+    const prodPick = pickSingleOrRequireSelection(
+      productCandidates,
+      p => p.product.id,
+      override?.productId
+    );
+    selectedProductId = prodPick.selectedId;
+    requiresProductSelection = prodPick.requiresSelection;
+  }
+
+  // 2b. Annotate & prioritize destination containers that already stock selectedProductId
+  //     For ADD: default to adding to an existing matched container holding the same product (unless overridden or ambiguous)
+  if ((baseClause.intent === 'add' || baseClause.intent === 'move') && destLocationCandidates.length > 0) {
+    const prodQtyByContainer = new Map<string, number>();
+    if (selectedProductId) {
+      for (const mc of state.meatCuts || []) {
+        if (mc.quantity > 0 && mc.productId === selectedProductId) {
+          prodQtyByContainer.set(
+            mc.containerId,
+            (prodQtyByContainer.get(mc.containerId) || 0) + mc.quantity
+          );
+        }
+      }
+    }
+
+    destLocationCandidates = destLocationCandidates.map(loc => {
+      const qty = prodQtyByContainer.get(loc.containerId) || 0;
+      return {
+        ...loc,
+        hasMatchingProduct: qty > 0,
+        existingProductQty: qty,
+      };
+    });
+
+    if (baseClause.intent === 'add' && selectedProductId) {
+      const exactMatches = destLocationCandidates.filter(c => c.isExact);
+      if (baseClause.destLocationQuery) {
+        // When destination was spoken (e.g. "red bag") and either multiple exact matches exist or none are exact,
+        // bring same-product containers to the front and auto-select if uniquely holding that product.
+        if (exactMatches.length !== 1) {
+          destLocationCandidates.sort((a, b) => {
+            if (Boolean(a.hasMatchingProduct) !== Boolean(b.hasMatchingProduct)) {
+              return a.hasMatchingProduct ? -1 : 1;
+            }
+            if (a.isExact !== b.isExact) return a.isExact ? -1 : 1;
+            if (b.score !== a.score) return b.score - a.score;
+            return (b.existingProductQty || 0) - (a.existingProductQty || 0);
+          });
+          if (!override?.destContainerId) {
+            const pool = exactMatches.length > 0 ? exactMatches : destLocationCandidates;
+            const matchingInPool = pool.filter(c => c.hasMatchingProduct);
+            if (matchingInPool.length === 1) {
+              selectedDestContainerId = matchingInPool[0].containerId;
+              requiresDestLocationSelection = false;
+            }
+          }
+        }
+      } else {
+        // No destination spoken (e.g. "add 4 broths"): surface containers with same product first,
+        // and default to a unique container already stocking that product.
+        destLocationCandidates.sort((a, b) => {
+          if (Boolean(a.hasMatchingProduct) !== Boolean(b.hasMatchingProduct)) {
+            return a.hasMatchingProduct ? -1 : 1;
+          }
+          if ((b.existingProductQty || 0) !== (a.existingProductQty || 0)) {
+            return (b.existingProductQty || 0) - (a.existingProductQty || 0);
+          }
+          if (a.isLoose !== b.isLoose) return a.isLoose ? 1 : -1;
+          return a.label.localeCompare(b.label);
+        });
+        if (!override?.destContainerId) {
+          const matchingAll = destLocationCandidates.filter(c => c.hasMatchingProduct);
+          if (matchingAll.length === 1) {
+            selectedDestContainerId = matchingAll[0].containerId;
+            requiresDestLocationSelection = false;
+          } else {
+            selectedDestContainerId = null;
+            requiresDestLocationSelection = destLocationCandidates.length > 1;
+          }
+        }
+      }
+    }
+  }
 
   // 3. Narrow / resolve source locations & MeatCuts for REMOVE, MOVE, and SET_QUANTITY
   let cutCandidates: VoiceCutCandidate[] = [];
@@ -5184,7 +6490,7 @@ export function evaluateParsedClause(
       } else if (cutCandidates.length === 1) {
         selectedMeatCutId = cutCandidates[0].meatCut.id;
         requiresCutSelection = false;
-      } else if (cutCandidates.length > 1) {
+      } else if (cutCandidates.length > 1 && !requiresSourceLocationSelection) {
         const prioritizedInCuts =
           baseClause.intent === 'remove' && selectedSourceContainerId
             ? cutCandidates.filter(
@@ -5197,7 +6503,7 @@ export function evaluateParsedClause(
           selectedMeatCutId = prioritizedInCuts[0].meatCut.id;
           requiresCutSelection = false;
         } else {
-          // Multiple stacks/variants (e.g., different notes or tags, or multiple containers) -> require selection!
+          // Multiple stacks/variants (e.g., different notes or tags) in the resolved container -> require selection!
           selectedMeatCutId = null;
           requiresCutSelection = true;
         }
@@ -5257,7 +6563,9 @@ export function evaluateParsedClause(
       ? `Specify item(s) and quantity${locNote} — e.g. "change inventory${locNote}: 2 brats, 3 hotdogs" or "adjust quantity of brats${locNote} to 2".`
       : 'What would you like to change? Try "adjust quantity of brats in display to 2", "reduce inventory of hot dogs in box green to 3", or "change inventory in display: 2 brats, 3 hotdogs".';
   } else if (productCandidates.length === 0) {
-    errorMessage = `No on-site product matched "${baseClause.productQuery}".`;
+    errorMessage = baseClause.pinnedProductId
+      ? `Product "${baseClause.productQuery}" in voice pack "${baseClause.bundlePhrase || ''}" is archived or no longer exists.`
+      : `No on-site product matched "${baseClause.productQuery}".`;
   } else if (
     (baseClause.intent === 'remove' ||
       baseClause.intent === 'move' ||
@@ -5351,11 +6659,62 @@ export function evaluateParsedClause(
       ? Boolean(selectedMeatCutId)
       : Boolean(selectedMeatCutId) && Boolean(selectedDestContainerId));
 
+  // Build non-dead-end suggestions when a primary match failed or needs recovery
+  let suggestedTemplateCandidates: VoiceContainerTemplateCandidate[] | undefined;
+  let suggestedFreezerId: string | null | undefined;
+  let suggestedFallbackFreezers: VoiceFreezerCandidate[] | undefined;
+  let suggestedFallbackLocations: VoiceLocationCandidate[] | undefined;
+  let suggestedFallbackProducts: VoiceProductMatch[] | undefined;
+
+  if (productCandidates.length === 0 && baseClause.productQuery.trim()) {
+    suggestedFallbackProducts = findFallbackProductMatches(
+      baseClause.productQuery,
+      state,
+      scopedIdsForProducts
+    );
+  }
+
+  if (baseClause.intent === 'add' && baseClause.destLocationQuery && destLocationCandidates.length === 0) {
+    const addFallbacks = buildAddFallbackSuggestions(
+      baseClause.destLocationQuery,
+      selectedProductId,
+      state
+    );
+    suggestedTemplateCandidates = addFallbacks.suggestedTemplateCandidates;
+    suggestedFreezerId = addFallbacks.suggestedFreezerId;
+    suggestedFallbackFreezers = addFallbacks.suggestedFallbackFreezers;
+    suggestedFallbackLocations = addFallbacks.suggestedFallbackLocations;
+  } else if (
+    (baseClause.intent === 'remove' ||
+      baseClause.intent === 'move' ||
+      baseClause.intent === 'set_quantity') &&
+    ((baseClause.sourceLocationQuery && sourceLocationCandidates.length === 0) ||
+      (selectedProductId && cutCandidates.length === 0))
+  ) {
+    suggestedFallbackLocations = findFallbackLocations(baseClause.sourceLocationQuery, state, {
+      mode: 'source',
+      productId: selectedProductId,
+      limit: 8,
+    });
+  } else if (
+    baseClause.intent === 'move' &&
+    baseClause.destLocationQuery &&
+    destLocationCandidates.length === 0
+  ) {
+    suggestedFallbackLocations = findFallbackLocations(baseClause.destLocationQuery, state, {
+      mode: 'dest',
+      productId: selectedProductId,
+      excludeIds: selectedSourceContainerId ? new Set([selectedSourceContainerId]) : undefined,
+      limit: 8,
+    });
+  }
+
   return {
     ...baseClause,
     missingTargetQuantity: isMissingTargetQtyUnset,
     quantity,
     excluded,
+    canSwitchToNewContainer: baseClause.intent === 'add',
     productCandidates,
     selectedProductId,
     requiresProductSelection,
@@ -5369,6 +6728,11 @@ export function evaluateParsedClause(
     selectedMeatCutId,
     requiresCutSelection,
     restockRuleNote,
+    suggestedTemplateCandidates,
+    suggestedFreezerId,
+    suggestedFallbackFreezers,
+    suggestedFallbackLocations,
+    suggestedFallbackProducts,
     isValid,
     errorMessage,
     warningMessage,
@@ -5813,6 +7177,131 @@ function parseCommandSegment(
   const segment = stripPoliteLeadIn(segmentRaw.trim());
   const lower = segment.toLowerCase();
 
+  let clauseCounter = 0;
+  const nextClauseId = () => `clause-${segIndex}-${clauseCounter++}`;
+
+  const expandItemWithBundles = (
+    params: {
+      rawText: string;
+      intent: 'remove' | 'add' | 'move' | 'set_quantity' | 'restock_display' | 'manage_list';
+      quantity: number;
+      isAllQuantity?: boolean;
+      productQuery: string;
+      sourceLocationQuery?: string;
+      destLocationQuery?: string;
+      adjustDirection?: 'up' | 'down' | 'neutral';
+      missingTargetQuantity?: boolean;
+      newContainerGroupKey?: string;
+      newContainerNameQuery?: string;
+      newContainerFreezerQuery?: string;
+      newContainerIcon?: string;
+      explicitTemplateRequested?: boolean;
+      listAction?: 'add' | 'remove' | 'set_threshold' | 'enable_notify' | 'disable_notify';
+      listQueryText?: string;
+      listThreshold?: number;
+    }
+  ): ParsedVoiceClause[] => {
+    const cleanQuery = params.productQuery.trim();
+    const scopedLocQuery =
+      params.intent === 'remove' || params.intent === 'move' || params.intent === 'set_quantity'
+        ? params.sourceLocationQuery
+        : undefined;
+    const scopedLocCands = scopedLocQuery
+      ? resolveOnSiteLocationCandidates(
+          scopedLocQuery,
+          state,
+          params.intent === 'set_quantity' ? 'any' : 'source'
+        )
+      : [];
+    const scopedIds =
+      scopedLocCands.length > 0
+        ? new Set(scopedLocCands.map(l => l.containerId))
+        : undefined;
+
+    const bundleHit = cleanQuery
+      ? resolveVoiceDictionaryBundles(cleanQuery, state, { scopedContainerIds: scopedIds })
+      : null;
+
+    if (!bundleHit) {
+      const id = nextClauseId();
+      return [
+        evaluateParsedClause(
+          {
+            id,
+            ...params,
+          },
+          state,
+          overrides[id]
+        ),
+      ];
+    }
+
+    if (bundleHit.isAmbiguous) {
+      const id = nextClauseId();
+      const matchedNames = bundleHit.matches.map(m => `"${m.entry.spokenPhrase}"`).join(', ');
+      return [
+        {
+          id,
+          rawText: params.rawText,
+          intent: params.intent,
+          quantity: params.quantity,
+          isAllQuantity: params.isAllQuantity,
+          productQuery: params.productQuery,
+          sourceLocationQuery: params.sourceLocationQuery,
+          destLocationQuery: params.destLocationQuery,
+          productCandidates: [],
+          selectedProductId: null,
+          requiresProductSelection: false,
+          sourceLocationCandidates: [],
+          selectedSourceContainerId: null,
+          requiresSourceLocationSelection: false,
+          destLocationCandidates: [],
+          selectedDestContainerId: null,
+          requiresDestLocationSelection: false,
+          cutCandidates: [],
+          selectedMeatCutId: null,
+          requiresCutSelection: false,
+          isValid: false,
+          excluded: Boolean(overrides[id]?.excluded),
+          errorMessage: `Multiple voice pack rules matched "${cleanQuery}" (${matchedNames}). Use distinct spoken phrases in Voice Dictionary.`,
+        },
+      ];
+    }
+
+    const bundleEntry = bundleHit.best.entry;
+    const bundleItems = bundleEntry.bundleItems || [];
+    const prodMap = new Map((state.products || []).map(p => [p.id, p]));
+
+    return bundleItems.map(bi => {
+      const id = nextClauseId();
+      const prod = prodMap.get(bi.productId);
+      const perPackQty = Math.max(1, Math.round(Number(bi.quantity) || 1));
+      let expandedQty = params.quantity;
+      if (params.intent !== 'manage_list') {
+        if (params.isAllQuantity || params.missingTargetQuantity) {
+          expandedQty = 1;
+        } else if (params.intent === 'set_quantity' && params.quantity === 0) {
+          expandedQty = 0;
+        } else {
+          expandedQty = Math.max(1, params.quantity) * perPackQty;
+        }
+      }
+
+      return evaluateParsedClause(
+        {
+          id,
+          ...params,
+          quantity: expandedQty,
+          productQuery: prod?.name || bi.productId,
+          pinnedProductId: bi.productId,
+          bundlePhrase: bundleEntry.spokenPhrase,
+        },
+        state,
+        overrides[id]
+      );
+    });
+  };
+
   // 0. Check QUICK UNDO intent:
   //    "undo", "undo that", "undo last command", "take that back", "roll back last change"
   if (
@@ -6021,15 +7510,14 @@ function parseCommandSegment(
         resolveOnSiteLocationCandidates(listCandRaw, state, 'dest').length === 0);
     if (isExplicitList) {
       const productsList = splitPlainProductList(itemsRaw);
-      return productsList.map((prodRaw, subIdx) => {
+      const outClauses: ParsedVoiceClause[] = [];
+      for (const prodRaw of productsList) {
         const strippedLeadingQty = extractLeadingQuantity(prodRaw, { allowToAsTwo: false, defaultQty: 1 });
         const cleanProd = strippedLeadingQty.hasExplicitQuantity
           ? strippedLeadingQty.rest || prodRaw
           : prodRaw;
-        const id = `clause-${segIndex}-${subIdx}`;
-        return evaluateParsedClause(
-          {
-            id,
+        outClauses.push(
+          ...expandItemWithBundles({
             rawText: prodRaw,
             intent: 'manage_list',
             listAction: 'add',
@@ -6037,11 +7525,10 @@ function parseCommandSegment(
             listThreshold: threshParsed ? threshParsed.value : undefined,
             productQuery: cleanProd,
             listQueryText: listCandRaw,
-          },
-          state,
-          overrides[id]
+          })
         );
-      });
+      }
+      return outClauses;
     }
   }
 
@@ -6057,22 +7544,20 @@ function parseCommandSegment(
         resolveOnSiteLocationCandidates(listCandRaw, state, 'source').length === 0);
     if (isExplicitList) {
       const productsList = splitPlainProductList(itemsRaw);
-      return productsList.map((prodRaw, subIdx) => {
-        const id = `clause-${segIndex}-${subIdx}`;
-        return evaluateParsedClause(
-          {
-            id,
+      const outClauses: ParsedVoiceClause[] = [];
+      for (const prodRaw of productsList) {
+        outClauses.push(
+          ...expandItemWithBundles({
             rawText: prodRaw,
             intent: 'manage_list',
             listAction: 'remove',
             quantity: 1,
             productQuery: prodRaw,
             listQueryText: listCandRaw,
-          },
-          state,
-          overrides[id]
+          })
         );
-      });
+      }
+      return outClauses;
     }
   }
 
@@ -6195,11 +7680,14 @@ function parseCommandSegment(
 
   // 0-lifecycle. Check SWAP / RENAME / ARCHIVE / DELETE / UNPLACE CONTAINER intents:
   const swapMatch = segment.match(
-    /^(?:swap|trade|switch|exchange)(?:\s+(?:the\s+)?(?:containers?|bins?|boxes?|bags?|totes?|buckets?|crates?|trays?|tubs?))?\s+(.+?)\s+\b(?:and|with|&|for)\s+(.+?)\s*[?!.]*$/i
+    new RegExp(
+      `^(?:swap|trade|switch|exchange)(?:\\s+(?:the\\s+)?${PLURAL_CONTAINER_GROUP_PREFIX_PATTERN})?\\s+(.+?)\\s+\\b(?:and|with|&|for)\\s+(.+?)\\s*[?!.]*$`,
+      'i'
+    )
   );
   if (swapMatch) {
-    const slotA = cleanLocationFragment(swapMatch[1].replace(/^(?:the\s+)?container\s+/i, ''));
-    const slotB = cleanLocationFragment(swapMatch[2].replace(/^(?:the\s+)?container\s+/i, ''));
+    const slotA = cleanLocationFragment(swapMatch[1].replace(/^(?:the\s+)?containers?\s+/i, ''));
+    const slotB = cleanLocationFragment(swapMatch[2].replace(/^(?:the\s+)?containers?\s+/i, ''));
     const id = `clause-${segIndex}-0`;
     return [
       evaluateParsedClause(
@@ -6222,10 +7710,15 @@ function parseCommandSegment(
 
   const renameMatch =
     segment.match(/^(?:rename|re-name|change\s+(?:the\s+)?name\s+of|retitle)(?:\s+(?:the\s+)?container)?\s+(.+?)\s+\b(?:to|as|into)\s+(.+?)\s*[?!.]*$/i) ||
-    segment.match(/^change\s+(?:the\s+)?container\s+(.+?)\s+name\s+(?:to|into|as)\s+(.+?)\s*[?!.]*$/i);
+    segment.match(
+      new RegExp(
+        `^change\\s+(?:the\\s+)?(?:container\\s+|(?=${SPECIFIC_CONTAINER_NOUN_PATTERN}\\b\\s))(.+?)\\s+name\\s+(?:to|into|as)\\s+(.+?)\\s*[?!.]*$`,
+        'i'
+      )
+    );
   if (renameMatch) {
-    const srcCont = cleanLocationFragment(renameMatch[1]);
-    const newName = cleanLocationFragment(renameMatch[2].replace(/^(?:the\s+)?container\s+/i, ''));
+    const srcCont = cleanLocationFragment(renameMatch[1] || '');
+    const newName = cleanLocationFragment((renameMatch[2] || '').replace(/^(?:the\s+)?container\s+/i, ''));
     const id = `clause-${segIndex}-0`;
     return [
       evaluateParsedClause(
@@ -6269,7 +7762,10 @@ function parseCommandSegment(
   }
 
   const deleteContainerMatch = segment.match(
-    /^(?:(?:delete|retire)\s+(?:the\s+)?(?:empty\s+)?(?:container\s+)?|(?:remove|discard)\s+(?:the\s+)?(?:empty\s+)?container\s+)(.+?)\s*[?!.]*$/i
+    new RegExp(
+      `^(?:(?:delete|retire)\\s+(?:the\\s+)?(?:empty\\s+)?(?:container\\s+)?|(?:remove|discard)\\s+(?:the\\s+)?(?:empty\\s+(?=${ALL_CONTAINER_NOUN_PATTERN}\\b)|container\\s+))(.+?)\\s*[?!.]*$`,
+      'i'
+    )
   );
   if (deleteContainerMatch) {
     const targetCont = cleanLocationFragment(deleteContainerMatch[1].replace(/^(?:the\s+)?container\s+/i, ''));
@@ -6315,7 +7811,10 @@ function parseCommandSegment(
 
   // 0-alerts. Check EMPTY CONTAINERS, STAGING CONTAINERS, and OUT-OF-STOCK / LOW-STOCK / NEEDS-RESTOCK QUERIES:
   const emptyContainersQueryMatch = segment.match(
-    /^(?:(?:what|which|show(?:\s+(?:me|us))?|list(?:\s+all)?|count|how\s+many)\s+(?:are\s+(?:the\s+)?)?empty\s+(?:containers?|bins?|boxes?|bags?|totes?|buckets?|crates?|trays?|tubs?)(?:\s+(?:are\s+)?(?:in|inside|at)\s+(.+?))?|(?:what|which|any)\s+(?:containers?|bins?|boxes?|bags?|totes?|buckets?|crates?|trays?|tubs?)\s+(?:are|is)\s+empty(?:\s+(?:in|inside|at)\s+(.+?))?|any\s+empty\s+(?:containers?|bins?|boxes?|bags?|totes?|buckets?|crates?|trays?|tubs?)(?:\s+(?:in|inside|at)\s+(.+?))?)\s*[?!.]*$/i
+    new RegExp(
+      `^(?:(?:what|which|show(?:\\s+(?:me|us))?|list(?:\\s+all)?|count|how\\s+many)\\s+(?:are\\s+(?:the\\s+)?)?empty\\s+${ALL_CONTAINER_NOUN_PLURAL_PATTERN}(?:\\s+(?:are\\s+)?(?:in|inside|at)\\s+(.+?))?|(?:what|which|any)\\s+${ALL_CONTAINER_NOUN_PLURAL_PATTERN}\\s+(?:are|is)\\s+empty(?:\\s+(?:in|inside|at)\\s+(.+?))?|any\\s+empty\\s+${ALL_CONTAINER_NOUN_PLURAL_PATTERN}(?:\\s+(?:in|inside|at)\\s+(.+?))?)\\s*[?!.]*$`,
+      'i'
+    )
   );
   if (emptyContainersQueryMatch) {
     const freezerFilter = cleanLocationFragment(
@@ -6341,9 +7840,10 @@ function parseCommandSegment(
   }
 
   if (
-    /^(?:what(?:'s|s|\s+is|\s+are)?|show(?:\s+(?:me|us))?|list(?:\s+all)?|check|which\s+containers?\s+are)\s+(?:(?:currently\s+)?(?:in|on)\s+(?:the\s+)?(?:staging(?:\s+area)?|sorting\s+table)|unplaced\s+(?:containers?|bins?|boxes?|bags?|totes?|buckets?|crates?|trays?|tubs?))(?:\s+are\s+there)?\s*[?!.]*$/i.test(
-      segment
-    )
+    new RegExp(
+      `^(?:what(?:'s|s|\\s+is|\\s+are)?|show(?:\\s+(?:me|us))?|list(?:\\s+all)?|check|which\\s+${ALL_CONTAINER_NOUN_PLURAL_PATTERN}\\s+are)\\s+(?:(?:currently\\s+)?(?:in|on)\\s+(?:the\\s+)?(?:staging(?:\\s+area)?|sorting\\s+table)|unplaced\\s+${ALL_CONTAINER_NOUN_PLURAL_PATTERN})(?:\\s+are\\s+there)?\\s*[?!.]*$`,
+      'i'
+    ).test(segment)
   ) {
     const id = `clause-${segIndex}-0`;
     return [
@@ -6511,34 +8011,37 @@ function parseCommandSegment(
       destHits.some(l => l.isDisplay);
     if (isExplicitBackstockOrDisplay && itemsBody) {
       const subItems = splitItemClauses(itemsBody);
-      return subItems.map((sub, subIdx) => {
+      const outClauses: ParsedVoiceClause[] = [];
+      for (const sub of subItems) {
         const qtyExtracted = extractLeadingQuantity(sub, { allowToAsTwo: true, defaultQty: 1 });
-        const id = `clause-${segIndex}-${subIdx}`;
-        return evaluateParsedClause(
-          {
-            id,
+        outClauses.push(
+          ...expandItemWithBundles({
             rawText: sub,
             intent: 'restock_display',
             quantity: qtyExtracted.quantity,
             productQuery: qtyExtracted.rest || sub,
             destLocationQuery: destLocRaw,
-          },
-          state,
-          overrides[id]
+          })
         );
-      });
+      }
+      return outClauses;
     }
   }
 
   // 0a. Check general ALL-CONTAINERS LIST / COUNT in an optional freezer:
-  //     "what containers are in freezer 1", "how many containers are in freezer 1", "list all containers", "show containers in canada"
+  //     "what containers are in freezer 1", "what boxes are in freezer 1", "how many bags are in freezer 1", "list all bins"
   const allContainersMatch = segment.match(
-    /^(?:how\s+many|count(?:\s+the)?|what|which|list(?:\s+all)?|show(?:\s+(?:me|us))?(?:\s+all)?)\s+containers(?:\s+(?:are|do\s+(?:we|i|you)\s+have|on\s*site|stored))?(?:\s+(?:in|inside|at)\s+(.+))?\s*[?!.]*$/i
+    new RegExp(
+      `^(?:how\\s+many|count(?:\\s+the)?|what|which|list(?:\\s+all)?|show(?:\\s+(?:me|us))?(?:\\s+all)?)\\s+(?:all\\s+)?(${ALL_CONTAINER_NOUN_PLURAL_PATTERN})(?:\\s+(?:are|do\\s+(?:we|i|you)\\s+have|on\\s*site|stored))?(?:\\s+(?:in|inside|at)\\s+(.+))?\\s*[?!.]*$`,
+      'i'
+    )
   );
   if (allContainersMatch) {
     const isCount = /^(?:how\s+many|count)/i.test(segment);
-    const freezerFilter = allContainersMatch[1]
-      ? cleanLocationFragment(allContainersMatch[1])
+    const matchedNoun = allContainersMatch[1].trim();
+    const isGenericContainersWord = /^containers?$/i.test(matchedNoun);
+    const freezerFilter = allContainersMatch[2]
+      ? cleanLocationFragment(allContainersMatch[2])
       : undefined;
     const id = `clause-${segIndex}-0`;
     return [
@@ -6549,8 +8052,8 @@ function parseCommandSegment(
           intent: 'container_query',
           containerQueryMode: isCount ? 'count' : 'contents',
           quantity: 1,
-          productQuery: '__all_containers__',
-          sourceLocationQuery: '',
+          productQuery: isGenericContainersWord ? '__all_containers__' : '',
+          sourceLocationQuery: isGenericContainersWord ? '' : singularizeSpecificContainerNoun(matchedNoun),
           queryLocationFilter: freezerFilter || undefined,
         },
         state,
@@ -6695,13 +8198,15 @@ function parseCommandSegment(
         .trim() || subjectRaw;
     const looksLikeContainerNoun =
       explicitContainerWord ||
-      /\b(?:bag|bags|tote|totes|bin|bins|box|boxes|bucket|buckets|crate|crates|tray|trays|tub|tubs)\b/i.test(
-        contSubjectCleaned
-      );
+      new RegExp(`\\b${ALL_CONTAINER_NOUN_PLURAL_PATTERN}\\b`, 'i').test(contSubjectCleaned);
 
-    // Check product candidates vs non-loose container candidates to pick the best target type
+    // Check product/bundle candidates vs non-loose container candidates to pick the best target type
     const prodCandidates = resolveOnSiteProductCandidates(subjectRaw, state);
-    const topProdScore = prodCandidates[0]?.score ?? 0;
+    const bundleQueryMatch = resolveVoiceDictionaryBundles(subjectRaw, state);
+    const topProdScore = Math.max(
+      prodCandidates[0]?.score ?? 0,
+      bundleQueryMatch ? bundleQueryMatch.best.score : 0
+    );
 
     const fullLocQuery = locationQuery ? `${contSubjectCleaned} in ${locationQuery}` : contSubjectCleaned;
     const rawContCandidates = resolveOnSiteLocationCandidates(fullLocQuery, state, 'source').filter(
@@ -6714,11 +8219,13 @@ function parseCommandSegment(
 
     const shouldTreatAsContainerQuery =
       explicitContainerWord ||
-      (rawContCandidates.length > 0 && (prodCandidates.length === 0 || topContScore > topProdScore)) ||
+      (rawContCandidates.length > 0 &&
+        ((prodCandidates.length === 0 && !bundleQueryMatch) || topContScore > topProdScore)) ||
       (isCountPhrase &&
         Boolean(locationQuery) &&
         matchedFreezersInLoc.length > 0 &&
         prodCandidates.length === 0 &&
+        !bundleQueryMatch &&
         (globalContCandidates.length > 0 || looksLikeContainerNoun));
 
     if (shouldTreatAsContainerQuery) {
@@ -6766,7 +8273,8 @@ function parseCommandSegment(
   // 1b. Check INVENTORY CHANGE / BULK ADJUSTMENT intent BEFORE fallback:
   //     "adjust quantity of brats in display to two", "reduce inventory of hot dogs in box green to three",
   //     "reduce inventory of hot dogs in box green by three", "change inventory", "set inventory in display: 2 brats, 3 hotdogs"
-  const isStrictNewContainer = STRICT_NEW_CONTAINER_START_REGEX.test(segment);
+  const parsedNewContainerEarly = parseNewContainerStatement(segment, state);
+  const isStrictNewContainer = Boolean(parsedNewContainerEarly);
   const invChangeRegex =
     /^(reduce|decrease|lower|drop|cut|trim|bring\s+down|knock\s+down|increase|raise|bump|boost|bring\s+up|adjust|change|update|edit|modify|reconcile|reset|correct|recount|fix|mark|set|make|count)(?:\s+(.*))?$/i;
   const invChangeMatch = !isStrictNewContainer ? segment.match(invChangeRegex) : null;
@@ -6900,7 +8408,8 @@ function parseCommandSegment(
         ];
       }
 
-      return subItems.map((sub, subIdx) => {
+      const outClauses: ParsedVoiceClause[] = [];
+      for (const sub of subItems) {
         const parsed = extractTargetQtyAndLoc(sub, allowBareOrLeadingQty);
         let itemText = parsed.itemBody || sub;
         let localLoc = parsed.trailingLoc || sharedLoc;
@@ -6923,10 +8432,8 @@ function parseCommandSegment(
           .replace(/^(?:(?:the|my|our)\s+)?(?:quantity|qty|inventory|stock|count|amount|level)\s+(?:of|for|on)\s+/i, '')
           .trim();
 
-        const id = `clause-${segIndex}-${subIdx}`;
-
         // Route relative deltas ("by N", "by -N", "by +N", or directional reduce/increase + leading qty) to remove/add
-        let clauseIntent: VoiceIntentType = 'set_quantity';
+        let clauseIntent: 'set_quantity' | 'remove' | 'add' = 'set_quantity';
         let clauseQty = parsed.quantity;
         let missingTargetQuantity = false;
 
@@ -6953,9 +8460,8 @@ function parseCommandSegment(
           missingTargetQuantity = true;
         }
 
-        return evaluateParsedClause(
-          {
-            id,
+        outClauses.push(
+          ...expandItemWithBundles({
             rawText: sub,
             intent: clauseIntent,
             quantity: clauseQty,
@@ -6965,11 +8471,10 @@ function parseCommandSegment(
             productQuery: itemText,
             sourceLocationQuery: clauseIntent === 'add' ? undefined : localLoc,
             destLocationQuery: clauseIntent === 'add' ? localLoc : undefined,
-          },
-          state,
-          overrides[id]
+          })
         );
-      });
+      }
+      return outClauses;
     }
   }
 
@@ -7039,7 +8544,6 @@ function parseCommandSegment(
 
     const subItems = splitItemClauses(body);
     const outClauses: ParsedVoiceClause[] = [];
-    let clauseCounter = 0;
 
     for (const sub of subItems) {
       let itemText = sub;
@@ -7070,12 +8574,16 @@ function parseCommandSegment(
         if (!localSrc || srcLocCands.length > 0) {
           const scopedIds =
             srcLocCands.length > 0 ? new Set(srcLocCands.map(l => l.containerId)) : undefined;
+          const bundleMatchForAll = resolveVoiceDictionaryBundles(cleanProdQuery, state, {
+            scopedContainerIds: scopedIds,
+          });
           const prodMatches = resolveOnSiteProductCandidates(cleanProdQuery, state, scopedIds);
           const catMatches = resolveCategoryCandidates(cleanProdQuery, state);
           const topProdScore = prodMatches[0]?.score ?? 0;
           const topCat = catMatches[0];
           const hasExactProd = prodMatches.some(p => p.isExact);
           const preferCategory =
+            !bundleMatchForAll &&
             Boolean(topCat) &&
             !hasExactProd &&
             (topCat!.isExact || topCat!.score > topProdScore);
@@ -7111,7 +8619,7 @@ function parseCommandSegment(
 
             if (matchedProductsInCat.length > 0) {
               for (const prod of matchedProductsInCat) {
-                const id = `clause-${segIndex}-${clauseCounter++}`;
+                const id = nextClauseId();
                 outClauses.push(
                   evaluateParsedClause(
                     {
@@ -7130,7 +8638,7 @@ function parseCommandSegment(
               }
               continue;
             } else {
-              const id = `clause-${segIndex}-${clauseCounter++}`;
+              const id = nextClauseId();
               const locLabel = srcLocCands[0]?.label || localSrc || 'on-site storage';
               outClauses.push({
                 id,
@@ -7162,21 +8670,15 @@ function parseCommandSegment(
         }
       }
 
-      const id = `clause-${segIndex}-${clauseCounter++}`;
       outClauses.push(
-        evaluateParsedClause(
-          {
-            id,
-            rawText: sub,
-            intent: 'remove',
-            quantity: qtyExtracted.quantity,
-            isAllQuantity: isAll,
-            productQuery: cleanProdQuery,
-            sourceLocationQuery: localSrc,
-          },
-          state,
-          overrides[id]
-        )
+        ...expandItemWithBundles({
+          rawText: sub,
+          intent: 'remove',
+          quantity: qtyExtracted.quantity,
+          isAllQuantity: isAll,
+          productQuery: cleanProdQuery,
+          sourceLocationQuery: localSrc,
+        })
       );
     }
 
@@ -7191,8 +8693,10 @@ function parseCommandSegment(
   );
   if (emptyItemOrContainerMatch) {
     const candidateBody = cleanLocationFragment(emptyItemOrContainerMatch[1]);
-    const isContainerKeywordLead =
-      /^(?:the\s+)?(?:containers?|bins?|boxes?|bags?|totes?|buckets?|crates?|trays?|tubs?)\b/i.test(candidateBody);
+    const isContainerKeywordLead = new RegExp(
+      `^(?:the\\s+)?${ALL_CONTAINER_NOUN_PLURAL_PATTERN}\\b`,
+      'i'
+    ).test(candidateBody);
     const hasContainerTransferClause = /\b(?:to|into|except(?:\s+for)?|excluding|other\s+than)\b/i.test(candidateBody);
     const matchesWholeNonLooseContainer =
       resolveOnSiteLocationCandidates(candidateBody, state, 'source').some(l => !l.isLoose);
@@ -7211,6 +8715,7 @@ function parseCommandSegment(
           const scopedIds = new Set(locMatches.map(l => l.containerId));
           const hasProdOrCat =
             resolveOnSiteProductCandidates(subjectPart, state, scopedIds).length > 0 ||
+            Boolean(resolveVoiceDictionaryBundles(subjectPart, state, { scopedContainerIds: scopedIds })) ||
             resolveCategoryCandidates(subjectPart, state).length > 0;
           if (hasProdOrCat) {
             return buildRemoveClauses(subjectPart, { forceAllQuantity: true, explicitSourceLoc: locPart });
@@ -7219,6 +8724,7 @@ function parseCommandSegment(
       } else if (/^(?:wipe\s+out|clean\s+out)\b/i.test(segment)) {
         const hasProdOrCat =
           resolveOnSiteProductCandidates(candidateBody, state).length > 0 ||
+          Boolean(resolveVoiceDictionaryBundles(candidateBody, state)) ||
           resolveCategoryCandidates(candidateBody, state).length > 0;
         if (hasProdOrCat) {
           return buildRemoveClauses(candidateBody, { forceAllQuantity: true });
@@ -7269,7 +8775,12 @@ function parseCommandSegment(
   // 3. Check COMBINE / MERGE / CONSOLIDATE CONTAINERS intent:
   //    "combine containers x and y", "combine x and y into z", "merge container x into container y", "put x and y together"
   const combineMatch =
-    segment.match(/^(?:combine|merge|consolidate|group)(?:\s+(?:the\s+)?(?:containers?|bins?|boxes?|bags?|totes?))?\s+(.+)$/i) ||
+    segment.match(
+      new RegExp(
+        `^(?:combine|merge|consolidate|group)(?:\\s+(?:the\\s+)?${PLURAL_CONTAINER_GROUP_PREFIX_PATTERN})?\\s+(.+)$`,
+        'i'
+      )
+    ) ||
     segment.match(/^put\s+(?:the\s+)?(?:containers?\s+)?(.+?\s+(?:and|with|&)\s+.+?)\s+together(?:\s+(?:in|into)\s+(.+?))?\s*[?!.]*$/i);
   if (combineMatch) {
     const rawBody = cleanLocationFragment(combineMatch[1]);
@@ -7393,10 +8904,31 @@ function parseCommandSegment(
       ];
     }
 
-    // 4b. MOVE WHOLE CONTAINER X to Freezer/Staging Z ("move container orange in canada to chest freezer"):
-    const explicitWholeCont = moveBody.match(/^(?:the\s+)?container\s+(.+)$/i);
-    if (explicitWholeCont) {
-      const rest = cleanLocationFragment(explicitWholeCont[1]);
+    // 4b. MOVE WHOLE CONTAINER X to Freezer/Staging Z ("move container orange in canada to chest freezer", "move box yellow to chest freezer", "put bag green in freezer 1"):
+    const explicitWholeContGeneric = moveBody.match(/^(?:the\s+)?container\s+(.+)$/i);
+    const typedWholeContMatch = !explicitWholeContGeneric
+      ? moveBody.match(new RegExp(`^(?:the\\s+)?((?:${SPECIFIC_CONTAINER_NOUN_PATTERN})\\s+.+)$`, 'i'))
+      : null;
+    const typedWholeContIsContainer = (() => {
+      if (!typedWholeContMatch) return false;
+      const bodyCand = cleanLocationFragment(typedWholeContMatch[1]);
+      if (/\s+\bfrom\s+/i.test(bodyCand)) return false;
+      const destSplit =
+        bodyCand.match(/^(.+?)\s+\b(?:to|into)\s+(.+)$/i) ||
+        (isPutOrBring ? bodyCand.match(/^(.+?)\s+\b(?:in|inside)\s+(.+)$/i) : null);
+      if (!destSplit) return false;
+      const srcPart = cleanLocationFragment(destSplit[1]);
+      const matchingProds = resolveOnSiteProductCandidates(srcPart, state);
+      const matchingContainers = resolveOnSiteLocationCandidates(srcPart, state, 'source').filter(
+        l => !l.isLoose
+      );
+      return matchingProds.length === 0 && matchingContainers.length > 0;
+    })();
+
+    if (explicitWholeContGeneric || typedWholeContIsContainer) {
+      const rest = cleanLocationFragment(
+        (explicitWholeContGeneric ? explicitWholeContGeneric[1] : typedWholeContMatch![1])
+      );
       let srcContQuery = rest;
       let destQuery: string | undefined;
 
@@ -7405,7 +8937,7 @@ function parseCommandSegment(
         srcContQuery = cleanLocationFragment(toDest[1]);
         destQuery = cleanLocationFragment(toDest[2]);
       } else if (isPutOrBring) {
-        // Handle "put container yellow bag in chest freezer"
+        // Handle "put container yellow bag in chest freezer" / "put bag green in freezer 1"
         const inDest = rest.match(/^(.+?)\s+\b(?:in|inside)\s+(.+)$/i);
         if (inDest && resolveOnSiteFreezerCandidates(inDest[2], state).length > 0) {
           srcContQuery = cleanLocationFragment(inDest[1]);
@@ -7534,7 +9066,8 @@ function parseCommandSegment(
     }
 
     const subItems = splitItemClauses(body);
-    return subItems.map((sub, subIdx) => {
+    const outClauses: ParsedVoiceClause[] = [];
+    for (const sub of subItems) {
       let itemText = sub;
       let localSrc = sharedSourceLoc;
       let localDest = sharedDestLoc;
@@ -7559,10 +9092,8 @@ function parseCommandSegment(
       }
 
       const qtyExtracted = extractLeadingQuantity(itemText, { allowToAsTwo: true, defaultQty: 1 });
-      const id = `clause-${segIndex}-${subIdx}`;
-      return evaluateParsedClause(
-        {
-          id,
+      outClauses.push(
+        ...expandItemWithBundles({
           rawText: sub,
           intent: 'move',
           quantity: qtyExtracted.quantity,
@@ -7570,11 +9101,10 @@ function parseCommandSegment(
           productQuery: qtyExtracted.rest || itemText,
           sourceLocationQuery: localSrc,
           destLocationQuery: localDest,
-        },
-        state,
-        overrides[id]
+        })
       );
-    });
+    }
+    return outClauses;
   }
 
   // 6. Check REMOVE intent: "remove/take/deduct/sell/sold/pull/grab/consume/discard/write off/zero out/sold out of <items> [from <src>]"
@@ -7599,55 +9129,16 @@ function parseCommandSegment(
     return buildRemoveClauses(removeMatch![1]);
   }
 
-  // Check STRICT NEW CONTAINER CREATION (container-first or items-first "to/into new container ...")
-  const containerFirstMatch = segment.match(
-    /^(?:please\s+)?(?:(?:add|create|make)\s+(?:a\s+)?(?:(?:new\s+)?container|new\s+(?:bin|box|bag|tote|bucket|crate|tray|tub))|new\s+(?:container|bin|box|bag|tote|bucket|crate|tray|tub))(?:\s+(from\s+template|template))?\s+(.+)$/i
-  );
-  const itemsFirstNewContainerMatch = !containerFirstMatch
-    ? segment.match(
-        /^(?:please\s+)?(?:add|put|restock|plus|pack|packed|receive|received|inbound|inbounded|stock|toss|place|load|store|stash|enter|log)\s+(.+?)\s+\b(?:to|into|in)\s+(?:a\s+)?new\s+(?:container|bin|box|bag|tote|bucket|crate|tray|tub)(?:\s+(from\s+template|template))?\s+(.+)$/i
-      )
-    : null;
-
-  if (containerFirstMatch || itemsFirstNewContainerMatch) {
-    let explicitTemplateRequested = false;
-    let containerAndFreezer = '';
-    let itemsPart: string | undefined;
-
-    if (containerFirstMatch) {
-      explicitTemplateRequested = Boolean(containerFirstMatch[1]);
-      const rawBody = containerFirstMatch[2].trim();
-      const split = splitContainerWithItems(rawBody);
-      containerAndFreezer = split.left;
-      itemsPart = split.itemsPart;
-    } else if (itemsFirstNewContainerMatch) {
-      itemsPart = itemsFirstNewContainerMatch[1].trim();
-      explicitTemplateRequested = Boolean(itemsFirstNewContainerMatch[2]);
-      containerAndFreezer = itemsFirstNewContainerMatch[3].trim();
-    }
-
-    let containerNameQuery = containerAndFreezer.trim();
-    let freezerQuery: string | undefined;
-
-    const freezerInContainerMatch = containerNameQuery.match(
-      /^(.+)\s+\b(?:in|into|to|inside|at)\s+(.+)$/i
-    );
-    if (freezerInContainerMatch) {
-      containerNameQuery = freezerInContainerMatch[1].trim();
-      freezerQuery = freezerInContainerMatch[2].trim();
-    } else if (itemsPart) {
-      // Allow trailing "in <freezer>" after items when none was placed after container name,
-      // e.g. "add container yellow bag with 4 liverwurst in freezer canada"
-      const trailingFreezerMatch = itemsPart.match(/^(.+?)\s+\b(?:in|into|to|inside|at)\s+(.+)$/i);
-      if (trailingFreezerMatch) {
-        const candFreezer = trailingFreezerMatch[2].trim();
-        if (resolveOnSiteFreezerCandidates(candFreezer, state).length > 0) {
-          itemsPart = trailingFreezerMatch[1].trim();
-          freezerQuery = candFreezer;
-        }
-      }
-    }
-
+  // Check STRICT NEW CONTAINER CREATION (container-first, adjective-before-noun, or items-first "to/into new ...")
+  const parsedNewContainer = parsedNewContainerEarly || parseNewContainerStatement(segment, state);
+  if (parsedNewContainer) {
+    const {
+      containerNameQuery,
+      freezerQuery,
+      itemsPart,
+      explicitTemplateRequested,
+      inferredIcon,
+    } = parsedNewContainer;
     const groupKey = `newcont-${segIndex}`;
 
     if (!itemsPart) {
@@ -7663,6 +9154,7 @@ function parseCommandSegment(
             newContainerGroupKey: groupKey,
             newContainerNameQuery: containerNameQuery,
             newContainerFreezerQuery: freezerQuery,
+            newContainerIcon: inferredIcon,
             explicitTemplateRequested,
           },
           state,
@@ -7672,12 +9164,11 @@ function parseCommandSegment(
     }
 
     const subItems = splitItemClauses(itemsPart);
-    return subItems.map((sub, subIdx) => {
+    const outClauses: ParsedVoiceClause[] = [];
+    for (const sub of subItems) {
       const qtyExtracted = extractLeadingQuantity(sub, { allowToAsTwo: true, defaultQty: 1 });
-      const id = `clause-${segIndex}-${subIdx}`;
-      return evaluateParsedClause(
-        {
-          id,
+      outClauses.push(
+        ...expandItemWithBundles({
           rawText: sub,
           intent: 'add',
           quantity: qtyExtracted.quantity,
@@ -7685,12 +9176,12 @@ function parseCommandSegment(
           newContainerGroupKey: groupKey,
           newContainerNameQuery: containerNameQuery,
           newContainerFreezerQuery: freezerQuery,
+          newContainerIcon: inferredIcon,
           explicitTemplateRequested,
-        },
-        state,
-        overrides[id]
+        })
       );
-    });
+    }
+    return outClauses;
   }
 
   // Check ADD intent: "add/put/restock/plus/pack/receive/inbound/stock/toss/load/store/stash <items> [to/into/in <dest>]"
@@ -7704,8 +9195,13 @@ function parseCommandSegment(
     const toLocMatch = body.match(/^(.+?)\s+\b(?:to|into|in|at)\s+(.+)$/i);
     if (toLocMatch) {
       const candidateDest = toLocMatch[2].trim();
-      // Ensure "to" isn't part of a trailing item name unless it matches a location or starts with to/into
-      if (/\s+(?:to|into)\s+/i.test(body) || resolveOnSiteLocationCandidates(candidateDest, state, 'dest').length > 0) {
+      const destHasNestedFreezer = /\b(?:in|into|inside|at)\s+.+$/i.test(candidateDest);
+      // Ensure "to" isn't part of a trailing item name unless it matches a location, uses to/into, or encodes "<container> in <freezer>"
+      if (
+        /\s+(?:to|into)\s+/i.test(body) ||
+        resolveOnSiteLocationCandidates(candidateDest, state, 'dest').length > 0 ||
+        destHasNestedFreezer
+      ) {
         body = toLocMatch[1].trim();
         sharedDestLoc = candidateDest;
       }
@@ -7718,7 +9214,8 @@ function parseCommandSegment(
     }
 
     const subItems = splitItemClauses(body);
-    return subItems.map((sub, subIdx) => {
+    const outClauses: ParsedVoiceClause[] = [];
+    for (const sub of subItems) {
       let itemText = sub;
       let localDest = sharedDestLoc;
 
@@ -7729,37 +9226,117 @@ function parseCommandSegment(
       }
 
       const qtyExtracted = extractLeadingQuantity(itemText, { allowToAsTwo: true, defaultQty: 1 });
-      const id = `clause-${segIndex}-${subIdx}`;
-      return evaluateParsedClause(
-        {
-          id,
+      outClauses.push(
+        ...expandItemWithBundles({
           rawText: sub,
           intent: 'add',
           quantity: qtyExtracted.quantity,
           productQuery: qtyExtracted.rest || itemText,
           destLocationQuery: localDest,
-        },
-        state,
-        overrides[id]
+        })
       );
-    });
+    }
+    return outClauses;
   }
 
-  // Fallback: If someone just typed/spoke a product name (e.g. "belly fresh") treat as unknown or query?
-  // Let's keep explicit unknown unless it looks like a short product lookup
+  // Fallback: Partial or unrecognized fragments — analyze for 1-tap intent conversion without retyping
   if (lower.length > 0) {
     const id = `clause-${segIndex}-0`;
+    const ov = overrides[id];
+    const analysis = analyzeUnknownSegment(segment, state);
+
+    if (ov?.fallbackIntent) {
+      const targetIntent = ov.fallbackIntent;
+      const inferredProd =
+        analysis.inferredProductQuery ||
+        analysis.suggestedFallbackProducts[0]?.product.name ||
+        segment;
+      const inferredLoc =
+        analysis.inferredLocationQuery && analysis.inferredFreezerQuery
+          ? `${analysis.inferredLocationQuery} in ${analysis.inferredFreezerQuery}`
+          : analysis.inferredLocationQuery || analysis.inferredFreezerQuery;
+
+      if (targetIntent === 'move_container') {
+        return [
+          evaluateParsedClause(
+            {
+              id,
+              rawText: segmentRaw.trim(),
+              intent: 'move_container',
+              quantity: 1,
+              productQuery: '',
+              sourceLocationQuery: analysis.inferredLocationQuery || segment,
+              destLocationQuery: analysis.inferredFreezerQuery,
+            },
+            state,
+            ov
+          ),
+        ];
+      }
+
+      if (targetIntent === 'query') {
+        if (!analysis.inferredProductQuery && analysis.inferredLocationQuery) {
+          return [
+            evaluateParsedClause(
+              {
+                id,
+                rawText: segmentRaw.trim(),
+                intent: 'container_query',
+                quantity: 1,
+                productQuery: '',
+                sourceLocationQuery: analysis.inferredLocationQuery,
+                containerQueryMode: 'contents',
+              },
+              state,
+              ov
+            ),
+          ];
+        }
+        return [
+          evaluateParsedClause(
+            {
+              id,
+              rawText: segmentRaw.trim(),
+              intent: 'query',
+              quantity: 1,
+              productQuery: inferredProd,
+              sourceLocationQuery: inferredLoc,
+            },
+            state,
+            ov
+          ),
+        ];
+      }
+
+      return [
+        evaluateParsedClause(
+          {
+            id,
+            rawText: segmentRaw.trim(),
+            intent: targetIntent,
+            quantity: analysis.quantity,
+            productQuery: inferredProd,
+            sourceLocationQuery:
+              targetIntent === 'remove' || targetIntent === 'move' ? inferredLoc : undefined,
+            destLocationQuery: targetIntent === 'add' ? inferredLoc : undefined,
+          },
+          state,
+          ov
+        ),
+      ];
+    }
+
     return [
       evaluateParsedClause(
         {
           id,
           rawText: segment,
           intent: 'unknown',
-          quantity: 1,
+          quantity: analysis.quantity,
           productQuery: segment,
         },
         state,
-        overrides[id]
+        ov
       ),
     ];
   }

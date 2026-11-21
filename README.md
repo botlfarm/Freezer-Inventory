@@ -1,128 +1,41 @@
+> **Notice:** This README was entirely written by Gemini.
+
 # Freezer Inventory Tracker
 
-A high-performance, full-featured inventory tracking and logistics management system built with React, TypeScript, Tailwind CSS, and Express. Uniquely engineered for home freezers, butcher shop processing, commercial meat lockers, and off-site cold storage facilities. 
+A full-stack inventory management and cold-chain tracking application built with React, TypeScript, Tailwind CSS, Express, and SQLite. Designed for homesteads, farms, butcher operations, and commercial cold storage, it runs either as a standalone web app / Progressive Web App (PWA) or natively as a **Home Assistant Add-on** with Ingress support.
 
-Operates seamlessly as a standalone web application or natively as a **Home Assistant Add-on** with Ingress integration, multi-architecture Docker support, and automatic volume persistence.
-
----
-
-## 📋 Table of Contents
-- [Overview](#-overview)
-- [Key Features](#-key-features)
-  - [1. Butcher Processing & Cut Cataloging](#1-butcher-processing--cut-cataloging)
-  - [2. Interactive Spreadsheet Workspaces](#2-interactive-spreadsheet-workspaces)
-  - [3. Off-Site Storage & Logistics Planner](#3-off-site-storage--logistics-planner)
-  - [4. QR & Barcode Camera Scanner](#4-qr--barcode-camera-scanner)
-  - [5. Data Portability, Backups & Preview Mode](#5-data-portability-backups--preview-mode)
-  - [6. High-Contrast Sage Interface](#6-high-contrast-sage-interface)
-- [Home Assistant Integration](#-home-assistant-integration)
-  - [Option A: Local Add-on Installation (Recommended)](#option-a-local-add-on-installation-recommended)
-  - [Option B: GitHub Add-on Repository](#option-b-github-add-on-repository)
-- [Local Development](#-local-development)
-- [Data Storage & Persistence Architecture](#-data-storage--persistence-architecture)
+For detailed technical architecture, relational database schemas, synchronization mechanics, backup rules, and test coverage, see [`APP_CONTEXT.md`](./APP_CONTEXT.md).
 
 ---
 
-## 🌟 Overview
+## Overview
 
-The **Freezer Inventory Tracker** eliminates spreadsheet confusion and lost frozen inventory. Designed to handle everything from individual homestead chest freezers to multi-location commercial butcher operations, it tracks detailed meat cuts, weights, box numbers, pallet locations, serial numbers, pack dates, and movement histories in real time.
+Freezer Inventory Tracker organizes physical food and meat inventory from butcher processing through off-site cold storage and into on-site freezers and display cases:
 
-### Key Architectural Highlights
-* **Home Assistant Native**: Full Ingress support with dynamic proxy path stripping and Supervisor API awareness.
-* **Persistent Storage**: Automatically routes database state (`freezer_data.json`) to `/data` volume mounts inside Home Assistant Alpine containers or local disk mounts in standalone Node environments.
-* **Instant Interactive Sorting & Filtering**: Real-time multi-column sorting, live search filters, box aggregation, and bulk record operations.
-* **Zero-Data-Loss Backups**: Complete JSON database snapshots and full ZIP export/import packages including uploaded image media.
-
----
-
-## 🎯 Key Features
-
-### 1. Butcher Processing & Cut Cataloging
-* **Comprehensive Cut Fields**: Catalog items with Primary Category (Beef, Pork, Poultry, Lamb, Seafood, Wild Game), Cut Name, Net Weight (lbs), Piece Count (# pcs), Box ID, Lot Number, Pack Date, Order Number, Serial Number, and Pallet / Location tags.
-* **Butcher Yield Analytics**: Track hanging carcass weights versus packaged yields, producer records, cut breakdown summaries, and processing dates.
-
-### 2. Interactive Spreadsheet Workspaces
-* **Dual Spreadsheet Views**: Dedicated interactive spreadsheets for both Butcher Processing records and Off-Site Inventory.
-* **Box Grouping & Expansion**: Toggle between itemized flat views and grouped-by-box views with condensed summary rows and expandable child item lists.
-* **Interactive Column Sorting**: Click any table header (Box, Cut Name, Net Weight, Pieces, Location, Pallet, Serial, Pack Date, Status) to instantly sort groups and items.
-* **Bulk Editing**: Multi-select rows to batch-update locations, box assignments, order numbers, or lot numbers in a single operation.
-
-### 3. Off-Site Storage & Logistics Planner
-* **Multi-Facility Tracking**: Manage inventory across on-site freezers, off-site commercial cold storage, walk-in coolers, and transport vehicles.
-* **Movement Manifests**: Create, plan, and track outbound shipping transfers between facilities with printable transfer manifests and audit trails.
-* **Movement History**: Complete chronological log of every check-in, transfer, edit, and checkout event.
-
-### 4. QR & Barcode Camera Scanner
-* **Rapid Checking & Audits**: Built-in camera scanner for reading QR codes and barcodes on boxes, pallets, or individual cuts.
-* **Instant Box Transfers**: Scan a box QR code to immediately check its contents, update its current storage location, or mark items as checked out.
-
-### 5. Data Portability, Backups & Preview Mode
-* **CSV Import/Export**: Import spreadsheets from CSV or AppSheet mapping guides and export inventory data at any time.
-* **ZIP & JSON Backups**: One-click full database snapshots and media-inclusive ZIP backup archives.
-* **Read-Only Live Preview Mode**: Inspect historical backup snapshots safely without overwriting or modifying your active database state.
-
-### 6. High-Contrast Sage Interface
-* **Optimized for Real-World Visibility**: Styled with high-contrast typography (`#0d1007`) and soft sage accents (`#c5cdb0`) for maximum legibility in freezer rooms, butcher shops, and high-glare environments under direct lighting.
+- **On-Site Freezers & Display Cases**: Track freezers, display cases, containers, and loose stock with fast `+`/`-` adjustments, tag-based restock and removal priorities, container templates, and physical reconciliation audits.
+- **Local On-Site Voice Control**: Hands-free speech and dictation workspace for on-site stock updates, container creation, restock checks, and custom phrase/bundle shortcuts via the **Voice Dictionary**.
+- **Off-Site Storage & Movement Logistics**: Manage multi-facility storage, pallets, and boxes using spreadsheet views, drag-and-drop staging worksheets, barcode-assisted pick/delivery scanning, and movement manifests.
+- **Butcher Processing & Traceability**: Record butcher orders, carcass-to-package yields, CSV cutsheet imports with deduplication, and batch chain-of-custody traceability up to on-site transfer.
+- **Custom Lists & Notifications**: Monitor minimum/maximum stock thresholds with automated daily digests, scheduled reports, and immediate alerts via SMTP email, webhooks, or in-app notifications.
+- **Multi-User Sync, Security & Offline PWA**: Real-time Server-Sent Events (SSE) synchronization across operational zones, local PIN user accounts and device management, offline PWA caching with queued mutations, and an isolated Demo Sandbox mode.
+- **Unified Audit Trail & Backups**: Cross-facility history log with tiered undo, automated rolling snapshots, and full or selective SQLite (`.db`), JSON, and media-inclusive `.zip` backup/restore tools, plus optional Nextcloud and Google Sheets connectors.
 
 ---
 
-## 🏡 Home Assistant Integration
+## Quick Start
 
-This application is built from the ground up to run inside Home Assistant as an Add-on.
+### Local Development
+```bash
+npm install
+npm run dev      # Starts Express + Vite dev server on port 3000
+npm run lint     # TypeScript type-check (tsc --noEmit)
+npm test         # Runs Vitest suite
+npm run build    # Builds client and server bundle to dist/
+npm start        # Runs production server
+```
 
-### Option A: Local Add-on Installation (Recommended)
+### Persistence & Home Assistant Add-on
+- **Home Assistant**: Install via a local add-on folder or GitHub add-on repository. Persistent state (`inventory.db`, backups, and uploaded media) is stored in `/data`.
+- **Standalone Node**: Data is stored locally under `./data/inventory.db`.
 
-1. Enable the **Samba share** or **SSH & Web Terminal** add-on in Home Assistant.
-2. Navigate to your Home Assistant `addons` folder (e.g. `/addons/`).
-3. Create a subdirectory named `freezer_inventory_tracker`.
-4. Copy all project repository files into `/addons/freezer_inventory_tracker/`.
-5. Open Home Assistant and go to **Settings** -> **Add-ons** -> **Add-on Store**.
-6. Click the three dots in the top-right corner and select **Check for updates**.
-7. Scroll down to **Local add-ons**, select **Freezer Inventory Tracker**, and click **Install**.
-8. Start the add-on and click **Open Web UI** (or access via the sidebar link).
-
----
-
-### Option B: GitHub Add-on Repository
-
-To install directly from a GitHub repository:
-1. Go to **Settings** -> **Add-ons** -> **Add-on Store** in Home Assistant.
-2. Click the three dots in the top-right corner and select **Repositories**.
-3. Add your repository URL: `https://github.com/YOUR_USERNAME/YOUR_REPO`.
-4. Locate **Freezer Inventory Tracker** in the store and click **Install**.
-
----
-
-## 🛠️ Local Development
-
-To run and test the application locally outside of Docker / Home Assistant:
-
-1. **Install Dependencies**:
-   ```bash
-   npm install
-   ```
-
-2. **Start Development Server**:
-   ```bash
-   npm run dev
-   ```
-   The dev server will launch on port `3000`.
-
-3. **Type Checking & Linting**:
-   ```bash
-   npm run lint
-   ```
-
-4. **Production Build**:
-   ```bash
-   npm run build
-   npm start
-   ```
-
----
-
-## 💾 Data Storage & Persistence Architecture
-
-- **Home Assistant Environment**: Data is persisted inside Home Assistant's `/data/freezer_data.json` directory, ensuring all records, settings, and logs survive add-on updates, container rebuilds, and system restarts.
-- **Standalone Node Environment**: State is stored in the root folder as `freezer_data.json`.
-- **Automatic Fallbacks**: Older data schemas automatically migrate on startup with safe default fallbacks to prevent runtime crashes.
+For the full system reference, refer to [`APP_CONTEXT.md`](./APP_CONTEXT.md).

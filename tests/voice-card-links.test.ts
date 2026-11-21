@@ -128,6 +128,11 @@ describe('Voice Control Cards Link Back to Main App', () => {
     expect(voiceSource).toContain('if (item.isContainerOp)');
     expect(voiceSource).toContain('else if (item.isDisplay && item.productId && onNavigateToDisplayCase)');
     expect(voiceSource).toContain('else if (item.productId)');
+
+    // Source container disambiguation hides redundant package stack list and shows per-container available qty
+    expect(voiceSource).toContain('!clause.requiresSourceLocationSelection && clause.cutCandidates.length > 1');
+    expect(voiceSource).toContain('!clause.requiresSourceLocationSelection &&\n                            clause.cutCandidates.length > 1');
+    expect(voiceSource).toContain('const containerStockQty =');
   });
 
   it('renders VoiceControlView and DisplayCaseView with selectedProductId cleanly', () => {

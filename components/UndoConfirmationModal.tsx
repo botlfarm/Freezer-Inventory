@@ -119,14 +119,31 @@ export const UndoConfirmationModal: React.FC<UndoConfirmationModalProps> = ({
     const relevantCutIds = new Set<string>();
     const relevantProductIds = new Set<string>();
     const relevantContainerIds = new Set<string>();
+    const relevantOffSiteIds = new Set<string>();
+    const relevantOrderIds = new Set<string>();
+    const relevantPalletNames = new Set<string>();
 
     if (undoData.meatCutId) relevantCutIds.add(undoData.meatCutId);
     if (undoData.sourceCutId) relevantCutIds.add(undoData.sourceCutId);
     if (undoData.destCutId) relevantCutIds.add(undoData.destCutId);
     if (undoData.originalCutId) relevantCutIds.add(undoData.originalCutId);
     if (undoData.createdSplitCutId) relevantCutIds.add(undoData.createdSplitCutId);
+
+    if (undoData.entryId) relevantOffSiteIds.add(undoData.entryId);
+    if (undoData.previousEntry?.id) relevantOffSiteIds.add(undoData.previousEntry.id);
+
+    if (undoData.orderId) relevantOrderIds.add(undoData.orderId);
+    if (undoData.previousOrder?.id) relevantOrderIds.add(undoData.previousOrder.id);
+
+    if (undoData.palletId) relevantPalletNames.add(String(undoData.palletId).toLowerCase());
+    if (undoData.palletName) relevantPalletNames.add(String(undoData.palletName).toLowerCase());
+    if (undoData.oldName) relevantPalletNames.add(String(undoData.oldName).toLowerCase());
+    if (undoData.newName) relevantPalletNames.add(String(undoData.newName).toLowerCase());
+
     if (targetHistoryEntry.targetId && !targetHistoryEntry.targetId.startsWith('local-')) {
       relevantCutIds.add(targetHistoryEntry.targetId);
+      relevantOffSiteIds.add(targetHistoryEntry.targetId);
+      relevantOrderIds.add(targetHistoryEntry.targetId);
     }
 
     if (undoData.productId) relevantProductIds.add(undoData.productId);
@@ -155,7 +172,14 @@ export const UndoConfirmationModal: React.FC<UndoConfirmationModalProps> = ({
       let isConflict = false;
 
       // Direct ID matches
-      if (sub.targetId && (relevantCutIds.has(sub.targetId) || relevantContainerIds.has(sub.targetId) || relevantProductIds.has(sub.targetId))) {
+      if (
+        sub.targetId &&
+        (relevantCutIds.has(sub.targetId) ||
+          relevantContainerIds.has(sub.targetId) ||
+          relevantProductIds.has(sub.targetId) ||
+          relevantOffSiteIds.has(sub.targetId) ||
+          relevantOrderIds.has(sub.targetId))
+      ) {
         isConflict = true;
       } else if (subUndo.meatCutId && relevantCutIds.has(subUndo.meatCutId)) {
         isConflict = true;
@@ -164,6 +188,22 @@ export const UndoConfirmationModal: React.FC<UndoConfirmationModalProps> = ({
       } else if (subUndo.containerId && relevantContainerIds.has(subUndo.containerId)) {
         isConflict = true;
       } else if (subUndo.productId && relevantProductIds.has(subUndo.productId)) {
+        isConflict = true;
+      } else if (
+        (subUndo.entryId && relevantOffSiteIds.has(subUndo.entryId)) ||
+        (subUndo.previousEntry?.id && relevantOffSiteIds.has(subUndo.previousEntry.id))
+      ) {
+        isConflict = true;
+      } else if (
+        (subUndo.orderId && relevantOrderIds.has(subUndo.orderId)) ||
+        (subUndo.previousOrder?.id && relevantOrderIds.has(subUndo.previousOrder.id)) ||
+        (sub.details?.relatedOrderId && relevantOrderIds.has(sub.details.relatedOrderId))
+      ) {
+        isConflict = true;
+      } else if (
+        sub.details?.palletName &&
+        relevantPalletNames.has(sub.details.palletName.toLowerCase())
+      ) {
         isConflict = true;
       } else {
         // Text keyword heuristic if names match
@@ -291,9 +331,158 @@ export const UndoConfirmationModal: React.FC<UndoConfirmationModalProps> = ({
       };
     }
 
+    // 4. Off-Site Entry Restore / Delete
+    if (undoType === 'RESTORE_OFFSITE_ENTRY' || undoType === 'DELETE_OFFSITE_ENTRY_BY_ID' || undoType === 'DELETE_OFFSITE_ENTRY') {
+      const prev = undoData.previousEntry;
+      const entryId = prev?.id || undoData.entryId || targetHistoryEntry.targetId;
+      const liveEntry = state.offSiteEntries?.find(e => e.id === entryId);
+      const product = state.products?.find(p => p.id === (liveEntry?.productId || prev?.productId));
+      const cutTitle = product?.name || liveEntry?.cuts || prev?.cuts || prev?.originalCutName || 'Off-Site Package';
+
+      if (undoType === 'DELETE_OFFSITE_ENTRY_BY_ID' || undoType === 'DELETE_OFFSITE_ENTRY') {
+        return {
+          entityType: 'Off-Site Package',
+          title: cutTitle,
+          current: {
+            quantityText: liveEntry ? `${liveEntry.pieces || 0} pcs · ${liveEntry.netWeight || 0} lbs` : 'Active entry',
+            locationText: liveEntry ? `${liveEntry.location || 'Off-Site'}${liveEntry.currentLocation ? ` (${liveEntry.currentLocation})` : ''}` : 'Off-Site Inventory',
+            statusText: liveEntry?.archived ? 'Archived' : 'Active'
+          },
+          proposed: {
+            quantityText: 'Entry removed (undoing add)',
+            locationText: 'Removed from off-site inventory',
+            statusText: 'Deleted',
+            isReduction: true
+          }
+        };
+      }
+
+      if (prev) {
+        const prevLoc = `${prev.location || 'Off-Site'}${prev.currentLocation ? ` (${prev.currentLocation})` : ''}`;
+        const liveLoc = liveEntry
+          ? `${liveEntry.location || 'Off-Site'}${liveEntry.currentLocation ? ` (${liveEntry.currentLocation})` : ''}`
+          : 'Removed / Archived';
+        return {
+          entityType: 'Off-Site Package',
+          title: prev.serial ? `${cutTitle} (#${prev.serial})` : cutTitle,
+          current: {
+            quantityText: liveEntry
+              ? `${liveEntry.pieces || 0} pcs · ${liveEntry.netWeight || 0} lbs${liveEntry.archived ? ' [Archived]' : ''}`
+              : 'Not present in off-site inventory',
+            locationText: liveLoc,
+            statusText: liveEntry?.archived ? 'Archived' : 'Active'
+          },
+          proposed: {
+            quantityText: `${prev.pieces || 0} pcs · ${prev.netWeight || 0} lbs${prev.archived ? ' [Archived]' : ''}`,
+            locationText: prevLoc,
+            statusText: prev.archived ? 'Archived' : 'Restored to prior state',
+            isAddition: !liveEntry
+          }
+        };
+      }
+    }
+
+    // 5. Butcher Order Metadata Restore
+    if (undoType === 'RESTORE_BUTCHER_ORDER' && undoData.previousOrder) {
+      const prev = undoData.previousOrder;
+      const liveOrder = state.butcherOrders?.find(o => o.id === prev.id);
+      return {
+        entityType: 'Butcher Order',
+        title: `Order #${prev.orderNumber || prev.id}`,
+        current: {
+          quantityText: liveOrder ? `${liveOrder.species || 'Order'} · ${liveOrder.coldWeight || 0} lbs cold` : 'Not found',
+          locationText: liveOrder?.killDate ? `Kill Date: ${liveOrder.killDate}` : 'Metadata recorded',
+          statusText: 'Updated'
+        },
+        proposed: {
+          quantityText: `${prev.species || 'Order'} · ${prev.coldWeight || 0} lbs cold`,
+          locationText: prev.killDate ? `Kill Date: ${prev.killDate}` : 'Restored metadata',
+          statusText: 'Restored to previous metadata'
+        }
+      };
+    }
+
+    // 6. Pallet Rename / Location Assign / Notes
+    if (undoType === 'RESTORE_PALLET_RENAME') {
+      const pkgCount = (state.offSiteEntries || []).filter(
+        e => (e.currentLocation || '').trim().toLowerCase() === String(undoData.newName || '').trim().toLowerCase()
+      ).length;
+      return {
+        entityType: 'Pallet Rename',
+        title: `${undoData.oldName} -> ${undoData.newName}`,
+        current: {
+          quantityText: `${pkgCount} active/historical package(s)`,
+          locationText: `Pallet "${undoData.newName}"`,
+          statusText: 'Renamed'
+        },
+        proposed: {
+          quantityText: `${pkgCount} package(s) reverted`,
+          locationText: `Pallet "${undoData.oldName}"`,
+          statusText: 'Restored original pallet name'
+        }
+      };
+    }
+
+    if (undoType === 'RESTORE_PALLET_LOCATION') {
+      const affectedCount = Array.isArray(undoData.previousEntryLocations) ? undoData.previousEntryLocations.length : 0;
+      return {
+        entityType: 'Pallet Location',
+        title: `Pallet "${undoData.palletName || 'Pallet'}"`,
+        current: {
+          quantityText: `${affectedCount} package(s) assigned`,
+          locationText: targetHistoryEntry.details?.locationName || 'Updated Storage Location',
+          statusText: 'Assigned'
+        },
+        proposed: {
+          quantityText: `${affectedCount} package(s) restored`,
+          locationText: 'Previous storage location(s)',
+          statusText: 'Restored prior location mapping'
+        }
+      };
+    }
+
+    if (undoType === 'RESTORE_PALLET_NOTES') {
+      const livePallet = (state.pallets || []).find(p => p.id === undoData.palletId || p.name === undoData.palletId);
+      const prevNote = undoData.previousPallet?.notes || '(none)';
+      return {
+        entityType: 'Pallet Notes',
+        title: `Pallet "${undoData.palletId}"`,
+        current: {
+          quantityText: livePallet?.notes ? `"${livePallet.notes}"` : '(no notes)',
+          locationText: `Pallet ${undoData.palletId}`,
+          statusText: 'Updated'
+        },
+        proposed: {
+          quantityText: prevNote === '(none)' ? '(no notes)' : `"${prevNote}"`,
+          locationText: undoData.existed ? `Pallet ${undoData.palletId}` : 'Removed newly created pallet note record',
+          statusText: 'Restored note'
+        }
+      };
+    }
+
+    // 7. Movement Order Status / Create Undo
+    if (undoType === 'RESTORE_MOVEMENT_ORDER_STATUS' || undoType === 'DELETE_MOVEMENT_ORDER_BY_ID') {
+      const orderId = undoData.orderId || targetHistoryEntry.targetId;
+      const liveOrder = state.movementOrders?.find(o => o.id === orderId);
+      return {
+        entityType: 'Movement Order',
+        title: liveOrder?.name || targetHistoryEntry.details?.orderName || 'Movement Order',
+        current: {
+          quantityText: `${liveOrder?.moves?.length || 0} planned cut(s)`,
+          locationText: liveOrder ? `Status: ${liveOrder.status}` : 'Order removed',
+          statusText: liveOrder?.status || 'Removed'
+        },
+        proposed: {
+          quantityText: undoType === 'DELETE_MOVEMENT_ORDER_BY_ID' ? 'Order removed' : `${liveOrder?.moves?.length || 0} planned cut(s)`,
+          locationText: undoType === 'DELETE_MOVEMENT_ORDER_BY_ID' ? 'Deleted from movement orders' : `Status: ${undoData.previousStatus}`,
+          statusText: undoType === 'DELETE_MOVEMENT_ORDER_BY_ID' ? 'Deleted' : `Restored to ${undoData.previousStatus}`
+        }
+      };
+    }
+
     // Generic fallback comparison from description
     return null;
-  }, [state, targetHistoryEntry]);
+  }, [state, targetHistoryEntry, isOpen]);
 
   if (!isOpen) return null;
 

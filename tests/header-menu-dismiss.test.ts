@@ -144,4 +144,30 @@ describe('Header Menu Outside-Click & Mutual Exclusion Behavior', () => {
     expect(menuSlice).not.toContain('Default solo performance with zero-lag local memory');
     expect(menuSlice).not.toContain('Changes save with zero latency locally');
   });
+
+  it('shows Export Sheet inside #sync-status-dropdown only in the Off-Site Workspace view and removes the inline export card', () => {
+    const appSource = fs.readFileSync(path.resolve(__dirname, '../App.tsx'), 'utf-8');
+    const spreadsheetSource = fs.readFileSync(path.resolve(__dirname, '../views/OffSiteSpreadsheet.tsx'), 'utf-8');
+
+    const syncIdx = appSource.indexOf('id="sync-status-dropdown"');
+    const endHeaderIdx = appSource.indexOf('{/* Expanded Search & Filters Row */}', syncIdx);
+    const menuSlice = appSource.slice(syncIdx, endHeaderIdx);
+
+    expect(appSource).toContain("const isOffSiteWorkspace = currentView === 'offsite' && offsiteSubTab === 'sheet';");
+    expect(menuSlice).toContain('{isOffSiteWorkspace && (');
+    expect(menuSlice).toContain('id="menu-export-sheet-btn"');
+    expect(menuSlice).toContain('Export Sheet');
+    expect(menuSlice).toContain('id="menu-export-filtered-btn"');
+    expect(menuSlice).toContain('Export Active Filtered View');
+    expect(menuSlice).toContain('id="menu-export-full-btn"');
+    expect(menuSlice).toContain('Export Entire Database');
+    expect(menuSlice).toContain('handleExportFilteredCSV');
+    expect(menuSlice).toContain('handleExportFullCSV');
+
+    // Inline spreadsheet header & export card removed from OffSiteSpreadsheet
+    expect(spreadsheetSource).not.toContain('Unified Worksheet Spreadsheet');
+    expect(spreadsheetSource).not.toContain('Export Spreadsheet');
+    expect(spreadsheetSource).not.toContain('isExportDropdownOpen');
+    expect(spreadsheetSource).toContain('onRegisterExportActions');
+  });
 });

@@ -123,5 +123,14 @@ describe('Workflow 1: SQLite Database Restore, Backup Snapshot & Roundtrip Integ
     expect(restoredDict.spokenPhrase).toBe('prime rib');
     expect(restoredDict.targetType).toBe('product');
     expect(restoredDict.targetId).toBe('prod-ribeye');
+
+    const restoredBundleDict = db.prepare('SELECT spokenPhrase, targetType, targetId, bundleItems FROM voice_dictionary WHERE id = ?').get('vd-seed-steak-pack') as any;
+    expect(restoredBundleDict.spokenPhrase).toBe('steak pack');
+    expect(restoredBundleDict.targetType).toBe('bundle');
+    expect(restoredBundleDict.targetId).toBeNull();
+    expect(JSON.parse(restoredBundleDict.bundleItems)).toEqual([
+      { productId: 'prod-ribeye', quantity: 1 },
+      { productId: 'prod-ground-beef', quantity: 2 },
+    ]);
   });
 });

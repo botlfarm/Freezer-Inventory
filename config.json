@@ -1,8 +1,8 @@
 {
   "name": "Freezer Inventory Tracker",
-  "version": "2.72.5",
+  "version": "2.88.1",
   "slug": "freezer_inventory",
-  "description": "Comprehensive freezer, butcher processing, and off-site cold storage inventory tracker with QR code scanning.",
+  "description": "Comprehensive freezer, butcher processing, and off-site cold storage inventory tracker.",
   "image": "ghcr.io/botlfarm/freezer-inventory-tracker-{arch}",
   "arch": [
     "aarch64",
@@ -18,11 +18,27 @@
   ],
   "options": {
     "admin_recovery_mode": false,
-    "admin_recovery_pin": ""
+    "admin_recovery_pin": "",
+    "backup_recovery_mode": false,
+    "auto_db_backup_enabled": true,
+    "auto_db_backup_interval_days": 1,
+    "auto_db_backup_keep_count": 7,
+    "auto_db_backup_hour": 2,
+    "auto_zip_backup_enabled": true,
+    "auto_zip_backup_interval_days": 7,
+    "auto_zip_backup_keep_count": 2
   },
   "schema": {
     "admin_recovery_mode": "bool?",
-    "admin_recovery_pin": "password?"
+    "admin_recovery_pin": "password?",
+    "backup_recovery_mode": "bool?",
+    "auto_db_backup_enabled": "bool?",
+    "auto_db_backup_interval_days": "int(1,365)?",
+    "auto_db_backup_keep_count": "int(1,90)?",
+    "auto_db_backup_hour": "int(0,23)?",
+    "auto_zip_backup_enabled": "bool?",
+    "auto_zip_backup_interval_days": "int(1,365)?",
+    "auto_zip_backup_keep_count": "int(1,30)?"
   },
   "ports": {
     "3000/tcp": 3000

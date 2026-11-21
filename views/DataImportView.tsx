@@ -1341,13 +1341,26 @@ export function DataImportView({
 
             {/* Dual Rolling Automatic Snapshots Schedules Section */}
             <div className="border border-cool-gray-750 bg-cool-gray-900/50 rounded-2xl p-5 space-y-4">
-              <div>
+              <div className="space-y-2">
                 <h4 className="text-md font-bold text-white flex items-center gap-2">
                   <RefreshCw className="w-4 h-4 text-emerald-400" /> Dual-Schedule Rolling Automatic Snapshots
                 </h4>
                 <p className="text-xs text-cool-gray-450 mt-1 leading-relaxed">
                   Configure independent background schedules for lightweight nightly database backups and comprehensive weekly full archives.
                 </p>
+                <div className="rounded-xl bg-amber-950/30 border border-amber-800/50 px-3.5 py-2.5 text-[11px] text-amber-200/90 leading-relaxed flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <span>
+                    <strong className="text-amber-100">Home Assistant Configure Parity:</strong> These rolling backup schedules (plus a last-resort{' '}
+                    <code className="font-mono bg-amber-950 px-1 py-0.5 rounded text-amber-100">backup_recovery_mode</code>{' '}
+                    switch) are also duplicated in Home Assistant Add-on <strong>Configuration</strong> so snapshots can be restored even if the main database fails to boot.
+                  </span>
+                  <a
+                    href="#failsafe"
+                    className="px-2.5 py-1 rounded-lg bg-amber-900/60 hover:bg-amber-800/70 border border-amber-700/60 text-amber-100 font-bold whitespace-nowrap shrink-0 text-center"
+                  >
+                    Open Failsafe Console
+                  </a>
+                </div>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-5">

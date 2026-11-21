@@ -23,6 +23,8 @@ import {
   Check,
   Terminal,
   Mic,
+  Layers,
+  Minus,
 } from 'lucide-react';
 
 interface VoiceDictionaryManagerProps {
@@ -73,6 +75,11 @@ const TARGET_TYPE_META: Record<
     shortLabel: 'Product',
     badgeClass: 'bg-emerald-950/60 text-emerald-300 border-emerald-500/40',
   },
+  bundle: {
+    label: 'Product Pack (1-to-Many)',
+    shortLabel: 'Pack',
+    badgeClass: 'bg-fuchsia-950/60 text-fuchsia-300 border-fuchsia-500/40',
+  },
   container: {
     label: 'Container / Bin',
     shortLabel: 'Container',
@@ -103,6 +110,7 @@ export const VoiceDictionaryManager: React.FC<VoiceDictionaryManagerProps> = ({
   const [spokenPhrase, setSpokenPhrase] = useState('');
   const [targetType, setTargetType] = useState<VoiceDictionaryTargetType>('product');
   const [targetId, setTargetId] = useState('');
+  const [bundleItems, setBundleItems] = useState<Array<{ productId: string; quantity: number }>>([]);
   const [replacementText, setReplacementText] = useState('');
   const [notes, setNotes] = useState('');
   const [targetSearch, setTargetSearch] = useState('');
@@ -263,6 +271,21 @@ export const VoiceDictionaryManager: React.FC<VoiceDictionaryManagerProps> = ({
           subLabel: f.isSpecial ? 'Display / Special Freezer' : 'Storage Freezer',
         }));
     }
+    if (targetType === 'bundle') {
+      return activeProducts
+        .filter(
+          p =>
+            !q ||
+            p.name.toLowerCase().includes(q) ||
+            p.primaryCategory.toLowerCase().includes(q) ||
+            p.subCategory.toLowerCase().includes(q)
+        )
+        .map(p => ({
+          id: p.id,
+          label: p.name,
+          subLabel: `${p.primaryCategory} / ${p.subCategory}`,
+        }));
+    }
     return [];
   }, [targetType, targetSearch, activeProducts, activeContainers, activeFreezers]);
 
@@ -271,9 +294,39 @@ export const VoiceDictionaryManager: React.FC<VoiceDictionaryManagerProps> = ({
     return [...raw].sort((a, b) => a.spokenPhrase.localeCompare(b.spokenPhrase));
   }, [state.voiceDictionary]);
 
-  const resolveEntryTarget = (entry: VoiceDictionaryEntry): { label: string; missing: boolean } => {
+  const resolveEntryTarget = (
+    entry: VoiceDictionaryEntry
+  ): {
+    label: string;
+    missing: boolean;
+    bundleParts?: Array<{ productId: string; name: string; quantity: number; missing: boolean }>;
+  } => {
     if (entry.targetType === 'phrase' || entry.targetType === 'command') {
       return { label: entry.replacementText || '(empty rewrite)', missing: !entry.replacementText };
+    }
+    if (entry.targetType === 'bundle') {
+      const items = Array.isArray(entry.bundleItems) ? entry.bundleItems : [];
+      if (items.length === 0) {
+        return { label: 'No products in pack', missing: true, bundleParts: [] };
+      }
+      const bundleParts = items.map(item => {
+        const p = productMap.get(item.productId);
+        const qty = Math.max(1, Math.round(Number(item.quantity) || 1));
+        if (!p) {
+          return { productId: item.productId, name: 'Deleted Product', quantity: qty, missing: true };
+        }
+        return {
+          productId: item.productId,
+          name: p.isArchived ? `${p.name} (Archived)` : p.name,
+          quantity: qty,
+          missing: Boolean(p.isArchived),
+        };
+      });
+      return {
+        label: bundleParts.map(bp => `${bp.quantity}x ${bp.name}`).join(', '),
+        missing: bundleParts.some(bp => bp.missing),
+        bundleParts,
+      };
     }
     if (entry.targetType === 'product') {
       const p = entry.targetId ? productMap.get(entry.targetId) : undefined;
@@ -319,6 +372,7 @@ export const VoiceDictionaryManager: React.FC<VoiceDictionaryManagerProps> = ({
     setEditingId(null);
     setSpokenPhrase('');
     setTargetId('');
+    setBundleItems([]);
     setReplacementText('');
     setNotes('');
     setTargetSearch('');
@@ -330,6 +384,14 @@ export const VoiceDictionaryManager: React.FC<VoiceDictionaryManagerProps> = ({
     setSpokenPhrase(entry.spokenPhrase);
     setTargetType(entry.targetType);
     setTargetId(entry.targetId || '');
+    setBundleItems(
+      Array.isArray(entry.bundleItems)
+        ? entry.bundleItems.map(item => ({
+            productId: item.productId,
+            quantity: Math.max(1, Math.round(Number(item.quantity) || 1)),
+          }))
+        : []
+    );
     setReplacementText(entry.replacementText || '');
     setNotes(entry.notes || '');
     setTargetSearch('');
@@ -337,23 +399,59 @@ export const VoiceDictionaryManager: React.FC<VoiceDictionaryManagerProps> = ({
     setFormNotice(null);
   };
 
+  const handleAddBundleProduct = (productId: string) => {
+    setBundleItems(prev => {
+      const existing = prev.find(i => i.productId === productId);
+      if (existing) {
+        return prev.map(i =>
+          i.productId === productId ? { ...i, quantity: i.quantity + 1 } : i
+        );
+      }
+      return [...prev, { productId, quantity: 1 }];
+    });
+    setFormError(null);
+  };
+
+  const handleSetBundleProductQty = (productId: string, nextQty: number) => {
+    const clamped = Math.max(1, Math.round(nextQty));
+    setBundleItems(prev =>
+      prev.map(i => (i.productId === productId ? { ...i, quantity: clamped } : i))
+    );
+  };
+
+  const handleRemoveBundleProduct = (productId: string) => {
+    setBundleItems(prev => prev.filter(i => i.productId !== productId));
+  };
+
   const duplicateConflict = useMemo(() => {
     const norm = spokenPhrase.trim().toLowerCase();
     if (!norm) return null;
     const isRewriteType = targetType === 'phrase' || targetType === 'command';
+    const normalizeBundleSig = (items?: Array<{ productId: string; quantity: number }>) =>
+      (items || [])
+        .map(i => `${i.productId}:${Math.max(1, Math.round(Number(i.quantity) || 1))}`)
+        .sort()
+        .join('|');
+    const currentBundleSig = normalizeBundleSig(bundleItems);
     const sameSpoken = entries.filter(
       e => e.id !== editingId && e.spokenPhrase.trim().toLowerCase() === norm
     );
     if (sameSpoken.length === 0) return null;
-    const exactDup = sameSpoken.find(
-      e =>
-        e.targetType === targetType &&
-        (isRewriteType
-          ? (e.replacementText || '').trim().toLowerCase() === replacementText.trim().toLowerCase()
-          : e.targetId === targetId)
-    );
+    const exactDup = sameSpoken.find(e => {
+      if (e.targetType !== targetType) return false;
+      if (isRewriteType) {
+        return (
+          (e.replacementText || '').trim().toLowerCase() ===
+          replacementText.trim().toLowerCase()
+        );
+      }
+      if (targetType === 'bundle') {
+        return normalizeBundleSig(e.bundleItems) === currentBundleSig;
+      }
+      return e.targetId === targetId;
+    });
     return { sameSpoken, exactDup };
-  }, [spokenPhrase, targetType, targetId, replacementText, entries, editingId]);
+  }, [spokenPhrase, targetType, targetId, bundleItems, replacementText, entries, editingId]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -367,6 +465,14 @@ export const VoiceDictionaryManager: React.FC<VoiceDictionaryManagerProps> = ({
     }
 
     const isRewriteType = targetType === 'phrase' || targetType === 'command';
+    const cleanBundleItems =
+      targetType === 'bundle'
+        ? bundleItems.map(i => ({
+            productId: i.productId,
+            quantity: Math.max(1, Math.round(Number(i.quantity) || 1)),
+          }))
+        : [];
+
     if (isRewriteType) {
       if (!replacementText.trim()) {
         setFormError(
@@ -378,6 +484,11 @@ export const VoiceDictionaryManager: React.FC<VoiceDictionaryManagerProps> = ({
       }
       if (replacementText.trim().toLowerCase() === cleanPhrase.toLowerCase()) {
         setFormError('Replacement text cannot be identical to the spoken word or phrase.');
+        return;
+      }
+    } else if (targetType === 'bundle') {
+      if (cleanBundleItems.length === 0) {
+        setFormError('Add at least one product to this pack.');
         return;
       }
     } else if (!targetId) {
@@ -398,7 +509,8 @@ export const VoiceDictionaryManager: React.FC<VoiceDictionaryManagerProps> = ({
           updates: {
             spokenPhrase: cleanPhrase,
             targetType,
-            targetId: isRewriteType ? undefined : targetId,
+            targetId: isRewriteType || targetType === 'bundle' ? undefined : targetId,
+            bundleItems: targetType === 'bundle' ? cleanBundleItems : undefined,
             replacementText: isRewriteType ? replacementText.trim() : undefined,
             notes: notes.trim(),
           },
@@ -419,7 +531,8 @@ export const VoiceDictionaryManager: React.FC<VoiceDictionaryManagerProps> = ({
             id,
             spokenPhrase: cleanPhrase,
             targetType,
-            targetId: isRewriteType ? undefined : targetId,
+            targetId: isRewriteType || targetType === 'bundle' ? undefined : targetId,
+            bundleItems: targetType === 'bundle' ? cleanBundleItems : undefined,
             replacementText: isRewriteType ? replacementText.trim() : undefined,
             notes: notes.trim(),
             createdAt: new Date().toISOString(),
@@ -542,10 +655,11 @@ export const VoiceDictionaryManager: React.FC<VoiceDictionaryManagerProps> = ({
           <span className="block text-[11px] font-bold uppercase tracking-wider text-cool-gray-300">
             Matches To
           </span>
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
             {(
               [
                 { type: 'product' as VoiceDictionaryTargetType, label: 'Product', icon: Package },
+                { type: 'bundle' as VoiceDictionaryTargetType, label: 'Product Pack', icon: Layers },
                 { type: 'container' as VoiceDictionaryTargetType, label: 'Container', icon: Box },
                 { type: 'freezer' as VoiceDictionaryTargetType, label: 'Freezer', icon: Snowflake },
                 { type: 'command' as VoiceDictionaryTargetType, label: 'Command', icon: Terminal },
@@ -562,6 +676,7 @@ export const VoiceDictionaryManager: React.FC<VoiceDictionaryManagerProps> = ({
                     if (targetType !== item.type) {
                       setTargetType(item.type);
                       setTargetId('');
+                      setBundleItems([]);
                       setReplacementText('');
                       setTargetSearch('');
                       setFormError(null);
@@ -660,6 +775,166 @@ export const VoiceDictionaryManager: React.FC<VoiceDictionaryManagerProps> = ({
             <p className="text-[11px] text-cool-gray-400">
               Applies before command parsing, so speech-to-text quirks or shorthand words normalize cleanly.
             </p>
+          </div>
+        ) : targetType === 'bundle' ? (
+          <div className="space-y-3">
+            <p className="text-[11px] text-cool-gray-400">
+              Map one spoken pack phrase (e.g. &ldquo;broth mix pack&rdquo;) to multiple products and quantities. Saying &ldquo;remove 1 broth mix pack from display loose&rdquo; will expand to each item automatically.
+            </p>
+
+            {/* Selected Pack Items */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="block text-[11px] font-bold uppercase tracking-wider text-cool-gray-300">
+                  Pack Contents ({bundleItems.length} product{bundleItems.length === 1 ? '' : 's'})
+                </span>
+                {bundleItems.length > 0 && (
+                  <span className="text-[11px] text-fuchsia-300 font-semibold tabular-nums">
+                    {bundleItems.reduce((sum, i) => sum + i.quantity, 0)} total unit(s) per pack
+                  </span>
+                )}
+              </div>
+
+              {bundleItems.length === 0 ? (
+                <div className="rounded-lg bg-cool-gray-900/70 border border-dashed border-cool-gray-750 px-3 py-3 text-xs text-cool-gray-400">
+                  No products added yet. Pick products below to include in this pack.
+                </div>
+              ) : (
+                <div className="divide-y divide-cool-gray-800 rounded-lg border border-fuchsia-500/35 bg-cool-gray-900 overflow-hidden">
+                  {bundleItems.map(item => {
+                    const p = productMap.get(item.productId);
+                    const isMissing = !p || Boolean(p.isArchived);
+                    return (
+                      <div
+                        key={item.productId}
+                        className="px-3 py-2 flex items-center justify-between gap-2"
+                      >
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <span
+                              className={`text-xs sm:text-sm font-semibold truncate ${
+                                isMissing ? 'text-amber-300' : 'text-white'
+                              }`}
+                            >
+                              {p ? p.name : 'Deleted Product'}
+                            </span>
+                            {isMissing && (
+                              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-950/60 border border-amber-500/40 text-amber-300 shrink-0">
+                                {p?.isArchived ? 'Archived' : 'Missing'}
+                              </span>
+                            )}
+                          </div>
+                          {p && (
+                            <div className="text-[11px] text-cool-gray-400 truncate">
+                              {p.primaryCategory} / {p.subCategory}
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => handleSetBundleProductQty(item.productId, item.quantity - 1)}
+                            disabled={item.quantity <= 1}
+                            aria-label="Decrease pack item quantity"
+                            className="w-7 h-7 rounded-md bg-cool-gray-800 hover:bg-cool-gray-750 disabled:opacity-40 disabled:cursor-not-allowed border border-cool-gray-700 text-cool-gray-200 flex items-center justify-center cursor-pointer"
+                          >
+                            <Minus className="w-3 h-3" />
+                          </button>
+                          <span className="min-w-[26px] text-center text-xs font-bold text-white tabular-nums">
+                            {item.quantity}x
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleSetBundleProductQty(item.productId, item.quantity + 1)}
+                            aria-label="Increase pack item quantity"
+                            className="w-7 h-7 rounded-md bg-cool-gray-800 hover:bg-cool-gray-750 border border-cool-gray-700 text-cool-gray-200 flex items-center justify-center cursor-pointer"
+                          >
+                            <Plus className="w-3 h-3" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveBundleProduct(item.productId)}
+                            aria-label="Remove product from pack"
+                            className="w-7 h-7 ml-1 rounded-md bg-cool-gray-850 hover:bg-red-950/50 border border-cool-gray-750 hover:border-red-500/40 text-cool-gray-400 hover:text-red-300 flex items-center justify-center cursor-pointer"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Product Search & 1-Click Add */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <label
+                  htmlFor="vd-bundle-product-search"
+                  className="block text-[11px] font-bold uppercase tracking-wider text-cool-gray-300"
+                >
+                  Add Products to Pack
+                </label>
+                <span className="text-[11px] text-cool-gray-400">
+                  {filteredTargetOptions.length} active product{filteredTargetOptions.length === 1 ? '' : 's'}
+                </span>
+              </div>
+
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 text-cool-gray-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <input
+                  id="vd-bundle-product-search"
+                  type="text"
+                  value={targetSearch}
+                  onChange={e => setTargetSearch(e.target.value)}
+                  placeholder="Filter products to add to pack..."
+                  className="w-full rounded-lg bg-cool-gray-900 border border-cool-gray-750 focus:border-cyan-500 pl-8 pr-3 py-1.5 text-xs text-white placeholder:text-cool-gray-500"
+                />
+              </div>
+
+              <div className="max-h-56 overflow-y-auto divide-y divide-cool-gray-800 rounded-lg border border-cool-gray-750 bg-cool-gray-900">
+                {filteredTargetOptions.length === 0 ? (
+                  <div className="px-3 py-4 text-center text-xs text-cool-gray-400">
+                    No active products match &ldquo;{targetSearch}&rdquo;.
+                  </div>
+                ) : (
+                  filteredTargetOptions.map(opt => {
+                    const existing = bundleItems.find(i => i.productId === opt.id);
+                    return (
+                      <div
+                        key={opt.id}
+                        className="px-3 py-2 flex items-center justify-between gap-2 hover:bg-cool-gray-850 transition"
+                      >
+                        <div className="min-w-0">
+                          <div className="text-xs sm:text-sm font-medium text-white truncate">
+                            {opt.label}
+                          </div>
+                          {opt.subLabel && (
+                            <div className="text-[11px] text-cool-gray-400 truncate">
+                              {opt.subLabel}
+                            </div>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleAddBundleProduct(opt.id)}
+                          className={`px-2.5 py-1 rounded-md border text-xs font-bold flex items-center gap-1 shrink-0 transition cursor-pointer ${
+                            existing
+                              ? 'bg-fuchsia-950/60 hover:bg-fuchsia-900/60 text-fuchsia-200 border-fuchsia-500/40'
+                              : 'bg-cool-gray-800 hover:bg-cyan-600 text-cool-gray-200 hover:text-white border-cool-gray-700'
+                          }`}
+                        >
+                          <Plus className="w-3 h-3" />
+                          <span>{existing ? `Added (${existing.quantity}x) +1` : 'Add'}</span>
+                        </button>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
           </div>
         ) : (
           <div className="space-y-2">
@@ -792,6 +1067,7 @@ export const VoiceDictionaryManager: React.FC<VoiceDictionaryManagerProps> = ({
             [
               { id: 'all', label: 'All' },
               { id: 'product', label: 'Products' },
+              { id: 'bundle', label: 'Packs' },
               { id: 'container', label: 'Containers' },
               { id: 'freezer', label: 'Freezers' },
               { id: 'command', label: 'Commands' },
@@ -849,13 +1125,39 @@ export const VoiceDictionaryManager: React.FC<VoiceDictionaryManagerProps> = ({
                       >
                         {meta.shortLabel}
                       </span>
-                      <span
-                        className={`text-xs sm:text-sm font-semibold truncate ${
-                          target.missing ? 'text-amber-300' : 'text-cool-gray-100'
-                        }`}
-                      >
-                        {target.label}
-                      </span>
+                      {entry.targetType === 'bundle' && target.bundleParts ? (
+                        target.bundleParts.length === 0 ? (
+                          <span className="text-xs text-amber-300 font-semibold">
+                            No products configured
+                          </span>
+                        ) : (
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            {target.bundleParts.map(bp => (
+                              <span
+                                key={bp.productId}
+                                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md border text-xs font-semibold ${
+                                  bp.missing
+                                    ? 'bg-amber-950/50 border-amber-500/40 text-amber-300'
+                                    : 'bg-cool-gray-950 border-cool-gray-750 text-cool-gray-100'
+                                }`}
+                              >
+                                <span className="text-fuchsia-300 font-bold tabular-nums">
+                                  {bp.quantity}x
+                                </span>
+                                <span>{bp.name}</span>
+                              </span>
+                            ))}
+                          </div>
+                        )
+                      ) : (
+                        <span
+                          className={`text-xs sm:text-sm font-semibold truncate ${
+                            target.missing ? 'text-amber-300' : 'text-cool-gray-100'
+                          }`}
+                        >
+                          {target.label}
+                        </span>
+                      )}
                       {target.missing && (
                         <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-950/60 border border-amber-500/40 text-amber-300">
                           Inactive / Missing

@@ -1,7 +1,7 @@
 // Offsite spreadsheet view
 import React, { useState, useMemo, useEffect, useRef, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { Search, ChevronDown, ChevronRight, PackageOpen, ArrowRightCircle, Trash2, Edit3, X, Filter, Plus, PlusCircle, FileText, Flag, Tag, Download, Eye, EyeOff, AlertTriangle, RotateCcw } from 'lucide-react';
+import { Search, ChevronDown, ChevronRight, PackageOpen, ArrowRightCircle, Trash2, Edit3, X, Filter, Plus, PlusCircle, FileText, Flag, Tag, Eye, EyeOff, AlertTriangle, RotateCcw } from 'lucide-react';
 import { Tag as AppTag, CustomList, Action } from '../types';
 import { compareBoxLabels } from '../utils/boxSort';
 import { SearchableProductSelect } from '../components/SearchableProductSelect';
@@ -403,9 +403,9 @@ export const OffSiteSpreadsheet = ({
   visibleColumns,
   setVisibleColumns,
   activeOrderId,
-  onSelectActiveOrder
+  onSelectActiveOrder,
+  onRegisterExportActions
 }: any) => {
-  const [isExportDropdownOpen, setIsExportDropdownOpen] = useState(false);
 
   const [filterOnlySplitBoxes, setFilterOnlySplitBoxes] = useState<boolean>(() => {
     try {
@@ -670,6 +670,28 @@ export const OffSiteSpreadsheet = ({
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
   };
+
+  const exportActionsRef = useRef({
+    exportFiltered: () => {},
+    exportFull: () => {},
+    filteredCount: 0,
+    totalCount: 0,
+  });
+
+  useEffect(() => {
+    if (!onRegisterExportActions) return;
+    onRegisterExportActions({
+      exportFiltered: () => exportActionsRef.current.exportFiltered(),
+      exportFull: () => exportActionsRef.current.exportFull(),
+      getCounts: () => ({
+        filteredCount: exportActionsRef.current.filteredCount,
+        totalCount: exportActionsRef.current.totalCount,
+      }),
+    });
+    return () => {
+      onRegisterExportActions(null);
+    };
+  }, [onRegisterExportActions]);
 
   const updateMoveTargetGroup = async (items: any[], target: string) => {
     if (!activeOrder || activeOrder.status !== 'planning') return;
@@ -2326,6 +2348,13 @@ export const OffSiteSpreadsheet = ({
   }, [entries, searchTerm, filterCuts, filterPrimaryCategories, filterSubCategories, filterPallets, filterLocations, filterBoxes, filterSerials, filterLots, filterPackDates, filterMoveTo, filterTags, filterLists, activeOrder, breakdownSearch, breakdownCategory, products, viewOriginalNames, state.customLists, filterOnlySplitBoxes, splitBoxIds, filterOnlyConflicts, openOrdersMovementData]);
 
   // Propagate filtered entries up to the parent component for exports
+  exportActionsRef.current = {
+    exportFiltered: () => downloadCSVForEntries(filteredEntries, 'offsite_filtered_export'),
+    exportFull: () => downloadCSVForEntries(mappedRawEntries, 'offsite_full_export'),
+    filteredCount: filteredEntries.length,
+    totalCount: mappedRawEntries.length,
+  };
+
   useEffect(() => {
     if (onFilteredEntriesChange) {
       onFilteredEntriesChange(filteredEntries);
@@ -2612,80 +2641,16 @@ export const OffSiteSpreadsheet = ({
 
   return (
     <div className="space-y-4" id="offsite-spreadsheet-workspace">
-      {/* Click-outside backdrop to dismiss column filters, flag selectors, & export dropdown */}
-      {(openFilter || openFlagSelectorId || isExportDropdownOpen) && (
+      {/* Click-outside backdrop to dismiss column filters & flag selectors */}
+      {(openFilter || openFlagSelectorId) && (
         <div 
           className="fixed inset-0 z-45 bg-transparent" 
           onClick={() => {
             setOpenFilter(null);
             setOpenFlagSelectorId(null);
-            setIsExportDropdownOpen(false);
           }} 
         />
       )}
-
-      {/* Worksheet Header & Export Action */}
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center bg-cool-gray-800 p-4 rounded-xl border border-cool-gray-750 gap-4 shadow-xs">
-        <div>
-          <h3 className="text-base font-bold text-white flex items-center gap-2">
-            <span className="text-cyan-400">📋</span>
-            Unified Worksheet Spreadsheet
-          </h3>
-          <p className="text-xs text-cool-gray-400 mt-0.5">
-            View, edit, filter, and export the entire off-site storage database.
-          </p>
-        </div>
-        
-        {/* Export Dropdown Anchor */}
-        <div className="relative w-full sm:w-auto">
-          <button
-            onClick={() => setIsExportDropdownOpen(!isExportDropdownOpen)}
-            className="w-full sm:w-auto bg-cyan-600 hover:bg-cyan-500 text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all shadow-md cursor-pointer select-none"
-          >
-            <Download size={14} />
-            <span>Export Spreadsheet</span>
-            <ChevronDown size={12} className={`transition-transform ${isExportDropdownOpen ? 'rotate-180' : ''}`} />
-          </button>
-          
-          {isExportDropdownOpen && (
-            <div className="absolute right-0 mt-2 w-72 bg-cool-gray-900 border border-cool-gray-700 rounded-xl shadow-2xl py-2 z-50 animate-scale-up text-xs">
-              <div className="px-3 py-1.5 text-[10px] font-bold text-cool-gray-500 uppercase tracking-wider border-b border-cool-gray-800/80 mb-1">
-                Select Export Type
-              </div>
-              
-              <button
-                onClick={() => {
-                  setIsExportDropdownOpen(false);
-                  downloadCSVForEntries(filteredEntries, 'offsite_filtered_export');
-                }}
-                className="flex flex-col w-full px-4 py-2.5 text-left transition hover:bg-cyan-950/40 text-cool-gray-200 hover:text-white cursor-pointer select-none group border-b border-cool-gray-850"
-              >
-                <span className="font-bold flex items-center gap-1.5 text-cyan-400">
-                  <span>🎯</span> Export Active Filtered View
-                </span>
-                <span className="text-[10px] text-cool-gray-400 mt-1 pl-5">
-                  Save {filteredEntries.length} items matching your active search, list, tag, or column filters.
-                </span>
-              </button>
-              
-              <button
-                onClick={() => {
-                  setIsExportDropdownOpen(false);
-                  downloadCSVForEntries(mappedRawEntries, 'offsite_full_export');
-                }}
-                className="flex flex-col w-full px-4 py-2.5 text-left transition hover:bg-cyan-950/40 text-cool-gray-200 hover:text-white cursor-pointer select-none group"
-              >
-                <span className="font-bold flex items-center gap-1.5 text-emerald-400">
-                  <span>🌐</span> Export Entire Database
-                </span>
-                <span className="text-[10px] text-cool-gray-400 mt-1 pl-5">
-                  Save all {mappedRawEntries.length} active off-site entries (excluding archived and historical items).
-                </span>
-              </button>
-            </div>
-          )}
-        </div>
-      </div>
 
 
 

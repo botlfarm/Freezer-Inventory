@@ -1,5 +1,5 @@
 // History retention utilities
-import { HistoryEntry, MeatCut, OffSiteEntry, Container, Freezer, Product, MovementOrder, ButcherOrder } from '../types';
+import { HistoryEntry, MeatCut, OffSiteEntry, Container, Freezer, Product, MovementOrder, ButcherOrder, AppPallet } from '../types';
 
 export interface HistoryRetentionResult {
   toKeep: HistoryEntry[];
@@ -32,6 +32,7 @@ export function calculateHistoryRetention(
     products?: Product[];
     movementOrders?: MovementOrder[];
     butcherOrders?: ButcherOrder[];
+    pallets?: AppPallet[];
   },
   olderThanDays: number
 ): HistoryRetentionResult {
@@ -43,6 +44,8 @@ export function calculateHistoryRetention(
   const offSiteEntries = state.offSiteEntries || [];
   const containers = state.containers || [];
   const movementOrders = state.movementOrders || [];
+  const butcherOrders = state.butcherOrders || [];
+  const pallets = state.pallets || [];
   const historyList = history || [];
 
   // 1. Identify packages and lots currently in the system (Active physical custody)
@@ -50,6 +53,9 @@ export function calculateHistoryRetention(
   const activeItemIds = new Set<string>();
   const activeLots = new Set<string>();
   const activeContainerIds = new Set<string>();
+  const activeButcherOrderIds = new Set<string>();
+  const activePalletNames = new Set<string>();
+  const activeMovementOrderIds = new Set<string>();
 
   for (let i = 0; i < meatCuts.length; i++) {
     const cut = meatCuts[i];
@@ -79,6 +85,13 @@ export function calculateHistoryRetention(
       if (entry.lot && entry.lot.trim()) {
         activeLots.add(entry.lot.trim().toLowerCase());
       }
+      if (entry.orderId && entry.orderId.trim()) {
+        activeButcherOrderIds.add(entry.orderId.trim().toLowerCase());
+      }
+      const pName = (entry.currentLocation || entry.pallet || '').trim().toLowerCase();
+      if (pName) {
+        activePalletNames.add(pName);
+      }
     }
   }
 
@@ -86,6 +99,46 @@ export function calculateHistoryRetention(
     const c = containers[i];
     if (!c.isArchived) {
       activeContainerIds.add(c.id);
+    }
+  }
+
+  for (let i = 0; i < pallets.length; i++) {
+    const p = pallets[i];
+    if (!p.isArchived && p.id) {
+      activePalletNames.add(p.id.trim().toLowerCase());
+    }
+  }
+
+  // Track last activity per ButcherOrder and MovementOrder
+  const orderLastSeen = new Map<string, number>();
+  activeButcherOrderIds.forEach(oid => orderLastSeen.set(oid, Infinity));
+
+  for (let i = 0; i < butcherOrders.length; i++) {
+    const bo = butcherOrders[i];
+    if (!bo.id) continue;
+    const oidLower = bo.id.toLowerCase();
+    if (orderLastSeen.get(oidLower) === Infinity) continue;
+    const boTime = Math.max(
+      bo.createdAt || 0,
+      bo.pickupDate ? new Date(bo.pickupDate).getTime() || 0 : 0
+    );
+    if (boTime > 0) {
+      orderLastSeen.set(oidLower, Math.max(orderLastSeen.get(oidLower) || 0, boTime));
+    }
+  }
+
+  for (let i = 0; i < movementOrders.length; i++) {
+    const mo = movementOrders[i];
+    if (!mo.id) continue;
+    const oidLower = mo.id.toLowerCase();
+    if (mo.status === 'planning' || mo.status === 'finalized') {
+      activeMovementOrderIds.add(oidLower);
+      orderLastSeen.set(oidLower, Infinity);
+    } else {
+      const moTime = new Date(mo.executedAt || mo.date || '').getTime();
+      if (!isNaN(moTime)) {
+        orderLastSeen.set(oidLower, Math.max(orderLastSeen.get(oidLower) || 0, moTime));
+      }
     }
   }
 
@@ -251,8 +304,18 @@ export function calculateHistoryRetention(
     if (isNaN(hTime)) continue;
 
     if (targetLower) {
-      if (packageLastSeen.get(`id:${targetLower}`) !== Infinity) {
+      const isNonPackageEntity =
+        orderLastSeen.has(targetLower) ||
+        activeButcherOrderIds.has(targetLower) ||
+        activeMovementOrderIds.has(targetLower) ||
+        activePalletNames.has(targetLower) ||
+        activeContainerIds.has(h.targetId);
+
+      if (!isNonPackageEntity && packageLastSeen.get(`id:${targetLower}`) !== Infinity) {
         packageLastSeen.set(`id:${targetLower}`, Math.max(packageLastSeen.get(`id:${targetLower}`) || 0, hTime));
+      }
+      if (orderLastSeen.has(targetLower) && orderLastSeen.get(targetLower) !== Infinity) {
+        orderLastSeen.set(targetLower, Math.max(orderLastSeen.get(targetLower) || 0, hTime));
       }
       if (allKnownSerials.has(targetLower)) {
         if (packageLastSeen.get(`serial:${targetLower}`) !== Infinity) {
@@ -291,17 +354,62 @@ export function calculateHistoryRetention(
 
     let packageLastSeenTime: number | null = null;
     let lotLastSeenTime: number | null = null;
-    let isTiedToActiveContainer = false;
+    let orderLastSeenTime: number | null = null;
+    let isTiedToActiveContainerOrPallet = false;
 
     if (h.targetId) {
+      const isNonPackageTarget =
+        orderLastSeen.has(targetLower) ||
+        activeButcherOrderIds.has(targetLower) ||
+        activeMovementOrderIds.has(targetLower) ||
+        activePalletNames.has(targetLower) ||
+        activeContainerIds.has(h.targetId);
+
       if (activeContainerIds.has(h.targetId)) {
-        isTiedToActiveContainer = true;
+        isTiedToActiveContainerOrPallet = true;
       }
-      if (packageLastSeen.has(`id:${targetLower}`)) {
+      if (activePalletNames.has(targetLower)) {
+        isTiedToActiveContainerOrPallet = true;
+      }
+      if (!isNonPackageTarget && packageLastSeen.has(`id:${targetLower}`)) {
         packageLastSeenTime = Math.max(packageLastSeenTime ?? 0, packageLastSeen.get(`id:${targetLower}`)!);
       }
       if (packageLastSeen.has(`serial:${targetLower}`)) {
         packageLastSeenTime = Math.max(packageLastSeenTime ?? 0, packageLastSeen.get(`serial:${targetLower}`)!);
+      }
+      if (orderLastSeen.has(targetLower)) {
+        orderLastSeenTime = Math.max(orderLastSeenTime ?? 0, orderLastSeen.get(targetLower)!);
+      }
+    }
+
+    if (h.details) {
+      if (h.details.palletName && activePalletNames.has(h.details.palletName.trim().toLowerCase())) {
+        isTiedToActiveContainerOrPallet = true;
+      }
+      if (h.details.relatedOrderId) {
+        const relLower = h.details.relatedOrderId.trim().toLowerCase();
+        if (activeButcherOrderIds.has(relLower) || activeMovementOrderIds.has(relLower)) {
+          orderLastSeenTime = Infinity;
+        } else if (orderLastSeen.has(relLower)) {
+          orderLastSeenTime = Math.max(orderLastSeenTime ?? 0, orderLastSeen.get(relLower)!);
+        }
+      }
+      if (Array.isArray(h.details.items)) {
+        for (let d = 0; d < h.details.items.length; d++) {
+          const dItem = h.details.items[d];
+          if (dItem.id) {
+            const dIdKey = `id:${dItem.id.toLowerCase()}`;
+            if (packageLastSeen.has(dIdKey)) {
+              packageLastSeenTime = Math.max(packageLastSeenTime ?? 0, packageLastSeen.get(dIdKey)!);
+            }
+          }
+          if (dItem.serial) {
+            const dSerialKey = `serial:${dItem.serial.trim().toLowerCase()}`;
+            if (packageLastSeen.has(dSerialKey)) {
+              packageLastSeenTime = Math.max(packageLastSeenTime ?? 0, packageLastSeen.get(dSerialKey)!);
+            }
+          }
+        }
       }
     }
 
@@ -351,13 +459,29 @@ export function calculateHistoryRetention(
       continue;
     }
 
-    // C. If tied to an active container currently in use:
-    if (isTiedToActiveContainer) {
+    // C. If tied to a butcher order or movement order:
+    if (orderLastSeenTime !== null) {
+      if (orderLastSeenTime === Infinity) {
+        protectedActiveCount++;
+        toKeep.push(h);
+        continue;
+      }
+      const outOfHandsDuration = now - orderLastSeenTime;
+      if (outOfHandsDuration < retentionMs) {
+        toKeep.push(h);
+        continue;
+      }
+      toPurge.push(h);
+      continue;
+    }
+
+    // D. If tied to an active container or active pallet currently in use:
+    if (isTiedToActiveContainerOrPallet) {
       toKeep.push(h);
       continue;
     }
 
-    // D. General/system maintenance entry not tied to a package:
+    // E. General/system maintenance entry not tied to a package:
     if (hTime < cutoffTime) {
       toPurge.push(h);
     } else {

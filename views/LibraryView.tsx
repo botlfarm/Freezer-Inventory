@@ -24,6 +24,7 @@ import { SearchableProductSelect } from "../components/SearchableProductSelect";
 import { PWAInstallButton } from "../components/PWAInstallButton";
 import { UsersAndDevicesPanel } from "../components/UsersAndDevicesPanel";
 import { VoiceDictionaryManager } from "../components/VoiceDictionaryManager";
+import { ButcherSettingsPanel } from "../components/ButcherSettingsPanel";
 import { ManagementForms, ManageFreezers } from "../components/ManagementForms";
 import { CatalogSearchFilterBar } from "../components/CatalogSearchFilterBar";
 import { getTagActionIcon } from "../utils/tagRestockRules";
@@ -58,6 +59,7 @@ import {
   Send,
   Save,
   RefreshCw,
+  Scale,
   History,
   Table,
   Sliders,
@@ -458,6 +460,8 @@ const LibraryView: React.FC<{
         handleSwitchTab("users_devices");
       } else if (e?.detail === "offsite_settings") {
         handleSwitchTab("offsite_settings");
+      } else if (e?.detail === "butcher_settings") {
+        handleSwitchTab("butcher_settings");
       } else if (e?.detail === "general") {
         handleSwitchTab("settings");
       }
@@ -3443,6 +3447,9 @@ const LibraryView: React.FC<{
           />
         );
       }
+      case "butcher_settings": {
+        return <ButcherSettingsPanel state={state} dispatch={dispatch} />;
+      }
       case "settings": {
         if (!authLoaded) {
           return (
@@ -4456,6 +4463,7 @@ const LibraryView: React.FC<{
       case 'locations': return <MapPin className="w-4 h-4 shrink-0" />;
       case 'photos': return <Images className="w-4 h-4 shrink-0" />;
       case 'offsite_settings': return <Truck className="w-4 h-4 shrink-0" />;
+      case 'butcher_settings': return <Scale className="w-4 h-4 shrink-0" />;
       case 'voice_dictionary': return <Mic className="w-4 h-4 shrink-0" />;
       case 'import': return <Database className="w-4 h-4 shrink-0" />;
       case 'users_devices': return <Users className="w-4 h-4 shrink-0" />;

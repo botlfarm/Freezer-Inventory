@@ -4,7 +4,16 @@ import { InventoryState, Action, Product, Container } from '../types';
 import { getApiUrl, resolveImageUrl } from '../hooks/apiUrl';
 import { authFetch } from '../utils/clientDevice';
 import { saveOfflineImage } from '../utils/offlineStorage';
-import { PhotoAttachment, PhotoAttachmentType } from '../utils/photoManager';
+import {
+  buildConnectableObjects,
+  ConnectableObject,
+  ConnectPhotoStatusFilter,
+  ConnectTargetTypeFilter,
+  doesImageUrlMatchFilename,
+  filterConnectableObjects,
+  PhotoAttachment,
+  PhotoAttachmentType,
+} from '../utils/photoManager';
 import { 
   Image as ImageIcon, Trash2, Search, Filter, ArrowUpDown, Sparkles, 
   Upload, Check, Plus, AlertTriangle, Link, Unlink, RefreshCw, X, ChevronRight, CheckCircle2, Box, Package, Camera, Layers
@@ -55,9 +64,17 @@ export function PhotoManagerView({
   const [missingSortBy, setMissingSortBy] = useState<'name_asc' | 'name_desc' | 'type_first'>('name_asc');
   const [showMissingFilters, setShowMissingFilters] = useState(false);
 
-  // Assign photo modal or inline state
+  // Assign photo modal or inline state (from Missing Photos -> pick existing/upload)
   const [assigningElement, setAssigningElement] = useState<{ id: string; name: string; type: PhotoAttachmentType } | null>(null);
   const [showExistingSelector, setShowExistingSelector] = useState(false);
+
+  // Connect selected photo modal state (from Active Photo Files -> connect to item/container)
+  const [connectingPhotoFilename, setConnectingPhotoFilename] = useState<string | null>(null);
+  const [connectSearch, setConnectSearch] = useState('');
+  const [connectTypeFilter, setConnectTypeFilter] = useState<ConnectTargetTypeFilter>('all');
+  const [connectPhotoFilter, setConnectPhotoFilter] = useState<ConnectPhotoStatusFilter>('all');
+  const [connectBusyKey, setConnectBusyKey] = useState<string | null>(null);
+  const [connectFeedback, setConnectFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   
   // Status message for optimization or deletes
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
@@ -201,6 +218,118 @@ export function PhotoManagerView({
 
     return result;
   }, [photos, searchTerm, filterType, sortBy]);
+
+  const connectingPhoto = useMemo(() => {
+    if (!connectingPhotoFilename) return null;
+    return photos.find((p) => p.filename === connectingPhotoFilename) || null;
+  }, [photos, connectingPhotoFilename]);
+
+  const allConnectableObjects = useMemo(() => buildConnectableObjects(state), [state]);
+
+  const connectTypeFilteredObjects = useMemo(
+    () =>
+      filterConnectableObjects(allConnectableObjects, {
+        search: connectSearch,
+        typeFilter: connectTypeFilter,
+        photoFilter: 'all',
+      }),
+    [allConnectableObjects, connectSearch, connectTypeFilter]
+  );
+
+  const connectPhotoStatusCounts = useMemo(() => {
+    let withPhoto = 0;
+    let withoutPhoto = 0;
+    connectTypeFilteredObjects.forEach((obj) => {
+      if (obj.imageUrl) withPhoto++;
+      else withoutPhoto++;
+    });
+    return {
+      all: connectTypeFilteredObjects.length,
+      withPhoto,
+      withoutPhoto,
+    };
+  }, [connectTypeFilteredObjects]);
+
+  const filteredConnectableObjects = useMemo(
+    () =>
+      filterConnectableObjects(allConnectableObjects, {
+        search: connectSearch,
+        typeFilter: connectTypeFilter,
+        photoFilter: connectPhotoFilter,
+      }),
+    [allConnectableObjects, connectSearch, connectTypeFilter, connectPhotoFilter]
+  );
+
+  const openConnectPhotoModal = (photo: PhotoItem) => {
+    setConnectingPhotoFilename(photo.filename);
+    setConnectSearch('');
+    setConnectTypeFilter('all');
+    setConnectPhotoFilter('all');
+    setConnectFeedback(null);
+  };
+
+  const closeConnectPhotoModal = () => {
+    setConnectingPhotoFilename(null);
+    setConnectBusyKey(null);
+    setConnectFeedback(null);
+  };
+
+  const handleConnectPhotoToTarget = async (
+    target: ConnectableObject,
+    mode: 'connect' | 'unlink'
+  ) => {
+    if (!connectingPhoto) return;
+    const key = `${target.type}-${target.id}`;
+    setConnectBusyKey(key);
+    setConnectFeedback(null);
+
+    try {
+      const token = localStorage.getItem('freezerToken');
+      const res = await authFetch(getApiUrl('api/photos/assign'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          imageUrl: mode === 'connect' ? connectingPhoto.url : '',
+          targetId: target.id,
+          targetType: target.type,
+        }),
+      });
+
+      if (res.ok) {
+        await refreshAfterPhotoMutation();
+        const typeLabel =
+          target.type === 'product'
+            ? 'item'
+            : target.type === 'container_template'
+              ? 'container template'
+              : 'container';
+        setConnectFeedback({
+          type: 'success',
+          text:
+            mode === 'connect'
+              ? `Connected photo to ${typeLabel} "${target.name}".`
+              : `Unlinked photo from ${typeLabel} "${target.name}".`,
+        });
+      } else {
+        let errText = mode === 'connect' ? 'Failed to connect photo.' : 'Failed to unlink photo.';
+        try {
+          const data = await res.json();
+          if (data?.error) errText = data.error;
+        } catch {}
+        setConnectFeedback({ type: 'error', text: errText });
+      }
+    } catch (err: any) {
+      setConnectFeedback({
+        type: 'error',
+        text: `Error updating photo link: ${err?.message || 'Network error'}`,
+      });
+    } finally {
+      setConnectBusyKey(null);
+    }
+  };
 
   // Elements missing photos
   const elementsMissingPhotos = useMemo(() => {
@@ -786,7 +915,11 @@ export function PhotoManagerView({
                     </button>
 
                     {/* Image visual wrapper */}
-                    <div className="relative aspect-video bg-cool-gray-950 overflow-hidden flex items-center justify-center border-b border-cool-gray-800">
+                    <div
+                      onClick={() => openConnectPhotoModal(photo)}
+                      className="relative aspect-video bg-cool-gray-950 overflow-hidden flex items-center justify-center border-b border-cool-gray-800 cursor-pointer"
+                      title="Click to connect this photo to an item or container"
+                    >
                       <img
                         src={resolveImageUrl(photo.url)}
                         alt={photo.filename}
@@ -821,7 +954,7 @@ export function PhotoManagerView({
                       </div>
 
                       {/* Attached elements listing drawer */}
-                      <div className="space-y-1.5 border-t border-cool-gray-800/80 pt-2 flex-grow flex flex-col justify-end">
+                      <div className="space-y-2 border-t border-cool-gray-800/80 pt-2 flex-grow flex flex-col justify-end">
                         {isUnattached ? (
                           <p className="text-[10px] text-cool-gray-500 italic leading-snug">
                             This image is unassigned. It is taking up space without being referenced by any products, container templates, or custom containers.
@@ -861,6 +994,15 @@ export function PhotoManagerView({
                             ))}
                           </div>
                         )}
+
+                        <button
+                          type="button"
+                          onClick={() => openConnectPhotoModal(photo)}
+                          className="w-full py-1.5 px-2.5 rounded-lg border border-cool-gray-700 hover:border-cyan-500/70 bg-cool-gray-950/80 hover:bg-cyan-950/30 text-cool-gray-200 hover:text-cyan-300 text-[11px] font-bold transition flex items-center justify-center gap-1.5 cursor-pointer"
+                        >
+                          <Link className="w-3 h-3" />
+                          <span>Connect to Item / Container</span>
+                        </button>
                       </div>
 
                     </div>
@@ -1115,6 +1257,287 @@ export function PhotoManagerView({
               </button>
             </div>
 
+          </div>
+        </div>
+      )}
+
+      {/* CONNECT PHOTO TO ITEM OR CONTAINER MODAL */}
+      {connectingPhoto && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs font-sans animate-fadeIn"
+          onClick={closeConnectPhotoModal}
+        >
+          <div
+            className="w-full max-w-3xl p-5 sm:p-6 bg-cool-gray-800 border border-cool-gray-750 rounded-xl shadow-2xl animate-scaleUp max-h-[88vh] flex flex-col gap-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="flex justify-between items-start gap-3 pb-3.5 border-b border-cool-gray-700/80 shrink-0">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-16 h-12 rounded-lg overflow-hidden bg-cool-gray-950 border border-cool-gray-700 shrink-0">
+                  <img
+                    src={resolveImageUrl(connectingPhoto.url)}
+                    alt={connectingPhoto.filename}
+                    className="w-full h-full object-cover"
+                    referrerPolicy="no-referrer"
+                  />
+                </div>
+                <div className="min-w-0">
+                  <h4 className="text-sm font-extrabold uppercase tracking-wider text-cyan-400 flex items-center gap-1.5">
+                    <Link className="w-4 h-4 shrink-0" />
+                    <span>Connect Photo to Item or Container</span>
+                  </h4>
+                  <p className="text-[11px] text-cool-gray-300 font-mono truncate mt-0.5" title={connectingPhoto.filename}>
+                    {connectingPhoto.filename}
+                  </p>
+                  <p className="text-[10px] text-cool-gray-400 mt-0.5">
+                    {formatSize(connectingPhoto.size)} · Currently attached to {connectingPhoto.attachments.length} object{connectingPhoto.attachments.length === 1 ? '' : 's'}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={closeConnectPhotoModal}
+                className="text-cool-gray-450 hover:text-white text-sm p-1 transition cursor-pointer shrink-0"
+                aria-label="Close"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Feedback Banner */}
+            {connectFeedback && (
+              <div
+                className={`p-3 rounded-lg border text-xs flex items-center gap-2 shrink-0 ${
+                  connectFeedback.type === 'success'
+                    ? 'bg-emerald-950/40 border-emerald-800 text-emerald-200'
+                    : 'bg-rose-950/40 border-rose-900 text-rose-200'
+                }`}
+              >
+                {connectFeedback.type === 'success' ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                ) : (
+                  <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                )}
+                <span className="font-semibold">{connectFeedback.text}</span>
+              </div>
+            )}
+
+            {/* Search & Filters */}
+            <div className="space-y-3 shrink-0">
+              <div className="relative">
+                <Search className="w-4 h-4 text-cool-gray-400 absolute left-3 top-2.5" />
+                <input
+                  type="text"
+                  value={connectSearch}
+                  onChange={(e) => setConnectSearch(e.target.value)}
+                  placeholder="Search items, container templates, or containers by name..."
+                  className="w-full pl-9 pr-8 py-2 bg-cool-gray-900 border border-cool-gray-700 rounded-lg text-xs text-white placeholder-cool-gray-400 focus:outline-none focus:border-cyan-500"
+                />
+                {connectSearch && (
+                  <button
+                    type="button"
+                    onClick={() => setConnectSearch('')}
+                    className="absolute right-2.5 top-2.5 text-cool-gray-400 hover:text-white cursor-pointer"
+                    aria-label="Clear search"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                {/* Object Type Filter */}
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-cool-gray-400 uppercase tracking-wider block">
+                    Object Type
+                  </label>
+                  <div className="grid grid-cols-4 gap-1 p-1 bg-cool-gray-900 border border-cool-gray-750 rounded-lg">
+                    {(
+                      [
+                        { id: 'all', label: 'All' },
+                        { id: 'product', label: 'Items' },
+                        { id: 'container', label: 'Containers' },
+                        { id: 'container_template', label: 'Templates' },
+                      ] as const
+                    ).map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => setConnectTypeFilter(opt.id)}
+                        className={`px-2 py-1.5 text-[11px] font-bold rounded-md transition cursor-pointer truncate ${
+                          connectTypeFilter === opt.id
+                            ? 'bg-cyan-600 text-white shadow'
+                            : 'text-cool-gray-400 hover:text-white hover:bg-cool-gray-850'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Photo Status Filter */}
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-cool-gray-400 uppercase tracking-wider block">
+                    Photo Status
+                  </label>
+                  <div className="grid grid-cols-3 gap-1 p-1 bg-cool-gray-900 border border-cool-gray-750 rounded-lg">
+                    {(
+                      [
+                        { id: 'all', label: `All (${connectPhotoStatusCounts.all})` },
+                        { id: 'without_photo', label: `Without (${connectPhotoStatusCounts.withoutPhoto})` },
+                        { id: 'with_photo', label: `With Photo (${connectPhotoStatusCounts.withPhoto})` },
+                      ] as const
+                    ).map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => setConnectPhotoFilter(opt.id)}
+                        className={`px-2 py-1.5 text-[11px] font-bold rounded-md transition cursor-pointer truncate ${
+                          connectPhotoFilter === opt.id
+                            ? 'bg-cyan-600 text-white shadow'
+                            : 'text-cool-gray-400 hover:text-white hover:bg-cool-gray-850'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Matching Objects List */}
+            <div className="flex-1 min-h-0 overflow-y-auto space-y-2 pr-1">
+              {filteredConnectableObjects.length === 0 ? (
+                <div className="py-10 px-4 text-center bg-cool-gray-900/50 border border-cool-gray-750 rounded-lg">
+                  <ImageIcon className="w-9 h-9 text-cool-gray-600 mx-auto mb-2" />
+                  <p className="text-xs font-bold text-cool-gray-300">No items or containers match these filters.</p>
+                  <p className="text-[11px] text-cool-gray-500 mt-1">Try adjusting your search or photo status filter.</p>
+                </div>
+              ) : (
+                filteredConnectableObjects.map((obj) => {
+                  const objKey = `${obj.type}-${obj.id}`;
+                  const isBusy = connectBusyKey === objKey;
+                  const isAlreadyConnected = doesImageUrlMatchFilename(obj.imageUrl, connectingPhoto.filename);
+                  const hasOtherPhoto = !!obj.imageUrl && !isAlreadyConnected;
+
+                  return (
+                    <div
+                      key={objKey}
+                      className={`p-3 rounded-xl border flex items-center justify-between gap-3 transition ${
+                        isAlreadyConnected
+                          ? 'bg-emerald-950/20 border-emerald-700/60'
+                          : 'bg-cool-gray-900/70 border-cool-gray-750 hover:border-cool-gray-650'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="w-11 h-11 rounded-lg overflow-hidden bg-cool-gray-950 border border-cool-gray-800 flex items-center justify-center shrink-0">
+                          {obj.imageUrl ? (
+                            <img
+                              src={resolveImageUrl(obj.imageUrl)}
+                              alt={obj.name}
+                              className="w-full h-full object-cover"
+                              referrerPolicy="no-referrer"
+                            />
+                          ) : obj.type === 'product' ? (
+                            <Package className="w-5 h-5 text-emerald-400" />
+                          ) : obj.type === 'container_template' ? (
+                            <Layers className="w-5 h-5 text-purple-400" />
+                          ) : (
+                            <Box className="w-5 h-5 text-cyan-400" />
+                          )}
+                        </div>
+
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <p className="text-xs font-bold text-cool-gray-100 truncate">
+                              {obj.name}
+                            </p>
+                            <span
+                              className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border shrink-0 ${
+                                obj.type === 'product'
+                                  ? 'bg-emerald-950/60 text-emerald-300 border-emerald-700/40'
+                                  : obj.type === 'container_template'
+                                    ? 'bg-purple-950/60 text-purple-300 border-purple-700/40'
+                                    : 'bg-cyan-950/60 text-cyan-300 border-cyan-700/40'
+                              }`}
+                            >
+                              {obj.type === 'product'
+                                ? 'Item'
+                                : obj.type === 'container_template'
+                                  ? 'Template'
+                                  : 'Container'}
+                            </span>
+                            {obj.isArchived && (
+                              <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-cool-gray-800 text-cool-gray-400 border border-cool-gray-700 shrink-0">
+                                Archived
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[11px] text-cool-gray-400 truncate mt-0.5">
+                            {obj.details || (obj.type === 'product' ? 'Product' : 'Container')}
+                            {' · '}
+                            {isAlreadyConnected ? (
+                              <span className="text-emerald-400 font-semibold">Connected to this photo</span>
+                            ) : hasOtherPhoto ? (
+                              <span className="text-amber-300">Has existing photo</span>
+                            ) : (
+                              <span className="text-cool-gray-500">No photo</span>
+                            )}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="shrink-0 flex items-center gap-2">
+                        {isAlreadyConnected ? (
+                          <button
+                            type="button"
+                            disabled={isBusy}
+                            onClick={() => handleConnectPhotoToTarget(obj, 'unlink')}
+                            className="px-3 py-1.5 rounded-lg border border-rose-700/60 bg-rose-950/30 hover:bg-rose-950/60 text-rose-300 text-xs font-bold transition flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                          >
+                            <Unlink className="w-3.5 h-3.5" />
+                            <span>{isBusy ? 'Unlinking...' : 'Unlink'}</span>
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={isBusy}
+                            onClick={() => handleConnectPhotoToTarget(obj, 'connect')}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-extrabold transition flex items-center gap-1 cursor-pointer disabled:opacity-50 ${
+                              hasOtherPhoto
+                                ? 'border border-amber-600/60 bg-amber-950/40 hover:bg-amber-900/60 text-amber-200'
+                                : 'bg-cyan-600 hover:bg-cyan-500 text-white shadow'
+                            }`}
+                          >
+                            <Link className="w-3.5 h-3.5" />
+                            <span>
+                              {isBusy ? 'Saving...' : hasOtherPhoto ? 'Replace Photo' : 'Connect'}
+                            </span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="flex items-center justify-between pt-3 border-t border-cool-gray-700/80 shrink-0 text-xs text-cool-gray-400">
+              <span>
+                Showing {filteredConnectableObjects.length} of {allConnectableObjects.length} objects
+              </span>
+              <button
+                type="button"
+                onClick={closeConnectPhotoModal}
+                className="px-4 py-1.5 bg-cool-gray-700 hover:bg-cool-gray-650 text-white rounded-lg text-xs font-semibold transition cursor-pointer"
+              >
+                Done
+              </button>
+            </div>
           </div>
         </div>
       )}

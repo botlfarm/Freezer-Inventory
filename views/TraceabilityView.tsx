@@ -29,14 +29,14 @@ import {
   MovementOrder, 
   MovementItem,
   MovementDestination,
-  Product, 
-  Container, 
-  Freezer, 
-  HistoryEntry, 
-  AppLocation, 
-  Tag, 
+  Product,
+  HistoryEntry,
+  AppLocation,
+  Tag,
+  Container,
+  Freezer,
   MeatCut,
-  View 
+  View
 } from '../types';
 
 interface TraceabilityViewProps {
@@ -146,8 +146,8 @@ export interface BuiltTraceIndex {
 
 /**
  * High-performance O(N) traceability index builder.
- * Pre-indexes products, movement orders, active on-site cuts, and removal logs
- * in single linear passes to avoid O(N * M * K^2) main-thread freezes on mount.
+ * Pre-indexes products, movement orders, and off-site removal logs
+ * in single linear passes. Traceability stops once an item is transferred on-site.
  */
 export const buildTraceRecords = (
   state: Pick<
@@ -156,23 +156,21 @@ export const buildTraceRecords = (
     | 'butcherOrders'
     | 'locations'
     | 'tags'
-    | 'containers'
-    | 'freezers'
     | 'offSiteEntries'
     | 'movementOrders'
-    | 'meatCuts'
     | 'history'
-  >
+  > & {
+    containers?: Container[];
+    freezers?: Freezer[];
+    meatCuts?: MeatCut[];
+  }
 ): BuiltTraceIndex => {
   const products = state.products || [];
   const butcherOrders = state.butcherOrders || [];
   const locations = state.locations || [];
   const tags = state.tags || [];
-  const containers = state.containers || [];
-  const freezers = state.freezers || [];
   const offsiteEntries = state.offSiteEntries || [];
   const movementOrders = state.movementOrders || [];
-  const meatCuts = state.meatCuts || [];
   const historyLogs = state.history || [];
 
   // 1. Pre-index Products & Cut Name Resolution Cache
@@ -211,7 +209,7 @@ export const buildTraceRecords = (
     return matched;
   };
 
-  // 2. Pre-index Butcher Orders, Locations, Tags, Containers, Freezers
+  // 2. Pre-index Butcher Orders, Locations, Tags
   const butcherOrdersMap = new Map<string, ButcherOrder>();
   for (let i = 0; i < butcherOrders.length; i++) {
     const bo = butcherOrders[i];
@@ -227,31 +225,6 @@ export const buildTraceRecords = (
   const tagsMap = new Map<string, Tag>();
   for (let i = 0; i < tags.length; i++) {
     tagsMap.set(tags[i].id, tags[i]);
-  }
-
-  const containersMap = new Map<string, Container>();
-  for (let i = 0; i < containers.length; i++) {
-    containersMap.set(containers[i].id, containers[i]);
-  }
-
-  const freezersMap = new Map<string, Freezer>();
-  for (let i = 0; i < freezers.length; i++) {
-    freezersMap.set(freezers[i].id, freezers[i]);
-  }
-
-  // 3. Pre-index Active On-Site MeatCuts by (productId + normalized serial)
-  const activeOnSiteCutsMap = new Map<string, MeatCut>();
-  for (let i = 0; i < meatCuts.length; i++) {
-    const mc = meatCuts[i];
-    if ((mc.quantity || 0) > 0 && mc.productId && mc.serial) {
-      const serialNorm = mc.serial.trim().toLowerCase();
-      if (serialNorm) {
-        const key = `${mc.productId}::${serialNorm}`;
-        if (!activeOnSiteCutsMap.has(key)) {
-          activeOnSiteCutsMap.set(key, mc);
-        }
-      }
-    }
   }
 
   // 4. Sort MovementOrders once chronologically and pre-index moves & originalEntries
@@ -361,7 +334,7 @@ export const buildTraceRecords = (
     }
   }
 
-  // 6. Build TraceRecords for all Off-Site Entries + On-Site Cuts
+  // 5. Build TraceRecords for Butcher / Off-Site Entries (trace ends once moved to on-site)
   const recordsMap = new Map<string, TraceRecord>();
   const recordsByKey = new Map<string, TraceRecord>();
   const lotsSet = new Set<string>();
@@ -409,7 +382,8 @@ export const buildTraceRecords = (
     let lastMoveItem: MovementItem | undefined;
     for (let m = relatedMoves.length - 1; m >= 0; m--) {
       const mo = relatedMoves[m];
-      if (!mo.executedAt && mo.status !== 'completed') continue;
+      const isEntryConfirmed = Boolean(mo.confirmedMoveEntryIds?.includes(entry.id));
+      if (!mo.executedAt && mo.status !== 'completed' && !isEntryConfirmed) continue;
       const itemByEntry = moveItemByOrderAndEntryId.get(mo.id)?.get(entry.id);
       const itemBySerial =
         !itemByEntry && entry.serial
@@ -460,29 +434,22 @@ export const buildTraceRecords = (
     }
     const removalDestName = matchedRemovalLog?.destName;
 
-    // Match active on-site cut in O(1)
-    let matchedOnSiteCut: MeatCut | undefined;
-    if (product && entry.serial) {
-      const serialNorm = entry.serial.trim().toLowerCase();
-      if (serialNorm) {
-        matchedOnSiteCut = activeOnSiteCutsMap.get(`${product.id}::${serialNorm}`);
-      }
-    }
-
-    // Determine status and current location
+    // Determine status and current location (trace ends at on-site transfer or external delivery)
     let currentLocationType: 'offsite' | 'onsite' | 'archived' = 'offsite';
     let currentLocationName =
       entry.currentLocation || entry.location || storageLocation?.name || 'Off-Site Cold Storage';
-    let currentContainerName: string | undefined;
-    let currentFreezerName: string | undefined;
     let onSiteArrivalDate: string | undefined;
-    let onSiteContainer: Container | undefined;
-    let onSiteFreezer: Freezer | undefined;
     let archivedDate: string | undefined;
     let archivedReason: string | undefined;
     let removalDestination: string | undefined =
       removalDestName ||
       (lastMoveTargetDest && !isLastMoveHome ? lastMoveTargetDest.locationName : undefined);
+
+    const movedToOnSite = Boolean(
+      (lastMoveTargetDest && isLastMoveHome) ||
+      storageLocation?.isHome ||
+      entry.currentLocation?.trim().toLowerCase() === 'home'
+    );
 
     if (entry.archived) {
       if (matchedRemovalLog || (lastMoveTargetDest && !isLastMoveHome)) {
@@ -493,35 +460,19 @@ export const buildTraceRecords = (
           matchedRemovalLog?.timestamp || lastExecutedMove?.executedAt || lastExecutedMove?.date;
         archivedReason = `Delivered to ${destLabel} and permanently removed from active inventory.`;
         removalDestination = destLabel;
-      } else if (matchedOnSiteCut) {
+      } else if (movedToOnSite) {
         currentLocationType = 'onsite';
-        const container = containersMap.get(matchedOnSiteCut.containerId);
-        if (container && !container.isArchived) {
-          onSiteContainer = container;
-          currentContainerName = container.name;
-          const freezer = container.freezerId ? freezersMap.get(container.freezerId) : undefined;
-          if (freezer) {
-            onSiteFreezer = freezer;
-            currentFreezerName = freezer.name;
-            currentLocationName = `${freezer.name} • ${container.name}`;
-          } else {
-            currentLocationName = container.name;
-          }
-        } else {
-          currentLocationName = 'On-Site Storage / Cabinets';
-        }
-        onSiteArrivalDate =
-          lastExecutedMove?.executedAt || lastExecutedMove?.date || matchedOnSiteCut.packDate;
+        const destLabel =
+          lastMoveTargetDest?.locationName ||
+          (storageLocation?.isHome ? storageLocation.name : undefined) ||
+          'On-Site';
+        currentLocationName = `Moved to ${destLabel} (End of Trace)`;
+        onSiteArrivalDate = lastExecutedMove?.executedAt || lastExecutedMove?.date;
       } else {
         currentLocationType = 'archived';
         archivedDate = lastExecutedMove?.executedAt || lastExecutedMove?.date;
-        if (lastMoveTargetDest && isLastMoveHome) {
-          currentLocationName = 'Archived / Consumed (Past On-Site)';
-          archivedReason = 'Transferred on-site and subsequently consumed or archived.';
-        } else {
-          currentLocationName = 'Archived / Removed';
-          archivedReason = 'Archived or removed from active inventory.';
-        }
+        currentLocationName = 'Archived / Removed';
+        archivedReason = 'Archived or removed from off-site inventory.';
       }
     } else {
       currentLocationType = 'offsite';
@@ -579,8 +530,6 @@ export const buildTraceRecords = (
       butcherOrder,
       currentLocationType,
       currentLocationName,
-      currentContainerName,
-      currentFreezerName,
       pallet: palletVal,
       box: entry.box,
       storageLocation,
@@ -591,97 +540,10 @@ export const buildTraceRecords = (
       pickupDate,
       offSiteIntakeDate,
       onSiteArrivalDate,
-      onSiteContainer,
-      onSiteFreezer,
       onSiteCohortLogs: EMPTY_HISTORY_LOGS,
       archivedDate,
       archivedReason,
       removalDestination,
-      _searchIndex: searchParts.join('\n').toLowerCase()
-    };
-
-    recordsMap.set(serialKey.toLowerCase(), record);
-    recordsByKey.set(record.serial, record);
-    recordsByKey.set(record.serial.toLowerCase(), record);
-    recordsByKey.set(record.id, record);
-  }
-
-  // 7. Index On-Site MeatCuts that don't have an Off-Site Entry
-  for (let i = 0; i < meatCuts.length; i++) {
-    const cut = meatCuts[i];
-    const serialKey = (cut.serial || cut.id).trim();
-    if (recordsMap.has(serialKey.toLowerCase())) continue;
-
-    const product = productsMap.get(cut.productId);
-    const container = containersMap.get(cut.containerId);
-    const freezer = container?.freezerId ? freezersMap.get(container.freezerId) : undefined;
-
-    const resolvedTags: Tag[] = [];
-    if (cut.tagIds && cut.tagIds.length > 0) {
-      for (let t = 0; t < cut.tagIds.length; t++) {
-        const tagObj = tagsMap.get(cut.tagIds[t]);
-        if (tagObj) resolvedTags.push(tagObj);
-      }
-    }
-
-    const isArchived = (cut.quantity || 0) <= 0 || Boolean(container?.isArchived);
-    const cutName = product?.name || cut.originalCutName || 'Unknown Cut';
-    const serialVal = cut.serial || cut.id;
-
-    if (cut.lot && cut.lot.trim()) {
-      lotsSet.add(cut.lot.trim());
-    }
-
-    const searchParts = [
-      serialVal,
-      cut.lot || '',
-      cutName,
-      cut.originalCutName || '',
-      ...resolvedTags.map(t => t.name)
-    ];
-
-    const record: TraceRecord = {
-      id: cut.id,
-      serial: serialVal,
-      lot: cut.lot,
-      cutName,
-      originalCutName: cut.originalCutName,
-      isWrongLabel: Boolean(cut.isWrongLabel || cut.wrongLabel),
-      wrongLabel: cut.wrongLabel,
-      product,
-      packDate: cut.packDate,
-      pieces: cut.quantity || 1,
-      netWeight: cut.weight || 0,
-      currentLocationType: isArchived ? 'archived' : 'onsite',
-      currentLocationName: isArchived
-        ? 'Archived / Consumed'
-        : freezer && container
-        ? `${freezer.name} • ${container.name}`
-        : container?.name || 'On-Site Freezers',
-      currentContainerName: container?.name,
-      currentFreezerName: freezer?.name,
-      tags: resolvedTags,
-      movementOrders: EMPTY_MOVEMENT_ORDERS,
-      entryRef: {
-        id: cut.id,
-        productId: cut.productId,
-        serial: serialVal,
-        lot: cut.lot,
-        packDate: cut.packDate,
-        cuts: product?.name,
-        netWeight: 0,
-        pieces: cut.quantity
-      },
-      harvestDate: undefined,
-      pickupDate: undefined,
-      offSiteIntakeDate: undefined,
-      onSiteArrivalDate: cut.packDate,
-      onSiteContainer: container,
-      onSiteFreezer: freezer,
-      onSiteCohortLogs: EMPTY_HISTORY_LOGS,
-      archivedDate: isArchived ? cut.packDate : undefined,
-      archivedReason: isArchived ? 'Consumed or depleted on-site stock.' : undefined,
-      removalDestination: undefined,
       _searchIndex: searchParts.join('\n').toLowerCase()
     };
 
@@ -700,10 +562,8 @@ export const buildTraceRecords = (
 };
 
 /**
- * Lazily enriches a single selected TraceRecord with audit history logs
- * (offSiteIntakeDate from intake log, onSiteArrivalDate fallback, and onSiteCohortLogs).
- * Running this only on the active record avoids scanning thousands of history logs
- * across thousands of items on initial view load.
+ * Lazily enriches a single selected TraceRecord with off-site intake audit logs.
+ * Traceability stops at on-site transfer, so on-site container cohort logs are not scanned.
  */
 export const enrichTraceRecordWithHistory = (
   record: TraceRecord,
@@ -715,83 +575,37 @@ export const enrichTraceRecordWithHistory = (
   const serialLower = (entry.serial || '').trim().toLowerCase();
   const entryIdLower = (entry.id || '').toLowerCase();
   const palletLower = (entry.pallet || '').toLowerCase();
-  const productLower = record.product?.name ? record.product.name.toLowerCase() : '';
-  const containerId = record.onSiteContainer?.id;
 
   let intakeLogTimestamp: string | undefined;
-  let arrivalLogTimestamp: string | undefined;
-  const needArrivalFallback = !record.onSiteArrivalDate && record.currentLocationType === 'onsite';
 
   for (let i = 0; i < historyLogs.length; i++) {
     const h = historyLogs[i];
     if (!h.description) continue;
     const desc = h.description.toLowerCase();
 
-    if (!intakeLogTimestamp) {
-      const matchesSerial = Boolean(serialLower && desc.includes(serialLower));
-      const matchesEntryId = Boolean(entryIdLower && desc.includes(entryIdLower));
-      const matchesPallet = Boolean(palletLower && desc.includes(palletLower));
-      if (
-        (matchesSerial || matchesEntryId || matchesPallet) &&
-        (desc.includes('import') ||
-          desc.includes('intake') ||
-          desc.includes('added') ||
-          desc.includes('created') ||
-          desc.includes('off-site') ||
-          desc.includes('pallet'))
-      ) {
-        intakeLogTimestamp = h.timestamp;
-      }
-    }
-
-    if (needArrivalFallback && !arrivalLogTimestamp) {
-      const matchesSerial = Boolean(serialLower && desc.includes(serialLower));
-      const matchesProduct = Boolean(productLower && desc.includes(productLower));
-      if (
-        (matchesSerial || matchesProduct) &&
-        (desc.includes('staged') ||
-          desc.includes('restock') ||
-          desc.includes('on-site') ||
-          desc.includes('cabinet') ||
-          desc.includes('freezer'))
-      ) {
-        arrivalLogTimestamp = h.timestamp;
-      }
-    }
-
-    if (intakeLogTimestamp && (!needArrivalFallback || arrivalLogTimestamp)) {
+    const matchesSerial = Boolean(serialLower && desc.includes(serialLower));
+    const matchesEntryId = Boolean(entryIdLower && desc.includes(entryIdLower));
+    const matchesPallet = Boolean(palletLower && desc.includes(palletLower));
+    if (
+      (matchesSerial || matchesEntryId || matchesPallet) &&
+      (desc.includes('import') ||
+        desc.includes('intake') ||
+        desc.includes('added') ||
+        desc.includes('created') ||
+        desc.includes('off-site') ||
+        desc.includes('pallet'))
+    ) {
+      intakeLogTimestamp = h.timestamp;
       break;
     }
   }
 
   const resolvedIntakeDate = intakeLogTimestamp || record.offSiteIntakeDate;
-  const resolvedArrivalDate = record.onSiteArrivalDate || arrivalLogTimestamp;
-
-  const onSiteCohortLogs: HistoryEntry[] = [];
-  if (containerId) {
-    const arrivalTime = resolvedArrivalDate ? new Date(resolvedArrivalDate).getTime() || 0 : 0;
-    const minTime = arrivalTime > 0 ? arrivalTime - 86400000 * 2 : 0;
-
-    for (let i = 0; i < historyLogs.length; i++) {
-      const h = historyLogs[i];
-      const matchesTarget = h.targetId === containerId;
-      const matchesProd =
-        !matchesTarget && Boolean(productLower && h.description?.toLowerCase().includes(productLower));
-      if (matchesTarget || matchesProd) {
-        const entryTime = new Date(h.timestamp).getTime();
-        if (arrivalTime === 0 || entryTime >= minTime) {
-          onSiteCohortLogs.push(h);
-          if (onSiteCohortLogs.length >= 15) break;
-        }
-      }
-    }
-  }
 
   return {
     ...record,
     offSiteIntakeDate: resolvedIntakeDate,
-    onSiteArrivalDate: resolvedArrivalDate,
-    onSiteCohortLogs
+    onSiteCohortLogs: EMPTY_HISTORY_LOGS
   };
 };
 
@@ -838,11 +652,8 @@ export const TraceabilityView: React.FC<TraceabilityViewProps> = ({
         butcherOrders: state.butcherOrders,
         locations: state.locations,
         tags: state.tags,
-        containers: state.containers,
-        freezers: state.freezers,
         offSiteEntries: state.offSiteEntries,
         movementOrders: state.movementOrders,
-        meatCuts: state.meatCuts,
         history: state.history
       }),
     [
@@ -850,11 +661,8 @@ export const TraceabilityView: React.FC<TraceabilityViewProps> = ({
       state.butcherOrders,
       state.locations,
       state.tags,
-      state.containers,
-      state.freezers,
       state.offSiteEntries,
       state.movementOrders,
-      state.meatCuts,
       state.history
     ]
   );
@@ -1240,35 +1048,35 @@ export const TraceabilityView: React.FC<TraceabilityViewProps> = ({
       });
     }
 
-    // Step: On-Site Freezer Placement (ONLY if item is currently on-site!)
+    // Step: Transferred to On-Site (End of Traceability)
     if (activeRecord.currentLocationType === 'onsite') {
       steps.push({
-        id: 'onsite_placement',
+        id: 'onsite_transfer',
         stepNumber: stepNum++,
-        title: 'On-Site Freezer Placement & In-Stock Custody',
-        badge: 'Active On-Site',
+        title: 'Transferred to On-Site (End of Traceability)',
+        badge: 'Moved On-Site',
         icon: <CheckCircle2 className="w-4 h-4 text-emerald-400" />,
-        dateStr: formatTraceDate(activeRecord.onSiteArrivalDate || activeRecord.packDate, true),
+        dateStr: formatTraceDate(activeRecord.onSiteArrivalDate, true),
         colorTheme: 'emerald',
-        summary: `Placed into active on-site storage in ${activeRecord.currentFreezerName || 'Freezer'} • ${activeRecord.currentContainerName || 'Bin'}.`,
+        summary: `Transferred to ${activeRecord.currentLocationName.replace(/\s*\(End of Trace\)$/i, '')}. Chain-of-custody tracking concludes upon on-site arrival.`,
         details: (
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs bg-cool-gray-850 p-3.5 rounded-lg border border-cool-gray-750 mt-3">
             <div>
-              <span className="text-[10px] text-cool-gray-500 block uppercase font-semibold">Cabinet / Freezer</span>
+              <span className="text-[10px] text-cool-gray-500 block uppercase font-semibold">Destination</span>
               <span className="font-bold text-cool-gray-100 text-sm block mt-0.5">
-                {activeRecord.currentFreezerName || 'On-Site Warehouse'}
+                {activeRecord.currentLocationName.replace(/\s*\(End of Trace\)$/i, '')}
               </span>
             </div>
             <div>
-              <span className="text-[10px] text-cool-gray-500 block uppercase font-semibold">Specific Container / Bin</span>
-              <span className="font-bold text-emerald-300 text-sm block mt-0.5">
-                {activeRecord.currentContainerName || 'On-Site Storage Bin'}
-              </span>
-            </div>
-            <div>
-              <span className="text-[10px] text-cool-gray-500 block uppercase font-semibold">Placement Timestamp</span>
+              <span className="text-[10px] text-cool-gray-500 block uppercase font-semibold">Transfer Date</span>
               <span className="font-mono text-emerald-300 font-bold block mt-0.5">
-                {formatTraceDate(activeRecord.onSiteArrivalDate || activeRecord.packDate, true)}
+                {formatTraceDate(activeRecord.onSiteArrivalDate, true)}
+              </span>
+            </div>
+            <div>
+              <span className="text-[10px] text-cool-gray-500 block uppercase font-semibold">Trace Boundary</span>
+              <span className="font-semibold text-cool-gray-300 block mt-0.5">
+                Concluded at On-Site Handoff
               </span>
             </div>
           </div>
@@ -1338,7 +1146,7 @@ export const TraceabilityView: React.FC<TraceabilityViewProps> = ({
                 Item Traceability & Chain of Custody
               </h1>
               <p className="text-xs text-cool-gray-400 mt-0.5">
-                End-to-end harvest, storage, transfer, and custody tracking from Butcher to Freezers
+                Harvest, packaging, cold storage, and freight tracking from Butcher through Off-Site Storage to On-Site Transfer
               </p>
             </div>
           </div>
@@ -1443,7 +1251,7 @@ export const TraceabilityView: React.FC<TraceabilityViewProps> = ({
               Comprehensive Chain of Custody
             </h2>
             <p className="text-xs text-cool-gray-300 leading-relaxed mb-4">
-              This system unites external processor intake, off-site blast cold storage, multi-facility logistics movement orders, and on-site cabinet allocations into a unified food safety timeline.
+              This system tracks external processor intake, off-site blast cold storage, and multi-facility logistics movement orders up to external delivery or on-site transfer.
             </p>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
@@ -1455,9 +1263,9 @@ export const TraceabilityView: React.FC<TraceabilityViewProps> = ({
               </div>
 
               <div className="p-3.5 bg-cool-gray-900/60 rounded-xl border border-cool-gray-800">
-                <span className="font-bold text-amber-400 block mb-1">🏠 On-Site Cabinet Phase</span>
+                <span className="font-bold text-amber-400 block mb-1">🏠 On-Site Transfer Endpoint</span>
                 <p className="text-cool-gray-400 text-[11px] leading-normal">
-                  Correlated via <strong>high-confidence cohort tracking</strong> across movement transfer manifests, destination bins, and verified audit logs.
+                  Traceability concludes when a package is <strong>moved on-site</strong> (or delivered externally), keeping custody records accurate without guessing post-arrival freezer moves.
                 </p>
               </div>
             </div>
@@ -1575,7 +1383,7 @@ export const TraceabilityView: React.FC<TraceabilityViewProps> = ({
                   {/* Current Status Badge */}
                   {activeRecord.currentLocationType === 'onsite' ? (
                     <span className="px-2.5 py-1 rounded-lg bg-emerald-500/15 border border-emerald-500/40 text-emerald-400 text-xs font-bold flex items-center gap-1">
-                      <CheckCircle2 className="w-3.5 h-3.5" /> On-Site Inventory
+                      <CheckCircle2 className="w-3.5 h-3.5" /> Moved On-Site (End of Trace)
                     </span>
                   ) : activeRecord.currentLocationType === 'offsite' ? (
                     <span className="px-2.5 py-1 rounded-lg bg-cyan-500/15 border border-cyan-500/40 text-cyan-400 text-xs font-bold flex items-center gap-1">
@@ -1679,7 +1487,7 @@ export const TraceabilityView: React.FC<TraceabilityViewProps> = ({
                       : 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
                   }`}>
                     {activeRecord.currentLocationType === 'onsite' ? (
-                      <><CheckCircle2 className="w-3.5 h-3.5" /> In Stock On-Site</>
+                      <><CheckCircle2 className="w-3.5 h-3.5" /> Transferred On-Site</>
                     ) : activeRecord.currentLocationType === 'offsite' ? (
                       <><Warehouse className="w-3.5 h-3.5" /> In Off-Site Cold Storage</>
                     ) : activeRecord.removalDestination ? (
@@ -1700,7 +1508,7 @@ export const TraceabilityView: React.FC<TraceabilityViewProps> = ({
               <div className="text-xs font-mono text-cool-gray-400 bg-cool-gray-900/80 px-3.5 py-2 rounded-xl border border-cool-gray-800 shrink-0">
                 <span className="text-[10px] uppercase block text-cool-gray-500 font-semibold">Location Type</span>
                 <span className="text-cool-gray-200 font-bold">
-                  {activeRecord.currentLocationType === 'onsite' ? 'On-Site Freezer' : activeRecord.currentLocationType === 'offsite' ? 'Commercial Deep Freeze' : activeRecord.removalDestination ? `Delivered to ${activeRecord.removalDestination}` : 'Historical Archive'}
+                  {activeRecord.currentLocationType === 'onsite' ? 'On-Site Handoff (End of Trace)' : activeRecord.currentLocationType === 'offsite' ? 'Commercial Deep Freeze' : activeRecord.removalDestination ? `Delivered to ${activeRecord.removalDestination}` : 'Historical Archive'}
                 </span>
               </div>
             </div>
@@ -1747,28 +1555,28 @@ export const TraceabilityView: React.FC<TraceabilityViewProps> = ({
               <div className="mt-4 space-y-3">
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
                   <div className="p-3 bg-cool-gray-900/60 rounded-xl border border-cool-gray-800">
-                    <span className="text-[10px] text-cool-gray-400 block uppercase font-semibold">Freezer / Cabinet</span>
+                    <span className="text-[10px] text-cool-gray-400 block uppercase font-semibold">Transfer Destination</span>
                     <span className="font-bold text-cool-gray-100 text-sm block mt-0.5">
-                      {activeRecord.currentFreezerName || 'On-Site Freezer'}
+                      {activeRecord.currentLocationName.replace(/\s*\(End of Trace\)$/i, '')}
                     </span>
                   </div>
                   <div className="p-3 bg-cool-gray-900/60 rounded-xl border border-cool-gray-800">
-                    <span className="text-[10px] text-cool-gray-400 block uppercase font-semibold">Bin / Container</span>
-                    <span className="font-bold text-emerald-300 text-sm block mt-0.5">
-                      {activeRecord.currentContainerName || 'On-Site Storage Bin'}
-                    </span>
-                  </div>
-                  <div className="p-3 bg-cool-gray-900/60 rounded-xl border border-cool-gray-800">
-                    <span className="text-[10px] text-cool-gray-400 block uppercase font-semibold">On-Site Placement Date</span>
+                    <span className="text-[10px] text-cool-gray-400 block uppercase font-semibold">On-Site Transfer Date</span>
                     <span className="font-mono font-bold text-emerald-400 text-sm block mt-0.5">
-                      {formatTraceDate(activeRecord.onSiteArrivalDate || activeRecord.packDate, true)}
+                      {formatTraceDate(activeRecord.onSiteArrivalDate, true)}
+                    </span>
+                  </div>
+                  <div className="p-3 bg-cool-gray-900/60 rounded-xl border border-cool-gray-800">
+                    <span className="text-[10px] text-cool-gray-400 block uppercase font-semibold">Custody Boundary</span>
+                    <span className="font-bold text-emerald-300 text-sm block mt-0.5">
+                      Traceability Concluded
                     </span>
                   </div>
                 </div>
                 <div className="p-3 rounded-xl bg-emerald-950/20 border border-emerald-800/30 text-xs text-emerald-200/90 flex items-start gap-2">
                   <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
                   <span>
-                    <strong>Actively In Stock:</strong> This item is physically placed in your on-site freezer storage and is immediately available for consumption or inventory counting.
+                    <strong>Moved to On-Site (End of Trace):</strong> This package was transferred on-site via logistics movement. Individual package traceability concludes at on-site arrival and does not track subsequent freezer, bin, or sales movements.
                   </span>
                 </div>
               </div>
@@ -1937,46 +1745,20 @@ export const TraceabilityView: React.FC<TraceabilityViewProps> = ({
                 </div>
                 <div className="bg-cool-gray-900/60 p-3.5 rounded-xl border border-cool-gray-800 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
-                    <span className="font-bold text-cool-gray-200">Current Verified Residence:</span>
+                    <span className="font-bold text-cool-gray-200">
+                      {activeRecord.currentLocationType === 'onsite' ? 'Traceability Endpoint:' : 'Current Verified Residence:'}
+                    </span>
                     <span className="font-bold text-amber-400 font-mono">{activeRecord.currentLocationName}</span>
                   </div>
                   <span className="text-[11px] text-cool-gray-400">
-                    Chain of custody verified up to present moment
+                    {activeRecord.currentLocationType === 'onsite'
+                      ? 'Custody tracked through on-site transfer'
+                      : 'Chain of custody verified up to present moment'}
                   </span>
                 </div>
               </div>
             </div>
           </div>
-
-          {/* On-Site Container Cohort Logs (Rendered only when active on-site and logs exist) */}
-          {activeRecord.currentLocationType === 'onsite' && activeRecord.onSiteCohortLogs.length > 0 && (
-            <div className="bg-cool-gray-850 p-5 sm:p-6 rounded-2xl border border-cool-gray-750 shadow-md space-y-4">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
-                <h4 className="text-sm font-bold text-purple-300 flex items-center gap-2">
-                  🔄 On-Site Container Activity Logs ({activeRecord.currentContainerName})
-                </h4>
-                <span className="text-[10px] px-2 py-0.5 bg-purple-500/15 text-purple-300 font-semibold rounded-md uppercase tracking-wider">
-                  Associated Container Events
-                </span>
-              </div>
-
-              <div className="p-2.5 bg-purple-950/30 border border-purple-800/40 rounded-lg text-[11px] text-purple-200">
-                <span className="font-bold text-purple-300">Container History Notice:</span> The logs below reflect physical container relocations, restocks, and audits recorded for container &quot;{activeRecord.currentContainerName}&quot; since this item was placed in it.
-              </div>
-
-              <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
-                {activeRecord.onSiteCohortLogs.map(log => (
-                  <div key={log.id} className="p-2.5 bg-cool-gray-850 rounded border border-cool-gray-750 text-xs flex items-center justify-between gap-3">
-                    <span className="text-cool-gray-200 truncate">{log.description}</span>
-                    <span className="text-[11px] text-purple-300 font-mono flex items-center gap-1.5 bg-purple-950/60 px-2.5 py-1 rounded border border-purple-800/40 whitespace-nowrap">
-                      <Clock className="w-3.5 h-3.5 text-purple-400" />
-                      {formatTraceDate(log.timestamp, true)}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
         </div>
       ) : (
         /* Multiple Records Cohort Overview (When searching a lot or butcher order with many packages) */
@@ -2015,7 +1797,7 @@ export const TraceabilityView: React.FC<TraceabilityViewProps> = ({
                 {[
                   { id: 'all', label: `All (${cohortSummary.totalPackages})` },
                   { id: 'offsite', label: `Off-Site Cold Storage (${cohortSummary.offsiteCount})` },
-                  { id: 'onsite', label: `On-Site Freezers (${cohortSummary.onsiteCount})` },
+                  { id: 'onsite', label: `Moved On-Site (${cohortSummary.onsiteCount})` },
                   { id: 'archived', label: `Archived (${cohortSummary.archivedCount})` }
                 ].map(tab => (
                   <button
@@ -2101,7 +1883,7 @@ export const TraceabilityView: React.FC<TraceabilityViewProps> = ({
                       <td className="py-3 px-4">
                         {record.currentLocationType === 'onsite' ? (
                           <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 whitespace-nowrap">
-                            On-Site
+                            Moved On-Site
                           </span>
                         ) : record.currentLocationType === 'offsite' ? (
                           <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-cyan-500/15 text-cyan-400 border border-cyan-500/30 whitespace-nowrap">
@@ -2257,10 +2039,12 @@ export const TraceabilityView: React.FC<TraceabilityViewProps> = ({
 
                 <div className="p-3 bg-gray-50 rounded-lg border border-gray-200 space-y-1">
                   <div className="flex justify-between items-center">
-                    <span className="font-bold text-gray-900">5. Final Custody Placement</span>
+                    <span className="font-bold text-gray-900">5. Custody Endpoint</span>
                     <span className="font-mono text-gray-800 text-[11px] font-bold">
                       {activeRecord.currentLocationType === 'onsite' 
-                        ? formatTraceDate(activeRecord.onSiteArrivalDate || activeRecord.packDate, true)
+                        ? formatTraceDate(activeRecord.onSiteArrivalDate, true)
+                        : activeRecord.currentLocationType === 'archived'
+                        ? formatTraceDate(activeRecord.archivedDate, true)
                         : 'Off-Site Residence'}
                     </span>
                   </div>

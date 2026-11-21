@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { InventoryState, Action, ButcherOrder, OffSiteEntry, Product, Tag } from '../types';
 import { SearchableProductSelect } from './SearchableProductSelect';
+import { parseButcherSpeciesList, getAllButcherSpeciesOptions } from '../utils/butcherSettings';
 
 export interface ManualCutItem {
   id: string;
@@ -57,6 +58,11 @@ export const ManualButcherEntryModal: React.FC<ManualButcherEntryModalProps> = (
   const locations = state.locations || [];
   const tags = state.tags || [];
 
+  const managedSpeciesOptions = useMemo(
+    () => getAllButcherSpeciesOptions(parseButcherSpeciesList(state.appConfig), state.butcherOrders || []),
+    [state.appConfig, state.butcherOrders]
+  );
+
   // Target Order state: order id, or '__NEW__' or '__IMPORT_FORM__'
   const [targetOrderId, setTargetOrderId] = useState<string>(() => {
     if (initialOrder) return initialOrder.id;
@@ -67,7 +73,7 @@ export const ManualButcherEntryModal: React.FC<ManualButcherEntryModalProps> = (
 
   // If creating new order context on the fly
   const [newOrderNumber, setNewOrderNumber] = useState('');
-  const [newOrderSpecies, setNewOrderSpecies] = useState('Beef');
+  const [newOrderSpecies, setNewOrderSpecies] = useState(() => managedSpeciesOptions[0] || 'Beef');
   const [newOrderLocationId, setNewOrderLocationId] = useState('');
 
   // Find currently selected order object
@@ -698,11 +704,17 @@ export const ManualButcherEntryModal: React.FC<ManualButcherEntryModalProps> = (
                     <label className="block text-xs font-bold text-cool-gray-300 mb-1">Species</label>
                     <input
                       type="text"
+                      list="manual-entry-species-list"
                       placeholder="e.g. Beef, Pork"
                       value={newOrderSpecies}
                       onChange={e => setNewOrderSpecies(e.target.value)}
                       className="w-full bg-cool-gray-950 border border-cool-gray-700 rounded-xl px-3 py-2 text-xs text-white focus:ring-1 focus:ring-cyan-500 outline-none"
                     />
+                    <datalist id="manual-entry-species-list">
+                      {managedSpeciesOptions.map(sp => (
+                        <option key={sp} value={sp} />
+                      ))}
+                    </datalist>
                   </div>
                 </div>
               ) : (

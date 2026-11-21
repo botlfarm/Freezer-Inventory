@@ -3,12 +3,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   assignPhotoToTargetInState,
+  buildConnectableObjects,
   clearPhotoReferencesInState,
   collectPhotoAttachments,
   doesImageUrlMatchFilename,
+  filterConnectableObjects,
   rewritePhotoReferencesInState,
 } from '../utils/photoManager';
-import { Container, ContainerTemplate, Product } from '../types';
+import { Container, ContainerTemplate, Freezer, Product } from '../types';
 
 describe('Photo Manager Attachment & Reference Logic', () => {
   it('matches upload filenames across relative paths, ingress URLs, query params, and Windows separators', () => {
@@ -176,7 +178,78 @@ describe('Photo Manager Attachment & Reference Logic', () => {
     expect(state.containers[1].templateId).toBeUndefined();
   });
 
-  it('guards PhotoManagerView against destructive UNDO/REDO refresh hacks and dropped undefined unlink payloads', () => {
+  it('builds and filters connectable objects by item/container type, photo presence, and search query', () => {
+    const freezers: Freezer[] = [{ id: 'f1', name: 'Garage Upright' }];
+    const products: Product[] = [
+      { id: 'p1', name: 'Ribeye Steak', primaryCategory: 'Beef', subCategory: 'Steaks', imageUrl: 'uploads/ribeye.jpg' },
+      { id: 'p2', name: 'Pork Chop', primaryCategory: 'Pork', subCategory: 'Chops' },
+      { id: 'p3', name: 'Archived Cut', primaryCategory: 'Beef', subCategory: 'Roasts', isArchived: true },
+    ];
+    const containerTemplates: ContainerTemplate[] = [
+      { id: 't1', name: 'Teal w/ white polka dots', icon: 'Folder', imageUrl: 'uploads/polka.jpg' },
+      { id: 't2', name: 'Sesame Street', icon: 'Folder' },
+    ];
+    const containers: Container[] = [
+      { id: 'staging_loose', name: 'Sorting Table', icon: 'Folder' },
+      { id: 'f1_loose', name: 'Loose', freezerId: 'f1', icon: 'Folder' },
+      { id: 'c1', name: 'Box Saucy', freezerId: 'f1', icon: 'Folder' },
+      { id: 'c2', name: 'Blue Flannel', freezerId: 'f1', icon: 'Folder', imageUrl: 'uploads/flannel.jpg' },
+    ];
+
+    const all = buildConnectableObjects({ freezers, products, containerTemplates, containers });
+    // Excludes staging_loose and *_loose
+    expect(all.map((o) => o.id)).toEqual(['p1', 'p2', 'p3', 't1', 't2', 'c1', 'c2']);
+    expect(all.find((o) => o.id === 'c1')?.details).toBe('In Garage Upright');
+
+    // Type filters: Items vs Containers (templates + instances) vs Templates only
+    expect(filterConnectableObjects(all, { typeFilter: 'product' }).map((o) => o.id)).toEqual([
+      'p2',
+      'p1',
+      'p3',
+    ]);
+    expect(filterConnectableObjects(all, { typeFilter: 'container' }).map((o) => o.id)).toEqual([
+      'c2',
+      'c1',
+      't2',
+      't1',
+    ]);
+    expect(filterConnectableObjects(all, { typeFilter: 'container_template' }).map((o) => o.id)).toEqual([
+      't2',
+      't1',
+    ]);
+
+    // Photo status filters: with_photo, without_photo, all
+    expect(filterConnectableObjects(all, { photoFilter: 'with_photo' }).map((o) => o.id)).toEqual([
+      'c2',
+      'p1',
+      't1',
+    ]);
+    expect(filterConnectableObjects(all, { photoFilter: 'without_photo' }).map((o) => o.id)).toEqual([
+      'c1',
+      'p2',
+      't2',
+      'p3',
+    ]);
+
+    // Combined type + photo status + search
+    expect(
+      filterConnectableObjects(all, {
+        typeFilter: 'container',
+        photoFilter: 'without_photo',
+        search: 'garage',
+      }).map((o) => o.id)
+    ).toEqual(['c1']);
+
+    expect(
+      filterConnectableObjects(all, {
+        typeFilter: 'product',
+        photoFilter: 'with_photo',
+        search: 'beef steak',
+      }).map((o) => o.id)
+    ).toEqual(['p1']);
+  });
+
+  it('guards PhotoManagerView against destructive UNDO/REDO refresh hacks and exposes Connect Photo filters', () => {
     const photoManagerSrc = fs.readFileSync(
       path.resolve(__dirname, '../views/PhotoManagerView.tsx'),
       'utf8'
@@ -187,5 +260,9 @@ describe('Photo Manager Attachment & Reference Logic', () => {
     expect(photoManagerSrc).toContain("imageUrl: ''");
     expect(photoManagerSrc).toContain("att.type === 'container_template'");
     expect(photoManagerSrc).toContain('resolveImageUrl(photo.url)');
+    expect(photoManagerSrc).toContain('Connect Photo to Item or Container');
+    expect(photoManagerSrc).toContain('Connect to Item / Container');
+    expect(photoManagerSrc).toContain('without_photo');
+    expect(photoManagerSrc).toContain('with_photo');
   });
 });

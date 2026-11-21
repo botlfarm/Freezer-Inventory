@@ -114,15 +114,50 @@ export interface MeatCut {
   weight?: number;
 }
 
+export type HistoryScope = 'onsite' | 'offsite' | 'butcher' | 'system';
+
+export type HistoryUndoMode = 'standard' | 'order_revert' | 'audit_only';
+
+export interface HistoryItemDetail {
+  id?: string;
+  serial?: string;
+  cut: string;
+  box?: string;
+  pallet?: string;
+  location?: string;
+  pieces?: number;
+  weight?: number;
+  note?: string;
+  action?: string;
+}
+
+export interface HistoryEntryDetails {
+  actionType?: string;
+  undoMode?: HistoryUndoMode;
+  relatedOrderId?: string;
+  orderNumber?: string;
+  orderName?: string;
+  locationName?: string;
+  palletName?: string;
+  itemCount?: number;
+  totalPieces?: number;
+  totalWeight?: number;
+  changedFields?: string[];
+  items?: HistoryItemDetail[];
+  truncatedCount?: number;
+}
+
 export interface HistoryEntry {
   id: string;
   timestamp: string; // ISO string
   description: string;
-  targetId: string; // ID of MeatCut or Container
+  targetId: string; // ID of MeatCut, Container, OffSiteEntry, ButcherOrder, MovementOrder, etc.
   user?: string;
   clientDevice?: string; // e.g. "Desktop Browser", "Mobile Browser", "HA Companion App"
   clientInfo?: string;   // detailed client/OS/browser string e.g. "Desktop Browser (Chrome / macOS)"
   undoData?: any;
+  scope?: HistoryScope;
+  details?: HistoryEntryDetails;
 }
 
 export interface Category {
@@ -325,10 +360,29 @@ export interface ButcherOrderDocument {
   id: string;
   name: string;
   url: string;
+  typeId?: string;
   provider?: 'nextcloud' | 'google_docs' | 'link' | string;
   size?: number;
   mimeType?: string;
   updatedAt?: string;
+}
+
+export type ButcherTagWeightCheckMode =
+  | 'normal'
+  | 'separate_baseline'
+  | 'exclude_from_baseline';
+
+export interface ButcherOrderTag {
+  id: string;
+  name: string;
+  description?: string;
+  color?: string;
+  weightCheckMode: ButcherTagWeightCheckMode;
+}
+
+export interface ButcherDocumentLinkType {
+  id: string;
+  name: string;
 }
 
 export interface NextcloudFileItem {
@@ -366,6 +420,32 @@ export interface ConnectorsConfigStatus {
   google: GoogleConnectorStatus;
 }
 
+export type ButcherWeightField = 'liveWeight' | 'hotWeight' | 'coldWeight' | 'packagedWeight';
+
+export type ButcherWeightAnomalyStatus = 'flagged' | 'dismissed';
+
+export interface ButcherWeightAnomalyFlag {
+  status: ButcherWeightAnomalyStatus;
+  reason?: string;
+  flaggedAt?: string;
+  autoDetected?: boolean;
+}
+
+export type ButcherWeightAnomaliesMap = Partial<Record<ButcherWeightField, ButcherWeightAnomalyFlag>>;
+
+export interface ButcherEstimatedWeights {
+  liveWeight?: number;
+  hotWeight?: number;
+  coldWeight?: number;
+  packagedWeight?: number;
+  note?: string;
+  updatedAt?: string;
+}
+
+export type ButcherReportMode = 'actuals' | 'estimates' | 'exclude_flagged';
+
+export type ButcherBaselineGroupingMode = 'species' | 'species_and_butcher';
+
 export interface ButcherOrder {
   id: string;
   orderNumber: string;
@@ -385,6 +465,12 @@ export interface ButcherOrder {
   createdAt: number;
   documents?: ButcherOrderDocument[];
   butcherFee?: number;
+  weightAnomalies?: ButcherWeightAnomaliesMap;
+  estimatedWeights?: ButcherEstimatedWeights;
+  reviewIgnoredFields?: string[];
+  tagIds?: string[];
+  auditClosed?: boolean;
+  auditClosedAt?: string;
 }
 
 
@@ -402,17 +488,23 @@ export interface AppConfigItem {
   updatedAt?: string;
 }
 
+export interface VoiceDictionaryBundleItem {
+  productId: string;
+  quantity: number;
+}
+
 export interface VoiceDictionaryEntry {
   id: string;
   spokenPhrase: string;
   targetType: VoiceDictionaryTargetType;
   targetId?: string;
   replacementText?: string;
+  bundleItems?: VoiceDictionaryBundleItem[];
   notes?: string;
   createdAt?: string;
 }
 
-export type VoiceDictionaryTargetType = 'product' | 'container' | 'freezer' | 'command' | 'phrase';
+export type VoiceDictionaryTargetType = 'product' | 'bundle' | 'container' | 'freezer' | 'command' | 'phrase';
 
 export type InventoryState = {
   freezers: Freezer[];
@@ -497,6 +589,7 @@ export type Action =
   | { type: 'MOVE_STAGING_TO_OFFSITE' }
   | { type: 'FINALIZE_OFFSITE_STAGING'; payload: { entries: OffSiteEntry[]; movementOrderName?: string } }
   | { type: 'REPLACE_STATE'; payload: InventoryState }
+  | { type: 'SYNC_APP_CONFIG'; payload: AppConfigItem[] }
   | { type: 'ADD_MOVEMENT_ORDER'; payload: { order: MovementOrder } }
   | { type: 'UPDATE_MOVEMENT_ORDER'; payload: { id: string; updates: Partial<MovementOrder> } }
   | { type: 'APPEND_MOVEMENT_ORDER_IDS'; payload: { id: string; pickedBoxIds?: string[]; pickedItemIds?: string[]; deliveredBoxIds?: string[]; deliveredItemIds?: string[] } }
@@ -536,6 +629,10 @@ export type Action =
   | { type: 'ADD_BUTCHER_ORDER'; payload: { order: ButcherOrder; records: OffSiteEntry[]; targetLocation?: string; targetPallet?: string } }
   | { type: 'DELETE_BUTCHER_ORDER'; payload: { orderId: string } }
   | { type: 'EDIT_BUTCHER_ORDER'; payload: { orderId: string; updates: Partial<ButcherOrder> } }
+  | { type: 'RENAME_BUTCHER_SPECIES'; payload: { oldName: string; newName: string } }
+  | { type: 'DELETE_BUTCHER_ORDER_TAG'; payload: { tagId: string } }
+  | { type: 'RENAME_BUTCHER_DOCUMENT_TYPE'; payload: { typeId: string; newName: string; alsoMatchByName?: boolean } }
+  | { type: 'DELETE_BUTCHER_DOCUMENT_TYPE'; payload: { typeId: string } }
   | { type: 'UPDATE_NOTIFICATION_SETTINGS'; payload: Partial<NotificationSettings> }
   | { type: 'CLEAR_NOTIFICATION_LOGS' }
   | { type: 'TOGGLE_CUSTOM_LIST_ITEM_NOTIFY'; payload: { listId: string; productId: string; notifyEnabled: boolean } }
@@ -631,6 +728,28 @@ export interface AuthStatus {
   recoveryPinConfigured?: boolean;
   recoverySource?: 'none' | 'env' | 'ha_options';
   availableUsers: Array<{ id: string; name: string }>;
+}
+
+export interface FailsafeSnapshotItem {
+  filename: string;
+  size: number;
+  createdAt: string;
+  modifiedAt: string;
+  type: 'sqlite' | 'zip' | 'json' | 'csv';
+  isAutomatic: boolean;
+}
+
+export interface FailsafeStatus {
+  backupRecoveryMode: boolean;
+  adminRecoveryMode: boolean;
+  recoveryPinConfigured: boolean;
+  recoverySource: 'none' | 'env' | 'ha_options';
+  dbHealthy: boolean;
+  dbError: string | null;
+  dbPath: string;
+  authorized: boolean;
+  snapshotsCount: number;
+  snapshots?: FailsafeSnapshotItem[];
 }
 
 export interface LegacyOperatorGroup {

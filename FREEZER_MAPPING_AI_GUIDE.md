@@ -67,12 +67,18 @@ interface Tag {
   excludeFromDisplayRestock?: boolean; // When true, items with this tag won't count towards Display Case restock backstock
 }
 
+interface VoiceDictionaryBundleItem {
+  productId: string;   // Canonical product ID
+  quantity: number;    // Units included per 1 spoken pack (default 1)
+}
+
 interface VoiceDictionaryEntry {
   id: string;          // UUID
-  spokenPhrase: string; // Custom spoken word or phrase (e.g., "rampler", "big orange", "front")
-  targetType: 'product' | 'container' | 'freezer' | 'phrase';
-  targetId?: string;   // Canonical product, container, or freezer ID (when targetType !== 'phrase')
-  replacementText?: string; // Replacement phrase (when targetType === 'phrase')
+  spokenPhrase: string; // Custom spoken word or phrase (e.g., "rampler", "broth mix pack", "front")
+  targetType: 'product' | 'bundle' | 'container' | 'freezer' | 'command' | 'phrase';
+  targetId?: string;   // Canonical product, container, or freezer ID (when targetType is product/container/freezer)
+  bundleItems?: VoiceDictionaryBundleItem[]; // 1-to-many constituent products & quantities (when targetType === 'bundle')
+  replacementText?: string; // Replacement phrase (when targetType is phrase/command)
   notes?: string;
   createdAt?: string;
 }

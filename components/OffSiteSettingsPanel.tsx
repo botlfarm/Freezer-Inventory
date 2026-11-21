@@ -71,18 +71,19 @@ export const OffSiteSettingsPanel: React.FC<OffSiteSettingsPanelProps> = ({
       }
 
       const data = await res.json().catch(() => ({}));
-      if (data && data.configs) {
-        const nextAppConfig = Object.entries(data.configs).map(([k, v]) => ({
-          key: k,
-          value: String(v ?? ''),
-          updatedAt: new Date().toISOString(),
-        }));
+      const nextAppConfig = Array.isArray(data?.appConfig)
+        ? data.appConfig
+        : data && data.configs
+          ? Object.entries(data.configs).map(([k, v]) => ({
+              key: k,
+              value: String(v ?? ''),
+              updatedAt: new Date().toISOString(),
+            }))
+          : null;
+      if (nextAppConfig) {
         dispatch({
-          type: 'REPLACE_STATE',
-          payload: {
-            ...state,
-            appConfig: nextAppConfig,
-          },
+          type: 'SYNC_APP_CONFIG',
+          payload: nextAppConfig,
         });
       }
 

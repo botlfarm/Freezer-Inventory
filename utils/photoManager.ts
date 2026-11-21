@@ -1,6 +1,15 @@
-import { Container, ContainerTemplate, Product } from '../types';
+import { Container, ContainerTemplate, Freezer, Product } from '../types';
 
 export type PhotoAttachmentType = 'product' | 'container' | 'container_template';
+
+export type ConnectTargetTypeFilter =
+  | 'all'
+  | 'product'
+  | 'container'
+  | 'container_template'
+  | 'container_instance';
+
+export type ConnectPhotoStatusFilter = 'all' | 'with_photo' | 'without_photo';
 
 export interface PhotoAttachment {
   id: string;
@@ -12,6 +21,16 @@ export interface PhotoTargetState {
   products?: Product[];
   containers?: Container[];
   containerTemplates?: ContainerTemplate[];
+  freezers?: Freezer[];
+}
+
+export interface ConnectableObject {
+  id: string;
+  name: string;
+  type: PhotoAttachmentType;
+  details?: string;
+  imageUrl?: string;
+  isArchived?: boolean;
 }
 
 export function normalizeImageUrlValue(value: string | undefined | null): string | undefined {
@@ -188,4 +207,86 @@ export function assignPhotoToTargetInState(
   }
 
   return { found: false, updatedTables: [] };
+}
+
+export function buildConnectableObjects(state: PhotoTargetState): ConnectableObject[] {
+  const objects: ConnectableObject[] = [];
+  const freezerNameById = new Map<string, string>();
+  (state.freezers || []).forEach((f) => {
+    if (f && f.id) freezerNameById.set(f.id, f.name);
+  });
+
+  (state.products || []).forEach((p) => {
+    objects.push({
+      id: p.id,
+      name: p.name,
+      type: 'product',
+      details: `${p.primaryCategory} > ${p.subCategory}`,
+      imageUrl: normalizeImageUrlValue(p.imageUrl),
+      isArchived: !!p.isArchived,
+    });
+  });
+
+  (state.containerTemplates || []).forEach((t) => {
+    objects.push({
+      id: t.id,
+      name: t.name,
+      type: 'container_template',
+      details: 'Container Template',
+      imageUrl: normalizeImageUrlValue(t.imageUrl),
+    });
+  });
+
+  (state.containers || []).forEach((c) => {
+    if (c.id === 'staging_loose' || c.id.endsWith('_loose')) return;
+    const freezerName = c.freezerId ? freezerNameById.get(c.freezerId) : undefined;
+    objects.push({
+      id: c.id,
+      name: c.name,
+      type: 'container',
+      details: freezerName ? `In ${freezerName}` : c.freezerId ? 'Placed Container' : 'Unassigned Bin',
+      imageUrl: normalizeImageUrlValue(c.imageUrl),
+      isArchived: !!c.isArchived,
+    });
+  });
+
+  return objects;
+}
+
+export function filterConnectableObjects(
+  objects: ConnectableObject[],
+  options: {
+    search?: string;
+    typeFilter?: ConnectTargetTypeFilter;
+    photoFilter?: ConnectPhotoStatusFilter;
+  } = {}
+): ConnectableObject[] {
+  const { search = '', typeFilter = 'all', photoFilter = 'all' } = options;
+  const searchTerms = search.toLowerCase().trim().split(/\s+/).filter(Boolean);
+
+  return objects
+    .filter((obj) => {
+      if (typeFilter === 'product' && obj.type !== 'product') return false;
+      if (typeFilter === 'container' && obj.type !== 'container' && obj.type !== 'container_template') {
+        return false;
+      }
+      if (typeFilter === 'container_template' && obj.type !== 'container_template') return false;
+      if (typeFilter === 'container_instance' && obj.type !== 'container') return false;
+
+      const hasPhoto = !!normalizeImageUrlValue(obj.imageUrl);
+      if (photoFilter === 'with_photo' && !hasPhoto) return false;
+      if (photoFilter === 'without_photo' && hasPhoto) return false;
+
+      if (searchTerms.length > 0) {
+        const haystack = `${obj.name} ${obj.details || ''}`.toLowerCase();
+        if (!searchTerms.every((term) => haystack.includes(term))) return false;
+      }
+
+      return true;
+    })
+    .sort((a, b) => {
+      const archivedDiff = Number(!!a.isArchived) - Number(!!b.isArchived);
+      if (archivedDiff !== 0) return archivedDiff;
+      return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+    });
 }
