@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import { InventoryState, Action, ButcherOrder, OffSiteEntry, Product, Tag } from '../types';
 import { SearchableProductSelect } from './SearchableProductSelect';
-import { parseButcherSpeciesList, getAllButcherSpeciesOptions } from '../utils/butcherSettings';
+import { getAllManagedSpeciesNames } from '../utils/speciesPrimals';
 
 export interface ManualCutItem {
   id: string;
@@ -59,8 +59,8 @@ export const ManualButcherEntryModal: React.FC<ManualButcherEntryModalProps> = (
   const tags = state.tags || [];
 
   const managedSpeciesOptions = useMemo(
-    () => getAllButcherSpeciesOptions(parseButcherSpeciesList(state.appConfig), state.butcherOrders || []),
-    [state.appConfig, state.butcherOrders]
+    () => getAllManagedSpeciesNames(state.speciesPrimals, state.appConfig, state.butcherOrders || []),
+    [state.speciesPrimals, state.appConfig, state.butcherOrders]
   );
 
   // Target Order state: order id, or '__NEW__' or '__IMPORT_FORM__'

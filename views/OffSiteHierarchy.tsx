@@ -3,6 +3,8 @@ import React, { useState, useMemo } from 'react';
 import { ChevronDown, ChevronRight, MapPin, Layers, PackageOpen, Edit3, FileText, X } from 'lucide-react';
 import { compareBoxLabels } from '../utils/boxSort';
 import { getTagActionIcon } from '../utils/tagRestockRules';
+import { buildSpeciesPrimalIndex, resolveProductPrimal, UNASSIGNED_PRIMAL_ID } from '../utils/speciesPrimals';
+import { SpeciesPrimalFilterPair } from '../components/PrimalSelect';
 
 export const OffSiteHierarchy = ({ state, dispatch }) => {
   const entries = (state.offSiteEntries || []).filter(e => {
@@ -18,6 +20,13 @@ export const OffSiteHierarchy = ({ state, dispatch }) => {
   
   const [expandedLocs, setExpandedLocs] = useState<Record<string, boolean>>({});
   const [expandedPallets, setExpandedPallets] = useState<Record<string, boolean>>({});
+  const [selectedSpeciesId, setSelectedSpeciesId] = useState<string>('');
+  const [selectedPrimalId, setSelectedPrimalId] = useState<string>('');
+
+  const primalIndex = useMemo(
+    () => buildSpeciesPrimalIndex(state.speciesPrimals || []),
+    [state.speciesPrimals]
+  );
 
   const [renamePalletModal, setRenamePalletModal] = useState<{ isOpen: boolean; oldName: string; newName: string } | null>(null);
   const [palletNotesModal, setPalletNotesModal] = useState<{ isOpen: boolean; palletId: string; palletName: string; notes: string } | null>(null);
@@ -65,13 +74,15 @@ export const OffSiteHierarchy = ({ state, dispatch }) => {
     const products = state.products || [];
 
     entries.forEach(rawE => {
-      // Find matching product
+      // Find matching product (prefer direct productId FK first)
       const cutsStr = (rawE.cuts || '').trim();
       const origStr = (rawE.originalCutName || '').trim();
       const normStr = (rawE.normalizedCutName || '').trim();
 
-      let matchedProduct = null;
-      if (normStr) {
+      let matchedProduct = rawE.productId
+        ? products.find((p: any) => p.id === rawE.productId) || null
+        : null;
+      if (!matchedProduct && normStr) {
         matchedProduct = products.find((p: any) => p.name.trim().toLowerCase() === normStr.toLowerCase());
       }
       if (!matchedProduct) {
@@ -99,9 +110,26 @@ export const OffSiteHierarchy = ({ state, dispatch }) => {
         }
       }
 
+      const resolvedPrimal = resolveProductPrimal(matchedProduct, primalIndex);
+      if (selectedSpeciesId) {
+        if (selectedSpeciesId === UNASSIGNED_PRIMAL_ID) {
+          if (resolvedPrimal) return;
+        } else if (!resolvedPrimal || resolvedPrimal.speciesId !== selectedSpeciesId) {
+          return;
+        }
+      }
+      if (selectedPrimalId) {
+        if (selectedPrimalId === UNASSIGNED_PRIMAL_ID) {
+          if (resolvedPrimal) return;
+        } else if (!resolvedPrimal || resolvedPrimal.primalId !== selectedPrimalId) {
+          return;
+        }
+      }
+
       const e = {
         ...rawE,
         cuts: matchedProduct ? matchedProduct.name : (rawE.normalizedCutName || rawE.cuts),
+        primalLabel: resolvedPrimal ? `${resolvedPrimal.speciesName} · ${resolvedPrimal.primalName}` : '',
       };
 
       const locName = e.location || 'Unassigned / Unknown';
@@ -132,7 +160,7 @@ export const OffSiteHierarchy = ({ state, dispatch }) => {
     });
 
     return locMap;
-  }, [entries, state.products]);
+  }, [entries, state.products, primalIndex, selectedSpeciesId, selectedPrimalId]);
 
   const toggleLoc = (loc: string) => setExpandedLocs(p => ({...p, [loc]: !p[loc]}));
   const togglePallet = (locPallet: string) => setExpandedPallets(p => ({...p, [locPallet]: !p[locPallet]}));
@@ -141,7 +169,7 @@ export const OffSiteHierarchy = ({ state, dispatch }) => {
 
   return (
     <div className="space-y-4" id="offsite-hierarchy-view">
-      <div className="bg-cool-gray-800 p-4 rounded-xl border border-cool-gray-700 shadow-sm flex items-center justify-between">
+      <div className="bg-cool-gray-800 p-4 rounded-xl border border-cool-gray-700 shadow-sm flex flex-col lg:flex-row lg:items-center justify-between gap-3">
         <div>
           <h3 className="text-lg font-bold text-white flex items-center gap-2">
             <Layers size={20} className="text-emerald-400" />
@@ -149,6 +177,30 @@ export const OffSiteHierarchy = ({ state, dispatch }) => {
           </h3>
           <p className="text-sm text-cool-gray-400 mt-1">Browse items by system location and pallet grouping.</p>
         </div>
+        {(state.speciesPrimals || []).length > 0 && (
+          <div className="flex flex-wrap items-center gap-2">
+            <SpeciesPrimalFilterPair
+              speciesPrimals={state.speciesPrimals || []}
+              speciesId={selectedSpeciesId}
+              primalId={selectedPrimalId}
+              onSpeciesChange={setSelectedSpeciesId}
+              onPrimalChange={setSelectedPrimalId}
+              compact
+            />
+            {(selectedSpeciesId || selectedPrimalId) && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedSpeciesId('');
+                  setSelectedPrimalId('');
+                }}
+                className="text-xs font-semibold text-cool-gray-400 hover:text-white px-2 py-1 rounded border border-cool-gray-700 hover:bg-cool-gray-750 cursor-pointer"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="space-y-3">
@@ -310,12 +362,19 @@ export const OffSiteHierarchy = ({ state, dispatch }) => {
                                         );
                                       })()}
                                     </div>
-                                    <div className="text-xs text-cool-gray-400 mt-1">
-                                      {bNode.items.length} items
+                                    <div className="text-xs text-cool-gray-400 mt-1 flex flex-wrap items-center gap-1.5">
+                                      <span>{bNode.items.length} items</span>
+                                      {(() => {
+                                        const primals = Array.from(new Set(bNode.items.map((i: any) => i.primalLabel).filter(Boolean)));
+                                        if (primals.length === 0) return null;
+                                        return (
+                                          <span className="text-cool-gray-500">· {primals.join(', ')}</span>
+                                        );
+                                      })()}
                                     </div>
                                   </div>
                                   <div className="text-right">
-                                    <div className="text-sm font-bold text-cool-gray-300">{bNode.totalWeight.toFixed(2)} lbs</div>
+                                    <div className="text-sm font-bold text-cool-gray-300 font-mono tabular-nums">{bNode.totalWeight.toFixed(2)} lbs</div>
                                     <div className="text-xs text-cool-gray-500 mt-1">{Array.from(new Set(bNode.items.map(i => i.cuts))).join(', ')}</div>
                                   </div>
                                 </div>
@@ -334,7 +393,9 @@ export const OffSiteHierarchy = ({ state, dispatch }) => {
 
         {locKeys.length === 0 && (
           <div className="p-12 text-center text-cool-gray-500 bg-cool-gray-850 rounded-2xl border border-cool-gray-750">
-            No items registered in the system yet.
+            {(selectedSpeciesId || selectedPrimalId)
+              ? 'No off-site items match the selected species or primal cut filter.'
+              : 'No items registered in the system yet.'}
           </div>
         )}
       </div>

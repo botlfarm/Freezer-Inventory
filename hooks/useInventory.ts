@@ -16,6 +16,15 @@ import {
 } from '../utils/offlineStorage';
 import { useOnlineStatus } from './useOnlineStatus';
 import { getHistoryUndoMode } from '../utils/auditHistory';
+import {
+  applyAddSpeciesPrimal,
+  applyEditSpeciesPrimal,
+  applyDeleteSpeciesPrimal,
+  applyRenameOrMergeSpecies,
+  applyReorderSpeciesPrimals,
+} from '../utils/speciesPrimals';
+import { isSameVariant } from '../utils/inventoryOperations';
+import { generateUUID } from '../components/uuidHelper';
 
 export type { OperatingMode, ForcedMultiUser, OperationalZone, ZoneClientCounts };
 
@@ -65,6 +74,7 @@ const defaultInitialState: InventoryState = {
   containers: [],
   products: [],
   categories: [],
+  speciesPrimals: [],
   meatCuts: [],
   history: [],
   voiceDictionary: [],
@@ -99,6 +109,7 @@ export interface LocalUndoSnapshot {
 const getActionDescription = (action: Action): string => {
   if (!action) return 'Inventory action';
   switch (action.type as string) {
+    case 'ADD_MEAT_CUT': return 'Added cut to inventory';
     case 'UPDATE_MEAT_QUANTITY': return 'Updated cut quantity';
     case 'BATCH_UPDATE_MEAT_QUANTITY': return 'Batch updated cut quantities';
     case 'MOVE_MEAT_CUTS': return 'Moved cuts to location';
@@ -116,6 +127,11 @@ const getActionDescription = (action: Action): string => {
     case 'ADD_VOICE_DICTIONARY_ENTRY': return 'Added voice dictionary rule';
     case 'EDIT_VOICE_DICTIONARY_ENTRY': return 'Updated voice dictionary rule';
     case 'DELETE_VOICE_DICTIONARY_ENTRY': return 'Deleted voice dictionary rule';
+    case 'ADD_SPECIES_PRIMAL': return (action as any).payload?.entry?.type === 'primal' ? 'Added primal cut' : 'Added species';
+    case 'EDIT_SPECIES_PRIMAL': return 'Updated species/primal';
+    case 'DELETE_SPECIES_PRIMAL': return 'Deleted species/primal';
+    case 'REORDER_SPECIES_PRIMALS': return 'Reordered species/primals';
+    case 'RENAME_BUTCHER_SPECIES': return 'Renamed/merged species';
     default:
       return (action as any).payload?.description || (action as any).description || `Action: ${action.type}`;
   }
@@ -127,6 +143,7 @@ const TABLE_TO_KEY_MAP: Record<string, keyof InventoryState> = {
   'freezers': 'freezers',
   'products': 'products',
   'categories': 'categories',
+  'species_primals': 'speciesPrimals',
   'pallets': 'pallets',
   'boxes': 'boxes',
   'custom_lists': 'customLists',
@@ -149,6 +166,7 @@ const STATE_ARRAY_KEYS: (keyof InventoryState)[] = [
   'meatCuts',
   'products',
   'categories',
+  'speciesPrimals',
   'pallets',
   'boxes',
   'customLists',
@@ -216,6 +234,7 @@ export const normalizeClientState = (s: any): InventoryState => {
     containerTemplates: Array.isArray(s.containerTemplates) ? s.containerTemplates : [],
     products: Array.isArray(s.products) ? s.products : [],
     categories: Array.isArray(s.categories) ? s.categories : [],
+    speciesPrimals: Array.isArray(s.speciesPrimals) ? s.speciesPrimals : [],
     meatCuts: Array.isArray(s.meatCuts) ? s.meatCuts : [],
     history: Array.isArray(s.history) ? s.history : [],
     offSiteEntries: Array.isArray(s.offSiteEntries) ? s.offSiteEntries : [],
@@ -467,7 +486,7 @@ export const useInventory = (activeView: View = 'product') => {
     const changedSlices: Partial<InventoryState> = {};
     if (nextState) {
       const sliceKeys: (keyof InventoryState)[] = [
-        'meatCuts', 'containers', 'freezers', 'products', 'categories',
+        'meatCuts', 'containers', 'freezers', 'products', 'categories', 'speciesPrimals',
         'pallets', 'boxes', 'customLists', 'tags', 'locations',
         'movementOrders', 'offSiteEntries', 'butcherOrders', 'voiceDictionary'
       ];
@@ -1287,6 +1306,78 @@ export const useInventory = (activeView: View = 'product') => {
       return false;
     }
 
+    // Instant optimistic client update for ADD_MEAT_CUT (including Display Case zero-to-positive adjustments)
+    if (action.type === 'ADD_MEAT_CUT') {
+      const { productId, quantity, containerId, notes, tagIds, originalCutName } = action.payload;
+      const numericQuantity = Number(quantity);
+      if (!Number.isFinite(numericQuantity) || numericQuantity <= 0) {
+        return sendActionToServer(action);
+      }
+
+      const generatedId = action.payload.id || generateUUID();
+      const actionWithId: Action = {
+        ...action,
+        payload: {
+          ...action.payload,
+          id: generatedId,
+          quantity: numericQuantity
+        }
+      };
+
+      setState(prev => {
+        const product = prev.products.find(p => p.id === productId);
+        const finalTagIds = tagIds || product?.defaultTagIds || [];
+
+        let nextContainers = prev.containers;
+        if (typeof containerId === 'string' && containerId.endsWith('_loose') && !prev.containers.some(c => c.id === containerId)) {
+          if (containerId === 'staging_loose') {
+            nextContainers = [...prev.containers, { id: 'staging_loose', name: 'Loose', icon: 'loose' }];
+          } else {
+            const targetFreezerId = containerId.slice(0, -'_loose'.length);
+            const targetFreezer = prev.freezers.find(f => f.id === targetFreezerId);
+            if (targetFreezer) {
+              nextContainers = [...prev.containers, { id: containerId, name: 'Loose', freezerId: targetFreezer.id, icon: 'loose' }];
+            }
+          }
+        }
+
+        const existingCut = prev.meatCuts.find(
+          mc => mc.containerId === containerId && isSameVariant(mc, productId, notes, finalTagIds, originalCutName)
+        );
+
+        let nextMeatCuts = prev.meatCuts;
+        if (existingCut) {
+          const combinedTagIds = Array.from(new Set([...(existingCut.tagIds || []), ...finalTagIds]));
+          nextMeatCuts = prev.meatCuts.map(mc =>
+            mc.id === existingCut.id
+              ? { ...mc, quantity: mc.quantity + numericQuantity, tagIds: combinedTagIds }
+              : mc
+          );
+        } else {
+          nextMeatCuts = [
+            ...prev.meatCuts,
+            {
+              id: generatedId,
+              productId,
+              quantity: numericQuantity,
+              containerId,
+              notes,
+              tagIds: [...finalTagIds],
+              originalCutName: originalCutName || undefined
+            }
+          ];
+        }
+
+        return {
+          ...prev,
+          containers: nextContainers,
+          meatCuts: nextMeatCuts
+        };
+      });
+
+      return sendActionToServer(actionWithId);
+    }
+
     // Queue quantity updates for debounced batch syncing
     if (action.type === 'UPDATE_MEAT_QUANTITY') {
       pushLocalUndo(action, stateRef.current);
@@ -1734,6 +1825,85 @@ export const useInventory = (activeView: View = 'product') => {
         ...prev,
         voiceDictionary: (prev.voiceDictionary || []).filter(e => e.id !== id)
       }));
+      return sendActionToServer(action);
+    }
+
+    if (action.type === 'ADD_SPECIES_PRIMAL') {
+      setState(prev => {
+        const res = applyAddSpeciesPrimal(prev.speciesPrimals || [], action.payload.entry);
+        if (res.error) return prev;
+        return { ...prev, speciesPrimals: res.nextList };
+      });
+      return sendActionToServer(action);
+    }
+
+    if (action.type === 'EDIT_SPECIES_PRIMAL') {
+      setState(prev => {
+        const res = applyEditSpeciesPrimal(
+          prev.speciesPrimals || [],
+          prev.butcherOrders || [],
+          action.payload.id,
+          action.payload.updates
+        );
+        if (res.error) return prev;
+        return {
+          ...prev,
+          speciesPrimals: res.nextList,
+          butcherOrders: res.nextOrders,
+        };
+      });
+      return sendActionToServer(action);
+    }
+
+    if (action.type === 'DELETE_SPECIES_PRIMAL') {
+      setState(prev => {
+        const res = applyDeleteSpeciesPrimal(
+          prev.speciesPrimals || [],
+          prev.products || [],
+          prev.butcherOrders || [],
+          action.payload.id,
+          action.payload.reassignToPrimalId
+        );
+        if (res.error) return prev;
+        return {
+          ...prev,
+          speciesPrimals: res.nextList,
+          products: res.nextProducts,
+        };
+      });
+      return sendActionToServer(action);
+    }
+
+    if (action.type === 'REORDER_SPECIES_PRIMALS') {
+      setState(prev => ({
+        ...prev,
+        speciesPrimals: applyReorderSpeciesPrimals(
+          prev.speciesPrimals || [],
+          action.payload.orderedIds || [],
+          action.payload.parentSpeciesId
+        ),
+      }));
+      return sendActionToServer(action);
+    }
+
+    if (action.type === 'RENAME_BUTCHER_SPECIES') {
+      const { oldName, newName } = action.payload;
+      setState(prev => {
+        const res = applyRenameOrMergeSpecies(
+          prev.speciesPrimals || [],
+          prev.products || [],
+          prev.butcherOrders || [],
+          oldName,
+          newName
+        );
+        if (!res.targetSpeciesId) return prev;
+        return {
+          ...prev,
+          speciesPrimals: res.nextList,
+          products: res.nextProducts,
+          butcherOrders: res.nextOrders,
+        };
+      });
       return sendActionToServer(action);
     }
 

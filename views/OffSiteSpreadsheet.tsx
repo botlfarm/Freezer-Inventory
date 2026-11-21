@@ -6,6 +6,7 @@ import { Tag as AppTag, CustomList, Action } from '../types';
 import { compareBoxLabels } from '../utils/boxSort';
 import { SearchableProductSelect } from '../components/SearchableProductSelect';
 import { getTagActionIcon } from '../utils/tagRestockRules';
+import { buildSpeciesPrimalIndex, resolveProductPrimal } from '../utils/speciesPrimals';
 
 export const OffsiteCategoryFilterModal = ({
   primaryOptions,
@@ -523,6 +524,11 @@ export const OffSiteSpreadsheet = ({
     return activeOrders[0];
   }, [activeOrders, activeOrderId]);
 
+  const primalIndex = useMemo(
+    () => buildSpeciesPrimalIndex(state.speciesPrimals || []),
+    [state.speciesPrimals]
+  );
+
   const entries = useMemo(() => {
     let baseList = rawEntries;
 
@@ -591,6 +597,8 @@ export const OffSiteSpreadsheet = ({
 
       const derivedPallet = palletRecord?.name || e.pallet || e.currentLocation || '';
       const derivedLocation = locationRecord?.name || palletRecord?.location || e.location || 'Unassigned';
+      const resolvedPrimal = resolveProductPrimal(matchedProduct, primalIndex);
+      const primalLabel = resolvedPrimal ? `${resolvedPrimal.speciesName} · ${resolvedPrimal.primalName}` : 'Unassigned';
 
       return {
         ...e,
@@ -602,6 +610,10 @@ export const OffSiteSpreadsheet = ({
         palletId: boxRecord?.palletId || e.palletId || '',
         primaryCategory: matchedProduct?.primaryCategory || 'Off-Site / Uncategorized',
         subCategory: matchedProduct?.subCategory || 'Off-Site / Uncategorized',
+        primalId: resolvedPrimal?.primalId || '',
+        speciesName: resolvedPrimal?.speciesName || '',
+        primalName: resolvedPrimal?.primalName || '',
+        primalLabel,
         matchedProduct: matchedProduct,
         isManuallyCorrected: isWrongLabel,
         isWrongLabel: isWrongLabel,
@@ -609,7 +621,7 @@ export const OffSiteSpreadsheet = ({
         wrongLabelOriginal: wrongLabelOriginal
       };
     });
-  }, [rawEntries, activeOrder, products, state.butcherRecords, state.products, state.boxes, state.containers, state.pallets, state.freezers, state.locations]);
+  }, [rawEntries, activeOrder, products, primalIndex, state.butcherRecords, state.products, state.boxes, state.containers, state.pallets, state.freezers, state.locations]);
 
   const downloadCSVForEntries = (entriesToExport: any[], filenamePrefix: string) => {
     if (entriesToExport.length === 0) return;
@@ -877,6 +889,7 @@ export const OffSiteSpreadsheet = ({
             box: parsed.box || 100,
             cuts: parsed.cuts || 220,
             category: parsed.category || 200,
+            primal: parsed.primal || 155,
             weight: parsed.weight || 90,
             pieces: parsed.pieces || 80,
             location: parsed.location || 130,
@@ -894,6 +907,7 @@ export const OffSiteSpreadsheet = ({
       box: 100,
       cuts: 220,
       category: 200,
+      primal: 155,
       weight: 90,
       pieces: 80,
       location: 130,
@@ -1607,6 +1621,7 @@ export const OffSiteSpreadsheet = ({
   const [filterCuts, setFilterCuts] = useState<Set<string>>(() => loadFilterSet('offsite_filter_cuts'));
   const [filterPrimaryCategories, setFilterPrimaryCategories] = useState<Set<string>>(() => loadFilterSet('offsite_filter_primary_categories'));
   const [filterSubCategories, setFilterSubCategories] = useState<Set<string>>(() => loadFilterSet('offsite_filter_sub_categories'));
+  const [filterPrimals, setFilterPrimals] = useState<Set<string>>(() => loadFilterSet('offsite_filter_primals'));
   const [filterPallets, setFilterPallets] = useState<Set<string>>(() => loadFilterSet('offsite_filter_pallets'));
   const [filterLocations, setFilterLocations] = useState<Set<string>>(() => loadFilterSet('offsite_filter_locations'));
   const [filterMoveTo, setFilterMoveTo] = useState<Set<string>>(() => loadFilterSet('offsite_filter_move_to'));
@@ -1632,6 +1647,12 @@ export const OffSiteSpreadsheet = ({
       localStorage.setItem('offsite_filter_sub_categories', JSON.stringify(Array.from(filterSubCategories)));
     } catch (_) {}
   }, [filterSubCategories]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('offsite_filter_primals', JSON.stringify(Array.from(filterPrimals)));
+    } catch (_) {}
+  }, [filterPrimals]);
 
   useEffect(() => {
     try {
@@ -1693,6 +1714,7 @@ export const OffSiteSpreadsheet = ({
   const [cutsSearch, setCutsSearch] = useState('');
   const [primaryCategoriesSearch, setPrimaryCategoriesSearch] = useState('');
   const [subCategoriesSearch, setSubCategoriesSearch] = useState('');
+  const [primalsSearch, setPrimalsSearch] = useState('');
   const [palletsSearch, setPalletsSearch] = useState('');
   const [locationsSearch, setLocationsSearch] = useState('');
   const [moveToSearch, setMoveToSearch] = useState('');
@@ -1771,7 +1793,7 @@ export const OffSiteSpreadsheet = ({
       setBreakdownSortAsc(!breakdownSortAsc);
     } else {
       setBreakdownSortField(field);
-      setBreakdownSortAsc(['name', 'category', 'pallet'].includes(field));
+      setBreakdownSortAsc(['name', 'category', 'primal', 'pallet'].includes(field));
     }
   };
 
@@ -1781,6 +1803,14 @@ export const OffSiteSpreadsheet = ({
   }, [entries]);
   const allSubCategories = useMemo(() => {
     return Array.from(new Set(entries.map((e: any) => e.subCategory || 'Off-Site / Uncategorized'))).sort();
+  }, [entries]);
+  const allPrimals = useMemo(() => {
+    const vals = Array.from(new Set<string>(entries.map((e: any) => String(e.primalLabel || 'Unassigned'))));
+    return vals.sort((a, b) => {
+      if (a === 'Unassigned') return 1;
+      if (b === 'Unassigned') return -1;
+      return a.localeCompare(b);
+    });
   }, [entries]);
 
   const categoryMap = useMemo(() => {
@@ -2298,7 +2328,9 @@ export const OffSiteSpreadsheet = ({
           om.orderName.toLowerCase().includes(term) || om.destName.toLowerCase().includes(term)
         );
 
-        if (!matchesCuts && !matchesOriginalCut && !matchesBox && !matchesPallet && !matchesLocation && !matchesMoveTo && !matchesOtherOrders) {
+        const matchesPrimal = (e.primalLabel || '').toLowerCase().includes(term);
+
+        if (!matchesCuts && !matchesOriginalCut && !matchesBox && !matchesPallet && !matchesLocation && !matchesMoveTo && !matchesOtherOrders && !matchesPrimal) {
           return false;
         }
       }
@@ -2306,6 +2338,7 @@ export const OffSiteSpreadsheet = ({
       if (filterCuts.size > 0 && !filterCuts.has(cutToCheck)) return false;
       if (filterPrimaryCategories.size > 0 && !filterPrimaryCategories.has(e.primaryCategory || 'Off-Site / Uncategorized')) return false;
       if (filterSubCategories.size > 0 && !filterSubCategories.has(e.subCategory || 'Off-Site / Uncategorized')) return false;
+      if (filterPrimals.size > 0 && !filterPrimals.has(e.primalLabel || 'Unassigned')) return false;
       if (filterPallets.size > 0) {
         const palletName = e.currentLocation || 'Unassigned';
         const locationName = e.location || 'Unassigned';
@@ -2345,7 +2378,7 @@ export const OffSiteSpreadsheet = ({
       }
       return true;
     });
-  }, [entries, searchTerm, filterCuts, filterPrimaryCategories, filterSubCategories, filterPallets, filterLocations, filterBoxes, filterSerials, filterLots, filterPackDates, filterMoveTo, filterTags, filterLists, activeOrder, breakdownSearch, breakdownCategory, products, viewOriginalNames, state.customLists, filterOnlySplitBoxes, splitBoxIds, filterOnlyConflicts, openOrdersMovementData]);
+  }, [entries, searchTerm, filterCuts, filterPrimaryCategories, filterSubCategories, filterPrimals, filterPallets, filterLocations, filterBoxes, filterSerials, filterLots, filterPackDates, filterMoveTo, filterTags, filterLists, activeOrder, breakdownSearch, breakdownCategory, products, viewOriginalNames, state.customLists, filterOnlySplitBoxes, splitBoxIds, filterOnlyConflicts, openOrdersMovementData]);
 
   // Propagate filtered entries up to the parent component for exports
   exportActionsRef.current = {
@@ -2428,6 +2461,10 @@ export const OffSiteSpreadsheet = ({
         valA = a.items[0]?.subCategory || 'Off-Site / Uncategorized';
         valB = b.items[0]?.subCategory || 'Off-Site / Uncategorized';
       }
+      else if (sortField === 'primal') {
+        valA = a.items[0]?.primalLabel || 'Unassigned';
+        valB = b.items[0]?.primalLabel || 'Unassigned';
+      }
       else if (sortField === 'serial') { valA = a.items[0]?.serial || ''; valB = b.items[0]?.serial || ''; }
       else if (sortField === 'lot') { valA = a.items[0]?.lot || ''; valB = b.items[0]?.lot || ''; }
       else if (sortField === 'packDate') { valA = a.items[0]?.packDate || ''; valB = b.items[0]?.packDate || ''; }
@@ -2481,6 +2518,7 @@ export const OffSiteSpreadsheet = ({
   const spreadsheetSummary = useMemo(() => {
     const itemMap: Record<string, {
       cutName: string;
+      primalLabel: string;
       boxCount: Set<string>;
       pallets: Set<string>;
       totalWeight: number;
@@ -2498,6 +2536,7 @@ export const OffSiteSpreadsheet = ({
         if (!itemMap[cut]) {
           itemMap[cut] = {
             cutName: cut,
+            primalLabel: item.primalLabel || 'Unassigned',
             boxCount: new Set<string>(),
             pallets: new Set<string>(),
             totalWeight: 0,
@@ -2527,6 +2566,12 @@ export const OffSiteSpreadsheet = ({
       } else if (breakdownSortField === 'category') {
         valA = getProductCategoryForCut(a.cutName);
         valB = getProductCategoryForCut(b.cutName);
+        if (valA === valB) {
+          return a.cutName.localeCompare(b.cutName);
+        }
+      } else if (breakdownSortField === 'primal') {
+        valA = a.primalLabel || 'Unassigned';
+        valB = b.primalLabel || 'Unassigned';
         if (valA === valB) {
           return a.cutName.localeCompare(b.cutName);
         }
@@ -2753,6 +2798,17 @@ export const OffSiteSpreadsheet = ({
                     </th>
                     <th 
                       className="sticky top-0 bg-cool-gray-850 z-10 border-b border-cool-gray-750/60 py-2.5 px-3 cursor-pointer hover:text-white transition-colors group"
+                      onClick={() => toggleBreakdownSort('primal')}
+                    >
+                      <div className="flex items-center gap-1">
+                        <span>Primal Cut</span>
+                        <span className="text-cool-gray-500 group-hover:text-cool-gray-300 text-[10px]">
+                          {breakdownSortField === 'primal' ? (breakdownSortAsc ? '↑' : '↓') : '↕'}
+                        </span>
+                      </div>
+                    </th>
+                    <th 
+                      className="sticky top-0 bg-cool-gray-850 z-10 border-b border-cool-gray-750/60 py-2.5 px-3 cursor-pointer hover:text-white transition-colors group"
                       onClick={() => toggleBreakdownSort('pallet')}
                     >
                       <div className="flex items-center gap-1">
@@ -2820,6 +2876,13 @@ export const OffSiteSpreadsheet = ({
                           }`}>
                             {category}
                           </span>
+                        </td>
+                        <td className="py-2.5 px-3 text-xs text-cool-gray-400">
+                          {item.primalLabel && item.primalLabel !== 'Unassigned' ? (
+                            <span className="text-cool-gray-200 font-medium">{item.primalLabel}</span>
+                          ) : (
+                            <span className="text-cool-gray-500">—</span>
+                          )}
                         </td>
                         <td className="py-2.5 px-3">
                           <div className="flex flex-wrap gap-1 max-w-xs">
@@ -2925,7 +2988,7 @@ export const OffSiteSpreadsheet = ({
       )}
 
       {/* Active Filter Indicators & Clear Actions */}
-      {(filterCuts.size > 0 || filterPallets.size > 0 || filterLocations.size > 0 || filterMoveTo.size > 0 || filterBoxes.size > 0 || filterSerials.size > 0 || filterLots.size > 0 || filterPackDates.size > 0 || breakdownSearch || filterOnlySplitBoxes || filterOnlyConflicts || (breakdownCategory && breakdownCategory !== 'All')) && (
+      {(filterCuts.size > 0 || filterPrimals.size > 0 || filterPallets.size > 0 || filterLocations.size > 0 || filterMoveTo.size > 0 || filterBoxes.size > 0 || filterSerials.size > 0 || filterLots.size > 0 || filterPackDates.size > 0 || breakdownSearch || filterOnlySplitBoxes || filterOnlyConflicts || (breakdownCategory && breakdownCategory !== 'All')) && (
         <div className="flex flex-wrap items-center gap-2 bg-emerald-950/20 border border-emerald-900/40 rounded-xl p-3 text-xs">
           <span className="font-bold text-cool-gray-400 uppercase tracking-wider text-[10px]">Active Filters:</span>
           {filterOnlyConflicts && (
@@ -2938,6 +3001,12 @@ export const OffSiteSpreadsheet = ({
             <span className="bg-emerald-950/60 border border-emerald-800/50 px-2 py-1 rounded-lg text-emerald-450 flex items-center gap-1.5 font-bold">
               ✂️ Cuts ({filterCuts.size})
               <button onClick={() => setFilterCuts(new Set())} className="hover:text-white transition-colors cursor-pointer text-[10px] pl-0.5 font-black">✕</button>
+            </span>
+          )}
+          {filterPrimals.size > 0 && (
+            <span className="bg-cyan-950/60 border border-cyan-800/50 px-2 py-1 rounded-lg text-cyan-300 flex items-center gap-1.5 font-bold">
+              Primal Cuts ({filterPrimals.size})
+              <button onClick={() => setFilterPrimals(new Set())} className="hover:text-white transition-colors cursor-pointer text-[10px] pl-0.5 font-black">✕</button>
             </span>
           )}
           {filterOnlySplitBoxes && (
@@ -3003,6 +3072,7 @@ export const OffSiteSpreadsheet = ({
           <button
             onClick={() => {
               setFilterCuts(new Set());
+              setFilterPrimals(new Set());
               setFilterPallets(new Set());
               setFilterLocations(new Set());
               setFilterMoveTo(new Set());
@@ -3357,6 +3427,30 @@ export const OffSiteSpreadsheet = ({
                         <div 
                           className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-emerald-500/50 active:bg-emerald-500 transition-colors z-30"
                           onMouseDown={(e) => handleResizeStart(e, 'category')}
+                        />
+                      </th>
+                    )}
+                    {visibleColumns?.has('primal') && (
+                      <th 
+                        className="sticky bg-cool-gray-800 z-20 py-1.5 px-2.5 select-none border-b border-cool-gray-750 shadow-xs first:rounded-tl-2xl last:rounded-tr-2xl" 
+                        style={{ top: headerStickyTop, width: columnWidths.primal || 155, minWidth: columnWidths.primal || 155 }}
+                      >
+                        <div className="flex items-center gap-2 overflow-hidden">
+                          <span className="cursor-pointer hover:text-white truncate" onClick={() => toggleSort('primal')}>
+                            Primal {sortField === 'primal' && (sortAsc ? '↑' : '↓')}
+                          </span>
+                          <div className="relative shrink-0">
+                            <Filter 
+                              size={14} 
+                              className={`cursor-pointer transition-colors ${filterPrimals.size > 0 ? 'text-cyan-400 hover:text-cyan-300' : 'text-cool-gray-400 hover:text-white'}`} 
+                              onClick={(e) => { e.stopPropagation(); setOpenFilter(openFilter === 'primal' ? null : 'primal'); }} 
+                            />
+                            {openFilter === 'primal' && renderFilterDropdown('primal', allPrimals, filterPrimals, setFilterPrimals, primalsSearch, setPrimalsSearch)}
+                          </div>
+                        </div>
+                        <div 
+                          className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-emerald-500/50 active:bg-emerald-500 transition-colors z-30"
+                          onMouseDown={(e) => handleResizeStart(e, 'primal')}
                         />
                       </th>
                     )}
@@ -3863,6 +3957,17 @@ export const OffSiteSpreadsheet = ({
                         <div className="overflow-hidden">
                           {Array.from(new Set(group.items.map(item => `${item.primaryCategory || 'Off-Site / Uncategorized'} / ${item.subCategory || 'Off-Site / Uncategorized'}`))).map((cat, i) => (
                             <div key={i} className="text-xs text-cool-gray-400 font-medium truncate" title={cat}>{cat}</div>
+                          ))}
+                        </div>
+                      </td>
+)}
+                      {visibleColumns?.has('primal') && (
+  <td className="py-1.5 px-2.5 text-cool-gray-300" style={{ width: columnWidths.primal || 155, minWidth: columnWidths.primal || 155, maxWidth: columnWidths.primal || 155 }}>
+                        <div className="overflow-hidden">
+                          {Array.from(new Set(group.items.map((item: any) => item.primalLabel || 'Unassigned'))).map((primal, i) => (
+                            <div key={i} className={`text-xs truncate ${primal === 'Unassigned' ? 'text-cool-gray-500' : 'text-cool-gray-300 font-medium'}`} title={primal}>
+                              {primal === 'Unassigned' ? '—' : primal}
+                            </div>
                           ))}
                         </div>
                       </td>
@@ -4579,6 +4684,17 @@ export const OffSiteSpreadsheet = ({
                                     <span>{item.primaryCategory}</span>
                                     <span className="text-cool-gray-600 mx-1 font-normal">/</span>
                                     <span className="italic normal-case text-cool-gray-600">{item.subCategory}</span>
+                                  </div>
+                                </td>
+                              )}
+                              {visibleColumns?.has('primal') && (
+                                <td className="py-1 px-2.5 text-[11px] text-cool-gray-400" style={{ width: columnWidths.primal || 155, minWidth: columnWidths.primal || 155, maxWidth: columnWidths.primal || 155 }}>
+                                  <div className="truncate" title={item.primalLabel || 'Unassigned'}>
+                                    {item.primalLabel && item.primalLabel !== 'Unassigned' ? (
+                                      <span className="text-cool-gray-300">{item.primalLabel}</span>
+                                    ) : (
+                                      <span className="text-cool-gray-600">—</span>
+                                    )}
                                   </div>
                                 </td>
                               )}

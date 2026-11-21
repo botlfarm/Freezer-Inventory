@@ -46,6 +46,8 @@ import { OfflineSyncBadge } from './components/OfflineSyncBadge';
 import { SecurityTokenModal } from './components/SecurityTokenModal';
 import { cleanTokenRefreshUrlParams, executeSecurityTokenRefresh, isCloudflareTokenRefreshEnabled } from './utils/authSecurity';
 import { useHeaderMenuDismiss } from './utils/headerMenuDismiss';
+import { PrimalSelect } from './components/PrimalSelect';
+import { buildSpeciesPrimalIndex, resolveProductPrimal, UNASSIGNED_PRIMAL_ID } from './utils/speciesPrimals';
 
 const VALID_VIEWS: Set<View> = new Set([
   'freezer', 'product', 'library', 'history', 'reconcile', 'import', 
@@ -980,7 +982,7 @@ function AppContent() {
     if (saved) {
       try { return new Set(JSON.parse(saved)); } catch (e) {}
     }
-    return new Set(['box', 'cuts', 'category', 'weight', 'pieces', 'location', 'pallet', 'movedTo', 'flag']);
+    return new Set(['box', 'cuts', 'category', 'primal', 'weight', 'pieces', 'location', 'pallet', 'movedTo', 'flag']);
   });
 
   const offsiteActionsRef = React.useRef<{
@@ -1385,11 +1387,19 @@ function AppContent() {
   // Centralized Filters State
   const [selectedPrimary, setSelectedPrimary] = useState<string | null>(null);
   const [selectedSub, setSelectedSub] = useState<string | null>(null);
+  const [selectedSpeciesId, setSelectedSpeciesId] = useState<string>('');
+  const [selectedPrimalId, setSelectedPrimalId] = useState<string>('');
+  const [groupByPrimal, setGroupByPrimal] = useState<boolean>(false);
   const [selectedFreezerId, setSelectedFreezerId] = useState<string>('all');
   const [hideZeroQuantity, setHideZeroQuantity] = useState(true);
   const [showZeroQtyWithStock, setShowZeroQtyWithStock] = useState(true);
   const [checkedTagIds, setCheckedTagIds] = useState<string[] | null>(null);
   const [isTagDropdownOpen, setIsTagDropdownOpen] = useState(false);
+
+  const speciesPrimalIndex = useMemo(
+    () => buildSpeciesPrimalIndex(state.speciesPrimals),
+    [state.speciesPrimals]
+  );
 
   const allTagIds = useMemo(() => {
     return ['untagged', ...(state.tags || []).map(t => t.id)];
@@ -1478,12 +1488,15 @@ function AppContent() {
   const activeFiltersCount = useMemo(() => {
     let count = 0;
     if (selectedPrimary) count++;
+    if (selectedSpeciesId) count++;
+    if (selectedPrimalId) count++;
+    if (groupByPrimal && (currentView === 'product' || currentView === 'display_case')) count++;
     if (selectedFreezerId && selectedFreezerId !== 'all') count++;
     if (!hideZeroQuantity) count++;
     if (currentView === 'display_case' && !showZeroQtyWithStock) count++;
     if (checkedTagIds !== null && checkedTagIds.length !== allTagIds.length) count++;
     return count;
-  }, [selectedPrimary, selectedFreezerId, hideZeroQuantity, showZeroQtyWithStock, currentView, checkedTagIds, allTagIds]);
+  }, [selectedPrimary, selectedSpeciesId, selectedPrimalId, groupByPrimal, selectedFreezerId, hideZeroQuantity, showZeroQtyWithStock, currentView, checkedTagIds, allTagIds]);
 
   const handleSelectPrimary = (cat: string | null) => {
     setSelectedPrimary(cat);
@@ -2254,10 +2267,13 @@ function AppContent() {
         const container = (state.containers || []).find(c => c.id === mc.containerId);
         const freezer = container?.freezerId ? (state.freezers || []).find(f => f.id === container.freezerId) : null;
 
+        const resolvedPrimal = resolveProductPrimal(product, speciesPrimalIndex);
         const contextString = [
             product?.name,
             product?.primaryCategory,
             product?.subCategory,
+            resolvedPrimal.species?.name,
+            resolvedPrimal.primal?.name,
             ...(Array.isArray(product?.productNumbers) ? product.productNumbers : []),
             container?.name,
             freezer?.name,
@@ -2427,6 +2443,8 @@ function AppContent() {
             }}
             selectedPrimary={selectedPrimary}
             selectedSub={selectedSub}
+            selectedSpeciesId={selectedSpeciesId}
+            selectedPrimalId={selectedPrimalId}
             selectedFreezerId={selectedFreezerId}
             hideZeroQuantity={hideZeroQuantity}
             activeCheckedTags={activeCheckedTags}
@@ -2452,6 +2470,9 @@ function AppContent() {
             onClearSelectedProduct={() => setSelectedProductId(null)}
             selectedPrimary={selectedPrimary}
             selectedSub={selectedSub}
+            selectedSpeciesId={selectedSpeciesId}
+            selectedPrimalId={selectedPrimalId}
+            groupByPrimal={groupByPrimal}
             selectedFreezerId={selectedFreezerId}
             hideZeroQuantity={hideZeroQuantity}
             showZeroQtyWithStock={showZeroQtyWithStock}
@@ -2472,6 +2493,9 @@ function AppContent() {
             onClearSelectedProduct={() => setSelectedProductId(null)}
             selectedPrimary={selectedPrimary}
             selectedSub={selectedSub}
+            selectedSpeciesId={selectedSpeciesId}
+            selectedPrimalId={selectedPrimalId}
+            groupByPrimal={groupByPrimal}
             selectedFreezerId={selectedFreezerId}
             hideZeroQuantity={hideZeroQuantity}
             activeCheckedTags={activeCheckedTags}
@@ -4333,13 +4357,16 @@ function AppContent() {
                     )}
 
                     {/* Reset All Filters Button */}
-                    {(searchTerm || selectedPrimary || (selectedFreezerId && selectedFreezerId !== 'all') || (checkedTagIds !== null && checkedTagIds.length !== allTagIds.length) || !hideZeroQuantity) && (
+                    {(searchTerm || selectedPrimary || selectedSpeciesId || selectedPrimalId || groupByPrimal || (selectedFreezerId && selectedFreezerId !== 'all') || (checkedTagIds !== null && checkedTagIds.length !== allTagIds.length) || !hideZeroQuantity) && (
                       <button
                         type="button"
                         onClick={() => {
                           setSearchTerm('');
                           setSelectedPrimary(null);
                           setSelectedSub(null);
+                          setSelectedSpeciesId('');
+                          setSelectedPrimalId('');
+                          setGroupByPrimal(false);
                           setSelectedFreezerId('all');
                           setCheckedTagIds(allTagIds);
                           setHideZeroQuantity(true);
@@ -4356,7 +4383,7 @@ function AppContent() {
                 </div>
 
                 {/* Bottom Row: Filter Selectors & Sort Controls Grid */}
-                <div className={`grid grid-cols-1 sm:grid-cols-2 ${(currentView === 'product' || currentView === 'display_case') ? 'lg:grid-cols-4' : 'lg:grid-cols-3'} gap-3 pt-0.5`}>
+                <div className={`grid grid-cols-1 sm:grid-cols-2 ${(currentView === 'product' || currentView === 'display_case') ? 'lg:grid-cols-5' : 'lg:grid-cols-4'} gap-3 pt-0.5`}>
                   {/* 1. Category Selector */}
                   <div className="flex flex-col gap-1">
                     <label className="text-[10px] font-black uppercase text-cool-gray-400 tracking-wider flex items-center gap-1">
@@ -4385,6 +4412,51 @@ function AppContent() {
                         </React.Fragment>
                       ))}
                     </select>
+                  </div>
+
+                  {/* 1b. Species & Primal Cut Selector */}
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] font-black uppercase text-cool-gray-400 tracking-wider flex items-center justify-between gap-1">
+                      <span>Primal Cut:</span>
+                      {speciesPrimalIndex.speciesList.length > 0 && (
+                        <select
+                          aria-label="Filter by species"
+                          value={selectedSpeciesId}
+                          onChange={(e) => {
+                            const nextSp = e.target.value;
+                            setSelectedSpeciesId(nextSp);
+                            if (nextSp && selectedPrimalId && selectedPrimalId !== UNASSIGNED_PRIMAL_ID) {
+                              const pr = speciesPrimalIndex.primalById.get(selectedPrimalId);
+                              if (pr && pr.parentSpeciesId !== nextSp) setSelectedPrimalId('');
+                            }
+                          }}
+                          className="bg-transparent text-[10px] font-bold text-cyan-400 focus:outline-none cursor-pointer"
+                        >
+                          <option value="" className="bg-cool-gray-900 text-cool-gray-200">All Species</option>
+                          {speciesPrimalIndex.speciesList.map((sp) => (
+                            <option key={sp.id} value={sp.id} className="bg-cool-gray-900 text-cool-gray-200">
+                              {sp.name}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                    </label>
+                    <PrimalSelect
+                      speciesPrimals={state.speciesPrimals}
+                      speciesFilterId={selectedSpeciesId || undefined}
+                      value={selectedPrimalId}
+                      onChange={setSelectedPrimalId}
+                      includeEmptyOption
+                      emptyOptionLabel="All Primals"
+                      emptyOptionValue=""
+                      includeUnassignedFilterOption
+                      unassignedFilterLabel="Unassigned Primal"
+                      className={`bg-cool-gray-850 text-xs font-bold rounded-lg border py-2 px-3 outline-none cursor-pointer focus:ring-1 w-full transition ${
+                        selectedPrimalId || selectedSpeciesId
+                          ? isDisplay ? 'text-amber-400 border-amber-500/60 bg-amber-950/20' : 'text-cyan-400 border-cyan-500/60 bg-cyan-950/20'
+                          : 'text-cool-gray-300 border-cool-gray-700 hover:border-cool-gray-600'
+                      }`}
+                    />
                   </div>
 
                   {/* 2. Storage Location Selector */}
@@ -4546,31 +4618,49 @@ function AppContent() {
                           <SlidersHorizontal className="w-2.5 h-2.5" /> Configure
                         </button>
                       </label>
-                      <div className="grid grid-cols-2 gap-1 bg-cool-gray-850 p-1 rounded-lg border border-cool-gray-700 h-[38px] items-center">
+                      <div className="grid grid-cols-3 gap-1 bg-cool-gray-850 p-1 rounded-lg border border-cool-gray-700 h-[38px] items-center">
                         <button
                           type="button"
-                          onClick={() => handleToggleSortMode('alphabetical')}
+                          onClick={() => {
+                            setGroupByPrimal(false);
+                            handleToggleSortMode('alphabetical');
+                          }}
                           className={`h-full rounded-md font-bold transition cursor-pointer text-xs flex items-center justify-center ${
-                            (isDisplay ? sortConfig.displaySortMode : sortConfig.productSortMode) === 'alphabetical'
+                            !groupByPrimal && (isDisplay ? sortConfig.displaySortMode : sortConfig.productSortMode) === 'alphabetical'
                               ? isDisplay ? 'bg-amber-600 text-black shadow-xs font-extrabold' : 'bg-cyan-600 text-white shadow-xs font-extrabold'
                               : 'text-cool-gray-400 hover:text-cool-gray-200'
                           }`}
-                          title="Sort alphabetically (A-Z)"
+                          title="Sort alphabetically (A-Z) by Category"
                         >
                           A-Z
                         </button>
                         <button
                           type="button"
-                          onClick={() => handleToggleSortMode('custom')}
+                          onClick={() => {
+                            setGroupByPrimal(false);
+                            handleToggleSortMode('custom');
+                          }}
                           className={`h-full rounded-md font-bold transition cursor-pointer text-xs flex items-center justify-center gap-1 ${
-                            (isDisplay ? sortConfig.displaySortMode : sortConfig.productSortMode) === 'custom'
+                            !groupByPrimal && (isDisplay ? sortConfig.displaySortMode : sortConfig.productSortMode) === 'custom'
                               ? isDisplay ? 'bg-amber-600 text-black shadow-xs font-extrabold' : 'bg-cyan-600 text-white shadow-xs font-extrabold'
                               : 'text-cool-gray-400 hover:text-cool-gray-200'
                           }`}
                           title="Sort by custom user-defined hierarchy order"
                         >
-                          <Sparkles className={`w-3 h-3 ${isDisplay && (sortConfig.displaySortMode === 'custom') ? 'text-black' : isDisplay ? 'text-amber-300' : 'text-cyan-300'}`} />
+                          <Sparkles className={`w-3 h-3 ${!groupByPrimal && isDisplay && (sortConfig.displaySortMode === 'custom') ? 'text-black' : isDisplay ? 'text-amber-300' : 'text-cyan-300'}`} />
                           Custom
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setGroupByPrimal((prev) => !prev)}
+                          className={`h-full rounded-md font-bold transition cursor-pointer text-xs flex items-center justify-center ${
+                            groupByPrimal
+                              ? isDisplay ? 'bg-amber-600 text-black shadow-xs font-extrabold' : 'bg-cyan-600 text-white shadow-xs font-extrabold'
+                              : 'text-cool-gray-400 hover:text-cool-gray-200'
+                          }`}
+                          title="Group and sort inventory by Species and Primal Cut"
+                        >
+                          Primal
                         </button>
                       </div>
                     </div>
@@ -4674,6 +4764,7 @@ function AppContent() {
                           { id: 'box', label: 'Box' },
                           { id: 'cuts', label: 'Cuts' },
                           { id: 'category', label: 'Category' },
+                          { id: 'primal', label: 'Primal Cut' },
                           { id: 'weight', label: 'Weight' },
                           { id: 'pieces', label: 'Pieces' },
                           { id: 'location', label: 'Location' },

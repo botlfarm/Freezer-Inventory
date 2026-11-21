@@ -5,6 +5,7 @@ import { MoreVertical, Package } from 'lucide-react';
 import { InventoryState, Action, ModalType } from '../types';
 import ContainerCard from '../components/ContainerCard';
 import { FreezerIcon } from '../components/icons';
+import { buildSpeciesPrimalIndex, resolveProductPrimal, UNASSIGNED_PRIMAL_ID } from '../utils/speciesPrimals';
 
 interface FreezerViewProps {
     state: InventoryState;
@@ -21,6 +22,8 @@ interface FreezerViewProps {
     onFindProduct: (productId: string) => void;
     selectedPrimary: string | null;
     selectedSub: string | null;
+    selectedSpeciesId?: string;
+    selectedPrimalId?: string;
     selectedFreezerId: string;
     hideZeroQuantity: boolean;
     activeCheckedTags: string[];
@@ -40,6 +43,8 @@ const FreezerView: React.FC<FreezerViewProps> = ({
     onFindProduct,
     selectedPrimary,
     selectedSub,
+    selectedSpeciesId = '',
+    selectedPrimalId = '',
     selectedFreezerId,
     hideZeroQuantity,
     activeCheckedTags = [],
@@ -47,6 +52,10 @@ const FreezerView: React.FC<FreezerViewProps> = ({
     setSelectedSub,
     onNavigateToOffsiteStaging
 }) => {
+    const speciesPrimalIndex = useMemo(
+        () => buildSpeciesPrimalIndex(state.speciesPrimals),
+        [state.speciesPrimals]
+    );
     const [dragOverFreezerId, setDragOverFreezerId] = useState<string | null>(null);
     const [isDragOverStaging, setIsDragOverStaging] = useState<boolean>(false);
     const [isStagingMenuOpen, setIsStagingMenuOpen] = useState<boolean>(false);
@@ -168,6 +177,17 @@ const FreezerView: React.FC<FreezerViewProps> = ({
             
             if (selectedPrimary && product.primaryCategory !== selectedPrimary) return false;
             if (selectedSub && product.subCategory !== selectedSub) return false;
+            if (selectedSpeciesId) {
+                const resolved = resolveProductPrimal(product, speciesPrimalIndex);
+                if (resolved?.species?.id !== selectedSpeciesId) return false;
+            }
+            if (selectedPrimalId) {
+                if (selectedPrimalId === UNASSIGNED_PRIMAL_ID) {
+                    if (resolveProductPrimal(product, speciesPrimalIndex)?.primal) return false;
+                } else if (product.primalId !== selectedPrimalId) {
+                    return false;
+                }
+            }
             
             if (selectedFreezerId !== 'all') {
                 const container = state.containers.find(c => c.id === mc.containerId);
@@ -176,7 +196,7 @@ const FreezerView: React.FC<FreezerViewProps> = ({
             
             return true;
         });
-    }, [state.meatCuts, state.products, state.containers, hideZeroQuantity, activeCheckedTags, selectedPrimary, selectedSub, selectedFreezerId]);
+    }, [state.meatCuts, state.products, state.containers, hideZeroQuantity, activeCheckedTags, selectedPrimary, selectedSub, selectedSpeciesId, selectedPrimalId, speciesPrimalIndex, selectedFreezerId]);
 
     const stagedContainers = useMemo(() => {
         return state.containers.filter(c => {
@@ -567,9 +587,9 @@ const FreezerView: React.FC<FreezerViewProps> = ({
                         containers = containers.filter(c => searchResults.containerIds.has(c.id));
                     }
 
-                    if (hideZeroQuantity) {
+                    if (hideZeroQuantity || selectedPrimary || selectedSpeciesId || selectedPrimalId) {
                         containers = containers.filter(container => 
-                            filteredMeatCuts.some(mc => mc.containerId === container.id && mc.quantity > 0)
+                            filteredMeatCuts.some(mc => mc.containerId === container.id && (!hideZeroQuantity || mc.quantity > 0))
                         );
                     }
                     

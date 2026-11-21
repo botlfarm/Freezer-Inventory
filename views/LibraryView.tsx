@@ -25,8 +25,15 @@ import { PWAInstallButton } from "../components/PWAInstallButton";
 import { UsersAndDevicesPanel } from "../components/UsersAndDevicesPanel";
 import { VoiceDictionaryManager } from "../components/VoiceDictionaryManager";
 import { ButcherSettingsPanel } from "../components/ButcherSettingsPanel";
+import { SpeciesPrimalsManager } from "../components/SpeciesPrimalsManager";
+import { PrimalSelect, BULK_PRIMAL_NO_CHANGE, BULK_PRIMAL_CLEAR } from "../components/PrimalSelect";
 import { ManagementForms, ManageFreezers } from "../components/ManagementForms";
 import { CatalogSearchFilterBar } from "../components/CatalogSearchFilterBar";
+import {
+  buildSpeciesPrimalIndex,
+  resolveProductPrimal,
+  UNASSIGNED_PRIMAL_ID,
+} from "../utils/speciesPrimals";
 import { getTagActionIcon } from "../utils/tagRestockRules";
 import {
   getContainerIcon,
@@ -1067,13 +1074,15 @@ const LibraryView: React.FC<{
   const [searchTerm, setSearchTerm] = useState("");
   const [showAddForm, setShowAddForm] = useState(false);
   const [sortBy, setSortBy] = useState<
-    "name_asc" | "name_desc" | "stock_asc" | "stock_desc" | "understock"
+    "name_asc" | "name_desc" | "stock_asc" | "stock_desc" | "understock" | "primal_asc"
   >("name_asc");
   const [stockLocationFilter, setStockLocationFilter] = useState<
     "all" | "onsite" | "offsite" | "both" | "instock" | "out_of_stock"
   >("all");
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
   const [subCategoryFilter, setSubCategoryFilter] = useState<string>("all");
+  const [speciesFilter, setSpeciesFilter] = useState<string>("");
+  const [primalFilter, setPrimalFilter] = useState<string>("");
   const [collapsedCategories, setCollapsedCategories] = useState<
     Record<string, boolean>
   >({});
@@ -1127,9 +1136,15 @@ const LibraryView: React.FC<{
   const [isProductBulkDeleteOpen, setIsProductBulkDeleteOpen] = useState(false);
   const [bulkProductPrimary, setBulkProductPrimary] = useState("");
   const [bulkProductSub, setBulkProductSub] = useState("");
+  const [bulkProductPrimal, setBulkProductPrimal] = useState<string>(BULK_PRIMAL_NO_CHANGE);
   const [bulkDefaultTagIds, setBulkDefaultTagIds] = useState<string[]>([]);
   const [bulkDefaultTagsMode, setBulkDefaultTagsMode] = useState<'append' | 'replace'>('append');
   const [bulkModifyTags, setBulkModifyTags] = useState<boolean>(false);
+
+  const speciesPrimalIndex = useMemo(
+    () => buildSpeciesPrimalIndex(state.speciesPrimals),
+    [state.speciesPrimals],
+  );
 
   const currentQuantityMap = useMemo(() => {
     return state.meatCuts.reduce(
@@ -1386,6 +1401,21 @@ const LibraryView: React.FC<{
       });
     }
 
+    if (speciesFilter) {
+      productsToGroup = productsToGroup.filter((p) => {
+        const resolved = resolveProductPrimal(p, speciesPrimalIndex);
+        return resolved?.species?.id === speciesFilter;
+      });
+    }
+
+    if (primalFilter) {
+      if (primalFilter === UNASSIGNED_PRIMAL_ID) {
+        productsToGroup = productsToGroup.filter((p) => !resolveProductPrimal(p, speciesPrimalIndex)?.primal);
+      } else {
+        productsToGroup = productsToGroup.filter((p) => p.primalId === primalFilter);
+      }
+    }
+
     if (searchWords.length > 0) {
       productsToGroup = productsToGroup.filter((p) => {
         const nameLower = p.name.toLowerCase();
@@ -1393,11 +1423,16 @@ const LibraryView: React.FC<{
           p.primaryCategory || "Uncategorized"
         ).toLowerCase();
         const subLower = (p.subCategory || "General").toLowerCase();
+        const resolved = resolveProductPrimal(p, speciesPrimalIndex);
+        const primalLower = (resolved?.primal?.name || "").toLowerCase();
+        const speciesLower = (resolved?.species?.name || "").toLowerCase();
         return searchWords.every(
           (word) =>
             nameLower.includes(word) ||
             primaryLower.includes(word) ||
             subLower.includes(word) ||
+            primalLower.includes(word) ||
+            speciesLower.includes(word) ||
             (p.productNumbers || []).some((n) =>
               n.toLowerCase().includes(word),
             ) ||
@@ -1415,7 +1450,7 @@ const LibraryView: React.FC<{
     });
 
     return map;
-  }, [state.products, searchTerm, productArchiveFilter, categoryFilter, subCategoryFilter, stockLocationFilter, currentQuantityMap, offSiteQuantityMap, offSiteWeightMap]);
+  }, [state.products, searchTerm, productArchiveFilter, categoryFilter, subCategoryFilter, stockLocationFilter, speciesFilter, primalFilter, speciesPrimalIndex, currentQuantityMap, offSiteQuantityMap, offSiteWeightMap]);
 
   const sortedCategoriesMap = useMemo(() => {
     const sortedMap: Record<string, Record<string, Product[]>> = {};
@@ -1486,6 +1521,15 @@ const LibraryView: React.FC<{
                   if (resA.limit !== resB.limit) return resB.limit - resA.limit;
                   return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
                 }
+                case "primal_asc": {
+                  const resA = resolveProductPrimal(a, speciesPrimalIndex);
+                  const resB = resolveProductPrimal(b, speciesPrimalIndex);
+                  const labelA = resA?.primal ? resA.fullLabel : "\uffff";
+                  const labelB = resB?.primal ? resB.fullLabel : "\uffff";
+                  const cmp = labelA.localeCompare(labelB, undefined, { numeric: true, sensitivity: 'base' });
+                  if (cmp !== 0) return cmp;
+                  return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+                }
                 case "name_asc":
                 default:
                   return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
@@ -1497,7 +1541,7 @@ const LibraryView: React.FC<{
       });
 
     return sortedMap;
-  }, [categoriesMap, sortBy, currentQuantityMap, offSiteQuantityMap, offSiteWeightMap, state.customLists]);
+  }, [categoriesMap, sortBy, speciesPrimalIndex, currentQuantityMap, offSiteQuantityMap, offSiteWeightMap, state.customLists]);
 
   // Product bulk action helpers
   const actualSelectedProductIds = useMemo(() => {
@@ -1568,6 +1612,8 @@ const LibraryView: React.FC<{
       categoryFilter !== "all" ||
       subCategoryFilter !== "all" ||
       stockLocationFilter !== "all" ||
+      speciesFilter !== "" ||
+      primalFilter !== "" ||
       productArchiveFilter !== "active";
 
     return {
@@ -1592,6 +1638,8 @@ const LibraryView: React.FC<{
     categoryFilter,
     subCategoryFilter,
     stockLocationFilter,
+    speciesFilter,
+    primalFilter,
   ]);
 
   const handleProductToggleAllMatched = () => {
@@ -1631,18 +1679,23 @@ const LibraryView: React.FC<{
   };
 
   const handleProductBulkEdit = () => {
-    if (!bulkProductPrimary.trim() && !bulkProductSub.trim() && !bulkModifyTags) {
-      alert('Please specify at least a Category update or enable Default Tag modifications.');
+    const hasPrimalUpdate = bulkProductPrimal !== BULK_PRIMAL_NO_CHANGE;
+    if (!bulkProductPrimary.trim() && !bulkProductSub.trim() && !bulkModifyTags && !hasPrimalUpdate) {
+      alert('Please specify at least a Category update, a Primal Cut change, or enable Default Tag modifications.');
       return;
     }
     const updates: { 
       primaryCategory?: string; 
       subCategory?: string; 
+      primalId?: string | null;
       defaultTagIds?: string[]; 
       defaultTagsMode?: 'append' | 'replace' 
     } = {};
     if (bulkProductPrimary.trim()) updates.primaryCategory = bulkProductPrimary.trim();
     if (bulkProductSub.trim()) updates.subCategory = bulkProductSub.trim();
+    if (hasPrimalUpdate) {
+      updates.primalId = bulkProductPrimal === BULK_PRIMAL_CLEAR ? null : bulkProductPrimal;
+    }
     
     if (bulkModifyTags) {
       updates.defaultTagIds = bulkDefaultTagIds;
@@ -1660,6 +1713,7 @@ const LibraryView: React.FC<{
     setIsProductBulkEditOpen(false);
     setBulkProductPrimary('');
     setBulkProductSub('');
+    setBulkProductPrimal(BULK_PRIMAL_NO_CHANGE);
     setBulkDefaultTagIds([]);
     setBulkDefaultTagsMode('append');
     setBulkModifyTags(false);
@@ -1669,6 +1723,7 @@ const LibraryView: React.FC<{
     setIsProductBulkEditOpen(false);
     setBulkProductPrimary('');
     setBulkProductSub('');
+    setBulkProductPrimal(BULK_PRIMAL_NO_CHANGE);
     setBulkDefaultTagIds([]);
     setBulkDefaultTagsMode('append');
     setBulkModifyTags(false);
@@ -2611,6 +2666,8 @@ const LibraryView: React.FC<{
         const activeProductFilterCount =
           (categoryFilter !== "all" ? 1 : 0) +
           (stockLocationFilter !== "all" ? 1 : 0) +
+          (speciesFilter ? 1 : 0) +
+          (primalFilter ? 1 : 0) +
           (sortBy !== "name_asc" ? 1 : 0);
 
         return (
@@ -2618,7 +2675,7 @@ const LibraryView: React.FC<{
             <CatalogSearchFilterBar
               searchValue={searchTerm}
               onSearchChange={setSearchTerm}
-              searchPlaceholder="Search products, categories, SKU, or barcode..."
+              searchPlaceholder="Search products, categories, primals, SKU, or barcode..."
               isFiltersOpen={showProductFilters}
               onToggleFilters={() => setShowProductFilters((prev) => !prev)}
               activeFilterCount={activeProductFilterCount}
@@ -2626,11 +2683,13 @@ const LibraryView: React.FC<{
                 setCategoryFilter('all');
                 setSubCategoryFilter('all');
                 setStockLocationFilter('all');
+                setSpeciesFilter('');
+                setPrimalFilter('');
                 setSortBy('name_asc');
                 setSearchTerm('');
               }}
             >
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5">
                 <div className="space-y-1">
                   <label className="text-[11px] font-bold text-cool-gray-400 uppercase tracking-wider block">
                     Category / Subcategory
@@ -2697,6 +2756,49 @@ const LibraryView: React.FC<{
 
                 <div className="space-y-1">
                   <label className="text-[11px] font-bold text-cool-gray-400 uppercase tracking-wider block">
+                    Species
+                  </label>
+                  <select
+                    value={speciesFilter}
+                    onChange={(e) => {
+                      const nextSp = e.target.value;
+                      setSpeciesFilter(nextSp);
+                      if (nextSp && primalFilter && primalFilter !== UNASSIGNED_PRIMAL_ID) {
+                        const pr = speciesPrimalIndex.primalById.get(primalFilter);
+                        if (pr && pr.parentSpeciesId !== nextSp) setPrimalFilter("");
+                      }
+                    }}
+                    className="w-full h-9 bg-cool-gray-900 border border-cool-gray-750 rounded-lg px-2.5 text-xs text-white font-semibold outline-none focus:border-cyan-500 cursor-pointer"
+                  >
+                    <option value="">All Species</option>
+                    {speciesPrimalIndex.speciesList.map((sp) => (
+                      <option key={sp.id} value={sp.id}>
+                        {sp.icon ? `${sp.icon} ${sp.name}` : sp.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[11px] font-bold text-cool-gray-400 uppercase tracking-wider block">
+                    Primal Cut
+                  </label>
+                  <PrimalSelect
+                    speciesPrimals={state.speciesPrimals}
+                    speciesFilterId={speciesFilter || undefined}
+                    value={primalFilter}
+                    onChange={setPrimalFilter}
+                    includeEmptyOption
+                    emptyOptionLabel="All Primals"
+                    emptyOptionValue=""
+                    includeUnassignedFilterOption
+                    unassignedFilterLabel="Unassigned Primal"
+                    className="w-full h-9 bg-cool-gray-900 border border-cool-gray-750 rounded-lg px-2.5 text-xs text-white font-semibold outline-none focus:border-cyan-500 cursor-pointer"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[11px] font-bold text-cool-gray-400 uppercase tracking-wider block">
                     Sort Order
                   </label>
                   <select
@@ -2706,6 +2808,7 @@ const LibraryView: React.FC<{
                   >
                     <option value="name_asc">Name: A to Z</option>
                     <option value="name_desc">Name: Z to A</option>
+                    <option value="primal_asc">Primal Cut: A to Z</option>
                     <option value="stock_asc">Stock: Low to High</option>
                     <option value="stock_desc">Stock: High to Low</option>
                     <option value="understock">Understocked First</option>
@@ -2726,6 +2829,8 @@ const LibraryView: React.FC<{
                       setCategoryFilter('all');
                       setSubCategoryFilter('all');
                       setStockLocationFilter('all');
+                      setSpeciesFilter('');
+                      setPrimalFilter('');
                       setProductArchiveFilter('active');
                       setSortBy('name_asc');
                       setSearchTerm('');
@@ -3209,10 +3314,19 @@ const LibraryView: React.FC<{
                                         </div>
                                       )}
                                       <div>
-                                        <div className="flex items-center gap-2">
+                                        <div className="flex items-center gap-2 flex-wrap">
                                           <p className="text-cool-gray-100 font-semibold text-sm">
                                             {product.name}
                                           </p>
+                                          {(() => {
+                                            const resolved = resolveProductPrimal(product, speciesPrimalIndex);
+                                            if (!resolved?.primal) return null;
+                                            return (
+                                              <span className="text-xs text-cool-gray-400 font-medium">
+                                                · {resolved.species ? `${resolved.species.name} · ${resolved.primal.name}` : resolved.primal.name}
+                                              </span>
+                                            );
+                                          })()}
                                           {product.isArchived && (
                                             <span className="text-[10px] font-extrabold px-2 py-0.5 rounded bg-amber-950 text-amber-300 border border-amber-800/80 shrink-0 shadow-xs">
                                               Archived
@@ -3386,6 +3500,8 @@ const LibraryView: React.FC<{
           </div>
         );
       }
+      case "species_primals":
+        return <SpeciesPrimalsManager state={state} dispatch={dispatch} />;
       case "containers":
         return renderContainersTab();
       case "freezers":
@@ -3448,7 +3564,13 @@ const LibraryView: React.FC<{
         );
       }
       case "butcher_settings": {
-        return <ButcherSettingsPanel state={state} dispatch={dispatch} />;
+        return (
+          <ButcherSettingsPanel
+            state={state}
+            dispatch={dispatch}
+            onNavigateToSpeciesPrimals={() => handleSwitchTab("species_primals")}
+          />
+        );
       }
       case "settings": {
         if (!authLoaded) {
@@ -4456,6 +4578,7 @@ const LibraryView: React.FC<{
   const renderSectionNavIcon = (id: LibrarySectionMeta['id']) => {
     switch (id) {
       case 'products': return <Package className="w-4 h-4 shrink-0" />;
+      case 'species_primals': return <Beef className="w-4 h-4 shrink-0" />;
       case 'containers': return <Layers className="w-4 h-4 shrink-0" />;
       case 'freezers': return <Snowflake className="w-4 h-4 shrink-0" />;
       case 'lists': return <ClipboardList className="w-4 h-4 shrink-0" />;
@@ -5123,12 +5246,13 @@ const LibraryView: React.FC<{
               onClick={() => {
                 setBulkProductPrimary("");
                 setBulkProductSub("");
+                setBulkProductPrimal(BULK_PRIMAL_NO_CHANGE);
                 setIsProductBulkEditOpen(true);
               }}
               className="text-xs px-3 py-2 bg-emerald-105 hover:bg-emerald-250 dark:bg-emerald-950/60 dark:hover:bg-emerald-900/50 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-900/40 rounded-lg transition-all font-semibold flex items-center gap-1.5 shadow-sm cursor-pointer"
-              title="Assign a new primary or subcategory to selected products"
+              title="Assign categories, primal cut, or default tags to selected products"
             >
-              ✏️ Bulk Edit Categories
+              ✏️ Bulk Edit Properties
             </button>
 
             <button
@@ -5215,6 +5339,20 @@ const LibraryView: React.FC<{
                     className="bg-cool-gray-905 text-cool-gray-100 text-xs rounded-lg border border-cool-gray-700 px-3 py-2 w-1/2 focus:ring-1 focus:ring-cyan-500 outline-none animate-fade-in"
                   />
                 </div>
+              </div>
+
+              {/* Primal Cut Assignment */}
+              <div className="space-y-1.5">
+                <label className="block text-xs font-bold text-cool-gray-300">
+                  Primal Cut
+                </label>
+                <PrimalSelect
+                  speciesPrimals={state.speciesPrimals}
+                  value={bulkProductPrimal}
+                  onChange={setBulkProductPrimal}
+                  bulkMode
+                  className="w-full bg-cool-gray-905 text-cool-gray-100 text-xs rounded-lg border border-cool-gray-700 p-2 focus:ring-1 focus:ring-cyan-500 outline-none cursor-pointer"
+                />
               </div>
 
               {/* Default Tags Modification Section */}

@@ -1,6 +1,6 @@
 {
   "name": "Freezer Inventory Tracker",
-  "version": "2.88.1",
+  "version": "2.89.1",
   "slug": "freezer_inventory",
   "description": "Comprehensive freezer, butcher processing, and off-site cold storage inventory tracker.",
   "image": "ghcr.io/botlfarm/freezer-inventory-tracker-{arch}",

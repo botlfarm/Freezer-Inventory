@@ -29,11 +29,22 @@ interface Container {
   imageUrl?: string;   // Optional image URL
 }
 
+interface SpeciesPrimal {
+  id: string;              // Unique ID, e.g., "sp_beef" or "pr_beef_rib"
+  name: string;            // Display name, e.g., "Beef" or "Rib"
+  type: 'species' | 'primal';
+  parentSpeciesId?: string; // Required when type === 'primal', matches parent species id
+  icon?: string;
+  description?: string;
+  sortOrder?: number;
+}
+
 interface Product {
   id: string;          // Unique product ID, matches meatCuts.productId
   name: string;        // Display name, e.g., "Beef Ribeye Steak"
   primaryCategory: string; // e.g., "Beef", "Pork", "Poultry", "Seafood"
   subCategory: string; // e.g., "Steaks", "Ground", "Roasts", "Ribs"
+  primalId?: string;   // Optional 1-to-1 FK referencing a 'primal' entry in speciesPrimals
   imageUrl?: string;   // Optional image URL
   productNumbers?: string[]; // Optional backend processor SKU/item numbers, e.g., ["15425"]
   barcode?: string;    // Optional 12-digit 0-lb base UPC-A barcode, e.g., "215425000003"
@@ -89,6 +100,7 @@ interface InventoryState {
   containerTemplates?: ContainerTemplate[];
   containers: Container[];
   categories?: ProductCategory[];
+  speciesPrimals?: SpeciesPrimal[];
   products: Product[];
   meatCuts: MeatCut[];
   locations?: StorageLocation[];
@@ -303,7 +315,7 @@ Below is a complete, syntactically correct example representation showing how 2 
 ```
 Instructions: Save database to a `.json` file and upload it in the Database Settings tab under the "JSON Backup / Restore" option.
 
-> **Optional User Accounts, Sessions & Notification Channels Schema (v2.62.0 / v2.72.0+)**: Full `.db`, `.zip`, and `.json` database backups support all 24 tables including `notificationChannels` (`id`, `name`, `type`: `'smtp_email' | 'webhook' | 'in_app'`, `enabled`, `config`, `createdAt`, `updatedAt`, `lastTestedAt`, `lastTestStatus`), `appUsers` (`id`, `name`, `role`: `'admin' | 'user'`, `pinHash`, `pinSalt`, `isActive`, `createdAt`, `updatedAt`, `lastLoginAt`), `userSessions` (`id`, `userId`, `tokenHash`, `deviceId`, `deviceName`, `userAgent`, `ip`, `createdAt`, `lastSeenAt`, `expiresAt`, `revokedAt`), and `pwaDevices[].userId` linking registered devices to local user accounts. For initial catalog/inventory migrations, omit `appUsers` and `userSessions` so existing user accounts remain untouched unless performing a full disaster recovery restore.
+> **Optional Species & Primals, User Accounts, Sessions & Notification Channels Schema (v2.62.0 / v2.89.0+)**: Full `.db`, `.zip`, and `.json` database backups support all 25 tables including `speciesPrimals` (`id`, `name`, `type`: `'species' | 'primal'`, `parentSpeciesId`, `icon`, `description`, `sortOrder`), `notificationChannels` (`id`, `name`, `type`: `'smtp_email' | 'webhook' | 'in_app'`, `enabled`, `config`, `createdAt`, `updatedAt`, `lastTestedAt`, `lastTestStatus`), `appUsers` (`id`, `name`, `role`: `'admin' | 'user'`, `pinHash`, `pinSalt`, `isActive`, `createdAt`, `updatedAt`, `lastLoginAt`), `userSessions` (`id`, `userId`, `tokenHash`, `deviceId`, `deviceName`, `userAgent`, `ip`, `createdAt`, `lastSeenAt`, `expiresAt`, `revokedAt`), and `pwaDevices[].userId` linking registered devices to local user accounts. For initial catalog/inventory migrations, omit `appUsers` and `userSessions` so existing user accounts remain untouched unless performing a full disaster recovery restore.
 
 ---
 

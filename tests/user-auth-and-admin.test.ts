@@ -285,11 +285,12 @@ describe('User Accounts, Salted PIN Auth, Device Isolation, Backups & Lockout Re
     expect(listSessionsSummary(db, { userId: primaryAdmin.id }).length).toBe(0);
   });
 
-  it('preserves app_users, user_sessions, and pwa_devices.userId across 24-table SQLite VACUUM backups and restores', () => {
+  it('preserves app_users, user_sessions, and pwa_devices.userId across 25-table SQLite VACUUM backups and restores', () => {
     expect(TABLE_NAMES).toContain('app_users');
     expect(TABLE_NAMES).toContain('user_sessions');
     expect(TABLE_NAMES).toContain('notification_channels');
-    expect(TABLE_NAMES.length).toBe(24);
+    expect(TABLE_NAMES).toContain('species_primals');
+    expect(TABLE_NAMES.length).toBe(25);
 
     seedSampleDatabase(db);
     const boot = setupFirstAdmin(db, {

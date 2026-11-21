@@ -19,6 +19,7 @@ import {
     isCutExcludedFromDisplayRestock,
     isCutPrioritized
 } from '../utils/tagRestockRules';
+import { buildSpeciesPrimalIndex, resolveProductPrimal, UNASSIGNED_PRIMAL_ID } from '../utils/speciesPrimals';
 
 interface ProductLocationRowProps {
     meatCut: MeatCut;
@@ -873,6 +874,9 @@ interface ProductViewProps {
     onClearSelectedProduct: () => void;
     selectedPrimary: string | null;
     selectedSub: string | null;
+    selectedSpeciesId?: string;
+    selectedPrimalId?: string;
+    groupByPrimal?: boolean;
     selectedFreezerId: string;
     hideZeroQuantity: boolean;
     activeCheckedTags: string[];
@@ -892,6 +896,9 @@ const ProductView: React.FC<ProductViewProps> = ({
     onClearSelectedProduct,
     selectedPrimary,
     selectedSub,
+    selectedSpeciesId = '',
+    selectedPrimalId = '',
+    groupByPrimal = false,
     selectedFreezerId,
     hideZeroQuantity,
     activeCheckedTags = [],
@@ -900,6 +907,10 @@ const ProductView: React.FC<ProductViewProps> = ({
     onNavigateToOffsiteStaging,
     isLoading = false
 }) => {
+    const speciesPrimalIndex = useMemo(
+        () => buildSpeciesPrimalIndex(state.speciesPrimals),
+        [state.speciesPrimals]
+    );
     const [isDragOverStaging, setIsDragOverStaging] = useState<boolean>(false);
     const [isStagingMenuOpen, setIsStagingMenuOpen] = useState<boolean>(false);
     const [isConfirmingMove, setIsConfirmingMove] = useState<boolean>(false);
@@ -1022,13 +1033,32 @@ const ProductView: React.FC<ProductViewProps> = ({
             filteredProducts = filteredProducts.filter(p => p.subCategory === selectedSub);
         }
 
+        // Apply Species & Primal filters
+        if (selectedSpeciesId) {
+            filteredProducts = filteredProducts.filter(p => resolveProductPrimal(p, speciesPrimalIndex)?.species?.id === selectedSpeciesId);
+        }
+        if (selectedPrimalId) {
+            if (selectedPrimalId === UNASSIGNED_PRIMAL_ID) {
+                filteredProducts = filteredProducts.filter(p => !resolveProductPrimal(p, speciesPrimalIndex)?.primal);
+            } else {
+                filteredProducts = filteredProducts.filter(p => p.primalId === selectedPrimalId);
+            }
+        }
+
         return filteredProducts.reduce((acc, product) => {
             let locations = findLocations(product.id);
+            const resolvedPrimal = resolveProductPrimal(product, speciesPrimalIndex);
 
             // Apply fallback standard typing filter search
             if (searchTerm.trim()) {
                 const searchWords = searchTerm.toLowerCase().trim().split(/\s+/).filter(Boolean);
-                const productString = [product.name, product.primaryCategory, product.subCategory].filter(Boolean).join(' ').toLowerCase();
+                const productString = [
+                    product.name,
+                    product.primaryCategory,
+                    product.subCategory,
+                    resolvedPrimal?.species?.name,
+                    resolvedPrimal?.primal?.name,
+                ].filter(Boolean).join(' ').toLowerCase();
 
                 locations = locations.filter(loc => {
                     const locationString = [
@@ -1054,17 +1084,22 @@ const ProductView: React.FC<ProductViewProps> = ({
                 return acc;
             }
 
-            const { primaryCategory, subCategory } = product;
-            if (!acc[primaryCategory]) {
-                acc[primaryCategory] = {};
+            const groupPrimary = groupByPrimal
+                ? (resolvedPrimal?.species?.name || 'Unassigned')
+                : product.primaryCategory;
+            const groupSub = groupByPrimal
+                ? (resolvedPrimal?.primal?.name || 'No Primal Assigned')
+                : product.subCategory;
+            if (!acc[groupPrimary]) {
+                acc[groupPrimary] = {};
             }
-            if (!acc[primaryCategory][subCategory]) {
-                acc[primaryCategory][subCategory] = [];
+            if (!acc[groupPrimary][groupSub]) {
+                acc[groupPrimary][groupSub] = [];
             }
-            acc[primaryCategory][subCategory].push({ product, locations, totalQuantity });
+            acc[groupPrimary][groupSub].push({ product, locations, totalQuantity });
             return acc;
         }, {} as Record<string, Record<string, { product: Product, locations: ReturnType<typeof findLocations>, totalQuantity: number }[]>>);
-    }, [state.products, state.meatCuts, state.containers, state.freezers, hideZeroQuantity, activeCheckedTags, searchTerm, selectedPrimary, selectedSub, selectedFreezerId]);
+    }, [state.products, state.meatCuts, state.containers, state.freezers, hideZeroQuantity, activeCheckedTags, searchTerm, selectedPrimary, selectedSub, selectedSpeciesId, selectedPrimalId, groupByPrimal, speciesPrimalIndex, selectedFreezerId]);
 
     const isDisplayFocus = selectedFreezerId === 'display';
 
@@ -1614,9 +1649,18 @@ const ProductView: React.FC<ProductViewProps> = ({
                                                                 )}
                                                                 <div className="flex flex-col min-w-0">
                                                                     <div className="flex items-center gap-1.5 flex-wrap text-[10px] sm:text-xs text-cyan-400 font-bold tracking-wide capitalize">
-                                                                        <span className="truncate">{primaryCategory}</span>
+                                                                        <span className="truncate">{product.primaryCategory}</span>
                                                                         <span className="text-cool-gray-650 font-light">•</span>
-                                                                        <span className="truncate">{subCategory}</span>
+                                                                        <span className="truncate">{product.subCategory}</span>
+                                                                        {(() => {
+                                                                            const resolved = resolveProductPrimal(product, speciesPrimalIndex);
+                                                                            if (!resolved?.primal) return null;
+                                                                            return (
+                                                                                <span className="text-cool-gray-400 font-medium normal-case">
+                                                                                    · {resolved.species ? `${resolved.species.name} · ${resolved.primal.name}` : resolved.primal.name}
+                                                                                </span>
+                                                                            );
+                                                                        })()}
                                                                         {((product as any).sku || product.productNumbers?.[0]) && (
                                                                             <span className="font-mono text-[9px] bg-cool-gray-950 px-1 py-0.2 rounded border border-cool-gray-850 text-cool-gray-450 ml-1">SKU: {(product as any).sku || product.productNumbers?.[0]}</span>
                                                                         )}

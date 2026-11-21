@@ -19,6 +19,40 @@ import {
     isCutExcludedFromDisplayRestock,
     isCutPrioritized
 } from '../utils/tagRestockRules';
+import { buildSpeciesPrimalIndex, resolveProductPrimal, UNASSIGNED_PRIMAL_ID } from '../utils/speciesPrimals';
+
+/**
+ * Builds the inventory action to dispatch when adjusting a Display Case row's quantity.
+ * Virtual zero-inventory rows (id prefixed with `virtual_zero_`) dispatch `ADD_MEAT_CUT`
+ * when adjusted to a positive quantity and no-op when kept at 0.
+ */
+export function buildDisplayQuantityAdjustmentAction(
+    meatCut: Pick<MeatCut, 'id' | 'productId'>,
+    containerId: string,
+    newQuantity: number
+): Action | null {
+    const safeQuantity = Math.max(0, Number.isFinite(newQuantity) ? Math.floor(newQuantity) : 0);
+    if (meatCut.id.startsWith('virtual_zero_')) {
+        if (safeQuantity > 0) {
+            return {
+                type: 'ADD_MEAT_CUT',
+                payload: {
+                    productId: meatCut.productId,
+                    containerId,
+                    quantity: safeQuantity
+                }
+            };
+        }
+        return null;
+    }
+    return {
+        type: 'UPDATE_MEAT_QUANTITY',
+        payload: {
+            meatCutId: meatCut.id,
+            newQuantity: safeQuantity
+        }
+    };
+}
 
 interface ProductLocationRowProps {
     meatCut: MeatCut;
@@ -125,19 +159,9 @@ const ProductLocationRow: React.FC<ProductLocationRowProps> = ({
         const currentQty = isEditing ? (parseInt(localQuantity, 10) || 0) : meatCut.quantity;
         const newQuantity = Math.max(0, currentQty + amount);
         setLocalQuantity(newQuantity.toString());
-        if (meatCut.id.startsWith('virtual_zero_')) {
-            if (newQuantity > 0) {
-                dispatch({
-                    type: 'ADD_MEAT',
-                    payload: {
-                        productId: meatCut.productId,
-                        containerId: container.id,
-                        quantity: newQuantity
-                    }
-                });
-            }
-        } else {
-            dispatch({ type: 'UPDATE_MEAT_QUANTITY', payload: { meatCutId: meatCut.id, newQuantity } });
+        const action = buildDisplayQuantityAdjustmentAction(meatCut, container.id, newQuantity);
+        if (action) {
+            dispatch(action);
         }
     };
     
@@ -150,19 +174,9 @@ const ProductLocationRow: React.FC<ProductLocationRowProps> = ({
         const evaluated = evaluateMathExpression(localQuantity, baseVal);
         if (evaluated !== null && evaluated >= 0 && evaluated !== baseVal) {
             setLocalQuantity(evaluated.toString());
-            if (meatCut.id.startsWith('virtual_zero_')) {
-                if (evaluated > 0) {
-                    dispatch({
-                        type: 'ADD_MEAT',
-                        payload: {
-                            productId: meatCut.productId,
-                            containerId: container.id,
-                            quantity: evaluated
-                        }
-                    });
-                }
-            } else {
-                dispatch({ type: 'UPDATE_MEAT_QUANTITY', payload: { meatCutId: meatCut.id, newQuantity: evaluated } });
+            const action = buildDisplayQuantityAdjustmentAction(meatCut, container.id, evaluated);
+            if (action) {
+                dispatch(action);
             }
         } else {
             setLocalQuantity(meatCut.quantity.toString());
@@ -915,6 +929,9 @@ interface DisplayCaseViewProps {
     onClearSelectedProduct?: () => void;
     selectedPrimary: string | null;
     selectedSub: string | null;
+    selectedSpeciesId?: string;
+    selectedPrimalId?: string;
+    groupByPrimal?: boolean;
     selectedFreezerId: string;
     hideZeroQuantity: boolean;
     showZeroQtyWithStock?: boolean;
@@ -934,6 +951,9 @@ export const DisplayCaseView: React.FC<DisplayCaseViewProps> = ({
     onClearSelectedProduct,
     selectedPrimary,
     selectedSub,
+    selectedSpeciesId = '',
+    selectedPrimalId = '',
+    groupByPrimal = false,
     selectedFreezerId,
     hideZeroQuantity,
     showZeroQtyWithStock = true,
@@ -941,6 +961,10 @@ export const DisplayCaseView: React.FC<DisplayCaseViewProps> = ({
     setSelectedPrimary,
     setSelectedSub
 }) => {
+    const speciesPrimalIndex = useMemo(
+        () => buildSpeciesPrimalIndex(state.speciesPrimals),
+        [state.speciesPrimals]
+    );
     const [openRestockProductIds, setOpenRestockProductIds] = useState<Record<string, boolean>>({});
     const [activeSectionId, setActiveSectionId] = useState<string | null>(null);
 
@@ -1052,8 +1076,8 @@ export const DisplayCaseView: React.FC<DisplayCaseViewProps> = ({
 
     // Find display case locations ONLY (freezer.isSpecial === true)
     const findDisplayLocations = (productId: string) => {
-        const existingDisplayLocs = state.meatCuts
-            .filter(mc => mc.productId === productId)
+        const displayCutsInTarget = state.meatCuts
+            .filter(mc => mc.productId === productId && mc.quantity > 0)
             .map(mc => {
                 const container = state.containers.find(c => c.id === mc.containerId);
                 const freezer = container ? state.freezers.find(f => f.id === container.freezerId) : undefined;
@@ -1061,25 +1085,35 @@ export const DisplayCaseView: React.FC<DisplayCaseViewProps> = ({
             })
             .filter(loc => {
                 if (!loc.container || !loc.freezer || !loc.freezer.isSpecial) return false;
-
-                // Match tags against activeCheckedTags
-                const itemTagIds = loc.meatCut.tagIds || [];
-                const resolvedItemTagIds = [...itemTagIds];
-
-                if (resolvedItemTagIds.length === 0) {
-                    if (!activeCheckedTags.includes('untagged')) return false;
-                } else {
-                    if (!resolvedItemTagIds.some(tid => activeCheckedTags.includes(tid))) return false;
-                }
-
+                if (selectedFreezerId !== 'all' && loc.freezer.id !== selectedFreezerId) return false;
                 return true;
             }) as { meatCut: MeatCut, container: Container, freezer: Freezer }[];
+
+        const existingDisplayLocs = displayCutsInTarget.filter(loc => {
+            // Match tags against activeCheckedTags
+            const itemTagIds = loc.meatCut.tagIds || [];
+            const resolvedItemTagIds = [...itemTagIds];
+
+            if (resolvedItemTagIds.length === 0) {
+                if (!activeCheckedTags.includes('untagged')) return false;
+            } else {
+                if (!resolvedItemTagIds.some(tid => activeCheckedTags.includes(tid))) return false;
+            }
+
+            return true;
+        });
 
         if (existingDisplayLocs.length > 0) {
             return existingDisplayLocs;
         }
 
-        // If product is in stock (has quantity in eligible non-display storage) but NOT in display, create a 0-quantity location for display freezers
+        // If display stock exists in target freezer(s) but was hidden strictly by tag filters, do not synthesize a 0 row
+        if (displayCutsInTarget.length > 0) {
+            return existingDisplayLocs;
+        }
+
+        // If product has 0 display stock and either has eligible backstock or zero-quantity items are visible,
+        // create an adjustable 0-quantity loose location for the target display freezer(s).
         const productHasStockInStorage = state.meatCuts.some(mc => {
             if (mc.productId !== productId || mc.quantity <= 0 || isCutExcludedFromRestock(mc)) {
                 return false;
@@ -1093,7 +1127,7 @@ export const DisplayCaseView: React.FC<DisplayCaseViewProps> = ({
             return true;
         });
 
-        if (productHasStockInStorage && displayFreezers.length > 0) {
+        if ((productHasStockInStorage || !hideZeroQuantity) && displayFreezers.length > 0) {
             const targetFreezers = selectedFreezerId !== 'all' 
                 ? displayFreezers.filter(f => f.id === selectedFreezerId)
                 : displayFreezers;
@@ -1135,9 +1169,20 @@ export const DisplayCaseView: React.FC<DisplayCaseViewProps> = ({
         if (selectedPrimary && selectedSub) {
             filteredProducts = filteredProducts.filter(p => p.subCategory === selectedSub);
         }
+        if (selectedSpeciesId) {
+            filteredProducts = filteredProducts.filter(p => resolveProductPrimal(p, speciesPrimalIndex)?.species?.id === selectedSpeciesId);
+        }
+        if (selectedPrimalId) {
+            if (selectedPrimalId === UNASSIGNED_PRIMAL_ID) {
+                filteredProducts = filteredProducts.filter(p => !resolveProductPrimal(p, speciesPrimalIndex)?.primal);
+            } else {
+                filteredProducts = filteredProducts.filter(p => p.primalId === selectedPrimalId);
+            }
+        }
 
         return filteredProducts.reduce((acc, product) => {
             let locations = findDisplayLocations(product.id).filter(l => selectedFreezerId === 'all' || l.freezer.id === selectedFreezerId);
+            const resolvedPrimal = resolveProductPrimal(product, speciesPrimalIndex);
 
             // Compute total backstock in non-display on-site storage (freezers & staging)
             const backStockLocations = state.meatCuts
@@ -1156,7 +1201,14 @@ export const DisplayCaseView: React.FC<DisplayCaseViewProps> = ({
 
             if (searchTerm.trim()) {
                 const searchWords = searchTerm.toLowerCase().trim().split(/\s+/).filter(Boolean);
-                const productString = [product.name, product.primaryCategory, product.subCategory, product.sku].filter(Boolean).join(' ').toLowerCase();
+                const productString = [
+                    product.name,
+                    product.primaryCategory,
+                    product.subCategory,
+                    product.sku,
+                    resolvedPrimal?.species?.name,
+                    resolvedPrimal?.primal?.name,
+                ].filter(Boolean).join(' ').toLowerCase();
 
                 const matchedLocations = locations.filter(loc => {
                     const locationString = [
@@ -1187,17 +1239,22 @@ export const DisplayCaseView: React.FC<DisplayCaseViewProps> = ({
                 }
             }
 
-            const { primaryCategory, subCategory } = product;
-            if (!acc[primaryCategory]) {
-                acc[primaryCategory] = {};
+            const groupPrimary = groupByPrimal
+                ? (resolvedPrimal?.species?.name || 'Unassigned')
+                : product.primaryCategory;
+            const groupSub = groupByPrimal
+                ? (resolvedPrimal?.primal?.name || 'No Primal Assigned')
+                : product.subCategory;
+            if (!acc[groupPrimary]) {
+                acc[groupPrimary] = {};
             }
-            if (!acc[primaryCategory][subCategory]) {
-                acc[primaryCategory][subCategory] = [];
+            if (!acc[groupPrimary][groupSub]) {
+                acc[groupPrimary][groupSub] = [];
             }
-            acc[primaryCategory][subCategory].push({ product, locations, totalQuantity });
+            acc[groupPrimary][groupSub].push({ product, locations, totalQuantity });
             return acc;
         }, {} as Record<string, Record<string, { product: Product, locations: ReturnType<typeof findDisplayLocations>, totalQuantity: number }[]>>);
-    }, [state.products, state.meatCuts, state.containers, state.freezers, hideZeroQuantity, showZeroQtyWithStock, activeCheckedTags, searchTerm, selectedPrimary, selectedSub, selectedFreezerId, isCutExcludedFromRestock]);
+    }, [state.products, state.meatCuts, state.containers, state.freezers, hideZeroQuantity, showZeroQtyWithStock, activeCheckedTags, searchTerm, selectedPrimary, selectedSub, selectedSpeciesId, selectedPrimalId, groupByPrimal, speciesPrimalIndex, selectedFreezerId, isCutExcludedFromRestock]);
 
     const COLOR_CLASSES: Record<string, {
         text: string,
@@ -1590,9 +1647,18 @@ export const DisplayCaseView: React.FC<DisplayCaseViewProps> = ({
                                                                 )}
                                                                 <div className="flex flex-col min-w-0">
                                                                     <div className="flex items-center gap-1.5 flex-wrap text-[10px] sm:text-xs text-cyan-400 font-bold tracking-wide capitalize">
-                                                                        <span className="truncate">{primaryCategory}</span>
+                                                                        <span className="truncate">{product.primaryCategory}</span>
                                                                         <span className="text-cool-gray-650 font-light">•</span>
-                                                                        <span className="truncate">{subCategory}</span>
+                                                                        <span className="truncate">{product.subCategory}</span>
+                                                                        {(() => {
+                                                                            const resolved = resolveProductPrimal(product, speciesPrimalIndex);
+                                                                            if (!resolved?.primal) return null;
+                                                                            return (
+                                                                                <span className="text-cool-gray-400 font-medium normal-case">
+                                                                                    · {resolved.species ? `${resolved.species.name} · ${resolved.primal.name}` : resolved.primal.name}
+                                                                                </span>
+                                                                            );
+                                                                        })()}
                                                                         {((product as any).sku || product.productNumbers?.[0]) && (
                                                                             <span className="font-mono text-[9px] bg-cool-gray-900 px-1 py-0.2 rounded border border-cool-gray-850 text-cool-gray-455 ml-1">SKU: {(product as any).sku || product.productNumbers?.[0]}</span>
                                                                         )}

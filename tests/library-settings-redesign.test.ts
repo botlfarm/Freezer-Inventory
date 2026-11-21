@@ -17,19 +17,20 @@ import {
 import { createTestDatabase } from './test-harness';
 
 describe('Catalog & Settings Navigation Structure', () => {
-  it('defines the three logical navigation groups in order with all 14 sections', () => {
+  it('defines the three logical navigation groups in order with all 15 sections', () => {
     expect(LIBRARY_GROUPS.map((g) => g.id)).toEqual(['catalog', 'operations', 'admin']);
     expect(LIBRARY_GROUPS.map((g) => g.label)).toEqual([
       'Catalog',
       'Operations',
       'System & Admin',
     ]);
-    expect(LIBRARY_SECTIONS).toHaveLength(14);
+    expect(LIBRARY_SECTIONS).toHaveLength(15);
   });
 
   it('normalizes legacy and alias hash routes accurately', () => {
     expect(normalizeLibraryTab('pwa')).toBe('users_devices');
     expect(normalizeLibraryTab('users_devices')).toBe('users_devices');
+    expect(normalizeLibraryTab('species_primals')).toBe('species_primals');
     expect(normalizeLibraryTab('offsite_settings')).toBe('offsite_settings');
     expect(normalizeLibraryTab('pallets')).toBe('pallets');
     expect(normalizeLibraryTab('lists')).toBe('lists');
@@ -42,6 +43,7 @@ describe('Catalog & Settings Navigation Structure', () => {
   it('keeps Off-Site Settings and Catalog sections available to regular users while gating System & Admin', () => {
     // Non-admin / regular user sections
     expect(isSectionAdminOnly('products')).toBe(false);
+    expect(isSectionAdminOnly('species_primals')).toBe(false);
     expect(isSectionAdminOnly('containers')).toBe(false);
     expect(isSectionAdminOnly('freezers')).toBe(false);
     expect(isSectionAdminOnly('lists')).toBe(false);
@@ -63,7 +65,7 @@ describe('Catalog & Settings Navigation Structure', () => {
   it('filters visible groups for gated non-admin users vs admins', () => {
     const gatedGroups = getVisibleLibraryGroups(true);
     expect(gatedGroups.map((g) => g.group.id)).toEqual(['catalog', 'operations']);
-    expect(gatedGroups.find((g) => g.group.id === 'catalog')?.sections).toHaveLength(7);
+    expect(gatedGroups.find((g) => g.group.id === 'catalog')?.sections).toHaveLength(8);
     expect(
       gatedGroups.find((g) => g.group.id === 'operations')?.sections.map((s) => s.id),
     ).toEqual(['offsite_settings', 'butcher_settings', 'voice_dictionary']);
@@ -79,6 +81,7 @@ describe('Catalog & Settings Navigation Structure', () => {
   });
 
   it('returns section metadata with fallback to products', () => {
+    expect(getLibrarySectionMeta('species_primals').label).toBe('Species & Primals');
     expect(getLibrarySectionMeta('offsite_settings').label).toBe('Off-Site Settings');
     expect(getLibrarySectionMeta('butcher_settings').label).toBe('Butcher Settings');
     expect(getLibrarySectionMeta('pwa').id).toBe('users_devices');

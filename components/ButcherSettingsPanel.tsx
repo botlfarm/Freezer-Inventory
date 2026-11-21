@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  ArrowRight,
   Check,
   CheckCircle2,
   Edit3,
@@ -31,19 +32,14 @@ import {
   BUTCHER_BASELINE_GROUPING_META,
   BUTCHER_DOC_LINK_TYPES_CONFIG_KEY,
   BUTCHER_ORDER_TAGS_CONFIG_KEY,
-  BUTCHER_SPECIES_CONFIG_KEY,
   BUTCHER_TAG_COLOR_PRESETS,
   BUTCHER_TAG_WEIGHT_MODE_META,
-  getAllButcherSpeciesOptions,
   getButcherDocLinkTypeUsageCounts,
-  getButcherSpeciesUsageCounts,
   getButcherTagUsageCounts,
-  normalizeSpeciesList,
   parseButcherAnomalySensitivity,
   parseButcherBaselineGroupingMode,
   parseButcherDocumentLinkTypes,
   parseButcherOrderTags,
-  parseButcherSpeciesList,
 } from '../utils/butcherSettings';
 import {
   clampSensitivity,
@@ -51,10 +47,12 @@ import {
   MAX_ANOMALY_SENSITIVITY,
   MIN_ANOMALY_SENSITIVITY,
 } from '../utils/butcherStats';
+import { buildSpeciesPrimalIndex, getAllManagedSpeciesNames } from '../utils/speciesPrimals';
 
 interface ButcherSettingsPanelProps {
   state: InventoryState;
   dispatch: React.Dispatch<Action>;
+  onNavigateToSpeciesPrimals?: () => void;
 }
 
 const BASELINE_GROUPING_MODES: ButcherBaselineGroupingMode[] = [
@@ -78,23 +76,25 @@ function generateLocalId(prefix: string): string {
 export const ButcherSettingsPanel: React.FC<ButcherSettingsPanelProps> = ({
   state,
   dispatch,
+  onNavigateToSpeciesPrimals,
 }) => {
   const { usersConfigured, isAuthenticated, requireLoginForEdits, openAccountModal } = useUserAuth();
   const isLoginRequiredForWrite = usersConfigured && requireLoginForEdits && !isAuthenticated;
 
   const orders = state.butcherOrders || [];
 
-  const managedSpecies = useMemo(
-    () => parseButcherSpeciesList(state.appConfig),
-    [state.appConfig],
+  const speciesPrimalIndex = useMemo(
+    () => buildSpeciesPrimalIndex(state.speciesPrimals),
+    [state.speciesPrimals],
   );
   const allSpecies = useMemo(
-    () => getAllButcherSpeciesOptions(managedSpecies, orders),
-    [managedSpecies, orders],
+    () => getAllManagedSpeciesNames(state.speciesPrimals, state.appConfig, orders),
+    [state.speciesPrimals, state.appConfig, orders],
   );
-  const speciesUsageCounts = useMemo(
-    () => getButcherSpeciesUsageCounts(orders),
-    [orders],
+  const totalPrimalsCount = speciesPrimalIndex.primalList.length;
+  const assignedProductsCount = useMemo(
+    () => (state.products || []).filter((p) => p.primalId && speciesPrimalIndex.primalById.has(p.primalId)).length,
+    [state.products, speciesPrimalIndex],
   );
 
   const butcherTags = useMemo(
@@ -136,11 +136,6 @@ export const ButcherSettingsPanel: React.FC<ButcherSettingsPanelProps> = ({
     text: string;
     authRequired?: boolean;
   } | null>(null);
-
-  // Species form states
-  const [newSpeciesName, setNewSpeciesName] = useState('');
-  const [renamingSpecies, setRenamingSpecies] = useState<string | null>(null);
-  const [renameSpeciesTarget, setRenameSpeciesTarget] = useState('');
 
   // Butcher Order Tag form states
   const [editingTagId, setEditingTagId] = useState<string | null>(null);
@@ -266,84 +261,6 @@ export const ButcherSettingsPanel: React.FC<ButcherSettingsPanelProps> = ({
         // Ignore storage access errors
       }
     }
-  };
-
-  // ============================================================================
-  // SPECIES HANDLERS
-  // ============================================================================
-  const handleAddSpecies = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmed = newSpeciesName.trim();
-    if (!trimmed) {
-      showFeedback('error', 'Enter a species name before adding.');
-      return;
-    }
-    const alreadyExists = allSpecies.some(
-      (sp) => sp.toLowerCase() === trimmed.toLowerCase(),
-    );
-    if (alreadyExists) {
-      showFeedback('error', `"${trimmed}" already exists in your butcher species list.`);
-      return;
-    }
-    const nextList = normalizeSpeciesList([...allSpecies, trimmed]);
-    const ok = await persistAppConfigKey(
-      BUTCHER_SPECIES_CONFIG_KEY,
-      nextList,
-      `Added species "${trimmed}".`,
-    );
-    if (ok) {
-      setNewSpeciesName('');
-    }
-  };
-
-  const handleConfirmSpeciesRename = (oldName: string) => {
-    const nextName = renameSpeciesTarget.trim();
-    if (!nextName) {
-      showFeedback('error', 'Replacement species name cannot be empty.');
-      return;
-    }
-    if (nextName === oldName) {
-      setRenamingSpecies(null);
-      setRenameSpeciesTarget('');
-      return;
-    }
-    const isMerge =
-      nextName.toLowerCase() !== oldName.toLowerCase() &&
-      allSpecies.some((sp) => sp.toLowerCase() === nextName.toLowerCase());
-    const count = speciesUsageCounts.get(oldName.toLowerCase())?.count || 0;
-
-    dispatch({
-      type: 'RENAME_BUTCHER_SPECIES',
-      payload: { oldName, newName: nextName },
-    });
-
-    setRenamingSpecies(null);
-    setRenameSpeciesTarget('');
-    showFeedback(
-      'success',
-      isMerge
-        ? `Merged "${oldName}" into "${nextName}" (${count} order${count === 1 ? '' : 's'} updated).`
-        : `Renamed "${oldName}" to "${nextName}" (${count} order${count === 1 ? '' : 's'} updated).`,
-    );
-  };
-
-  const handleRemoveUnusedSpecies = async (speciesName: string) => {
-    const count = speciesUsageCounts.get(speciesName.toLowerCase())?.count || 0;
-    if (count > 0) {
-      showFeedback(
-        'error',
-        `"${speciesName}" is still used by ${count} order${count === 1 ? '' : 's'}. Rename or merge it into another species instead.`,
-      );
-      return;
-    }
-    const nextList = managedSpecies.filter(
-      (sp) => sp.toLowerCase() !== speciesName.toLowerCase(),
-    );
-    await persistAppConfigKey(
-      BUTCHER_SPECIES_CONFIG_KEY,
-      nextList,
-      `Removed unused species "${speciesName}".`,
-    );
   };
 
   // ============================================================================
@@ -693,137 +610,37 @@ export const ButcherSettingsPanel: React.FC<ButcherSettingsPanelProps> = ({
       </section>
 
       {/* ===================================================================== */}
-      {/* SECTION 1: BUTCHER SPECIES                                            */}
+      {/* SECTION 1: SPECIES & PRIMAL CUTS (MOVED TO CATALOG)                   */}
       {/* ===================================================================== */}
-      <section className="bg-cool-gray-850 rounded-lg border border-cool-gray-750 p-5 space-y-4">
-        <div className="border-b border-cool-gray-800 pb-3">
-          <h4 className="text-sm font-bold text-cool-gray-100 flex items-center gap-2">
-            <Scale className="w-4 h-4 text-cyan-400 shrink-0" />
-            Butcher Species
-          </h4>
-          <p className="text-xs text-cool-gray-400 mt-1 leading-relaxed">
-            Manage species options independently from Product Categories. Renaming a species updates every matching butcher order atomically—and renaming into an existing species (e.g. Pig to Pork) merges them cleanly.
-          </p>
+      <section className="bg-cool-gray-850 rounded-lg border border-cool-gray-750 p-5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="min-w-0">
+            <h4 className="text-sm font-bold text-cool-gray-100 flex items-center gap-2">
+              <Scale className="w-4 h-4 text-cyan-400 shrink-0" />
+              Species &amp; Primal Cuts
+            </h4>
+            <p className="text-xs text-cool-gray-400 mt-1 leading-relaxed max-w-2xl">
+              Species and their primal cuts are managed in <span className="text-cool-gray-200 font-semibold">Catalog → Species &amp; Primals</span>. Assign a primal cut to each product to enable primal filtering across inventory views and primal-level yield reports in Butcher Records.
+            </p>
+            <div className="mt-2.5 flex items-center flex-wrap gap-x-4 gap-y-1 text-xs text-cool-gray-400 font-mono tabular-nums">
+              <span>{allSpecies.length} species</span>
+              <span className="text-cool-gray-700">·</span>
+              <span>{totalPrimalsCount} primal{totalPrimalsCount === 1 ? '' : 's'}</span>
+              <span className="text-cool-gray-700">·</span>
+              <span>{assignedProductsCount} linked product{assignedProductsCount === 1 ? '' : 's'}</span>
+            </div>
+          </div>
+          {onNavigateToSpeciesPrimals && (
+            <button
+              type="button"
+              onClick={onNavigateToSpeciesPrimals}
+              className="px-3.5 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer transition"
+            >
+              Manage Species &amp; Primals
+              <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
-
-        <form onSubmit={handleAddSpecies} className="flex flex-col sm:flex-row gap-2 max-w-lg">
-          <input
-            id="butcher-new-species-input"
-            type="text"
-            value={newSpeciesName}
-            onChange={(e) => setNewSpeciesName(e.target.value)}
-            placeholder="Add a species (e.g. Pork, Beef, Lamb)"
-            className="flex-1 bg-cool-gray-900 border border-cool-gray-750 rounded-lg px-3.5 py-2 text-white text-sm focus:outline-none focus:border-cyan-500"
-          />
-          <button
-            type="submit"
-            disabled={isSaving || !newSpeciesName.trim()}
-            className="px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50 transition"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            Add Species
-          </button>
-        </form>
-
-        {allSpecies.length === 0 ? (
-          <div className="rounded-lg border border-dashed border-cool-gray-750 p-5 text-center text-xs text-cool-gray-400">
-            No butcher species registered yet. Add species above or log your first butcher order.
-          </div>
-        ) : (
-          <div className="divide-y divide-cool-gray-800 border border-cool-gray-800 rounded-lg overflow-hidden">
-            {allSpecies.map((species) => {
-              const usageCount = speciesUsageCounts.get(species.toLowerCase())?.count || 0;
-              const isRenaming = renamingSpecies === species;
-              const targetTrimmed = renameSpeciesTarget.trim();
-              const isMergeTarget =
-                isRenaming &&
-                targetTrimmed.length > 0 &&
-                targetTrimmed.toLowerCase() !== species.toLowerCase() &&
-                allSpecies.some((sp) => sp.toLowerCase() === targetTrimmed.toLowerCase());
-
-              return (
-                <div key={species} className="px-3.5 py-2.5 bg-cool-gray-900/40">
-                  {isRenaming ? (
-                    <div className="space-y-2">
-                      <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-                        <input
-                          type="text"
-                          value={renameSpeciesTarget}
-                          onChange={(e) => setRenameSpeciesTarget(e.target.value)}
-                          placeholder="New species name..."
-                          className="flex-1 bg-cool-gray-900 border border-cyan-500/60 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-cyan-400"
-                          autoFocus
-                        />
-                        <div className="flex items-center gap-2 shrink-0">
-                          <button
-                            type="button"
-                            onClick={() => handleConfirmSpeciesRename(species)}
-                            disabled={!targetTrimmed}
-                            className="px-3 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold flex items-center gap-1 whitespace-nowrap cursor-pointer disabled:opacity-50"
-                          >
-                            <Check className="w-3.5 h-3.5" />
-                            {isMergeTarget ? 'Merge Species' : 'Save Rename'}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setRenamingSpecies(null);
-                              setRenameSpeciesTarget('');
-                            }}
-                            className="px-2.5 py-1.5 rounded-lg bg-cool-gray-800 hover:bg-cool-gray-750 text-cool-gray-300 text-xs font-semibold cursor-pointer"
-                          >
-                            Cancel
-                          </button>
-                        </div>
-                      </div>
-                      <p className={`text-[11px] ${isMergeTarget ? 'text-amber-300' : 'text-cool-gray-400'}`}>
-                        {isMergeTarget
-                          ? `Will merge "${species}" into existing "${targetTrimmed}" and update ${usageCount} butcher order${usageCount === 1 ? '' : 's'}.`
-                          : `Will rename "${species}" across ${usageCount} butcher order${usageCount === 1 ? '' : 's'}.`}
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="min-w-0 flex items-center gap-2.5 flex-wrap">
-                        <span className="text-sm font-semibold text-cool-gray-100 truncate">
-                          {species}
-                        </span>
-                        <span className="text-xs text-cool-gray-400 font-mono tabular-nums">
-                          {usageCount} order{usageCount === 1 ? '' : 's'}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setRenamingSpecies(species);
-                            setRenameSpeciesTarget(species);
-                          }}
-                          className="px-2.5 py-1 rounded-md bg-cool-gray-800 hover:bg-cool-gray-750 border border-cool-gray-700 text-cool-gray-200 text-xs font-semibold flex items-center gap-1 whitespace-nowrap cursor-pointer transition"
-                        >
-                          <Edit3 className="w-3 h-3 text-cyan-400" />
-                          Rename / Merge
-                        </button>
-                        {usageCount === 0 && (
-                          <button
-                            type="button"
-                            disabled={isSaving}
-                            onClick={() => handleRemoveUnusedSpecies(species)}
-                            className="p-1.5 rounded-md text-cool-gray-400 hover:text-rose-400 hover:bg-cool-gray-800 transition cursor-pointer disabled:opacity-50"
-                            title={`Remove unused species "${species}"`}
-                            aria-label={`Remove ${species}`}
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
       </section>
 
       {/* ===================================================================== */}

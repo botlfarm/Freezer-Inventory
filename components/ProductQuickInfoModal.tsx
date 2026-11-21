@@ -2,6 +2,7 @@
 import React, { useState } from 'react';
 import { X, FileText, Star } from 'lucide-react';
 import { InventoryState, Action } from '../types';
+import { buildSpeciesPrimalIndex, resolveProductPrimal } from '../utils/speciesPrimals';
 
 interface ProductQuickInfoModalProps {
   quickInfoItem: { cuts?: string; productId?: string } | null;
@@ -319,6 +320,15 @@ export const ProductQuickInfoModal: React.FC<ProductQuickInfoModalProps> = ({
                     ● Catalog Registered
                   </span>
                   <span>({matchedProduct.primaryCategory} › {matchedProduct.subCategory})</span>
+                  {(() => {
+                    const resolved = resolveProductPrimal(matchedProduct, buildSpeciesPrimalIndex(state.speciesPrimals));
+                    if (!resolved?.primal) return null;
+                    return (
+                      <span className="text-cyan-300/90 font-medium">
+                        · {resolved.species ? `${resolved.species.name} · ${resolved.primal.name}` : resolved.primal.name}
+                      </span>
+                    );
+                  })()}
                   {matchedProduct.barcode && (
                     <span className="bg-cool-gray-800 text-cool-gray-300 font-mono text-[10px] px-2 py-0.5 rounded border border-cool-gray-700" title="UPC-A Weight-Embedded Barcode">
                       UPC: {matchedProduct.barcode}

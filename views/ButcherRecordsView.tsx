@@ -1,7 +1,7 @@
 // Butcher records view
 import React, { useState, useMemo, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { Upload, Search, Trash2, ArrowRight, Edit3, X, ChevronDown, Check, CheckCircle2, PlusCircle, Plus, Link, ExternalLink, AlertTriangle, AlertCircle, Flag, ClipboardCheck, Calculator, Tag as TagIcon, Lock, RotateCcw, BarChart3, FileSpreadsheet } from 'lucide-react';
+import { Upload, Search, Trash2, ArrowRight, Edit3, X, ChevronDown, ChevronRight, Check, CheckCircle2, PlusCircle, Plus, Link, ExternalLink, AlertTriangle, AlertCircle, Flag, ClipboardCheck, Calculator, Tag as TagIcon, Lock, RotateCcw, BarChart3, FileSpreadsheet } from 'lucide-react';
 import Papa from 'papaparse';
 import { ButcherOrder, ButcherRecord, AppLocation, Product, ButcherOrderDocument, ButcherReportMode, ButcherWeightField } from '../types';
 import { getApiUrl } from '../hooks/apiUrl';
@@ -57,11 +57,19 @@ import {
 } from '../utils/butcherSettings';
 import { ButcherAnomalyReviewModal } from '../components/ButcherAnomalyReviewModal';
 import { ButcherTimelinesReport } from '../components/ButcherTimelinesReport';
+import { ButcherPrimalReport } from '../components/ButcherPrimalReport';
 import {
   computeOrderTimelineMetrics,
   computeButcherTimelineReport,
   formatDaysAsMonths,
 } from '../utils/butcherTimelines';
+import {
+  buildSpeciesPrimalIndex,
+  resolveProductPrimal,
+  getAllManagedSpeciesNames,
+  buildButcherPrimalReport,
+  UNASSIGNED_PRIMAL_ID,
+} from '../utils/speciesPrimals';
 
 const MultiSelectDropdown = ({ 
   options, 
@@ -524,6 +532,9 @@ export const ButcherRecordsView = ({
   // New Reporting & Graphing states
   const [reportGraphTab, setReportGraphTab] = useState<ButcherReportTypeId>(initialReportType);
   const [reportBreakdownSearch, setReportBreakdownSearch] = useState('');
+  const [breakdownGroupByPrimal, setBreakdownGroupByPrimal] = useState(false);
+  const [collapsedBreakdownPrimals, setCollapsedBreakdownPrimals] = useState<Set<string>>(() => new Set());
+  const [primalSpeciesScope, setPrimalSpeciesScope] = useState<string>('ALL');
   const [visibleYieldSeries, setVisibleYieldSeries] = useState({
     dressing: true,
     shrink: true,
@@ -678,13 +689,15 @@ export const ButcherRecordsView = ({
 
   const records = useMemo(() => {
     return (state.butcherRecords || []).map((r: any) => {
-      // Find matching product
+      // Find matching product (prefer direct productId FK first)
       const orig = (r.originalCutName || '').trim();
       const norm = (r.normalizedCutName || '').trim();
       
-      let matchedProd = null;
-      if (norm) {
-        matchedProd = products.find(prod => prod.name.trim().toLowerCase() === norm.toLowerCase());
+      let matchedProd = r.productId
+        ? products.find(prod => prod.id === r.productId) || null
+        : null;
+      if (!matchedProd && norm) {
+        matchedProd = products.find(prod => prod.name.trim().toLowerCase() === norm.toLowerCase()) || null;
       }
 
       if (!matchedProd) {
@@ -698,7 +711,7 @@ export const ButcherRecordsView = ({
             prod.productNumbers && prod.productNumbers.some(num => 
               num.toLowerCase() === origNum.toLowerCase()
             )
-          );
+          ) || null;
         }
       }
 
@@ -714,7 +727,7 @@ export const ButcherRecordsView = ({
                  pName === normNamePart ||
                  pName === orig.toLowerCase() || 
                  pName === norm.toLowerCase();
-        });
+        }) || null;
       }
 
       return {
@@ -723,12 +736,21 @@ export const ButcherRecordsView = ({
         normalizedCutName: matchedProd ? matchedProd.name : (r.normalizedCutName || r.originalCutName),
         primaryCategory: matchedProd?.primaryCategory || 'Uncategorized',
         subCategory: matchedProd?.subCategory || 'Uncategorized',
+        primalId: matchedProd?.primalId || '',
         matchedProduct: matchedProd
       };
     });
   }, [state.butcherRecords, products]);
 
-  const managedSpecies = useMemo(() => parseButcherSpeciesList(state.appConfig), [state.appConfig]);
+  const speciesPrimalIndex = useMemo(
+    () => buildSpeciesPrimalIndex(state.speciesPrimals || []),
+    [state.speciesPrimals]
+  );
+
+  const managedSpecies = useMemo(
+    () => getAllManagedSpeciesNames(state.speciesPrimals || [], state.appConfig, orders),
+    [state.speciesPrimals, state.appConfig, orders]
+  );
   const butcherTags = useMemo(() => parseButcherOrderTags(state.appConfig), [state.appConfig]);
   const documentLinkTypes = useMemo(() => parseButcherDocumentLinkTypes(state.appConfig), [state.appConfig]);
   const baselineGroupingMode = useMemo(() => parseButcherBaselineGroupingMode(state.appConfig), [state.appConfig]);
@@ -807,6 +829,34 @@ export const ButcherRecordsView = ({
   const resolveTagNamesFromIds = (ids: string[]): string[] => {
     const idSet = new Set(ids);
     return butcherTags.filter(t => idSet.has(t.id)).map(t => t.name);
+  };
+
+  // Primal Cut multi-select filter options (grouped label: "Species · Primal" + "Unassigned Primal")
+  const primalFilterEntries = useMemo(() => {
+    const list: Array<{ id: string; label: string }> = [];
+    for (const sp of speciesPrimalIndex.species) {
+      const primals = speciesPrimalIndex.primalsBySpeciesId.get(sp.id) || [];
+      for (const p of primals) {
+        list.push({ id: p.id, label: `${sp.name} · ${p.name}` });
+      }
+    }
+    list.push({ id: UNASSIGNED_PRIMAL_ID, label: 'Unassigned Primal' });
+    return list;
+  }, [speciesPrimalIndex]);
+
+  const primalFilterOptions = useMemo(
+    () => primalFilterEntries.map(e => e.label),
+    [primalFilterEntries]
+  );
+
+  const resolvePrimalIdsFromLabels = (labels: string[]): string[] => {
+    const labelSet = new Set(labels);
+    return primalFilterEntries.filter(e => labelSet.has(e.label)).map(e => e.id);
+  };
+
+  const resolvePrimalLabelsFromIds = (ids: string[]): string[] => {
+    const idSet = new Set(ids);
+    return primalFilterEntries.filter(e => idSet.has(e.id)).map(e => e.label);
   };
 
   // Real-time calculation of order cuts and newly appended cuts when adding more cuts to an existing butcher file
@@ -1800,8 +1850,8 @@ export const ButcherRecordsView = ({
           </div>
         </div>
 
-        {/* Row 3: Shared Order, Species, Butcher, Tags, Cuts, and Category Multi-Selects */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-2.5">
+        {/* Row 3: Shared Order, Species, Primal Cut, Butcher, Tags, Cuts, and Category Multi-Selects */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7 gap-2.5">
           <div>
             <label className="block text-[10px] font-bold uppercase tracking-wider text-cool-gray-400 mb-1">Order Number</label>
             <MultiSelectDropdown
@@ -1819,6 +1869,16 @@ export const ButcherRecordsView = ({
               selected={filter.species}
               onChange={(selected) => setFilter(prev => ({ ...prev, species: selected }))}
               placeholder="All Species"
+              compact
+            />
+          </div>
+          <div>
+            <label className="block text-[10px] font-bold uppercase tracking-wider text-cool-gray-400 mb-1">Primal Cut</label>
+            <MultiSelectDropdown
+              options={primalFilterOptions}
+              selected={resolvePrimalLabelsFromIds(filter.primalIds || [])}
+              onChange={(labels) => setFilter(prev => ({ ...prev, primalIds: resolvePrimalIdsFromLabels(labels) }))}
+              placeholder="All Primals"
               compact
             />
           </div>
@@ -2008,6 +2068,14 @@ export const ButcherRecordsView = ({
         key: `scat-${sub}`,
         label: `Sub-Category: ${sub}`,
         onRemove: () => setFilter(prev => ({ ...prev, subCategory: prev.subCategory.filter(v => v !== sub) })),
+      });
+    }
+    for (const pid of filter.primalIds || []) {
+      const label = primalFilterEntries.find(e => e.id === pid)?.label || (pid === UNASSIGNED_PRIMAL_ID ? 'Unassigned Primal' : pid);
+      chips.push({
+        key: `primal-${pid}`,
+        label: `Primal: ${label}`,
+        onRemove: () => setFilter(prev => ({ ...prev, primalIds: (prev.primalIds || []).filter(v => v !== pid) })),
       });
     }
 
@@ -4571,14 +4639,44 @@ export const ButcherRecordsView = ({
             ? cutTrendPointCoordsAdditive
             : (cutTrendsPointCoordsByCut[0]?.points || []);
 
-          // Total packaged meat respecting estimates mode when no cut/category filter narrows the dataset
+          // Total packaged meat respecting estimates mode when no cut/category/primal filter narrows the dataset
           const totalPackagedSummaryLbs =
             reportMode === 'estimates' &&
             reportFilter.cutName.length === 0 &&
             reportFilter.primaryCategory.length === 0 &&
-            reportFilter.subCategory.length === 0
+            reportFilter.subCategory.length === 0 &&
+            (reportFilter.primalIds || []).length === 0
               ? rOrdersWithStats.reduce((sum, item) => sum + item.stats.packagedWeight, 0)
               : reportData.totalWeight;
+
+          // Build Primal Cuts report data scoped to active orders & optional species scope
+          const primalAvailableSpecies = Array.from(
+            new Set<string>(rOrdersWithStats.map(({ order }) => String(order.species || '').trim()).filter(Boolean))
+          ).sort((a, b) => a.localeCompare(b));
+          const effectivePrimalSpeciesScope =
+            primalSpeciesScope !== 'ALL' && primalAvailableSpecies.includes(primalSpeciesScope)
+              ? primalSpeciesScope
+              : 'ALL';
+          const scopedOrdersForPrimals =
+            effectivePrimalSpeciesScope === 'ALL'
+              ? rOrdersWithStats
+              : rOrdersWithStats.filter(
+                  ({ order }) => (order.species || '').trim() === effectivePrimalSpeciesScope
+                );
+          const filteredRecordsByOrderForPrimals = new Map<string, any[]>();
+          scopedOrdersForPrimals.forEach(({ order }) => {
+            const orderRecs = (recordsByOrderId.get(order.id) || []).filter(r =>
+              matchesButcherRecordFilter(r, reportFilter, viewOriginalNames)
+            );
+            filteredRecordsByOrderForPrimals.set(order.id, orderRecs);
+          });
+          const primalReport = buildButcherPrimalReport(
+            scopedOrdersForPrimals.map(({ order, stats }) => ({ order, stats })),
+            filteredRecordsByOrderForPrimals,
+            products,
+            state.speciesPrimals || [],
+            { viewOriginalNames }
+          );
 
           // Filtered aggregated cut breakdown for the Cut Breakdown report type
           const filteredReportBreakdown = filterCutBreakdown(reportData.breakdown, reportBreakdownSearch);
@@ -4645,6 +4743,7 @@ export const ButcherRecordsView = ({
             },
             speciesComparison: speciesComparisonData,
             timelineReport,
+            primalReport,
           };
 
           const activeReportKpis = buildButcherReportKpis(reportGraphTab, reportKpiContext);
@@ -4792,13 +4891,24 @@ export const ButcherRecordsView = ({
               >
                 {/* Active Report Content */}
                 <div className="p-4 sm:p-5 bg-cool-gray-800">
-                  {totalPoints === 0 && reportGraphTab !== 'breakdown' ? (
+                  {totalPoints === 0 && reportGraphTab !== 'breakdown' && reportGraphTab !== 'primals' ? (
                     <div className="text-center py-16 text-cool-gray-400 border border-dashed border-cool-gray-700 rounded-xl">
                       <p className="font-semibold">No orders matching the active filters to render trends.</p>
                       <p className="text-xs text-cool-gray-500 mt-1">Adjust your dates, species, reporting basis, or filters using the Filters button in the top bar.</p>
                     </div>
                   ) : (
                     <>
+                      {/* 0. DEDICATED PRIMAL CUTS REPORT */}
+                      {reportGraphTab === 'primals' && (
+                        <ButcherPrimalReport
+                          report={primalReport}
+                          availableSpecies={primalAvailableSpecies}
+                          selectedSpeciesScope={effectivePrimalSpeciesScope}
+                          onChangeSpeciesScope={setPrimalSpeciesScope}
+                          totalMatchingOrdersBeforeScope={rOrdersWithStats.length}
+                        />
+                      )}
+
                       {/* 1. YIELD TRENDS LINE GRAPH */}
                       {reportGraphTab === 'yields' && (
                         <div className="space-y-3">
@@ -5712,31 +5822,130 @@ export const ButcherRecordsView = ({
                       )}
 
                       {/* 4. AGGREGATED CUT BREAKDOWN REPORT TYPE */}
-                      {reportGraphTab === 'breakdown' && (
+                      {reportGraphTab === 'breakdown' && (() => {
+                        const groupedBreakdownByPrimal = (() => {
+                          if (!breakdownGroupByPrimal) return [];
+                          const map = new Map<
+                            string,
+                            {
+                              key: string;
+                              label: string;
+                              isUnassigned: boolean;
+                              count: number;
+                              totalPieces: number;
+                              totalWeight: number;
+                              estValue: number;
+                              cuts: Array<{
+                                cut: typeof filteredReportBreakdown[number];
+                                unitPrice: number;
+                                unit: string;
+                                estValue: number;
+                                cutPct: number;
+                              }>;
+                            }
+                          >();
+                          for (const cut of filteredReportBreakdown) {
+                            const cutPct = reportData.totalWeight > 0 ? (cut.totalWeight / reportData.totalWeight) * 100 : 0;
+                            const matchedProd = products.find(
+                              p =>
+                                (cut.productId && p.id === cut.productId) ||
+                                p.name.trim().toLowerCase() === cut.name.trim().toLowerCase()
+                            );
+                            const resolved = resolveProductPrimal(matchedProd, speciesPrimalIndex);
+                            const key = resolved ? resolved.primalId : UNASSIGNED_PRIMAL_ID;
+                            const label = resolved ? `${resolved.speciesName} · ${resolved.primalName}` : 'Unassigned Primal';
+                            const unitPrice = matchedProd?.salePrice || 0;
+                            const unit = matchedProd?.salePriceUnit || 'lb';
+                            const estValue = unitPrice > 0 ? (unit === 'package' ? cut.count * unitPrice : cut.totalWeight * unitPrice) : 0;
+                            let grp = map.get(key);
+                            if (!grp) {
+                              grp = {
+                                key,
+                                label,
+                                isUnassigned: !resolved,
+                                count: 0,
+                                totalPieces: 0,
+                                totalWeight: 0,
+                                estValue: 0,
+                                cuts: [],
+                              };
+                              map.set(key, grp);
+                            }
+                            grp.count += cut.count;
+                            grp.totalPieces += cut.totalPieces;
+                            grp.totalWeight += cut.totalWeight;
+                            grp.estValue += estValue;
+                            grp.cuts.push({ cut, unitPrice, unit, estValue, cutPct });
+                          }
+                          return Array.from(map.values()).sort((a, b) => {
+                            if (a.isUnassigned && !b.isUnassigned) return 1;
+                            if (!a.isUnassigned && b.isUnassigned) return -1;
+                            return b.totalWeight - a.totalWeight;
+                          });
+                        })();
+
+                        const toggleBreakdownPrimal = (key: string) => {
+                          setCollapsedBreakdownPrimals(prev => {
+                            const next = new Set(prev);
+                            if (next.has(key)) next.delete(key);
+                            else next.add(key);
+                            return next;
+                          });
+                        };
+
+                        return (
                         <div data-testid="butcher-reports-breakdown-panel" className="space-y-3">
                           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-                            <div className="relative flex-1 max-w-sm">
-                              <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-2.5">
-                                <Search size={13} className="text-cool-gray-400" />
+                            <div className="flex flex-wrap items-center gap-2 flex-1">
+                              <div className="relative flex-1 min-w-[200px] max-w-sm">
+                                <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-2.5">
+                                  <Search size={13} className="text-cool-gray-400" />
+                                </div>
+                                <input
+                                  type="text"
+                                  data-testid="butcher-reports-breakdown-search"
+                                  value={reportBreakdownSearch}
+                                  onChange={(e) => setReportBreakdownSearch(e.target.value)}
+                                  placeholder="Filter cuts in breakdown..."
+                                  className="block w-full rounded-lg border border-cool-gray-700 bg-cool-gray-900 pl-8 pr-7 py-1.5 text-xs text-cool-gray-100 placeholder:text-cool-gray-500 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 outline-none"
+                                />
+                                {reportBreakdownSearch && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setReportBreakdownSearch('')}
+                                    className="absolute inset-y-0 right-0 flex items-center pr-2 text-cool-gray-400 hover:text-white cursor-pointer"
+                                    title="Clear cut search"
+                                  >
+                                    <X size={12} />
+                                  </button>
+                                )}
                               </div>
-                              <input
-                                type="text"
-                                data-testid="butcher-reports-breakdown-search"
-                                value={reportBreakdownSearch}
-                                onChange={(e) => setReportBreakdownSearch(e.target.value)}
-                                placeholder="Filter cuts in breakdown..."
-                                className="block w-full rounded-lg border border-cool-gray-700 bg-cool-gray-900 pl-8 pr-7 py-1.5 text-xs text-cool-gray-100 placeholder:text-cool-gray-500 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 outline-none"
-                              />
-                              {reportBreakdownSearch && (
+                              <div className="inline-flex items-center bg-cool-gray-900 border border-cool-gray-700 rounded-lg p-0.5 text-xs">
                                 <button
                                   type="button"
-                                  onClick={() => setReportBreakdownSearch('')}
-                                  className="absolute inset-y-0 right-0 flex items-center pr-2 text-cool-gray-400 hover:text-white cursor-pointer"
-                                  title="Clear cut search"
+                                  data-testid="butcher-breakdown-flat-toggle"
+                                  onClick={() => setBreakdownGroupByPrimal(false)}
+                                  className={`px-2.5 py-1 rounded-md font-bold transition cursor-pointer ${
+                                    !breakdownGroupByPrimal
+                                      ? 'bg-cyan-600 text-white shadow'
+                                      : 'text-cool-gray-400 hover:text-white'
+                                  }`}
                                 >
-                                  <X size={12} />
+                                  Flat Cuts
                                 </button>
-                              )}
+                                <button
+                                  type="button"
+                                  data-testid="butcher-breakdown-primal-toggle"
+                                  onClick={() => setBreakdownGroupByPrimal(true)}
+                                  className={`px-2.5 py-1 rounded-md font-bold transition cursor-pointer ${
+                                    breakdownGroupByPrimal
+                                      ? 'bg-cyan-600 text-white shadow'
+                                      : 'text-cool-gray-400 hover:text-white'
+                                  }`}
+                                >
+                                  Group by Primal
+                                </button>
+                              </div>
                             </div>
                             <div className="flex items-center gap-2 flex-wrap">
                               <span className="text-xs font-bold text-cool-gray-400 bg-cool-gray-900 border border-cool-gray-700 px-2.5 py-1 rounded-lg font-mono tabular-nums">
@@ -5766,32 +5975,98 @@ export const ButcherRecordsView = ({
                                 </tr>
                               </thead>
                               <tbody className="divide-y divide-cool-gray-700/60">
-                                {filteredReportBreakdown.map((cut) => {
-                                  const cutPct = reportData.totalWeight > 0 ? (cut.totalWeight / reportData.totalWeight) * 100 : 0;
-                                  const matchedProd = products.find(
-                                    p =>
-                                      (cut.productId && p.id === cut.productId) ||
-                                      p.name.trim().toLowerCase() === cut.name.trim().toLowerCase()
-                                  );
-                                  const unitPrice = matchedProd?.salePrice || 0;
-                                  const unit = matchedProd?.salePriceUnit || 'lb';
-                                  const estValue = unitPrice > 0 ? (unit === 'package' ? cut.count * unitPrice : cut.totalWeight * unitPrice) : 0;
-                                  return (
-                                    <tr key={cut.name} className="hover:bg-cool-gray-750/30 transition group">
-                                      <td className="px-4 py-3 font-bold text-cool-gray-200 group-hover:text-cyan-400 transition-colors">{cut.name}</td>
-                                      <td className="px-4 py-3 text-right font-mono text-xs font-semibold text-cool-gray-400">
-                                        {unitPrice > 0 ? `$${unitPrice.toFixed(2)} / ${unit === 'package' ? 'pkg' : 'lb'}` : '—'}
-                                      </td>
-                                      <td className="px-4 py-3 text-right font-medium text-cool-gray-300 font-mono tabular-nums">{cut.count}</td>
-                                      <td className="px-4 py-3 text-right font-medium text-cool-gray-300 font-mono tabular-nums">{cut.totalPieces}</td>
-                                      <td className="px-4 py-3 text-right font-bold text-cool-gray-400 font-mono tabular-nums">{cutPct.toFixed(1)}%</td>
-                                      <td className="px-4 py-3 text-right font-extrabold text-cyan-400 font-mono tabular-nums">{cut.totalWeight.toFixed(2)} lbs</td>
-                                      <td className="px-4 py-3 text-right font-mono font-extrabold text-emerald-400 tabular-nums">
-                                        {estValue > 0 ? `$${estValue.toFixed(2)}` : '—'}
-                                      </td>
-                                    </tr>
-                                  );
-                                })}
+                                {!breakdownGroupByPrimal ? (
+                                  filteredReportBreakdown.map((cut) => {
+                                    const cutPct = reportData.totalWeight > 0 ? (cut.totalWeight / reportData.totalWeight) * 100 : 0;
+                                    const matchedProd = products.find(
+                                      p =>
+                                        (cut.productId && p.id === cut.productId) ||
+                                        p.name.trim().toLowerCase() === cut.name.trim().toLowerCase()
+                                    );
+                                    const resolvedPrimal = resolveProductPrimal(matchedProd, speciesPrimalIndex);
+                                    const unitPrice = matchedProd?.salePrice || 0;
+                                    const unit = matchedProd?.salePriceUnit || 'lb';
+                                    const estValue = unitPrice > 0 ? (unit === 'package' ? cut.count * unitPrice : cut.totalWeight * unitPrice) : 0;
+                                    return (
+                                      <tr key={cut.name} className="hover:bg-cool-gray-750/30 transition group">
+                                        <td className="px-4 py-3">
+                                          <div className="font-bold text-cool-gray-200 group-hover:text-cyan-400 transition-colors">{cut.name}</div>
+                                          {resolvedPrimal && (
+                                            <div className="text-[11px] text-cool-gray-500">
+                                              {resolvedPrimal.speciesName} · {resolvedPrimal.primalName}
+                                            </div>
+                                          )}
+                                        </td>
+                                        <td className="px-4 py-3 text-right font-mono text-xs font-semibold text-cool-gray-400">
+                                          {unitPrice > 0 ? `$${unitPrice.toFixed(2)} / ${unit === 'package' ? 'pkg' : 'lb'}` : '—'}
+                                        </td>
+                                        <td className="px-4 py-3 text-right font-medium text-cool-gray-300 font-mono tabular-nums">{cut.count}</td>
+                                        <td className="px-4 py-3 text-right font-medium text-cool-gray-300 font-mono tabular-nums">{cut.totalPieces}</td>
+                                        <td className="px-4 py-3 text-right font-bold text-cool-gray-400 font-mono tabular-nums">{cutPct.toFixed(1)}%</td>
+                                        <td className="px-4 py-3 text-right font-extrabold text-cyan-400 font-mono tabular-nums">{cut.totalWeight.toFixed(2)} lbs</td>
+                                        <td className="px-4 py-3 text-right font-mono font-extrabold text-emerald-400 tabular-nums">
+                                          {estValue > 0 ? `$${estValue.toFixed(2)}` : '—'}
+                                        </td>
+                                      </tr>
+                                    );
+                                  })
+                                ) : (
+                                  groupedBreakdownByPrimal.map(grp => {
+                                    const isCollapsed = collapsedBreakdownPrimals.has(grp.key);
+                                    const grpPct = reportData.totalWeight > 0 ? (grp.totalWeight / reportData.totalWeight) * 100 : 0;
+                                    return (
+                                      <React.Fragment key={grp.key}>
+                                        <tr
+                                          onClick={() => toggleBreakdownPrimal(grp.key)}
+                                          className={`cursor-pointer transition-colors ${
+                                            grp.isUnassigned
+                                              ? 'bg-amber-950/20 hover:bg-amber-950/30'
+                                              : 'bg-cool-gray-850/90 hover:bg-cool-gray-800'
+                                          }`}
+                                        >
+                                          <td className="px-4 py-2.5 font-bold text-white" colSpan={2}>
+                                            <div className="flex items-center gap-2">
+                                              <span className="text-cool-gray-400">
+                                                {isCollapsed ? <ChevronRight size={15} /> : <ChevronDown size={15} />}
+                                              </span>
+                                              <span className={grp.isUnassigned ? 'text-amber-200' : 'text-cool-gray-100'}>
+                                                {grp.label}
+                                              </span>
+                                              <span className="text-xs font-normal text-cool-gray-500">
+                                                ({grp.cuts.length} {grp.cuts.length === 1 ? 'cut' : 'cuts'})
+                                              </span>
+                                            </div>
+                                          </td>
+                                          <td className="px-4 py-2.5 text-right font-mono tabular-nums font-bold text-cool-gray-200">{grp.count}</td>
+                                          <td className="px-4 py-2.5 text-right font-mono tabular-nums font-bold text-cool-gray-200">{grp.totalPieces}</td>
+                                          <td className="px-4 py-2.5 text-right font-mono tabular-nums font-bold text-cool-gray-300">{grpPct.toFixed(1)}%</td>
+                                          <td className="px-4 py-2.5 text-right font-mono tabular-nums font-extrabold text-cyan-400">{grp.totalWeight.toFixed(2)} lbs</td>
+                                          <td className="px-4 py-2.5 text-right font-mono tabular-nums font-extrabold text-emerald-400">
+                                            {grp.estValue > 0 ? `$${grp.estValue.toFixed(2)}` : '—'}
+                                          </td>
+                                        </tr>
+                                        {!isCollapsed &&
+                                          grp.cuts.map(({ cut, unitPrice, unit, estValue, cutPct }) => (
+                                            <tr key={`${grp.key}::${cut.name}`} className="hover:bg-cool-gray-750/30 transition group bg-cool-gray-950/30">
+                                              <td className="pl-10 pr-4 py-2.5 font-semibold text-cool-gray-200 group-hover:text-cyan-400 transition-colors">
+                                                {cut.name}
+                                              </td>
+                                              <td className="px-4 py-2.5 text-right font-mono text-xs font-semibold text-cool-gray-400">
+                                                {unitPrice > 0 ? `$${unitPrice.toFixed(2)} / ${unit === 'package' ? 'pkg' : 'lb'}` : '—'}
+                                              </td>
+                                              <td className="px-4 py-2.5 text-right font-medium text-cool-gray-300 font-mono tabular-nums">{cut.count}</td>
+                                              <td className="px-4 py-2.5 text-right font-medium text-cool-gray-300 font-mono tabular-nums">{cut.totalPieces}</td>
+                                              <td className="px-4 py-2.5 text-right font-bold text-cool-gray-400 font-mono tabular-nums">{cutPct.toFixed(1)}%</td>
+                                              <td className="px-4 py-2.5 text-right font-bold text-cyan-300 font-mono tabular-nums">{cut.totalWeight.toFixed(2)} lbs</td>
+                                              <td className="px-4 py-2.5 text-right font-mono font-bold text-emerald-400/90 tabular-nums">
+                                                {estValue > 0 ? `$${estValue.toFixed(2)}` : '—'}
+                                              </td>
+                                            </tr>
+                                          ))}
+                                      </React.Fragment>
+                                    );
+                                  })
+                                )}
                                 {filteredReportBreakdown.length === 0 && (
                                   <tr>
                                     <td colSpan={7} className="px-6 py-12 text-center text-cool-gray-500 font-semibold">
@@ -5832,7 +6107,8 @@ export const ButcherRecordsView = ({
                             </table>
                           </div>
                         </div>
-                      )}
+                        );
+                      })()}
 
                       {/* 5. SPECIES COMPARISONS BENTO */}
                       {reportGraphTab === 'species' && (

@@ -578,7 +578,8 @@ describe('Butcher Settings — App Config Permissions, SQLite Persistence & SSR 
     expect(settingsHtml).toContain('id="butcher-settings-sensitivity-slider"');
     expect(settingsHtml).toContain('id="butcher-settings-sensitivity-save"');
     expect(settingsHtml).toContain('2.4σ');
-    expect(settingsHtml).toContain('Butcher Species');
+    expect(settingsHtml).toContain('Species &amp; Primal Cuts');
+    expect(settingsHtml).toContain('Catalog → Species &amp; Primals');
     expect(settingsHtml).toContain('Butcher Order Tags');
     expect(settingsHtml).toContain('Document Link Types');
     expect(settingsHtml).toContain('Retired Sow');

@@ -1138,13 +1138,14 @@ describe('ButcherRecordsView Main Order Species Badge', () => {
     expect(reportsClosedHtml).not.toContain('Aggregated Cut Breakdown Spreadsheet');
     expect(reportsClosedHtml).not.toContain('data-testid="butcher-reports-breakdown-panel"');
 
-    // Full-page dashboard exposes all 6 selectable report types including Cut Breakdown
+    // Full-page dashboard exposes all 7 selectable report types including Cut Breakdown and Primal Cuts
     expect(reportsClosedHtml).toContain('data-testid="butcher-reports-dashboard"');
     expect(reportsClosedHtml).toContain('data-testid="butcher-report-type-selector"');
     expect(reportsClosedHtml).toContain('data-testid="butcher-reports-yields-tab"');
     expect(reportsClosedHtml).toContain('data-testid="butcher-reports-weights-tab"');
     expect(reportsClosedHtml).toContain('data-testid="butcher-reports-cuts-tab"');
     expect(reportsClosedHtml).toContain('data-testid="butcher-reports-breakdown-tab"');
+    expect(reportsClosedHtml).toContain('data-testid="butcher-reports-primals-tab"');
     expect(reportsClosedHtml).toContain('data-testid="butcher-reports-species-tab"');
     expect(reportsClosedHtml).toContain('data-testid="butcher-reports-timelines-tab"');
 
@@ -1201,9 +1202,11 @@ describe('ButcherRecordsView Main Order Species Badge', () => {
       'weights',
       'cuts',
       'breakdown',
+      'primals',
       'species',
       'timelines',
     ]);
+    expect(getButcherReportDefinition('primals').testId).toBe('butcher-reports-primals-tab');
     expect(getButcherReportDefinition('timelines').testId).toBe('butcher-reports-timelines-tab');
     expect(getKpiGridColumnsClass(3)).toContain('sm:grid-cols-3');
     expect(getKpiGridColumnsClass(4)).toContain('lg:grid-cols-4');

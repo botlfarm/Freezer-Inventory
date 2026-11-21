@@ -34,6 +34,7 @@ export interface Product {
   name: string;
   primaryCategory: string;
   subCategory: string;
+  primalId?: string;
   imageUrl?: string;
   productNumbers?: string[];
   barcode?: string;
@@ -166,6 +167,18 @@ export interface Category {
   type: 'primary' | 'sub';
   parentPrimary?: string; // used if type === 'sub'
   icon?: string;
+}
+
+export type SpeciesPrimalType = 'species' | 'primal';
+
+export interface SpeciesPrimal {
+  id: string;
+  name: string;
+  type: SpeciesPrimalType;
+  parentSpeciesId?: string; // Required when type === 'primal', referencing a species row's id
+  icon?: string;
+  description?: string;
+  sortOrder?: number;
 }
 
 export interface Tag {
@@ -450,6 +463,7 @@ export interface ButcherOrder {
   id: string;
   orderNumber: string;
   species: string;
+  speciesId?: string;
   killDate?: string;
   pickupDate?: string;
   birthDate?: string;
@@ -519,6 +533,7 @@ export type InventoryState = {
   butcherOrders?: ButcherOrder[];
   butcherRecords?: ButcherRecord[];
   categories?: Category[];
+  speciesPrimals?: SpeciesPrimal[];
   customLists?: CustomList[];
   tags?: Tag[];
   locations?: AppLocation[];
@@ -549,7 +564,7 @@ export type Action =
   | { type: 'TOGGLE_CONTAINER_ARCHIVED'; payload: { containerId: string; isArchived: boolean } }
   | { type: 'ADD_PRODUCT'; payload: { product: Product } }
   | { type: 'EDIT_PRODUCT'; payload: { productId: string; updates: Partial<Omit<Product, 'id'>> } }
-  | { type: 'ADD_MEAT_CUT'; payload: { productId: string; quantity: number; containerId: string; notes?: string; tagIds?: string[]; originalCutName?: string; } }
+  | { type: 'ADD_MEAT_CUT'; payload: { id?: string; productId: string; quantity: number; containerId: string; notes?: string; tagIds?: string[]; originalCutName?: string; } }
   | { type: 'BATCH_UPDATE_MEAT_QUANTITY'; payload: { updates: Record<string, number> } }
   | { type: 'UPDATE_MEAT_QUANTITY'; payload: { meatCutId: string; newQuantity: number } }
   | { type: 'UPDATE_MEAT_NOTES'; payload: { meatCutId: string; notes: string; originalCutName?: string } }
@@ -570,8 +585,12 @@ export type Action =
   | { type: 'DELETE_CONTAINER'; payload: { containerId: string } }
   | { type: 'DELETE_PRODUCT'; payload: { productId: string } }
   | { type: 'BULK_DELETE_PRODUCTS'; payload: { productIds: string[] } }
-  | { type: 'BULK_EDIT_PRODUCTS'; payload: { productIds: string[]; updates: { primaryCategory?: string; subCategory?: string; defaultTagIds?: string[]; defaultTagsMode?: 'append' | 'replace'; isArchived?: boolean } } }
+  | { type: 'BULK_EDIT_PRODUCTS'; payload: { productIds: string[]; updates: { primaryCategory?: string; subCategory?: string; primalId?: string | null; defaultTagIds?: string[]; defaultTagsMode?: 'append' | 'replace'; isArchived?: boolean } } }
   | { type: 'DELETE_CATEGORY'; payload: { name: string; type: 'primary' | 'sub'; parentPrimary?: string } }
+  | { type: 'ADD_SPECIES_PRIMAL'; payload: { entry: SpeciesPrimal } }
+  | { type: 'EDIT_SPECIES_PRIMAL'; payload: { id: string; updates: Partial<Omit<SpeciesPrimal, 'id' | 'type'>> } }
+  | { type: 'DELETE_SPECIES_PRIMAL'; payload: { id: string; reassignToPrimalId?: string | null } }
+  | { type: 'REORDER_SPECIES_PRIMALS'; payload: { orderedIds: string[]; parentSpeciesId?: string } }
   | { type: 'EDIT_CONTAINER'; payload: { containerId: string; updates: Partial<Omit<Container, 'id' | 'freezerId'>>; applyGlobally?: boolean } }
   | { type: 'BULK_ADD_MEAT_CUTS'; payload: { items: Array<{ productId: string; quantity: number; notes?: string; tagIds?: string[]; originalCutName?: string; }>, containerId: string } }
   | { type: 'RENAME_CATEGORY'; payload: { oldName: string; newName: string; type: 'primary' | 'sub' } }

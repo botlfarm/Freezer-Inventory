@@ -8,6 +8,7 @@ import { getTagActionIcon } from '../utils/tagRestockRules';
 import { ComboboxInput } from './ComboboxInput';
 import { generateDefaultUpcABarcode, validateUpcABarcode } from '../utils/barcode';
 import { CatalogSearchFilterBar } from './CatalogSearchFilterBar';
+import { PrimalSelect } from './PrimalSelect';
 
 interface CommonFormProps {
   dispatch: React.Dispatch<Action>;
@@ -20,6 +21,7 @@ const ProductForm: React.FC<CommonFormProps & { products: Product[], existingPro
     const [name, setName] = useState(existingProduct?.name || '');
     const [primaryCategory, setPrimaryCategory] = useState(existingProduct?.primaryCategory || '');
     const [subCategory, setSubCategory] = useState(existingProduct?.subCategory || '');
+    const [primalId, setPrimalId] = useState(existingProduct?.primalId || '');
     const [imageUrl, setImageUrl] = useState(existingProduct?.imageUrl || '');
     const [listThresholds, setListThresholds] = useState<Record<string, number>>(() => {
         return existingProduct?.listThresholds || {};
@@ -132,6 +134,7 @@ const ProductForm: React.FC<CommonFormProps & { products: Product[], existingPro
     const handleAutofillFromProduct = (p: Product) => {
         setPrimaryCategory(p.primaryCategory || '');
         setSubCategory(p.subCategory || '');
+        setPrimalId(p.primalId || '');
         setImageUrl(p.imageUrl || '');
         setProductNumbersInput((p.productNumbers || []).join(', '));
         setBarcodeInput(p.barcode || '');
@@ -260,6 +263,9 @@ const ProductForm: React.FC<CommonFormProps & { products: Product[], existingPro
             if (name.trim() !== existingProduct.name) updates.name = name;
             if (primaryCategory.trim() !== existingProduct.primaryCategory) updates.primaryCategory = primaryCategory;
             if (subCategory.trim() !== existingProduct.subCategory) updates.subCategory = subCategory;
+            if ((primalId || '') !== (existingProduct.primalId || '')) {
+                updates.primalId = primalId || '';
+            }
             if (imageUrl !== (existingProduct.imageUrl || '')) updates.imageUrl = imageUrl;
             if (finalBarcode !== (existingProduct.barcode || undefined)) updates.barcode = finalBarcode;
             updates.salePrice = parsedSalePrice;
@@ -284,6 +290,7 @@ const ProductForm: React.FC<CommonFormProps & { products: Product[], existingPro
                 name, 
                 primaryCategory, 
                 subCategory, 
+                primalId: primalId || undefined,
                 imageUrl, 
                 productNumbers: parsedProductNumbers, 
                 barcode: finalBarcode,
@@ -511,6 +518,18 @@ const ProductForm: React.FC<CommonFormProps & { products: Product[], existingPro
                         className="w-full px-3 py-2 bg-cool-gray-700 border border-cool-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-cyan-500 text-white placeholder-cool-gray-500 text-sm" 
                     />
                 </div>
+            </div>
+            <div className="space-y-1">
+                <label className="block text-xs font-semibold text-cool-gray-400">
+                    Primal Cut <span className="font-normal text-cool-gray-500">(Optional — links product to species &amp; butcher primal reporting)</span>
+                </label>
+                <PrimalSelect
+                    speciesPrimals={state?.speciesPrimals}
+                    value={primalId}
+                    onChange={setPrimalId}
+                    emptyOptionLabel="No Primal Cut Assigned"
+                    className="w-full px-3 py-2 bg-cool-gray-700 border border-cool-gray-600 rounded-md text-white text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500 cursor-pointer"
+                />
             </div>
             <div className="space-y-1">
                 <label className="text-xs font-semibold text-cool-gray-400">Backend Product Numbers (Optional, can assign multiple, comma separated)</label>

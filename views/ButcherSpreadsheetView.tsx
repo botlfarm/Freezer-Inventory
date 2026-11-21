@@ -10,6 +10,7 @@ import { InventoryState, Action, OffSiteEntry, Product, Tag as AppTag } from '..
 import { compareBoxLabels } from '../utils/boxSort';
 import { getTagActionIcon } from '../utils/tagRestockRules';
 import { mergeOrderIdsForSpreadsheetFilter } from '../utils/butcherSettings';
+import { buildSpeciesPrimalIndex, resolveProductPrimal } from '../utils/speciesPrimals';
 
 export interface ButcherSpreadsheetOrderSelectionRequest {
   orderIds: string[];
@@ -40,6 +41,7 @@ const STORAGE_KEYS = {
   FILTER_BOXES: 'butcher_spreadsheet_filter_boxes',
   FILTER_CUTS: 'butcher_spreadsheet_filter_cuts',
   FILTER_PRIMARY_CATEGORIES: 'butcher_spreadsheet_filter_primary_categories',
+  FILTER_PRIMALS: 'butcher_spreadsheet_filter_primals',
   FILTER_ORDER_NUMBERS: 'butcher_spreadsheet_filter_order_numbers',
   FILTER_LOCATIONS: 'butcher_spreadsheet_filter_locations',
   FILTER_PALLETS: 'butcher_spreadsheet_filter_pallets',
@@ -285,6 +287,7 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({
   const [filterBoxes, setFilterBoxes] = useState<Set<string>>(() => getSavedSet(STORAGE_KEYS.FILTER_BOXES) || new Set());
   const [filterCuts, setFilterCuts] = useState<Set<string>>(() => getSavedSet(STORAGE_KEYS.FILTER_CUTS) || new Set());
   const [filterPrimaryCategories, setFilterPrimaryCategories] = useState<Set<string>>(() => getSavedSet(STORAGE_KEYS.FILTER_PRIMARY_CATEGORIES) || new Set());
+  const [filterPrimals, setFilterPrimals] = useState<Set<string>>(() => getSavedSet(STORAGE_KEYS.FILTER_PRIMALS) || new Set());
   const [filterOrderNumbers, setFilterOrderNumbers] = useState<Set<string>>(() =>
     orderSelectionRequest && orderSelectionRequest.orderIds.length > 0
       ? new Set()
@@ -317,6 +320,7 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({
   useEffect(() => { saveSet(STORAGE_KEYS.FILTER_BOXES, filterBoxes); }, [filterBoxes]);
   useEffect(() => { saveSet(STORAGE_KEYS.FILTER_CUTS, filterCuts); }, [filterCuts]);
   useEffect(() => { saveSet(STORAGE_KEYS.FILTER_PRIMARY_CATEGORIES, filterPrimaryCategories); }, [filterPrimaryCategories]);
+  useEffect(() => { saveSet(STORAGE_KEYS.FILTER_PRIMALS, filterPrimals); }, [filterPrimals]);
   useEffect(() => { saveSet(STORAGE_KEYS.FILTER_ORDER_NUMBERS, filterOrderNumbers); }, [filterOrderNumbers]);
   useEffect(() => { saveSet(STORAGE_KEYS.FILTER_LOCATIONS, filterLocations); }, [filterLocations]);
   useEffect(() => { saveSet(STORAGE_KEYS.FILTER_PALLETS, filterPallets); }, [filterPallets]);
@@ -330,6 +334,7 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({
   const [boxesSearch, setBoxesSearch] = useState('');
   const [cutsSearch, setCutsSearch] = useState('');
   const [categoriesSearch, setCategoriesSearch] = useState('');
+  const [primalsSearch, setPrimalsSearch] = useState('');
   const [orderNumbersSearch, setOrderNumbersSearch] = useState('');
   const [locationsSearch, setLocationsSearch] = useState('');
   const [palletsSearch, setPalletsSearch] = useState('');
@@ -369,6 +374,7 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({
     box: true,
     cutName: true,
     category: true,
+    primal: true,
     weight: true,
     pieces: true,
     location: true,
@@ -470,14 +476,21 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({
     });
   }, [state.offSiteEntries, selectedOrderIds, sortedOrders]);
 
+  const primalIndex = useMemo(
+    () => buildSpeciesPrimalIndex(state.speciesPrimals || []),
+    [state.speciesPrimals]
+  );
+
   // Process and map cuts to Product Catalog metadata
   const mappedEntries = useMemo(() => {
     return rawOrderEntries.map((e) => {
       const origStr = (e.originalCutName || e.cuts || '').trim();
       const normStr = ((state.products?.find(p => p.id === e.productId)?.name || '') || '').trim();
 
-      let matchedProduct: Product | undefined = undefined;
-      if (normStr) {
+      let matchedProduct: Product | undefined = e.productId
+        ? products.find(p => p.id === e.productId)
+        : undefined;
+      if (!matchedProduct && normStr) {
         matchedProduct = products.find(p => p.name.trim().toLowerCase() === normStr.toLowerCase());
       }
       if (!matchedProduct) {
@@ -512,6 +525,9 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({
         !state.butcherRecords?.find(br => br.serial === e.serial && br.originalCutName === e.originalCutName)
       );
 
+      const resolvedPrimal = resolveProductPrimal(matchedProduct, primalIndex);
+      const primalLabel = resolvedPrimal ? `${resolvedPrimal.speciesName} · ${resolvedPrimal.primalName}` : 'Unassigned';
+
       return {
         ...e,
         displayCutName,
@@ -519,12 +535,13 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({
         isManuallyCorrected,
         primaryCategory: matchedProduct?.primaryCategory || 'Uncategorized',
         subCategory: matchedProduct?.subCategory || 'Uncategorized',
+        primalLabel,
         statusLabel: isArchived ? 'Moved / Depleted' : 'Active Off-Site',
         archivedLabel: isArchived ? 'Yes' : 'No',
         isArchived
       };
     });
-  }, [rawOrderEntries, products, state.products, viewOriginalNames]);
+  }, [rawOrderEntries, products, primalIndex, state.products, viewOriginalNames]);
 
   // Extract primary and sub category options for filtering
   const categoryOptions = useMemo(() => {
@@ -552,6 +569,14 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({
   const allBoxes = useMemo(() => Array.from(new Set(mappedEntries.map(e => e.box ? e.box.trim() : 'Unboxed Cuts'))).sort((a: string, b: string) => compareBoxLabels(a, b)), [mappedEntries]);
   const allCuts = useMemo(() => Array.from(new Set(mappedEntries.map(e => e.displayCutName || 'Unspecified Cut'))).sort(), [mappedEntries]);
   const allPrimaryCategories = useMemo(() => Array.from(new Set(mappedEntries.map(e => getCategoryDisplay(e)))).sort(), [mappedEntries]);
+  const allPrimals = useMemo(() => {
+    const vals = Array.from(new Set<string>(mappedEntries.map(e => String(e.primalLabel || 'Unassigned'))));
+    return vals.sort((a, b) => {
+      if (a === 'Unassigned') return 1;
+      if (b === 'Unassigned') return -1;
+      return a.localeCompare(b);
+    });
+  }, [mappedEntries]);
   const allOrderNumbers = useMemo(() => (Array.from(new Set(mappedEntries.map(e => e.orderNumber || 'Unassigned'))) as string[]).sort((a, b) => b.localeCompare(a, undefined, { numeric: true, sensitivity: 'base' })), [mappedEntries]);
   const allLocations = useMemo(() => Array.from(new Set(mappedEntries.map(e => e.location || 'Unassigned'))).sort(), [mappedEntries]);
   const allPallets = useMemo(() => Array.from(new Set(mappedEntries.map(e => e.currentLocation || e.pallet || 'Unassigned'))).sort(), [mappedEntries]);
@@ -579,6 +604,7 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({
           (e.currentLocation || e.pallet || '').toLowerCase().includes(q) ||
           (e.location || '').toLowerCase().includes(q) ||
           (e.notes || '').toLowerCase().includes(q) ||
+          (e.primalLabel || '').toLowerCase().includes(q) ||
           getCategoryDisplay(e).toLowerCase().includes(q)
         );
       });
@@ -602,6 +628,9 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({
     }
     if (filterPrimaryCategories.size > 0) {
       list = list.filter(e => filterPrimaryCategories.has(getCategoryDisplay(e)));
+    }
+    if (filterPrimals.size > 0) {
+      list = list.filter(e => filterPrimals.has(e.primalLabel || 'Unassigned'));
     }
     if (filterOrderNumbers.size > 0) {
       list = list.filter(e => filterOrderNumbers.has(e.orderNumber || 'Unassigned'));
@@ -631,7 +660,7 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({
     return list;
   }, [
     mappedEntries, searchTerm, selectedPrimary, selectedSub,
-    filterBoxes, filterCuts, filterPrimaryCategories, filterOrderNumbers,
+    filterBoxes, filterCuts, filterPrimaryCategories, filterPrimals, filterOrderNumbers,
     filterLocations, filterPallets, filterSerials, filterLots, filterPackDates, filterStatuses, filterArchived
   ]);
 
@@ -640,6 +669,7 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({
       filterBoxes,
       filterCuts,
       filterPrimaryCategories,
+      filterPrimals,
       filterOrderNumbers,
       filterLocations,
       filterPallets,
@@ -650,7 +680,7 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({
       filterArchived,
     ].reduce((acc, s) => acc + (s.size > 0 ? 1 : 0), 0);
   }, [
-    filterBoxes, filterCuts, filterPrimaryCategories, filterOrderNumbers,
+    filterBoxes, filterCuts, filterPrimaryCategories, filterPrimals, filterOrderNumbers,
     filterLocations, filterPallets, filterSerials, filterLots, filterPackDates, filterStatuses, filterArchived
   ]);
 
@@ -673,6 +703,7 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({
     setFilterBoxes(new Set());
     setFilterCuts(new Set());
     setFilterPrimaryCategories(new Set());
+    setFilterPrimals(new Set());
     setFilterOrderNumbers(new Set());
     setFilterLocations(new Set());
     setFilterPallets(new Set());
@@ -704,6 +735,7 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({
         case 'box': return 'Box Number';
         case 'cutName': return 'Product / Cut';
         case 'category': return 'Category';
+        case 'primal': return 'Primal Cut';
         case 'location': return 'Location';
         case 'pallet': return 'Pallet';
         case 'serial': return 'Box Serial';
@@ -879,6 +911,7 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({
         case 'serial': valA = a.serial || ''; valB = b.serial || ''; break;
         case 'cutName': valA = a.displayCutName || ''; valB = b.displayCutName || ''; break;
         case 'category': valA = getCategoryDisplay(a); valB = getCategoryDisplay(b); break;
+        case 'primal': valA = a.primalLabel || 'Unassigned'; valB = b.primalLabel || 'Unassigned'; break;
         case 'packDate': valA = a.packDate || ''; valB = b.packDate || ''; break;
         case 'lotNumber': valA = a.lot || ''; valB = b.lot || ''; break;
         case 'pieces': valA = a.pieces || 0; valB = b.pieces || 0; break;
@@ -922,6 +955,7 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({
       archivedCount: number;
       cutsSummary: Record<string, { count: number; weight: number }>;
       categories: Set<string>;
+      primals: Set<string>;
       orderNumbers: Set<string>;
       lots: Set<string>;
       packDates: Set<string>;
@@ -941,6 +975,7 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({
           archivedCount: 0,
           cutsSummary: {},
           categories: new Set(),
+          primals: new Set(),
           orderNumbers: new Set(),
           lots: new Set(),
           packDates: new Set()
@@ -962,6 +997,7 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({
 
       const catDisplay = getCategoryDisplay(item);
       if (catDisplay) boxMap[bId].categories.add(catDisplay);
+      if (item.primalLabel) boxMap[bId].primals.add(item.primalLabel);
       if (item.orderNumber) boxMap[bId].orderNumbers.add(item.orderNumber);
       if (item.lot) boxMap[bId].lots.add(item.lot);
       if (item.packDate) boxMap[bId].packDates.add(item.packDate);
@@ -989,6 +1025,10 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({
         case 'category':
           valA = Array.from(a.categories).sort().join(', ');
           valB = Array.from(b.categories).sort().join(', ');
+          break;
+        case 'primal':
+          valA = Array.from(a.primals).sort().join(', ');
+          valB = Array.from(b.primals).sort().join(', ');
           break;
         case 'weight':
           valA = a.totalWeight;
@@ -1551,6 +1591,7 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({
                     { key: 'box', label: 'Box ID' },
                     { key: 'cutName', label: 'Cut / Product Name' },
                     { key: 'category', label: 'Category / Sub Category' },
+                    { key: 'primal', label: 'Primal Cut' },
                     { key: 'weight', label: 'Net Weight (lbs)' },
                     { key: 'pieces', label: '# Pieces' },
                     { key: 'location', label: 'Location' },
@@ -1931,6 +1972,25 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({
                       {openFilter === 'category' && renderFilterDropdown('category', allPrimaryCategories, filterPrimaryCategories, setFilterPrimaryCategories, categoriesSearch, setCategoriesSearch)}
                     </th>
                   )}
+                  {visibleColumns.primal && (
+                    <th className="py-3 px-3 whitespace-nowrap">
+                      <div className="flex items-center justify-between gap-1">
+                        <span onClick={() => handleSort('primal')} className="cursor-pointer hover:text-white flex items-center gap-1">
+                          Primal Cut
+                          {sortField === 'primal' && <ArrowUpDown size={12} className="text-cyan-400" />}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); setOpenFilter(openFilter === 'primal' ? null : 'primal'); }}
+                          className={`p-1 rounded hover:bg-cool-gray-750 transition cursor-pointer ${filterPrimals.size > 0 ? 'text-cyan-400 bg-cyan-950/60 border border-cyan-500/30' : 'text-cool-gray-500 hover:text-cool-gray-300'}`}
+                          title="Filter by Primal Cut"
+                        >
+                          <Filter size={12} />
+                        </button>
+                      </div>
+                      {openFilter === 'primal' && renderFilterDropdown('primal', allPrimals, filterPrimals, setFilterPrimals, primalsSearch, setPrimalsSearch)}
+                    </th>
+                  )}
                   {visibleColumns.weight && (
                     <th onClick={() => handleSort('weight')} className="py-3 px-3 text-right cursor-pointer hover:text-white transition whitespace-nowrap">
                       <div className="flex items-center justify-end gap-1">
@@ -2141,6 +2201,15 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({
                               </td>
                             )}
 
+                            {visibleColumns.primal && (
+                              <td className="py-3 px-3 text-cool-gray-300 text-xs font-medium max-w-xs truncate">
+                                {(() => {
+                                  const primals = Array.from(group.primals || []).filter(p => p !== 'Unassigned');
+                                  return primals.length > 0 ? primals.join(', ') : <span className="text-cool-gray-600">—</span>;
+                                })()}
+                              </td>
+                            )}
+
                             {visibleColumns.weight && (
                               <td className="py-3 px-3 text-right font-mono font-extrabold text-emerald-400 text-sm whitespace-nowrap">
                                 {(group.totalWeight || 0).toFixed(1)} <span className="text-[10px] text-cool-gray-400 font-sans font-normal">lbs</span>
@@ -2252,6 +2321,7 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({
                               switch (sortField) {
                                 case 'serial': valA = itemA.serial || ''; valB = itemB.serial || ''; break;
                                 case 'cutName': valA = itemA.displayCutName || ''; valB = itemB.displayCutName || ''; break;
+                                case 'primal': valA = itemA.primalLabel || 'Unassigned'; valB = itemB.primalLabel || 'Unassigned'; break;
                                 case 'packDate': valA = itemA.packDate || ''; valB = itemB.packDate || ''; break;
                                 case 'lotNumber': valA = itemA.lot || ''; valB = itemB.lot || ''; break;
                                 case 'pieces': valA = itemA.pieces || 0; valB = itemB.pieces || 0; break;
@@ -2321,6 +2391,16 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({
                                   {visibleColumns.category && (
                                     <td className="py-2 px-3 text-cool-gray-400 text-xs truncate max-w-[150px]">
                                       {getCategoryDisplay(item)}
+                                    </td>
+                                  )}
+
+                                  {visibleColumns.primal && (
+                                    <td className="py-2 px-3 text-cool-gray-400 text-xs truncate max-w-[160px]" title={item.primalLabel || 'Unassigned'}>
+                                      {item.primalLabel && item.primalLabel !== 'Unassigned' ? (
+                                        <span className="text-cool-gray-300">{item.primalLabel}</span>
+                                      ) : (
+                                        <span className="text-cool-gray-600">—</span>
+                                      )}
                                     </td>
                                   )}
 
@@ -2540,6 +2620,11 @@ export const ButcherSpreadsheetView: React.FC<ButcherSpreadsheetViewProps> = ({
                             </td>
                           )}
                           {visibleColumns.category && <td className="py-2.5 px-3 text-cool-gray-300 text-xs">{getCategoryDisplay(item)}</td>}
+                          {visibleColumns.primal && (
+                            <td className="py-2.5 px-3 text-cool-gray-300 text-xs whitespace-nowrap">
+                              {item.primalLabel && item.primalLabel !== 'Unassigned' ? item.primalLabel : <span className="text-cool-gray-600">—</span>}
+                            </td>
+                          )}
                           {visibleColumns.weight && <td className="py-2.5 px-3 text-right font-mono font-extrabold text-cyan-200 text-sm whitespace-nowrap">{(item.netWeight || 0).toFixed(1)} lbs</td>}
                           {visibleColumns.pieces && <td className="py-2.5 px-3 text-right font-mono font-bold text-cool-gray-200">{item.pieces || 1}</td>}
                           {visibleColumns.location && <td className="py-2.5 px-3 text-cool-gray-300">{item.location || '-'}</td>}

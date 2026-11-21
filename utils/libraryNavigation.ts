@@ -1,5 +1,6 @@
 export type LibraryTab =
   | 'products'
+  | 'species_primals'
   | 'containers'
   | 'freezers'
   | 'pallets'
@@ -44,7 +45,15 @@ export const LIBRARY_SECTIONS: LibrarySectionMeta[] = [
     groupId: 'catalog',
     label: 'Products & Categories',
     shortLabel: 'Products',
-    description: 'Browse, categorize, price, and archive catalog items and category icons.',
+    description: 'Browse, categorize, assign primals, price, and archive catalog items and category icons.',
+    adminOnly: false,
+  },
+  {
+    id: 'species_primals',
+    groupId: 'catalog',
+    label: 'Species & Primals',
+    shortLabel: 'Species & Primals',
+    description: 'Manage livestock species and their primal cut breakdowns for products and butcher reporting.',
     adminOnly: false,
   },
   {
@@ -108,7 +117,7 @@ export const LIBRARY_SECTIONS: LibrarySectionMeta[] = [
     groupId: 'operations',
     label: 'Butcher Settings',
     shortLabel: 'Butcher',
-    description: 'Manage butcher species, order tags, yield baseline rules, and document link types.',
+    description: 'Manage butcher order tags, yield baseline rules, anomaly sensitivity, and document link types.',
     adminOnly: false,
   },
   {

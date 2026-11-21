@@ -1,12 +1,14 @@
 import { ButcherOrder, ButcherReportMode } from '../types';
 import { ButcherOrderStats } from './butcherStats';
 import { ButcherTimelineReport, formatDaysAsMonths } from './butcherTimelines';
+import { ButcherPrimalReportData } from './speciesPrimals';
 
 export type ButcherReportTypeId =
   | 'yields'
   | 'weights'
   | 'cuts'
   | 'breakdown'
+  | 'primals'
   | 'species'
   | 'timelines';
 
@@ -104,6 +106,7 @@ export interface ButcherReportKpiContext {
   };
   speciesComparison: ButcherReportSpeciesRow[];
   timelineReport: ButcherTimelineReport;
+  primalReport?: ButcherPrimalReportData;
 }
 
 export interface ButcherReportDefinition {
@@ -615,6 +618,84 @@ function buildTimelineKpis(ctx: ButcherReportKpiContext): ButcherReportKpiItem[]
   ];
 }
 
+function buildPrimalKpis(ctx: ButcherReportKpiContext): ButcherReportKpiItem[] {
+  const primalReport = ctx.primalReport;
+  if (!primalReport) {
+    return [
+      { id: 'primal-tracked', label: 'Primals Tracked', value: '0', subValue: 'Assign primals to products', tone: 'neutral' },
+      { id: 'primal-top', label: 'Top Primal', value: '—', subValue: 'No primal data', tone: 'amber' },
+      { id: 'primal-coverage', label: 'Assigned Coverage', value: '0.0%', subValue: 'Of packaged weight', tone: 'cyan' },
+      { id: 'primal-avg-head', label: 'Assigned / Head', value: '—', subValue: 'Per animal average', tone: 'indigo' },
+      { id: 'primal-unassigned', label: 'Unassigned Weight', value: '0', unit: 'lbs', subValue: 'Cuts without primal', tone: 'neutral' },
+      { id: 'primal-est-value', label: 'Est. Primal Value', value: '—', subValue: 'Set product prices', tone: 'emerald' },
+    ];
+  }
+
+  const topPrimal = primalReport.assignedRows[0] || null;
+  const assignedPerHead =
+    primalReport.totalAnimalCount > 0
+      ? primalReport.totalAssignedWeight / primalReport.totalAnimalCount
+      : 0;
+
+  return [
+    {
+      id: 'primal-tracked',
+      label: 'Primals Tracked',
+      value: String(primalReport.assignedRows.length),
+      subValue: `${primalReport.totalOrderCount} ${primalReport.totalOrderCount === 1 ? 'order' : 'orders'} · ${primalReport.totalAnimalCount} head`,
+      tone: 'cyan',
+    },
+    {
+      id: 'primal-top',
+      label: 'Top Primal by Weight',
+      value: topPrimal ? topPrimal.primalName : '—',
+      subValue: topPrimal
+        ? `${fmtCompactLbs(topPrimal.totalWeight)} lbs · ${topPrimal.pctOfPackaged.toFixed(1)}%`
+        : 'Assign primals to products',
+      tone: 'amber',
+    },
+    {
+      id: 'primal-coverage',
+      label: 'Assigned Coverage',
+      value: primalReport.totalPackagedWeight > 0 ? `${primalReport.assignedCoveragePct.toFixed(1)}%` : '—',
+      subValue: `${fmtCompactLbs(primalReport.totalAssignedWeight)} of ${fmtCompactLbs(primalReport.totalPackagedWeight)} lbs`,
+      tone: primalReport.assignedCoveragePct >= 90 ? 'emerald' : primalReport.assignedCoveragePct > 0 ? 'cyan' : 'amber',
+    },
+    {
+      id: 'primal-avg-head',
+      label: 'Assigned / Head',
+      value: assignedPerHead > 0 ? assignedPerHead.toFixed(1) : '—',
+      unit: assignedPerHead > 0 ? 'lbs' : undefined,
+      subValue: `Across ${primalReport.totalAnimalCount} head`,
+      tone: 'indigo',
+    },
+    {
+      id: 'primal-unassigned',
+      label: 'Unassigned Weight',
+      value: fmtCompactLbs(primalReport.totalUnassignedWeight),
+      unit: 'lbs',
+      subValue:
+        primalReport.unassignedRow
+          ? `${primalReport.unassignedRow.cuts.length} unassigned ${primalReport.unassignedRow.cuts.length === 1 ? 'cut' : 'cuts'}`
+          : 'All cuts mapped',
+      tone: primalReport.totalUnassignedWeight > 0 ? 'amber' : 'emerald',
+    },
+    {
+      id: 'primal-est-value',
+      label: 'Est. Primal Value',
+      value:
+        primalReport.totalEstValue > 0
+          ? `$${primalReport.totalEstValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+          : '—',
+      subValue:
+        primalReport.totalPackagedWeight > 0 && primalReport.totalEstValue > 0
+          ? `$${(primalReport.totalEstValue / primalReport.totalPackagedWeight).toFixed(2)} / lb avg`
+          : 'Set product prices to estimate',
+      tone: 'emerald',
+    },
+  ];
+}
+
 /**
  * Declarative registry of all Butcher Reports.
  * Adding a new report type only requires registering a definition here
@@ -656,6 +737,18 @@ export const BUTCHER_REPORT_DEFINITIONS: readonly ButcherReportDefinition[] = [
         ? { text: String(ctx.breakdown.allRows.length), tone: 'neutral' }
         : null,
     buildKpis: buildBreakdownKpis,
+  },
+  {
+    id: 'primals',
+    label: 'Primal Cuts',
+    category: 'cuts',
+    testId: 'butcher-reports-primals-tab',
+    description: 'Carcass share, weight breakdown, estimated value, and harvest trends grouped by primal cut.',
+    getBadge: (ctx) =>
+      ctx.primalReport && ctx.primalReport.assignedRows.length > 0
+        ? { text: String(ctx.primalReport.assignedRows.length), tone: 'cyan' }
+        : null,
+    buildKpis: buildPrimalKpis,
   },
   {
     id: 'species',

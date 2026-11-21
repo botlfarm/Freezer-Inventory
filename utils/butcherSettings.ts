@@ -644,6 +644,7 @@ export interface ButcherOrderFilterState {
   cutName: string[];
   primaryCategory: string[];
   subCategory: string[];
+  primalIds: string[];
 }
 
 export function createEmptyButcherOrderFilter(
@@ -661,6 +662,7 @@ export function createEmptyButcherOrderFilter(
     cutName: [],
     primaryCategory: [],
     subCategory: [],
+    primalIds: [],
     ...overrides,
   };
 }
@@ -676,7 +678,8 @@ export function countActiveButcherFilters(filter: ButcherOrderFilterState): numb
     filter.tagIds.length +
     filter.cutName.length +
     filter.primaryCategory.length +
-    filter.subCategory.length
+    filter.subCategory.length +
+    (filter.primalIds?.length || 0)
   );
 }
 
@@ -758,11 +761,12 @@ export interface FilterableButcherRecord {
   cuts?: string;
   primaryCategory?: string;
   subCategory?: string;
+  primalId?: string;
 }
 
 export function matchesButcherRecordFilter(
   record: FilterableButcherRecord,
-  filter: Pick<ButcherOrderFilterState, 'cutName' | 'primaryCategory' | 'subCategory'>,
+  filter: Pick<ButcherOrderFilterState, 'cutName' | 'primaryCategory' | 'subCategory'> & { primalIds?: string[] },
   viewOriginalNames: boolean = false,
 ): boolean {
   if (filter.cutName.length > 0) {
@@ -785,6 +789,13 @@ export function matchesButcherRecordFilter(
   if (filter.subCategory.length > 0) {
     const sub = (record.subCategory || 'Uncategorized').toLowerCase();
     if (!filter.subCategory.some((val) => val.toLowerCase() === sub)) {
+      return false;
+    }
+  }
+
+  if (filter.primalIds && filter.primalIds.length > 0) {
+    const recPrimalId = record.primalId || '__unassigned__';
+    if (!filter.primalIds.includes(recPrimalId)) {
       return false;
     }
   }
@@ -859,7 +870,8 @@ export function matchesButcherOrderFilters(
   const hasRecordLevelFilter =
     filter.cutName.length > 0 ||
     filter.primaryCategory.length > 0 ||
-    filter.subCategory.length > 0;
+    filter.subCategory.length > 0 ||
+    (filter.primalIds && filter.primalIds.length > 0);
 
   if (hasRecordLevelFilter) {
     if (

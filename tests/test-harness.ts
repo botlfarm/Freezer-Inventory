@@ -10,6 +10,7 @@ export const TABLE_NAMES = [
   'containers',
   'products',
   'categories',
+  'species_primals',
   'meat_cuts',
   'pallets',
   'boxes',
@@ -77,7 +78,8 @@ export function createTestDatabase(dbPath: string = ':memory:'): Database.Databa
       barcode TEXT,
       isArchived INTEGER DEFAULT 0,
       salePrice REAL DEFAULT 0,
-      salePriceUnit TEXT DEFAULT 'lb'
+      salePriceUnit TEXT DEFAULT 'lb',
+      primalId TEXT
     );
 
     CREATE TABLE IF NOT EXISTS categories (
@@ -87,6 +89,16 @@ export function createTestDatabase(dbPath: string = ':memory:'): Database.Databa
       icon TEXT,
       imageUrl TEXT,
       cutList TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS species_primals (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      type TEXT NOT NULL,
+      parentSpeciesId TEXT,
+      icon TEXT,
+      description TEXT,
+      sortOrder INTEGER DEFAULT 0
     );
 
     CREATE TABLE IF NOT EXISTS meat_cuts (
@@ -260,6 +272,7 @@ export function createTestDatabase(dbPath: string = ':memory:'): Database.Databa
       id TEXT PRIMARY KEY,
       orderNumber TEXT NOT NULL,
       species TEXT NOT NULL,
+      speciesId TEXT,
       animalCount INTEGER,
       killDate TEXT NOT NULL,
       pickupDate TEXT,

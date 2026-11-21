@@ -1,3 +1,94 @@
+### [2.89.1] - 2026-11-21
+
+### Fixed
+- **Display Freezer View Zero-Inventory Manual Quantity Adjustment (`views/DisplayCaseView.tsx`, `hooks/useInventory.ts`, `server.ts`, `types.ts`)**:
+  - Fixed an error (`Unsupported action type.`) when manually adjusting the quantity of a zero-inventory item in Display Freezer View (`+` button or direct numeric/formula input on `virtual_zero_` rows), which previously dispatched an invalid `'ADD_MEAT'` modal action instead of `'ADD_MEAT_CUT'`.
+  - Extracted `buildDisplayQuantityAdjustmentAction` in `DisplayCaseView.tsx` to normalize both increment/decrement and direct input/formula commits across virtual zero-inventory rows and existing cuts.
+  - Enabled adjustable zero-quantity loose rows in `DisplayCaseView.tsx` for zero-inventory items even without backstock when `hideZeroQuantity` is off, fixed single-display-freezer filtering when stock exists only in another display freezer, and guarded against synthesizing misleading `0` rows when display stock is hidden strictly by tag filters.
+  - Added instant optimistic client handling for `ADD_MEAT_CUT` with a stable client-generated UUID (`id?: string`) in `hooks/useInventory.ts` and matching server-side `id` reuse, positive quantity validation, and automatic missing `*_loose` container provisioning in `server.ts` so rapid consecutive adjustments from zero work seamlessly without race conditions or UI flicker.
+
+### Added
+- **Automated Tests (`tests/display-case-zero-adjustment.test.ts`)**:
+  - Added unit, SSR, and regression tests verifying `buildDisplayQuantityAdjustmentAction`, zero-inventory row rendering (with backstock, without backstock when `hideZeroQuantity` is false, multi-display freezer filtering, and tag-filter guards), and `ADD_MEAT_CUT` client/server handling.
+
+### Files Modified
+- `/types.ts`
+- `/views/DisplayCaseView.tsx`
+- `/hooks/useInventory.ts`
+- `/server.ts`
+- `/tests/display-case-zero-adjustment.test.ts`
+- `/APP_CONTEXT.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
+### [2.89.0] - 2026-11-21
+
+### Added
+- **Species & Primal Cuts Relational Table & Auto-Migration (`server.ts`, `types.ts`, `utils/speciesPrimals.ts`, `hooks/useInventory.ts`, `views/DataImportView.tsx`)**:
+  - Introduced the 25th SQLite table `species_primals` (`id`, `name`, `type: 'species' | 'primal'`, `parentSpeciesId`, `icon`, `description`, `sortOrder`) along with optional 1-to-1 `products.primalId` and `butcher_orders.speciesId` foreign-key columns (with safe startup `ALTER TABLE` migrations for live Home Assistant databases).
+  - Implemented idempotent legacy migration (`migrateLegacySpeciesIntoTable`) on startup that moves existing species from `app_config.butcher_species_list` and `butcher_orders.species` into `species_primals` with **empty primal lists** and links `butcher_orders.speciesId` without duplicating data.
+  - Integrated `species_primals` across all 25-table SQLite `.db`, JSON, and full `.zip` backup, preview, foreign-key dependency checking, and selective restore pipelines.
+  - Added server & optimistic client reducers (`ADD_SPECIES_PRIMAL`, `EDIT_SPECIES_PRIMAL`, `DELETE_SPECIES_PRIMAL`, `REORDER_SPECIES_PRIMALS`, plus upgraded `RENAME_BUTCHER_SPECIES` for atomic species rename/merge with colliding primal deduplication and product remapping).
+- **Catalog → Species & Primals Management Tab (`components/SpeciesPrimalsManager.tsx`, `components/PrimalSelect.tsx`, `utils/libraryNavigation.ts`, `views/LibraryView.tsx`)**:
+  - Added a dedicated **Species & Primals** tab under Catalog (`#library/species_primals`) for managing species and their nested primal cuts (search, filter, sort order up/down, inline rename/merge, order-usage delete guards, and product reassignment on primal deletion).
+  - Created reusable `<PrimalSelect>` and `<SpeciesPrimalFilterPair>` components for grouped Species → Primal assignment and filtering.
+- **Butcher Records Primal Reporting & Cut Breakdown Grouping (`components/ButcherPrimalReport.tsx`, `utils/butcherReports.ts`, `utils/butcherSettings.ts`, `views/ButcherRecordsView.tsx`, `views/ButcherSpreadsheetView.tsx`)**:
+  - Added a dedicated **Primal Cuts** report (`primals`) to the Butcher Reports selector with contextual KPIs (Primals Tracked, Top Primal, Primal Coverage %, Unassigned Weight, Est. Primal Value), a Primal Carcass Share & Breakdown table with `% of Packaged` bars, `% of Cold Carcass`, Avg/Head, expandable child cuts, explicit Unassigned Primal audit bucket, and an interactive Primal Yield Over Time SVG chart (`% of Packaged` vs. `Net Weight`).
+  - Added a `Flat Cuts | Group by Primal` toggle with collapsible primal group headers inside the **Cut Breakdown** report.
+  - Added Primal Cut multi-select filtering (including Unassigned Primal) across Butcher Logs, Reports, and the Butcher Spreadsheet (with a new sortable/filterable Primal Cut column).
+- **Cross-App Primal Filtering, Sorting, Grouping & Metadata (`App.tsx`, `views/LibraryView.tsx`, `components/ManagementForms.tsx`, `components/ProductQuickInfoModal.tsx`, `views/ProductView.tsx`, `views/DisplayCaseView.tsx`, `views/FreezerView.tsx`, `views/OffSiteHierarchy.tsx`, `views/OffSiteSpreadsheet.tsx`)**:
+  - Added primal cut assignment to Product Add/Edit forms, Bulk Product Editor, and quiet `Species · Primal` metadata in Product Quick Info and Catalog rows.
+  - Added Species & Primal filters and Group-by-Primal support across Catalog Products, On-Site Products, Display Case, Freezers, and Off-Site Storage Hierarchy & Spreadsheet (including itemized breakdown sorting and column toggle).
+- **Automated Tests (`tests/species-primals.test.ts`, `tests/test-harness.ts`, `tests/library-settings-redesign.test.ts`, `tests/butcher-reports.test.ts`, `tests/butcher-settings.test.ts`)**:
+  - Added comprehensive unit, SSR, and 25-table SQLite backup/restore roundtrip tests covering empty-primal legacy migration, CRUD/reordering, delete guards, atomic species merge, primal filter engine, Butcher Primal Report analytics & KPIs, and component rendering.
+
+### Changed
+- **Butcher Settings Species Pointer Card (`components/ButcherSettingsPanel.tsx`, `components/ManualButcherEntryModal.tsx`)**:
+  - Replaced the legacy flat text Butcher Species manager in Butcher Settings with a summary pointer card showing managed species, primal, and linked product counts with a direct **Manage Species & Primals** link to Catalog → Species & Primals.
+  - Sourced species dropdown options across Butcher Logs and Manual Entry from the relational `species_primals` table with seamless fallback to legacy config/order values.
+
+### Files Modified
+- `/types.ts`
+- `/utils/speciesPrimals.ts`
+- `/utils/butcherSettings.ts`
+- `/utils/butcherReports.ts`
+- `/utils/libraryNavigation.ts`
+- `/server.ts`
+- `/hooks/useInventory.ts`
+- `/components/PrimalSelect.tsx`
+- `/components/SpeciesPrimalsManager.tsx`
+- `/components/ButcherPrimalReport.tsx`
+- `/components/ButcherSettingsPanel.tsx`
+- `/components/ManagementForms.tsx`
+- `/components/ProductQuickInfoModal.tsx`
+- `/components/ManualButcherEntryModal.tsx`
+- `/views/LibraryView.tsx`
+- `/views/DataImportView.tsx`
+- `/views/ProductView.tsx`
+- `/views/DisplayCaseView.tsx`
+- `/views/FreezerView.tsx`
+- `/views/OffSiteHierarchy.tsx`
+- `/views/OffSiteSpreadsheet.tsx`
+- `/views/ButcherRecordsView.tsx`
+- `/views/ButcherSpreadsheetView.tsx`
+- `/App.tsx`
+- `/tests/test-harness.ts`
+- `/tests/species-primals.test.ts`
+- `/tests/library-settings-redesign.test.ts`
+- `/tests/butcher-reports.test.ts`
+- `/tests/butcher-settings.test.ts`
+- `/tests/user-auth-and-admin.test.ts`
+- `/APP_CONTEXT.md`
+- `/FREEZER_MAPPING_AI_GUIDE.md`
+- `/version.ts`
+- `/package.json`
+- `/config.yaml`
+- `/config.json`
+- `/CHANGELOG.md`
+
 ### [2.88.1] - 2026-11-21
 
 ### Changed

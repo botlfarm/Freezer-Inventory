@@ -1964,7 +1964,7 @@ export function DataImportView({
                       <button
                         type="button"
                         onClick={() => {
-                          const onSiteOnly = ['freezers', 'containers', 'container_templates', 'products', 'categories', 'meat_cuts', 'custom_lists', 'tags', 'butcher_orders', 'notification_channels', 'notification_settings', 'notification_logs', 'app_config', 'history', 'pwa_devices', 'undo_sql_journal', 'voice_dictionary', 'app_users', 'user_sessions'];
+                          const onSiteOnly = ['freezers', 'containers', 'container_templates', 'products', 'categories', 'species_primals', 'meat_cuts', 'custom_lists', 'tags', 'butcher_orders', 'notification_channels', 'notification_settings', 'notification_logs', 'app_config', 'history', 'pwa_devices', 'undo_sql_journal', 'voice_dictionary', 'app_users', 'user_sessions'];
                           selectAllTables(onSiteOnly);
                         }}
                         className="px-2.5 py-1 text-[11px] font-bold bg-cool-gray-850 hover:bg-cool-gray-800 text-indigo-300 rounded-lg border border-cool-gray-750 transition cursor-pointer"
@@ -2005,6 +2005,7 @@ export function DataImportView({
                             { name: 'container_templates', label: 'Container Dimension Templates', category: 'layout', description: 'Preset blueprints and standard sizes for containers' },
                             { name: 'containers', label: 'Containers, Bins & Baskets', category: 'layout', description: 'Boxes, drawers, baskets, and dividers located inside freezers' },
                             { name: 'categories', label: 'Product Categories', category: 'catalog', description: 'Taxonomy groupings and classifications for products' },
+                            { name: 'species_primals', label: 'Species & Primal Cuts', category: 'catalog', description: 'Animal species and hierarchical primal cut breakdown linked to products and butcher orders' },
                             { name: 'products', label: 'Product Master Catalog', category: 'catalog', description: 'Master catalog of meat cuts, weights, barcodes, and descriptions' },
                             { name: 'meat_cuts', label: 'On-Site Meat Cuts Stock', category: 'inventory', description: 'Active individual stock cuts, batches, and item tallies' },
                             { name: 'locations', label: 'Off-Site Facility Locations', category: 'offsite', description: 'External cold storage warehouses and facility sites' },

@@ -46,6 +46,15 @@ import {
   upsertAppConfigItem,
 } from './utils/butcherSettings';
 import {
+  applyAddSpeciesPrimal,
+  applyDeleteSpeciesPrimal,
+  applyEditSpeciesPrimal,
+  applyRenameOrMergeSpecies,
+  applyReorderSpeciesPrimals,
+  makeSpeciesIdFromName,
+  migrateLegacySpeciesIntoTable,
+} from './utils/speciesPrimals';
+import {
   assignPhotoToTargetInState,
   clearPhotoReferencesInState,
   collectPhotoAttachments,
@@ -486,6 +495,7 @@ interface AppInventoryState {
   containerTemplates?: any[];
   products: any[];
   categories?: any[];
+  speciesPrimals?: any[];
   meatCuts: any[];
   history: any[];
   offSiteEntries?: any[];
@@ -548,6 +558,7 @@ const defaultInitialState: AppInventoryState = {
   containers: [],
   products: [],
   categories: [],
+  speciesPrimals: [],
   meatCuts: [],
   history: [],
   offSiteEntries: [],
@@ -680,6 +691,7 @@ const TABLE_SCHEMAS: Record<string, {
         name TEXT NOT NULL,
         primaryCategory TEXT NOT NULL,
         subCategory TEXT NOT NULL,
+        primalId TEXT,
         imageUrl TEXT,
         productNumbers TEXT,
         listThresholds TEXT,
@@ -691,12 +703,13 @@ const TABLE_SCHEMAS: Record<string, {
         salePriceUnit TEXT DEFAULT 'lb'
       )
     `,
-    columns: ['id', 'name', 'primaryCategory', 'subCategory', 'imageUrl', 'productNumbers', 'listThresholds', 'defaultTagIds', 'listControlSources', 'barcode', 'isArchived', 'salePrice', 'salePriceUnit'],
+    columns: ['id', 'name', 'primaryCategory', 'subCategory', 'primalId', 'imageUrl', 'productNumbers', 'listThresholds', 'defaultTagIds', 'listControlSources', 'barcode', 'isArchived', 'salePrice', 'salePriceUnit'],
     fromDb: (row: any) => ({
       id: row.id,
       name: row.name,
       primaryCategory: row.primaryCategory,
       subCategory: row.subCategory,
+      primalId: row.primalId || undefined,
       imageUrl: row.imageUrl || undefined,
       productNumbers: row.productNumbers ? JSON.parse(row.productNumbers) : [],
       barcode: row.barcode || undefined,
@@ -712,6 +725,7 @@ const TABLE_SCHEMAS: Record<string, {
       name: item.name,
       primaryCategory: item.primaryCategory,
       subCategory: item.subCategory,
+      primalId: item.primalId || null,
       imageUrl: item.imageUrl || null,
       productNumbers: item.productNumbers ? JSON.stringify(item.productNumbers) : null,
       barcode: item.barcode || null,
@@ -747,6 +761,38 @@ const TABLE_SCHEMAS: Record<string, {
       type: item.type,
       parentPrimary: item.parentPrimary || null,
       icon: item.icon || null
+    })
+  },
+  species_primals: {
+    createSql: `
+      CREATE TABLE IF NOT EXISTS species_primals (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        type TEXT NOT NULL,
+        parentSpeciesId TEXT,
+        icon TEXT,
+        description TEXT,
+        sortOrder INTEGER DEFAULT 0
+      )
+    `,
+    columns: ['id', 'name', 'type', 'parentSpeciesId', 'icon', 'description', 'sortOrder'],
+    fromDb: (row: any) => ({
+      id: row.id,
+      name: row.name,
+      type: row.type === 'primal' ? 'primal' : 'species',
+      parentSpeciesId: row.parentSpeciesId || undefined,
+      icon: row.icon || undefined,
+      description: row.description || undefined,
+      sortOrder: row.sortOrder !== undefined && row.sortOrder !== null ? Number(row.sortOrder) : 0
+    }),
+    toDb: (item: any) => ({
+      id: item.id,
+      name: String(item.name || '').trim(),
+      type: item.type === 'primal' ? 'primal' : 'species',
+      parentSpeciesId: item.type === 'primal' ? (item.parentSpeciesId || null) : null,
+      icon: item.icon || null,
+      description: item.description || null,
+      sortOrder: typeof item.sortOrder === 'number' && Number.isFinite(item.sortOrder) ? item.sortOrder : 0
     })
   },
   meat_cuts: {
@@ -1354,11 +1400,12 @@ const TABLE_SCHEMAS: Record<string, {
     })
   },
   butcher_orders: {
-    columns: ['id', 'orderNumber', 'species', 'animalCount', 'killDate', 'pickupDate', 'liveWeight', 'hotWeight', 'coldWeight', 'locationId', 'createdAt', 'birthDate', 'notes', 'documents', 'butcherFee', 'weightAnomalies', 'estimatedWeights', 'reviewIgnoredFields', 'tagIds', 'auditClosed', 'auditClosedAt'],
+    columns: ['id', 'orderNumber', 'species', 'speciesId', 'animalCount', 'killDate', 'pickupDate', 'liveWeight', 'hotWeight', 'coldWeight', 'locationId', 'createdAt', 'birthDate', 'notes', 'documents', 'butcherFee', 'weightAnomalies', 'estimatedWeights', 'reviewIgnoredFields', 'tagIds', 'auditClosed', 'auditClosedAt'],
     createSql: `CREATE TABLE IF NOT EXISTS butcher_orders (
       id TEXT PRIMARY KEY,
       orderNumber TEXT NOT NULL,
       species TEXT NOT NULL,
+      speciesId TEXT,
       animalCount INTEGER,
       killDate TEXT NOT NULL,
       pickupDate TEXT,
@@ -1400,6 +1447,7 @@ const TABLE_SCHEMAS: Record<string, {
         id: row.id,
         orderNumber: row.orderNumber,
         species: row.species,
+        speciesId: row.speciesId || undefined,
         animalCount: row.animalCount,
         killDate: row.killDate || '',
         pickupDate: row.pickupDate || '',
@@ -1424,6 +1472,7 @@ const TABLE_SCHEMAS: Record<string, {
       id: item.id,
       orderNumber: item.orderNumber,
       species: item.species,
+      speciesId: item.speciesId || null,
       animalCount: item.animalCount || null,
       killDate: item.killDate || '',
       pickupDate: item.pickupDate || '',
@@ -2107,8 +2156,23 @@ function initDatabase() {
         console.log("Adding 'auditClosedAt' column to butcher_orders table...");
         db.prepare("ALTER TABLE butcher_orders ADD COLUMN auditClosedAt TEXT").run();
       }
+      if (!butcherOrderCols.some(col => col.name === 'speciesId')) {
+        console.log("Adding 'speciesId' column to butcher_orders table...");
+        db.prepare("ALTER TABLE butcher_orders ADD COLUMN speciesId TEXT").run();
+      }
     } catch (e) {
       console.error("Error checking/adding columns to butcher_orders:", e);
+    }
+
+    // Ensure products table has primalId column for 1-to-1 primal cut mapping
+    try {
+      const productCols = db.prepare("PRAGMA table_info(products)").all() as any[];
+      if (!productCols.some(col => col.name === 'primalId')) {
+        console.log("Adding 'primalId' column to products table...");
+        db.prepare("ALTER TABLE products ADD COLUMN primalId TEXT").run();
+      }
+    } catch (e) {
+      console.error("Error checking/adding primalId column to products:", e);
     }
 
     // Ensure movement_orders has confirmedPallets and confirmedMoveEntryIds columns
@@ -2477,6 +2541,7 @@ function loadStateSync(): AppInventoryState {
         saveTableData('containers', defaultInitialState.containers || []);
         saveTableData('products', defaultInitialState.products || []);
         saveTableData('categories', defaultInitialState.categories || []);
+        saveTableData('species_primals', defaultInitialState.speciesPrimals || []);
         saveTableData('meat_cuts', defaultInitialState.meatCuts || []);
         saveTableData('history', defaultInitialState.history || []);
         saveTableData('off_site_entries', defaultInitialState.offSiteEntries || []);
@@ -2595,6 +2660,27 @@ function loadStateSync(): AppInventoryState {
     }
 
     let containerTemplates = loadTableData('container_templates') || [];
+    const appConfig = loadTableData('app_config') || [];
+    let butcherOrders = loadTableData('butcher_orders');
+    let speciesPrimals = loadTableData('species_primals') || [];
+
+    const speciesMig = migrateLegacySpeciesIntoTable(speciesPrimals, appConfig, butcherOrders);
+    if (speciesMig.changedSpeciesPrimals || speciesMig.changedButcherOrders) {
+      speciesPrimals = speciesMig.speciesPrimals;
+      butcherOrders = speciesMig.butcherOrders;
+      try {
+        db.transaction(() => {
+          if (speciesMig.changedSpeciesPrimals) {
+            saveTableData('species_primals', speciesPrimals);
+          }
+          if (speciesMig.changedButcherOrders) {
+            saveTableData('butcher_orders', butcherOrders);
+          }
+        })();
+      } catch (migErr) {
+        console.error('Error persisting migrated species_primals:', migErr);
+      }
+    }
 
     return {
       freezers: loadTableData('freezers'),
@@ -2602,12 +2688,13 @@ function loadStateSync(): AppInventoryState {
       containerTemplates: containerTemplates,
       products: products,
       categories: loadTableData('categories'),
+      speciesPrimals: speciesPrimals,
       meatCuts: meatCuts,
       history: loadTableData('history'),
       offSiteEntries: offSiteEntries,
       pallets: loadTableData('pallets') || [],
       boxes: loadTableData('boxes') || [],
-      butcherOrders: loadTableData('butcher_orders'),
+      butcherOrders: butcherOrders,
       butcherRecords: butcherRecords,
       customLists: customLists,
       tags: loadTableData('tags'),
@@ -2617,7 +2704,7 @@ function loadStateSync(): AppInventoryState {
       notificationChannels: notificationChannels,
       notificationSettings: notificationSettings,
       notificationLogs: loadTableData('notification_logs') || [],
-      appConfig: loadTableData('app_config') || [],
+      appConfig: appConfig,
       pwaDevices: loadTableData('pwa_devices') || [],
       undoJournal: loadTableData('undo_sql_journal') || []
     };
@@ -2658,6 +2745,9 @@ function saveStateSync(state: AppInventoryState, affectedTables?: string[], hist
       }
       if (shouldSync('categories')) {
         syncTableData('categories', state.categories || [], collectInverse ? inverseCollector : undefined);
+      }
+      if (shouldSync('species_primals')) {
+        syncTableData('species_primals', state.speciesPrimals || [], collectInverse ? inverseCollector : undefined);
       }
       if (shouldSync('meat_cuts')) {
         syncTableData('meat_cuts', state.meatCuts || [], collectInverse ? inverseCollector : undefined);
@@ -2953,6 +3043,17 @@ function normalizeState(state: AppInventoryState): AppInventoryState {
   // Guarantee tags array exists without forcing hardcoded tag rules
   if (!state.tags) {
     state.tags = [];
+  }
+
+  // Guarantee speciesPrimals array exists and migrate any legacy species from app_config / butcherOrders
+  const normalizedSpeciesMig = migrateLegacySpeciesIntoTable(
+    state.speciesPrimals,
+    state.appConfig,
+    state.butcherOrders
+  );
+  state.speciesPrimals = normalizedSpeciesMig.speciesPrimals;
+  if (normalizedSpeciesMig.changedButcherOrders) {
+    state.butcherOrders = normalizedSpeciesMig.butcherOrders;
   }
 
   if (!Array.isArray(state.voiceDictionary)) {
@@ -6911,14 +7012,24 @@ export const DATABASE_TABLE_DEFINITIONS = [
     dependents: ['products']
   },
   {
+    name: 'species_primals',
+    label: 'Species & Primal Cuts',
+    category: 'catalog',
+    categoryLabel: 'Product Catalog & Cuts',
+    iconName: 'Layers',
+    description: 'Livestock species and their primal cut breakdowns linked to products and butcher orders',
+    dependents: ['products', 'butcher_orders']
+  },
+  {
     name: 'products',
     label: 'Product Catalog Items',
     category: 'catalog',
     categoryLabel: 'Product Catalog & Cuts',
     iconName: 'Library',
-    description: 'Standardized product definitions, SKUs, barcodes, and prices',
+    description: 'Standardized product definitions, SKUs, barcodes, primals, and prices',
     dependsOn: [
-      { table: 'categories', foreignKey: 'primaryCategory', label: 'Product Categories' }
+      { table: 'categories', foreignKey: 'primaryCategory', label: 'Product Categories' },
+      { table: 'species_primals', foreignKey: 'primalId', label: 'Species & Primal Cuts' }
     ],
     dependents: ['meat_cuts', 'off_site_entries']
   },
@@ -6999,7 +7110,8 @@ export const DATABASE_TABLE_DEFINITIONS = [
     iconName: 'ClipboardCheck',
     description: 'Livestock processing orders, live/hanging weights, and harvest dates',
     dependsOn: [
-      { table: 'locations', foreignKey: 'locationId', label: 'Off-Site Locations' }
+      { table: 'locations', foreignKey: 'locationId', label: 'Off-Site Locations' },
+      { table: 'species_primals', foreignKey: 'speciesId', label: 'Species & Primal Cuts' }
     ],
     dependents: ['off_site_entries']
   },
@@ -7112,6 +7224,7 @@ export const TABLE_ALIAS_MAP: Record<string, string[]> = {
   container_templates: ['container_templates'],
   containers: ['containers'],
   categories: ['categories'],
+  species_primals: ['species_primals'],
   products: ['products'],
   meat_cuts: ['meat_cuts'],
   locations: ['locations'],
@@ -7135,6 +7248,9 @@ export const TABLE_ALIAS_MAP: Record<string, string[]> = {
 
   // CamelCase aliases
   containerTemplates: ['container_templates'],
+  speciesPrimals: ['species_primals'],
+  primals: ['species_primals'],
+  species: ['species_primals'],
   meatCuts: ['meat_cuts'],
   offSiteEntries: ['off_site_entries'],
   movementOrders: ['movement_orders'],
@@ -7156,10 +7272,10 @@ export const TABLE_ALIAS_MAP: Record<string, string[]> = {
 
   // Broad Section aliases
   layout: ['freezers', 'containers', 'container_templates'],
-  catalog: ['products', 'categories', 'butcher_orders'],
+  catalog: ['products', 'categories', 'species_primals', 'butcher_orders'],
   inventory: ['meat_cuts'],
   stock: ['meat_cuts'],
-  items: ['products', 'categories'],
+  items: ['products', 'categories', 'species_primals'],
   offsite: ['locations', 'pallets', 'boxes', 'off_site_entries', 'movement_orders'],
   lists: ['custom_lists', 'tags'],
   system: ['app_config', 'notification_channels', 'notification_settings', 'notification_logs', 'history', 'pwa_devices', 'undo_sql_journal', 'voice_dictionary', 'app_users', 'user_sessions'],
@@ -7481,6 +7597,66 @@ function checkDatabaseDependencies(srcDb: any, selectedTables: string[]) {
     } catch (e) {}
   }
 
+  // Check products -> species_primals dependency
+  if (isTableSelected('products') && !isTableSelected('species_primals')) {
+    try {
+      const activeSpIds = getExistingIds(db, 'species_primals');
+      const pRows = srcDb.prepare("SELECT primalId FROM products WHERE primalId IS NOT NULL AND trim(primalId) != ''").all() as any[];
+      const missingIds = new Set<string>();
+      let missingCount = 0;
+      for (const row of pRows) {
+        const pid = String(row.primalId).trim();
+        if (pid && !activeSpIds.has(pid)) {
+          missingIds.add(pid);
+          missingCount++;
+        }
+      }
+      if (missingCount > 0) {
+        issues.push({
+          sourceTable: 'products',
+          sourceLabel: 'Product Catalog Items',
+          targetTable: 'species_primals',
+          targetLabel: 'Species & Primal Cuts',
+          missingCount,
+          sampleIds: Array.from(missingIds).slice(0, 5),
+          message: `${missingCount} product(s) reference primal cut ID(s) missing from active species_primals.`,
+          recommendation: 'species_primals'
+        });
+        suggestedTables.add('species_primals');
+      }
+    } catch (e) {}
+  }
+
+  // Check butcher_orders -> species_primals dependency
+  if (isTableSelected('butcher_orders') && !isTableSelected('species_primals')) {
+    try {
+      const activeSpIds = getExistingIds(db, 'species_primals');
+      const oRows = srcDb.prepare("SELECT speciesId FROM butcher_orders WHERE speciesId IS NOT NULL AND trim(speciesId) != ''").all() as any[];
+      const missingIds = new Set<string>();
+      let missingCount = 0;
+      for (const row of oRows) {
+        const sid = String(row.speciesId).trim();
+        if (sid && !activeSpIds.has(sid)) {
+          missingIds.add(sid);
+          missingCount++;
+        }
+      }
+      if (missingCount > 0) {
+        issues.push({
+          sourceTable: 'butcher_orders',
+          sourceLabel: 'Butcher Orders',
+          targetTable: 'species_primals',
+          targetLabel: 'Species & Primal Cuts',
+          missingCount,
+          sampleIds: Array.from(missingIds).slice(0, 5),
+          message: `${missingCount} butcher order(s) reference species ID(s) missing from active species_primals.`,
+          recommendation: 'species_primals'
+        });
+        suggestedTables.add('species_primals');
+      }
+    } catch (e) {}
+  }
+
   return {
     hasMissingDependencies: issues.length > 0,
     issues,
@@ -7588,6 +7764,33 @@ function checkJsonDependencies(data: any, selectedTables: string[]) {
     }
   }
 
+  const productsJson = data.products || data.catalog || data.items || [];
+  if (isTableSelected('products') && !isTableSelected('species_primals') && Array.isArray(productsJson)) {
+    const activeSpIds = getExistingIds(db, 'species_primals');
+    const missingIds = new Set<string>();
+    let missingCount = 0;
+    for (const p of productsJson) {
+      const pid = String(p?.primalId || '').trim();
+      if (pid && !activeSpIds.has(pid)) {
+        missingIds.add(pid);
+        missingCount++;
+      }
+    }
+    if (missingCount > 0) {
+      issues.push({
+        sourceTable: 'products',
+        sourceLabel: 'Product Catalog Items',
+        targetTable: 'species_primals',
+        targetLabel: 'Species & Primal Cuts',
+        missingCount,
+        sampleIds: Array.from(missingIds).slice(0, 5),
+        message: `${missingCount} product(s) reference primal cut ID(s) missing from active species_primals.`,
+        recommendation: 'species_primals'
+      });
+      suggestedTables.add('species_primals');
+    }
+  }
+
   return {
     hasMissingDependencies: issues.length > 0,
     issues,
@@ -7650,6 +7853,7 @@ function restoreFromJsonData(backupData: any, targetSections?: string[]): AppInv
   const srcContainerTemplates = backupData.containerTemplates || backupData.container_templates || backupData.templates;
   const srcContainers = backupData.containers || backupData.bins || backupData.boxes;
   const srcCategories = backupData.categories;
+  const srcSpeciesPrimals = backupData.speciesPrimals || backupData.species_primals;
   const srcProducts = backupData.products || backupData.catalog || backupData.items;
   const srcMeatCuts = backupData.meatCuts || backupData.meat_cuts || backupData.inventory || backupData.stock || backupData.stockCounts || backupData.counts;
   const srcLocations = backupData.locations || backupData.hubs || backupData.offSiteLocations;
@@ -7683,6 +7887,7 @@ function restoreFromJsonData(backupData: any, targetSections?: string[]): AppInv
       containerTemplates: srcContainerTemplates || [],
       containers: srcContainers || [],
       categories: srcCategories || [],
+      speciesPrimals: srcSpeciesPrimals || [],
       products: srcProducts || [],
       meatCuts: srcMeatCuts || [],
       locations: srcLocations || [],
@@ -7733,6 +7938,10 @@ function restoreFromJsonData(backupData: any, targetSections?: string[]): AppInv
   if (tablesToRestore.has('categories') && srcCategories) {
     currentState.categories = srcCategories;
     affectedTablesList.push('categories');
+  }
+  if (tablesToRestore.has('species_primals') && srcSpeciesPrimals) {
+    currentState.speciesPrimals = srcSpeciesPrimals;
+    affectedTablesList.push('species_primals');
   }
   if (tablesToRestore.has('products') && srcProducts) {
     currentState.products = srcProducts;
@@ -8236,6 +8445,7 @@ app.get('/api/backups/preview/:filename', async (req, res) => {
         targetSummary.counts.tags = targetSummary.tableCounts.tags;
         targetSummary.counts.history = targetSummary.tableCounts.history;
         targetSummary.counts.butcherOrders = targetSummary.tableCounts.butcher_orders;
+        targetSummary.counts.speciesPrimals = targetSummary.tableCounts.species_primals;
         targetSummary.counts.settings = targetSummary.tableCounts.app_config;
         targetSummary.counts.voiceDictionary = targetSummary.tableCounts.voice_dictionary;
 
@@ -8314,6 +8524,7 @@ app.get('/api/backups/preview/:filename', async (req, res) => {
           container_templates: getArrayLength(data.containerTemplates || data.templates),
           containers: getArrayLength(data.containers || data.bins || data.boxes),
           categories: getArrayLength(data.categories),
+          species_primals: getArrayLength(data.speciesPrimals || data.species_primals),
           products: getArrayLength(data.products || data.catalog || data.items),
           meat_cuts: getArrayLength(meatCuts),
           locations: getArrayLength(data.locations),
@@ -8346,6 +8557,7 @@ app.get('/api/backups/preview/:filename', async (req, res) => {
         summary.counts.voiceDictionary = summary.tableCounts.voice_dictionary;
         summary.counts.history = summary.tableCounts.history;
         summary.counts.butcherOrders = summary.tableCounts.butcher_orders;
+        summary.counts.speciesPrimals = summary.tableCounts.species_primals;
         summary.counts.butcherRecords = getArrayLength(data.butcherRecords);
 
         summary.samples.freezers = getNamesSample(data.freezers || data.locations || data.cabinets);
@@ -8430,6 +8642,7 @@ app.get('/api/backups/preview/:filename', async (req, res) => {
               container_templates: getArrayLength(parsed.containerTemplates || parsed.templates),
               containers: getArrayLength(parsed.containers || parsed.bins || parsed.boxes),
               categories: getArrayLength(parsed.categories),
+              species_primals: getArrayLength(parsed.speciesPrimals || parsed.species_primals),
               products: getArrayLength(parsed.products || parsed.catalog || parsed.items),
               meat_cuts: getArrayLength(meatCuts),
               locations: getArrayLength(parsed.locations),
@@ -8499,6 +8712,7 @@ app.get('/api/backups/preview/:filename', async (req, res) => {
       currentCounts.customLists = currentTableCounts.custom_lists;
       currentCounts.tags = currentTableCounts.tags;
       currentCounts.voiceDictionary = currentTableCounts.voice_dictionary;
+      currentCounts.speciesPrimals = currentTableCounts.species_primals;
       currentCounts.history = currentTableCounts.history;
       currentCounts.settings = currentTableCounts.app_config;
       currentCounts.images = currentTableCounts.images;
@@ -8752,9 +8966,9 @@ app.post('/api/backups/import-zip', async (req: any, res) => {
     } else {
       if (restoreFreezers || (restoreOnSite && restoreFreezers !== false)) explicitTables.push('freezers');
       if (restoreContainers || (restoreOnSite && restoreContainers !== false)) explicitTables.push('containers', 'container_templates');
-      if (restoreProducts || (restoreOnSite && restoreProducts !== false)) explicitTables.push('products', 'categories');
+      if (restoreProducts || (restoreOnSite && restoreProducts !== false)) explicitTables.push('products', 'categories', 'species_primals');
       if (restoreMeatCuts || (restoreOnSite && restoreMeatCuts !== false)) explicitTables.push('meat_cuts');
-      if (restoreOffSite) explicitTables.push('off_site_entries', 'locations', 'pallets', 'boxes', 'movement_orders', 'butcher_orders');
+      if (restoreOffSite) explicitTables.push('off_site_entries', 'locations', 'pallets', 'boxes', 'movement_orders', 'butcher_orders', 'species_primals');
       if (restoreCustomLists || (restoreOnSite && restoreCustomLists !== false)) explicitTables.push('custom_lists');
       if (restoreTags || (restoreOnSite && restoreTags !== false)) explicitTables.push('tags');
       if (restoreOnSite) explicitTables.push('voice_dictionary');
@@ -11984,6 +12198,12 @@ function getAffectedTablesForAction(actionType: string): string[] | undefined {
     case 'UPDATE_CATEGORY_DECORATION':
       return ['categories', 'products', 'history'];
 
+    case 'ADD_SPECIES_PRIMAL':
+    case 'EDIT_SPECIES_PRIMAL':
+    case 'DELETE_SPECIES_PRIMAL':
+    case 'REORDER_SPECIES_PRIMALS':
+      return ['species_primals', 'products', 'butcher_orders', 'app_config', 'history'];
+
     case 'ADD_TAG':
     case 'EDIT_TAG':
     case 'DELETE_TAG':
@@ -12022,9 +12242,11 @@ function getAffectedTablesForAction(actionType: string): string[] | undefined {
     case 'EDIT_BUTCHER_ORDER':
     case 'UPDATE_BUTCHER_STATUS':
     case 'LINK_BUTCHER_CONTAINER':
-      return ['butcher_orders', 'off_site_entries', 'containers', 'meat_cuts', 'history'];
+      return ['butcher_orders', 'species_primals', 'off_site_entries', 'containers', 'meat_cuts', 'history'];
 
     case 'RENAME_BUTCHER_SPECIES':
+      return ['species_primals', 'products', 'butcher_orders', 'app_config', 'history'];
+
     case 'DELETE_BUTCHER_ORDER_TAG':
     case 'RENAME_BUTCHER_DOCUMENT_TYPE':
     case 'DELETE_BUTCHER_DOCUMENT_TYPE':
@@ -12693,6 +12915,10 @@ app.post('/api/inventory/action', requireEditAuth, async (req: any, res) => {
         if ('imageUrl' in normalizedUpdates) {
           normalizedUpdates.imageUrl = normalizeImageUrlValue(normalizedUpdates.imageUrl);
         }
+        if ('primalId' in normalizedUpdates) {
+          const rawPrimal = normalizedUpdates.primalId;
+          normalizedUpdates.primalId = typeof rawPrimal === 'string' && rawPrimal.trim() ? rawPrimal.trim() : undefined;
+        }
         nextState.products = nextState.products.map(p => {
           if (p.id === productId) {
             const updated = { ...p, ...normalizedUpdates };
@@ -12875,10 +13101,15 @@ app.post('/api/inventory/action', requireEditAuth, async (req: any, res) => {
                 nextTags = Array.from(new Set([...nextTags, ...updates.defaultTagIds]));
               }
             }
+            const nextPrimalPatch =
+              updates.primalId !== undefined
+                ? { primalId: typeof updates.primalId === 'string' && updates.primalId.trim() ? updates.primalId.trim() : undefined }
+                : {};
             return {
               ...p,
               ...(updates.primaryCategory !== undefined ? { primaryCategory: updates.primaryCategory } : {}),
               ...(updates.subCategory !== undefined ? { subCategory: updates.subCategory } : {}),
+              ...nextPrimalPatch,
               ...(updates.defaultTagIds !== undefined ? { defaultTagIds: nextTags } : {}),
               ...(updates.isArchived !== undefined ? { isArchived: updates.isArchived } : {})
             };
@@ -12889,6 +13120,14 @@ app.post('/api/inventory/action', requireEditAuth, async (req: any, res) => {
         const updateDescriptionDetails: string[] = [];
         if (updates.primaryCategory !== undefined) updateDescriptionDetails.push(`primary category to "${updates.primaryCategory}"`);
         if (updates.subCategory !== undefined) updateDescriptionDetails.push(`subcategory to "${updates.subCategory}"`);
+        if (updates.primalId !== undefined) {
+          if (updates.primalId) {
+            const matchedPrimal = (nextState.speciesPrimals || []).find((sp: any) => sp.id === updates.primalId);
+            updateDescriptionDetails.push(`primal to "${matchedPrimal?.name || updates.primalId}"`);
+          } else {
+            updateDescriptionDetails.push('cleared primal cut');
+          }
+        }
         if (updates.defaultTagIds !== undefined) {
           const modeWord = updates.defaultTagsMode === 'append' ? 'appended' : 'replaced';
           const tagNames = updates.defaultTagIds.length > 0 ? updates.defaultTagIds.join(', ') : 'none';
@@ -12960,9 +13199,33 @@ app.post('/api/inventory/action', requireEditAuth, async (req: any, res) => {
         break;
       }
       case 'ADD_MEAT_CUT': {
-        const { productId, quantity, containerId, notes, tagIds, originalCutName } = action.payload;
+        const { id, productId, quantity, containerId, notes, tagIds, originalCutName } = action.payload;
         const product = nextState.products.find(p => p.id === productId);
         if (!product) return res.status(400).json({ error: 'Product not found.' });
+
+        const numericQuantity = Number(quantity);
+        if (!Number.isFinite(numericQuantity) || numericQuantity <= 0) {
+          return res.status(400).json({ error: 'Quantity must be greater than zero.' });
+        }
+
+        // Auto-provision missing loose container for valid freezers or staging
+        if (typeof containerId === 'string' && containerId.endsWith('_loose') && !nextState.containers.some(c => c.id === containerId)) {
+          if (containerId === 'staging_loose') {
+            nextState.containers = [
+              ...nextState.containers,
+              { id: 'staging_loose', name: 'Loose', icon: 'loose' }
+            ];
+          } else {
+            const targetFreezerId = containerId.slice(0, -'_loose'.length);
+            const targetFreezer = nextState.freezers.find(f => f.id === targetFreezerId);
+            if (targetFreezer) {
+              nextState.containers = [
+                ...nextState.containers,
+                { id: containerId, name: 'Loose', freezerId: targetFreezer.id, icon: 'loose' }
+              ];
+            }
+          }
+        }
 
         const productDefaultTagIds = product.defaultTagIds || [];
         const finalTagIds = tagIds || productDefaultTagIds;
@@ -12970,7 +13233,7 @@ app.post('/api/inventory/action', requireEditAuth, async (req: any, res) => {
         const existingCut = nextState.meatCuts.find(mc => mc.containerId === containerId && isSameVariant(mc, productId, notes, finalTagIds, originalCutName));
 
         if (existingCut) {
-          const newQuantity = existingCut.quantity + quantity;
+          const newQuantity = existingCut.quantity + numericQuantity;
           const combinedTagIds = Array.from(new Set([...(existingCut.tagIds || []), ...finalTagIds]));
           const existingNotes = (existingCut.notes || '').trim();
           const newNotes = (notes || '').trim();
@@ -12989,22 +13252,28 @@ app.post('/api/inventory/action', requireEditAuth, async (req: any, res) => {
           const locPhrase = getLocationPhrase(containerId, nextState);
           
           nextState.meatCuts = nextState.meatCuts.map(mc => mc.id === existingCut.id ? { ...mc, quantity: newQuantity, tagIds: combinedTagIds, notes: combinedNotes, originalCutName: combinedOriginal } : mc);
-          const history = newHistoryEntry(`Added ${quantity}x "${product.name}" ${locPhrase}, new total ${newQuantity}.`, existingCut.id);
+          const history = newHistoryEntry(`Added ${numericQuantity}x "${product.name}" ${locPhrase}, new total ${newQuantity}.`, existingCut.id);
           nextState.history = addHistory(nextState, history);
         } else {
           const combinedTagIds = [...finalTagIds];
+          const requestedId =
+            typeof id === 'string' &&
+            id.trim().length > 0 &&
+            !nextState.meatCuts.some(mc => mc.id === id.trim())
+              ? id.trim()
+              : crypto.randomUUID();
 
           const newMeatCut = { 
-            id: crypto.randomUUID(), 
+            id: requestedId, 
             productId, 
-            quantity, 
+            quantity: numericQuantity, 
             containerId, 
             notes,
             tagIds: combinedTagIds,
             originalCutName: originalCutName || undefined
           };
           const locPhrase = getLocationPhrase(containerId, nextState);
-          const history = newHistoryEntry(`${quantity}x "${product.name}" added ${locPhrase}.`, newMeatCut.id);
+          const history = newHistoryEntry(`${numericQuantity}x "${product.name}" added ${locPhrase}.`, newMeatCut.id);
           nextState.meatCuts = [...nextState.meatCuts, newMeatCut];
           nextState.history = addHistory(nextState, history);
         }
@@ -14272,15 +14541,46 @@ app.post('/api/inventory/action', requireEditAuth, async (req: any, res) => {
           }
         });
         
-        const existingOrderIdx = orders.findIndex((o: any) => o.id === action.payload.order.id);
+        // Ensure species exists in species_primals and link speciesId on the butcher order
+        const incomingOrder = { ...action.payload.order };
+        const spList = [...(nextState.speciesPrimals || [])];
+        const spNameTrimmed = String(incomingOrder.species || '').trim();
+        let matchedSpecies = incomingOrder.speciesId
+          ? spList.find((sp: any) => sp.type === 'species' && sp.id === incomingOrder.speciesId)
+          : undefined;
+        if (!matchedSpecies && spNameTrimmed) {
+          matchedSpecies = spList.find(
+            (sp: any) => sp.type === 'species' && String(sp.name || '').trim().toLowerCase() === spNameTrimmed.toLowerCase()
+          );
+        }
+        if (!matchedSpecies && spNameTrimmed) {
+          const existingIds = new Set<string>(spList.map((sp: any) => sp.id));
+          const maxOrder = spList
+            .filter((sp: any) => sp.type === 'species')
+            .reduce((m: number, sp: any) => (typeof sp.sortOrder === 'number' && sp.sortOrder > m ? sp.sortOrder : m), -1);
+          matchedSpecies = {
+            id: makeSpeciesIdFromName(spNameTrimmed, existingIds),
+            name: spNameTrimmed,
+            type: 'species',
+            sortOrder: maxOrder + 1
+          };
+          spList.push(matchedSpecies);
+          nextState.speciesPrimals = spList;
+        }
+        if (matchedSpecies) {
+          incomingOrder.speciesId = matchedSpecies.id;
+          incomingOrder.species = matchedSpecies.name;
+        }
+
+        const existingOrderIdx = orders.findIndex((o: any) => o.id === incomingOrder.id);
         if (existingOrderIdx >= 0) {
           orders[existingOrderIdx] = {
             ...orders[existingOrderIdx],
-            ...action.payload.order
+            ...incomingOrder
           };
           nextState.butcherOrders = [...orders];
         } else {
-          nextState.butcherOrders = [...orders, action.payload.order];
+          nextState.butcherOrders = [...orders, incomingOrder];
         }
         nextState.offSiteEntries = [...offSiteEntries];
         nextState.products = [...products];
@@ -14385,6 +14685,36 @@ app.post('/api/inventory/action', requireEditAuth, async (req: any, res) => {
           }
         }
         const updates = rawUpdates;
+        if (updates.species !== undefined || updates.speciesId !== undefined) {
+          const spList = [...(nextState.speciesPrimals || [])];
+          const spName = String(updates.species ?? existingOrder?.species ?? '').trim();
+          let matchedSp = updates.speciesId
+            ? spList.find((sp: any) => sp.type === 'species' && sp.id === updates.speciesId)
+            : undefined;
+          if (!matchedSp && spName) {
+            matchedSp = spList.find(
+              (sp: any) => sp.type === 'species' && String(sp.name || '').trim().toLowerCase() === spName.toLowerCase()
+            );
+          }
+          if (!matchedSp && spName) {
+            const existingIds = new Set<string>(spList.map((sp: any) => sp.id));
+            const maxOrder = spList
+              .filter((sp: any) => sp.type === 'species')
+              .reduce((m: number, sp: any) => (typeof sp.sortOrder === 'number' && sp.sortOrder > m ? sp.sortOrder : m), -1);
+            matchedSp = {
+              id: makeSpeciesIdFromName(spName, existingIds),
+              name: spName,
+              type: 'species',
+              sortOrder: maxOrder + 1
+            };
+            spList.push(matchedSp);
+            nextState.speciesPrimals = spList;
+          }
+          if (matchedSp) {
+            updates.speciesId = matchedSp.id;
+            updates.species = matchedSp.name;
+          }
+        }
         nextState.butcherOrders = orders.map(o => o.id === orderId ? { ...o, ...updates } : o);
         if (existingOrder) {
           const changedFields = Object.keys(updates).filter(k => {
@@ -14412,34 +14742,176 @@ app.post('/api/inventory/action', requireEditAuth, async (req: any, res) => {
         }
         break;
       }
+      case 'ADD_SPECIES_PRIMAL': {
+        const entry = action.payload?.entry;
+        if (!entry) break;
+        const result = applyAddSpeciesPrimal(nextState.speciesPrimals || [], entry);
+        if (result.error || !result.added) {
+          return res.status(400).json({ error: result.error || 'Invalid species/primal entry.' });
+        }
+        nextState.speciesPrimals = result.nextList;
+        if (result.added.type === 'species') {
+          const allNames = nextState.speciesPrimals
+            .filter((sp: any) => sp.type === 'species')
+            .map((sp: any) => sp.name);
+          nextState.appConfig = upsertAppConfigItem(
+            nextState.appConfig,
+            BUTCHER_SPECIES_CONFIG_KEY,
+            JSON.stringify(allNames)
+          );
+        }
+        const label = result.added.type === 'species' ? 'species' : 'primal cut';
+        const hist = newHistoryEntry(
+          `Added ${label} "${result.added.name}".`,
+          result.added.id,
+          undefined,
+          'system',
+          buildHistoryDetails({
+            actionType: 'ADD_SPECIES_PRIMAL',
+            undoMode: 'standard'
+          })
+        );
+        nextState.history = addHistory(nextState, hist);
+        break;
+      }
+      case 'EDIT_SPECIES_PRIMAL': {
+        const id = String(action.payload?.id || '').trim();
+        const updates = action.payload?.updates || {};
+        if (!id) break;
+        const result = applyEditSpeciesPrimal(
+          nextState.speciesPrimals || [],
+          nextState.butcherOrders || [],
+          id,
+          updates
+        );
+        if (result.error || !result.updated) {
+          return res.status(400).json({ error: result.error || 'Could not update species/primal.' });
+        }
+        nextState.speciesPrimals = result.nextList;
+        nextState.butcherOrders = result.nextOrders;
+        if (result.updated.type === 'species') {
+          const allNames = nextState.speciesPrimals
+            .filter((sp: any) => sp.type === 'species')
+            .map((sp: any) => sp.name);
+          nextState.appConfig = upsertAppConfigItem(
+            nextState.appConfig,
+            BUTCHER_SPECIES_CONFIG_KEY,
+            JSON.stringify(allNames)
+          );
+        }
+        const label = result.updated.type === 'species' ? 'species' : 'primal cut';
+        const hist = newHistoryEntry(
+          `Updated ${label} "${result.updated.name}"${result.affectedOrderCount > 0 ? ` (${result.affectedOrderCount} order${result.affectedOrderCount === 1 ? '' : 's'} synced)` : ''}.`,
+          result.updated.id,
+          undefined,
+          'system',
+          buildHistoryDetails({
+            actionType: 'EDIT_SPECIES_PRIMAL',
+            undoMode: 'standard',
+            changedFields: Object.keys(updates)
+          })
+        );
+        nextState.history = addHistory(nextState, hist);
+        break;
+      }
+      case 'DELETE_SPECIES_PRIMAL': {
+        const id = String(action.payload?.id || '').trim();
+        const reassignToPrimalId = action.payload?.reassignToPrimalId ?? null;
+        if (!id) break;
+        const result = applyDeleteSpeciesPrimal(
+          nextState.speciesPrimals || [],
+          nextState.products || [],
+          nextState.butcherOrders || [],
+          id,
+          reassignToPrimalId
+        );
+        if (result.error || !result.deleted) {
+          return res.status(400).json({ error: result.error || 'Could not delete species/primal.' });
+        }
+        nextState.speciesPrimals = result.nextList;
+        nextState.products = result.nextProducts;
+        if (result.deleted.type === 'species') {
+          const allNames = nextState.speciesPrimals
+            .filter((sp: any) => sp.type === 'species')
+            .map((sp: any) => sp.name);
+          nextState.appConfig = upsertAppConfigItem(
+            nextState.appConfig,
+            BUTCHER_SPECIES_CONFIG_KEY,
+            JSON.stringify(allNames)
+          );
+        }
+        const label = result.deleted.type === 'species' ? 'species' : 'primal cut';
+        const productNote =
+          result.affectedProductCount > 0
+            ? reassignToPrimalId
+              ? ` (reassigned ${result.affectedProductCount} product${result.affectedProductCount === 1 ? '' : 's'})`
+              : ` (cleared from ${result.affectedProductCount} product${result.affectedProductCount === 1 ? '' : 's'})`
+            : '';
+        const hist = newHistoryEntry(
+          `Deleted ${label} "${result.deleted.name}"${productNote}.`,
+          result.deleted.id,
+          undefined,
+          'system',
+          buildHistoryDetails({
+            actionType: 'DELETE_SPECIES_PRIMAL',
+            undoMode: 'standard',
+            itemCount: result.affectedProductCount
+          })
+        );
+        nextState.history = addHistory(nextState, hist);
+        break;
+      }
+      case 'REORDER_SPECIES_PRIMALS': {
+        const orderedIds = Array.isArray(action.payload?.orderedIds) ? action.payload.orderedIds : [];
+        const parentSpeciesId = action.payload?.parentSpeciesId;
+        if (orderedIds.length === 0) break;
+        nextState.speciesPrimals = applyReorderSpeciesPrimals(
+          nextState.speciesPrimals || [],
+          orderedIds,
+          parentSpeciesId
+        );
+        break;
+      }
       case 'RENAME_BUTCHER_SPECIES': {
         const oldName = String(action.payload?.oldName || '').trim();
         const newName = String(action.payload?.newName || '').trim();
         if (!oldName || !newName) break;
-        const currentSpecies = parseButcherSpeciesList(nextState.appConfig);
-        const result = applyButcherSpeciesRename(
+        const spResult = applyRenameOrMergeSpecies(
+          nextState.speciesPrimals || [],
+          nextState.products || [],
           nextState.butcherOrders || [],
-          currentSpecies,
           oldName,
           newName
         );
-        nextState.butcherOrders = result.nextOrders;
+        nextState.speciesPrimals = spResult.nextList;
+        nextState.products = spResult.nextProducts;
+        nextState.butcherOrders = spResult.nextOrders;
+
+        const allSpeciesNames = nextState.speciesPrimals
+          .filter((sp: any) => sp.type === 'species')
+          .map((sp: any) => sp.name);
+        const currentSpecies = parseButcherSpeciesList(nextState.appConfig);
+        const legacySync = applyButcherSpeciesRename([], currentSpecies, oldName, newName);
+        const mergedConfigSpecies = Array.from(
+          new Set([...allSpeciesNames, ...legacySync.nextSpeciesList])
+        ).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+
         nextState.appConfig = upsertAppConfigItem(
           nextState.appConfig,
           BUTCHER_SPECIES_CONFIG_KEY,
-          JSON.stringify(result.nextSpeciesList)
+          JSON.stringify(mergedConfigSpecies)
         );
-        const verb = result.mergedIntoExisting ? 'Merged' : 'Renamed';
+        const verb = spResult.mergedIntoExisting ? 'Merged' : 'Renamed';
         const hist = newHistoryEntry(
-          `${verb} butcher species "${oldName}" -> "${newName}" (${result.affectedOrderCount} order${result.affectedOrderCount === 1 ? '' : 's'} updated).`,
-          'butcher_settings',
+          `${verb} species "${oldName}" -> "${newName}" (${spResult.affectedOrderCount} order${spResult.affectedOrderCount === 1 ? '' : 's'} updated${spResult.affectedProductCount > 0 ? `, ${spResult.affectedProductCount} product${spResult.affectedProductCount === 1 ? '' : 's'} remapped` : ''}).`,
+          spResult.targetSpeciesId || 'species_primals',
           undefined,
           'butcher',
           buildHistoryDetails({
             actionType: 'RENAME_BUTCHER_SPECIES',
             undoMode: 'audit_only',
-            itemCount: result.affectedOrderCount,
-            changedFields: ['species']
+            itemCount: spResult.affectedOrderCount,
+            changedFields: ['species', 'speciesId']
           })
         );
         nextState.history = addHistory(nextState, hist);
