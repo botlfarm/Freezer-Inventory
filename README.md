@@ -1,4 +1,4 @@
-> **Notice:** This README was entirely written by Gemini.
+> **Disclosure:** This entire software application, test suite, CI/CD configuration, and documentation were written by AI. Review the code and verify backups before relying on it for critical farm operations.
 
 # Freezer Inventory Tracker
 
